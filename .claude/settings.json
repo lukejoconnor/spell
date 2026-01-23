@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(/**)",
+      "Read(/notebook/**)",
+      "Edit(/notebook/**)",
+      "Write(/notebook/**)",
+      "Bash(git -C notebook *)",
+      "Bash(git init)",
+      "Bash(git remote *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(gh repo create *)",
+      "Bash(gh auth *)",
+      "Bash(ls *)",
+      "Bash(mkdir *)"
+    ]
+  }
+}
