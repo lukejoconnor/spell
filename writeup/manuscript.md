@@ -4,28 +4,98 @@
 
 This document describes Spell, a domain-specific language for LLM self-orchestration. In contrast to standard agent architectures where an external harness controls the execution loop, Spell allows the LLM to write its own execution graph—including recursive calls, parallel branches, function definitions, and context management. The key innovation is that recursion is moved *inside* the LLM's output. Instead of calling the LLM in a loop, the harness calls it just once and interprets its output, calling it again if instructed to do so by the LLM itself.
 
-Spell is implemented as a Lisp dialect. The LLM produces S-expressions that the interpreter evaluates.
+Spell is implemented as a Lisp dialect, based closely on Clojure. The LLM produces S-expressions that the interpreter evaluates.
 
-## Data and Expressions
+## Background
 
-Values in Spell are S-expressions: strings, numbers, symbols, and lists. Expressions can be evaluated, producing values.
-
-Expressions in Spell can be named via bindings. A binding evaluates the expression and associates the result with a name—standard eager evaluation, as in most Lisps. To defer evaluation, you quote the expression.
+In Lisp (and Clojure), objects are S-expressions, and these can be evaluated, producing values. Expressions are named via bindings. A binding evaluates the expression and associates the result with a name unless it is quoted. A quoted expression, or thunk, is evaluated using `eval`.
 
 ```clojure
 ;; Binding evaluates immediately
 (def x (+ 1 2))    ; x is bound to 3
 
 ;; To defer evaluation, quote
-(def thunk '(llm "analyze this"))  ; thunk is bound to the list (llm "analyze this")
+(def thunk '(+ 41 1))  ; thunk is bound to the list
 
 ;; Later, evaluate the thunk
-(eval thunk)  ; calls the LLM
+(eval thunk) -> 42
 ```
 
-## Quotation and Expansion
+There exist two ways to quote an expression: using the tic ', or using the backtick. When an expression is backtick-quoted, a subexpression can be evaluated using the `,` operator:
 
-Quotation and expansion are separate operations in Spell:
+```clojure
+(def x 41)
+`(+ ,x 1) -> (+ 41 1)
+```
+
+Quotes and backtick quotes are used in Spell so that a parent LLM can pass arbitrary source code as context to a child LLM (in Lisp, "code is data"). This "source code" will often have trivial logic yet contain important information, like a prompt ("data is code").
+
+
+## Completions and `llm`
+
+In Spell, a *completion* is a program which comprises a prompt (called a *prefix*) and a *response*:
+
+```clojure
+'(progn
+   (def prefix ...)
+   (def response
+     (progn
+       ...
+       (def return ...))))
+```
+
+The response is produced by an LLM, with the prefix as its prompt. Within the response, the value of `return` is the actual output (i.e., what would be viewed by a user in a chat). This is orchestrated by the `llm` primitive. In pseudocode:
+
+```
+(defn llm [prompt]
+  (let [response (api-call prompt)
+        completion (str prompt response)
+        env (spell-eval completion {})]
+    (get env 'return)))
+```
+
+`spell-eval` is a special evaluation function that takes as input both an expression and an environment (here, `{}`) and returns a new environment (here bound to `env`). This environment contains a binding for the symbol `return`, which is the return value of `llm`.
+
+
+## Example: Passing Context to a Child
+
+
+```clojure
+(def completion
+  '(progn
+     (def prefix "Print 'Hello' and call a child LLM, who should print ' World!'")
+     (def response
+       (def return (cat "Hello" (llm completion))))))
+```
+
+The child LLM sees the completion of its parent as its prompt, producing this completion:
+
+```clojure
+'(progn
+   (def prefix
+     "(progn
+        (def prefix \"Print 'Hello' and call a child LLM, who should print ' World!'\")
+        (def response
+          (def return (cat \"Hello\" (llm completion)))))")
+   (def response
+     (def return " World!")))
+```
+
+In order of operations:
+1. the parent `llm` call passes the initial prompt to an API call, gets `completion`, and calls `spell-eval` on it.
+2. this thunk contains a child `llm` call with `completion` as its prompt; this is evaluated.
+3. the child `llm` call passes this prompt to the API, gets a new `completion` and calls `spell-eval`.
+4. this completion has no further function calls to be evaluated, so `spell-eval` returns immediately.
+5. the child `llm` call extracts the `return` value from its completion, which is " World!".
+6. the parent `spell-eval` call returns the fully evaluated completion, which contains the binding `return -> "Hello World!"`
+7. This binding is extracted and returned by the parent `llm` call.
+
+## Environments and scope
+In Clojure, 
+
+## Expansion
+
+A thunk 
 - **Quote** (`'expr`): Returns the expression unevaluated
 - **Expand** (`(expand expr)`): Substitutes free variables while preserving internal bindings
 
@@ -59,20 +129,6 @@ But internal bindings are preserved:
 This rule reflects an important feature of Spell: the *environment* of a program is almost exactly the program itself. All references resolve to bindings defined inside the program, with the exception of built-in functions like `llm`.
 
 Every expression has a canonical expansion: the smallest equivalent expression with only internal references. The canonical expansion is what gets passed to child LLM calls.
-
-## Completions
-
-A program in Spell is called a *completion* because it comprises a prompt (called a *prefix*) and a *response*, written by the LLM:
-
-```clojure
-(completion
-  (prefix ...)
-  (response ...))
-```
-
-The evaluation scope of a binding is its suffix (the entire program after the binding). The quotation scope of a binding is the entire program, including the body of the binding itself.
-
-## Example: Passing Context to a Child
 
 Consider this program:
 
