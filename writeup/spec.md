@@ -1,707 +1,414 @@
-# Agent Execution DSL: Language Specification
+# Spell Implementation Specification
 
 ## 1. Overview
 
-This document specifies a domain-specific language, called *Spell* (self-prompting execution language for LLMs), for LLM self-orchestration. In contrast to standard agent architectures where an external harness controls the execution loop, this language allows the LLM to write its own execution graph—including recursive calls, parallel branches, function definitions, and context management. The key innovation is that recursion is moved *inside* the LLM's output. Instead of calling the LLM in a loop, the harness calls it just once and interprets its output, calling it again if instructed to do so by the LLM itself.
+Spell is a Lisp dialect for LLM self-orchestration. This document specifies how to implement the interpreter.
 
-In Spell, the only data type is a string. Objects in the language are expressions. Expressions can be evaluated, producing other expressions. In particular, they produce literals, which are defined as expressions that are equivalent to their value (see below for "equivalent"). 
+**Implementation language:** Clojure
 
-Expressions in Spell can be named via bindings. A binding is akin to variable assignments in other languages, but instead of the value of the expression being assigned when bound to a name, the expression itself is bound to the name. When we wish to evaluate an expression, we use the `$` operator; we are also allowed to *quote* an expression, using the `@` operator.
+**Key insight:** The interpreter evaluates S-expressions produced by an LLM. The LLM can invoke itself recursively via the `llm` primitive. Before passing expressions to child LLM calls, free variables are substituted with their values (expansion).
 
-Quotation is separate from evaluation in Spell. Evaluating an expression produces its value; quoting an expression produces its *expansion*. We define *equivalence* between expressions: two expressions are equivalent if they have the same expansion. For example, consider this expression:
-```XML
-<item>
-@item
-</item>
-```
-This expression is equivalent to:
-```XML
-@item
-```
-and also to:
-
-```XML
-<item>
-<item>
-@item
-</item>
-</item>
-```
-Moreover, all three of these expressions are literals: they are equivalent to their own value. 
-
-The primary reason for quotation is that it allows an LLM to pass items from its context window to a child LLM without repeating them and burning tokens. If it wishes its child call to see its original prompt, then it can simply tag `@prompt`, and the harness will expand this quotation before passing it to the child.
-
-How does the harness decide when to stop expanding a quote, if the expansion itself contains quotes? When expanding an subexpression `x` of an expression `y`, it only expands quotes within `x` whose binding is defined somewhere in `y` that is outside of `x`. For example:
-```XML
-<y>
-<hi>
-Hello
-</hi>
-<x>
-<earth>
-World!
-</earth>
-<greeting>
-@hi @earth
-</greeting>
-</x>
-</y>
-```
-The expansion of the subexpression `x` is:
-```XML
-<x>
-<earth>
-World!
-</earth>
-<greeting>
-Hello @earth
-</greeting>
-</x>
-```
-
-This rule reflects an important feature of Spell, which is that the *environment* of a program is almost exactly the program itself. All quotations and evaluations refer to bindings defined inside of the program, with the exception of the `llm` function itself (the `llm` function cannot be quoted, but it can be evaluated). In the example above, `@hi` must be replaced with `earth` when the `x` is expanded because the binding of `hi` is outside of `x`. This way, every expression has a canonical expansion: the smallest equivalent expression with only internal quotations. `@item` contains an external quotation. This expression:
-```XML
-<item>
-<item>
-@item
-</item>
-</item>
-```
-does have internal quotations only, but it is not the smallest such expression; the smallest is:
-```XML
-<item>
-@item
-</item>
-```
-
-A program in Spell is called a *completion* because it comprises a prompt (called a *prefix*) and a *response*, probably written by the LLM:
-```XML
-<completion>
-<prefix>
-...
-</prefix>
-<response>
-...
-</response>
-</completion>
-```
-Both the prefix and the response have their own internal structure, such as a required `<return>` statement (see below). 
-
-The evaluation scope of a binding is its suffix (that is, the entire program after the `</binding>` tag). The quotation scope of a binding is the entire program, particularly including the body of the binding. In fact, this is a common use case for quotations: consider the following examples:
-
-```XML
-<completion>
-<prefix>
-Please print 'hello ' and then invoke another llm with instructions to print 'world'.
-</prefix>
-<instruction>
-Print 'world' and terminate.
-</instruction>
-<return>
-hello $llm($instruction)
-</return>
-</completion>
-```
-
-Here is an equivalent program that uses the language-specific `@` operator:
-
-```XML
-<completion>
-<prefix>
-Please print 'hello ' and then invoke another llm with instructions to print 'world'.
-</prefix>
-<return>
-hello $llm(@completion)
-</return>
-</completion>
-```
-
-Here, `@completion` is the entire expression of the completion. In the child `llm` call, the completion would be:
-
-```XML
-<completion>
-<prefix>
-<completion>
-<prefix>
-Please print 'hello ' and then invoke another llm with instructions to print 'world'.
-</prefix>
-<return>
-hello $llm(@completion)
-</return>
-</completion>
-<return>
-world
-</return>
-</completion>
-```
-
-The completion of the parent call is the prefix of the child call. The child LLM thus has the context it needs to understand its assignment: the user has asked the first LLM to print 'hello' and the second to print 'world', the first has already printed 'hello', and it now must print 'world'. If the parent LLM attempted to pass `$completion`, this would be an error, because an expression must be defined before it is evaluated, and it is not defined until after its closing tag (`</completion>`).
-
-
-
-
-
+See `manuscript.md` for conceptual introduction. See `questions.md` for open design questions.
 
 ---
 
-## 2. Terminology
+## 2. Core Data Structures
 
-| Term | Definition |
-|------|------------|
-| **Completion** | The full text of a single LLM interaction: prefix + response |
-| **Prefix** | Everything before the LLM's generation; the "input" |
-| **Response** | What the LLM generates; the "output" |
-| **Body** | The content between matching tags |
-| **Expression (Expr)** | Syntax that can be evaluated |
-| **Value** | A fully-evaluated expression; in this language, always a string |
-| **Binding** | A named intermediate result: `<name> Expr </name>` |
-| **Definition** | A function definition |
-| **Return expression** | The final expression whose value is the output |
-| **Environment** | The completion itself—all bindings are accessible via tag navigation |
-| **Pattern** | A constraint on output shape; our analogue of types |
+### 2.1 Environment
+
+The environment maps symbols to values. Implemented as an immutable map.
+
+```clojure
+;; Environment is a map from symbols to values
+(def empty-env {})
+
+(defn extend-env [env name val]
+  (assoc env name val))
+
+(defn lookup [env name]
+  (if-let [val (get env name)]
+    val
+    (throw (ex-info "Unbound variable" {:name name}))))
+```
+
+### 2.2 Values
+
+Values are full S-expressions:
+- Strings
+- Numbers
+- Symbols
+- Lists (including nested lists)
 
 ---
 
-## 3. Document Structure
+## 3. The Interpreter: `spell-eval`
 
-### 3.1 Completion
+The core interpreter evaluates an expression in an environment.
 
-```
-Completion ::= <completion> Prefix Response </completion>
-```
+```clojure
+(defn spell-eval [expr env]
+  (cond
+    ;; String literal: self-evaluating
+    (string? expr) expr
 
-A completion is the fundamental unit of execution. It contains everything: the input (prefix) and output (response).
+    ;; Number literal: self-evaluating
+    (number? expr) expr
 
-### 3.2 Prefix
+    ;; Symbol: look up in environment
+    (symbol? expr) (lookup env expr)
 
-```
-Prefix ::= <prefix> SystemPrompt InterpreterPrompt CallerPrompt </prefix>
+    ;; Empty list: nil
+    (empty? expr) nil
 
-SystemPrompt ::= <system-prompt> Text </system-prompt>
-InterpreterPrompt ::= <interpreter-prompt> Text </interpreter-prompt>
-CallerPrompt ::= <caller-prompt> Text </caller-prompt>
-```
+    ;; Special forms and function calls
+    (list? expr) (spell-eval-list expr env)
 
-The prefix has three components:
+    :else (throw (ex-info "Unknown expression type" {:expr expr}))))
 
-- **System prompt**: Static instructions prepended to every prefix. Defines the language, available tools, base behavior.
+(defn spell-eval-list [expr env]
+  (let [op (first expr)]
+    (case op
+      ;; Quote: return unevaluated
+      quote (second expr)
 
-- **Interpreter prompt**: Dynamic state injected by the harness. Examples: recursion depth, token budget remaining, execution status of parallel branches.
+      ;; Setq: bind name to value, return value
+      setq (let [name (second expr)
+                 val (spell-eval (nth expr 2) env)]
+             ;; Note: env mutation handled by caller
+             val)
 
-- **Caller prompt**: The first argument to the `llm()` call. Supplied by the user (for the root call) or by a parent agent (for recursive calls).
+      ;; Progn: evaluate sequence, return last
+      progn (spell-eval-progn (rest expr) env)
 
-### 3.3 Response
+      ;; If: conditional
+      if (if (spell-eval (second expr) env)
+           (spell-eval (nth expr 2) env)
+           (spell-eval (nth expr 3) env))
 
-```
-Response ::= <response> (Definition | Binding)* ReturnExpr </response>
+      ;; Concat: string concatenation
+      concat (apply str (map #(spell-eval % env) (rest expr)))
 
-Definition ::= <fn name=id> <args> IdList? </args> Expr </fn>
-IdList ::= id ( , id )*
-
-Binding ::= < id > Expr </ id >
-
-ReturnExpr ::= <return> Expr </return>
-```
-
-A response contains:
-1. Zero or more **definitions** (functions)
-2. Zero or more **bindings** (named intermediate computations)
-3. Exactly one **return expression**
-
----
-
-## 4. Expressions
-
-### 4.1 Grammar
-
-```
-Expr ::=
-    | Text                             -- bare text is a literal
-    | $ TagRef                         -- evaluate reference
-    | @ TagRef                         -- quote reference (literal text)
-    | Expr Expr                        -- concatenation (adjacency)
-    | Call                             -- function/tool invocation
-    | Call : Pattern                   -- constrained invocation
-
-TagRef ::= id ( . id | [ int ] )*
-
-Call ::= id ( ArgList? )
-ArgList ::= Expr ( , Expr )*
+      ;; Function call (built-in, tool, or user-defined)
+      (spell-apply op
+                   (map #(spell-eval % env) (rest expr))
+                   env))))
 ```
 
-### 4.2 Reference Types
+### 3.1 Progn with Bindings
 
-There are two ways to reference a binding:
+`progn` must thread environment updates from `setq`:
 
-**`$ref` — Evaluate**: Returns the *value* of the expression in the binding.
-
-```
-<greeting>hello</greeting>
-<return>$greeting world</return>
-```
-Return value: `"hello world"`
-
-**`@ref` — Quote**: Returns the *literal text* between the tags.
-
-```
-<plan>
-  <step1>Do X</step1>
-  <step2>Do Y</step2>
-</plan>
-<return>llm(Execute this plan: @plan)</return>
-```
-The child LLM receives the literal text `<step1>Do X</step1><step2>Do Y</step2>`.
-
-### 4.3 Tag Navigation
-
-Tags are navigated using dot notation and array indexing:
-
-```
-$prefix.caller-prompt         -- nested tag access
-$thought[0]                   -- first element of array
-$thought                      -- entire array (if multiple <thought> tags)
-$prefix.caller-prompt.task    -- deeper nesting
-```
-
-When multiple tags share the same name at the same level, they form an array:
-
-```
-<thought>First</thought>
-<thought>Second</thought>
-```
-
-- `$thought[0]` → `"First"`
-- `$thought[1]` → `"Second"`
-- `$thought` → the array `["First", "Second"]`
-
-### 4.4 Concatenation
-
-Adjacency is concatenation:
-
-```
-<return>Hello $name, welcome to $place</return>
-```
-
-If `$name` is `"Alice"` and `$place` is `"Wonderland"`:
-Return value: `"Hello Alice, welcome to Wonderland"`
-
----
-
-## 5. Calls
-
-### 5.1 Unified Call Syntax
-
-All callable things share the same syntax:
-
-```
-id ( arg1, arg2, ... )
-id ( arg1, arg2, ... ) : Pattern
-```
-
-Three kinds of callables:
-
-| Kind | Defined where | Examples |
-|------|---------------|----------|
-| Built-in | Interpreter | `llm` |
-| Tool | Harness/external | `search`, `write_file`, `calculator` |
-| User-defined | Response | `ralph`, `analyze`, `summarize` |
-
-Lookup order: user-defined → tools → built-ins.
-
-### 5.2 Constrained Calls
-
-Any call can have an output constraint using `: Pattern`:
-
-```
-llm($prompt) : <return>%s</return>
-
-search($query) : <results>(<result>%s</result>)+</results>
-```
-
-The pattern specifies the required shape of the output. If the output doesn't match, it's a runtime error (or retry, depending on harness policy).
-
-### 5.3 The `llm` Built-in
-
-The `llm` function spawns a child agent:
-
-```
-llm( caller-prompt )
-llm( caller-prompt ) : Pattern
-```
-
-The child receives:
-- **System prompt**: Inherited from parent
-- **Interpreter prompt**: Constructed by harness (may include updated depth, budget, etc.)
-- **Caller prompt**: The argument to `llm()`
-
----
-
-## 6. Functions
-
-### 6.1 Definition
-
-```
-<fn name=id> <args> param1, param2, ... </args>
-  Expr
-</fn>
-```
-
-Zero-argument functions are allowed:
-
-```
-<fn name=get-time> <args></args>
-  current_time()
-</fn>
-```
-
-### 6.2 Scope
-
-A function is in scope for any expression that appears after its definition in the document. This includes:
-- Later bindings
-- The return expression
-- Bodies of later-defined functions
-
-### 6.3 Mutual Recursion
-
-Functions may reference each other:
-
-```
-<fn name=is-even> <args> n </args>
-  if($n == 0, true, is-odd(dec($n)))
-</fn>
-
-<fn name=is-odd> <args> n </args>
-  if($n == 0, false, is-even(dec($n)))
-</fn>
-```
-
-This is allowed because function bodies are evaluated at call time, not definition time.
-
-### 6.4 Dependency Rule
-
-If function `f` calls function `g`, and `f` is passed to a child via `llm()`, then `g` must also be included in the child's context. Failure to include dependencies is a runtime error.
-
----
-
-## 7. Evaluation
-
-### 7.1 Two Phases
-
-**Phase 1 — Quotation**: Resolve all `@ref` expressions to literal text. This is pure string extraction from the generated document.
-
-**Phase 2 — Evaluation**: Resolve all `$ref` expressions and execute calls, left-to-right, top-to-bottom.
-
-### 7.2 Evaluation Order
-
-Bindings are evaluated in document order (top-to-bottom). Within an expression, evaluation proceeds left-to-right.
-
-```
-<a>llm(First)</a>
-<b>llm(Second)</b>
-<return>llm($a $b Third)</return>
-```
-
-Evaluation order:
-1. `llm(First)` → bind to `a`
-2. `llm(Second)` → bind to `b`
-3. Evaluate `$a` → value of `a`
-4. Evaluate `$b` → value of `b`
-5. `llm(...)` with concatenated arguments
-
-### 7.3 Dependency Constraint
-
-For `$ref`: A binding can only reference bindings that appear earlier in the document.
-
-```
--- Valid
-<a>hello</a>
-<b>$a world</b>
-
--- Error: b is undefined when evaluating a
-<a>$b world</a>
-<b>hello</b>
-```
-
-For `@ref`: No constraints. Any tag can be quoted, including:
-- Forward references
-- Self-references
-- Circular references
-
-```
--- Valid: self-reference via quotation
-<response>
-  <thought>My reasoning</thought>
-  <return>llm(Continue: @response)</return>
-</response>
+```clojure
+(defn spell-eval-progn [exprs env]
+  (loop [remaining exprs
+         current-env env
+         last-val nil]
+    (if (empty? remaining)
+      last-val
+      (let [expr (first remaining)]
+        (if (and (list? expr) (= 'setq (first expr)))
+          ;; Setq: evaluate and extend env
+          (let [name (second expr)
+                val (spell-eval (nth expr 2) current-env)
+                new-env (extend-env current-env name val)]
+            (recur (rest remaining) new-env val))
+          ;; Other expression: evaluate in current env
+          (let [val (spell-eval expr current-env)]
+            (recur (rest remaining) current-env val)))))))
 ```
 
 ---
 
-## 8. Patterns
+## 4. Function Application: `spell-apply`
 
-Patterns constrain the shape of call outputs. They serve three purposes:
-1. **Constraint**: Output must match
-2. **Parsing**: Harness extracts values from wildcards
-3. **Documentation**: Declares expected output shape
+Applies a function to evaluated arguments.
 
-### 8.1 Pattern Grammar (Draft)
+```clojure
+(defn spell-apply [fn-name args env]
+  (case fn-name
+    ;; Arithmetic (if we support numbers)
+    + (apply + args)
+    - (apply - args)
+    * (apply * args)
+    / (apply / args)
 
-```
-Pattern ::=
-    | Literal                      -- exact text
-    | % id : Wildcard              -- named wildcard
-    | Wildcard                     -- unnamed wildcard
-    | < id > Pattern </ id >       -- tag pattern
-    | Pattern Pattern              -- concatenation
-    | Pattern | Pattern            -- alternation
-    | Pattern ?                    -- optional
-    | Pattern *                    -- zero or more
-    | Pattern +                    -- one or more
-    | ( Pattern )                  -- grouping
+    ;; List operations
+    car (first (first args))
+    cdr (rest (first args))
+    cons (cons (first args) (second args))
+    list args
 
-Wildcard ::= s | d | f | expr
-    -- s = string, d = integer, f = float, expr = expression to evaluate
-```
+    ;; String operations
+    concat (apply str args)
 
-### 8.2 Pattern Examples
+    ;; Comparison
+    = (apply = args)
+    < (apply < args)
+    > (apply > args)
 
-**Simple string output:**
-```
-llm($prompt) : %answer:s
-```
+    ;; The LLM primitive
+    llm (call-llm (first args) env)
 
-**Structured output:**
-```
-llm($prompt) : <answer>%s</answer>
-```
+    ;; Expansion (substitute free variables)
+    expand (expand-expr (first args) env)
 
-**Branching (answer or recursive call):**
-```
-llm($prompt) : <return>%answer:s</return> | <return>ralph(%task:s, %ctx:s)</return>
+    ;; Otherwise: look up user-defined function or tool
+    (let [fn-def (get env fn-name)]
+      (if fn-def
+        (apply-user-fn fn-def args env)
+        (apply-tool fn-name args)))))
 ```
 
-**List extraction:**
-```
-search($query) : <results>(<result>%s</result>)+</results>
-```
+### 4.1 Tool Functions
 
-### 8.3 Expression Wildcards
+Tools are external functions (search, file operations, etc.). They're whitelisted.
 
-The wildcard type `expr` indicates the captured text should be parsed and evaluated as an expression:
+```clojure
+(def tools
+  {'search (fn [query] (external-search query))
+   'read-file (fn [path] (slurp path))
+   ;; Add more tools here
+   })
 
-```
-llm($prompt) : <return>%call:expr</return>
-```
-
-If the output is `<return>ralph(task, ctx)</return>`, then `%call:expr` captures `ralph(task, ctx)` and the harness evaluates it as a function call.
-
----
-
-## 9. Errors
-
-### 9.1 Parse-Time Errors
-
-- Malformed XML structure
-- Missing return expression
-- Invalid tag reference syntax
-
-### 9.2 Static Errors
-
-- `$ref` references a binding that appears later in document
-- Function body references undefined function (and it's not defined later)
-
-### 9.3 Runtime Errors
-
-- Undefined function or tool called
-- Pattern match failure on constrained call
-- Recursion depth exceeded
-- Token budget exceeded
-- Function passed to child without its dependencies
-
----
-
-## 10. Examples
-
-### 10.1 Basic Agent Loop
-
-The standard ReAct-style loop, expressed in this language:
-
-```
-<response>
-  <thought>I need to search for information about the query.</thought>
-  <action>search($prefix.caller-prompt.query)</action>
-  <return>llm($prefix.caller-prompt
-
-I searched and found: $action
-
-Please provide a final answer.)</return>
-</response>
-```
-
-### 10.2 Parallel Research with Synthesis
-
-Independent branches that don't pollute each other's context:
-
-```
-<response>
-  <branch1>llm(Research topic A: $prefix.topicA)</branch1>
-  <branch2>llm(Research topic B: $prefix.topicB)</branch2>
-  <branch3>llm(Research topic C: $prefix.topicC)</branch3>
-  <return>llm(Synthesize these findings:
-
-Topic A: $branch1
-
-Topic B: $branch2
-
-Topic C: $branch3)</return>
-</response>
-```
-
-### 10.3 Context Surgery (Pruning Failed Reasoning)
-
-Discarding a failed attempt:
-
-```
-<response>
-  <attempt1>llm($prefix Try approach A)</attempt1>
-  <attempt2>llm($prefix Try approach B)</attempt2>
-  <return>llm($prefix 
-
-I tried approach B and got: $attempt2
-
-Approach A didn't work. Continue from approach B.)</return>
-</response>
-```
-
-Note: `$attempt1` is evaluated (the work is done) but its value is not passed to the child. The child doesn't know approach A was tried.
-
-### 10.4 The Ralph Loop
-
-Persistent task completion with external judgment:
-
-```
-<response>
-  <fn name=ralph> <args> task, ctx </args>
-    llm(You are a completion judge.
-
-Task: $task
-
-Work produced: llm($ctx Continue working on: $task)
-
-If COMPLETE, return the final answer.
-If INCOMPLETE, return ralph(task, updated_context).) : <return>%answer:s</return> | <return>ralph(%task:s, %ctx:s):expr</return>
-  </fn>
-  <return>ralph($prefix.task, $prefix)</return>
-</response>
-```
-
-### 10.5 Self-Describing Response
-
-Passing the response structure to a child:
-
-```
-<response>
-  <plan>
-    <step n=1>Gather requirements</step>
-    <step n=2>Design solution</step>
-    <step n=3>Implement</step>
-    <step n=4>Test</step>
-  </plan>
-  <current-step>1</current-step>
-  <return>llm(You are executing a plan.
-
-Full plan structure: @plan
-
-You are on step $current-step. Execute it and return the updated response structure.)</return>
-</response>
-```
-
-The child sees the literal XML structure via `@plan` and can produce a similarly-structured response for the next step.
-
-### 10.6 Debate Pattern
-
-Two perspectives, then judgment:
-
-```
-<response>
-  <position-a>llm($prefix Argue FOR this proposition.)</position-a>
-  <position-b>llm($prefix Argue AGAINST this proposition.)</position-b>
-  <return>llm(Two positions have been argued.
-
-FOR: $position-a
-
-AGAINST: $position-b
-
-Which argument is stronger? Return the label.) : <verdict>A</verdict> | <verdict>B</verdict></return>
-</response>
-```
-
-### 10.7 Recursive Summarization
-
-Handling a document too large for one pass:
-
-```
-<response>
-  <fn name=summarize> <args> doc </args>
-    llm(If this document is short enough, summarize it directly.
-If it's too long, split it and return recursive calls.
-
-Document: $doc) : <summary>%s</summary> | <split><part>summarize(%s:expr)</part><part>summarize(%s:expr)</part></split>
-  </fn>
-  <return>summarize($prefix.document)</return>
-</response>
-```
-
-### 10.8 Iterative Refinement
-
-Self-critique loop:
-
-```
-<response>
-  <fn name=refine> <args> draft, iterations </args>
-    llm(Draft: $draft
-
-Critique this draft. If it's good enough or iterations exhausted, return it.
-Otherwise, improve it and call refine(improved, iterations-1).
-
-Iterations remaining: $iterations) : <final>%s</final> | <again>refine(%s:expr, %d)</again>
-  </fn>
-  <draft>llm($prefix Write a first draft.)</draft>
-  <return>refine($draft, 3)</return>
-</response>
+(defn apply-tool [name args]
+  (if-let [tool-fn (get tools name)]
+    (apply tool-fn args)
+    (throw (ex-info "Unknown function" {:name name}))))
 ```
 
 ---
 
-## 11. Open Questions
+## 5. Expansion
 
-1. **Parallel execution**: Currently all evaluation is sequential. Should we add an explicit `parallel(e1, e2, ...)` construct for guaranteed concurrent evaluation?
+The critical operation: substitute values for free variables in a quoted expression.
 
-2. **Error handling**: What happens on pattern match failure? Options: retry, default value, propagate error.
+**Key distinction from quote:** `quote` returns the expression unevaluated. `expand` substitutes free variables (those defined outside the expression) while preserving internal bindings.
 
-3. **Recursion limits**: Harness-enforced? Or expressible in the language via interpreter-prompt?
+```clojure
+;; Example:
+(def y 41)
+(def x '(+ 1 y))
+(expand x)  ;; => '(+ 1 41)
+;; y is free (defined outside x), so it's substituted
 
-4. **Side effects**: Tools may have side effects. Should we mark pure vs impure calls? Affects optimization potential.
+;; But:
+(def x '(progn (def y 41) (+ 1 y)))
+(expand x)  ;; => '(progn (def y 41) (+ 1 y))
+;; y is internal (defined inside x), so it's preserved
+```
 
-5. **Higher-order functions**: Can functions be passed as arguments? Not currently needed, but would add expressiveness.
+### 5.1 Collect Internal Bindings
+
+Find all names bound by `setq` inside an expression:
+
+```clojure
+(defn collect-bindings [expr]
+  (cond
+    (not (list? expr)) #{}
+    (= 'setq (first expr)) (conj (collect-bindings (nth expr 2))
+                                  (second expr))
+    :else (apply clojure.set/union (map collect-bindings expr))))
+```
+
+### 5.2 Substitute Free Variables
+
+```clojure
+(defn expand-expr [expr env]
+  (let [internal (collect-bindings expr)]
+    (substitute-free expr env internal)))
+
+(defn substitute-free [expr env internal]
+  (cond
+    ;; Symbol: substitute if free (not internal, but in env)
+    (symbol? expr)
+    (if (and (not (contains? internal expr))
+             (contains? env expr))
+      (get env expr)
+      expr)
+
+    ;; Not a list: return as-is
+    (not (list? expr)) expr
+
+    ;; Quote: don't descend (nested quotes are protected)
+    (= 'quote (first expr)) expr
+
+    ;; Setq: recurse into body, preserve name
+    (= 'setq (first expr))
+    (list 'setq
+          (second expr)
+          (substitute-free (nth expr 2) env internal))
+
+    ;; Other list: recurse into all elements
+    :else (map #(substitute-free % env internal) expr)))
+```
+
+### 5.3 Integration with LLM Calls
+
+When calling `llm`, expand the argument first:
+
+```clojure
+(defn call-llm [prompt env]
+  (let [expanded-prompt (expand-expr prompt env)]
+    (invoke-llm-api expanded-prompt)))
+```
 
 ---
 
-## 12. Summary
+## 6. The LLM Interface
 
-This language gives LLMs control over their own execution topology. Key features:
+### 6.1 Invoking the LLM
 
-- **Self-reference**: `@response` lets a parent describe its own structure to children
-- **Context surgery**: Selective passing of intermediate results
-- **Recursion**: Named functions with mutual recursion support
-- **Structured I/O**: Patterns constrain and parse outputs
-- **Uniform syntax**: Tools, built-ins, and user functions share call syntax
+```clojure
+(defn invoke-llm-api [prompt]
+  ;; Convert prompt to string if needed
+  ;; Call the actual LLM API
+  ;; Parse response as S-expression
+  ;; Return the result
+  (let [prompt-str (pr-str prompt)  ; or format as needed
+        response-str (call-anthropic-api prompt-str)
+        response-expr (read-string response-str)]
+    (spell-eval response-expr {})))  ; evaluate in fresh env? or inherited?
+```
 
-The harness role is reduced to:
-- Providing the system prompt
-- Injecting interpreter state
-- Enforcing resource limits
-- Executing tool calls
-- Matching patterns and routing recursive calls
+> **[DECISION NEEDED: Q2, Q10]** What context does the child LLM receive? What's the prompt format?
 
-The LLM decides *what* computation to perform and *how* to structure it.
+### 6.2 Completion Structure
+
+> **[DECISION NEEDED: Q2]** Define the structure of a completion.
+
+---
+
+## 7. User-Defined Functions
+
+> **[DECISION NEEDED: Q8]** How are functions defined?
+
+Draft approach using closures:
+
+```clojure
+;; Function definition stored as a closure-like structure
+{:params [doc]
+ :body '(llm (concat "Summarize: " doc))
+ :env captured-env}
+
+(defn apply-user-fn [fn-def args env]
+  (let [{:keys [params body closure-env]} fn-def
+        extended-env (reduce (fn [e [p a]] (extend-env e p a))
+                             closure-env
+                             (map vector params args))]
+    (spell-eval body extended-env)))
+```
+
+---
+
+## 8. Parallel Execution
+
+> **[DECISION NEEDED: Q6]** Parallelism model.
+
+Draft using Clojure futures:
+
+```clojure
+;; In spell-apply:
+future (future (spell-eval (first args) env))
+force (deref (first args))
+```
+
+---
+
+## 9. Entry Point
+
+```clojure
+(defn run-spell [program]
+  (spell-eval program {}))
+
+;; Example:
+(run-spell '(progn
+              (setq greeting "hello")
+              (concat greeting " world")))
+;; => "hello world"
+```
+
+---
+
+## 10. Implementation Roadmap
+
+### Phase 1: Core Interpreter
+- [ ] `spell-eval` for literals, symbols, quote, setq, progn, if
+- [ ] `spell-apply` for basic operations (concat, arithmetic, list ops)
+- [ ] Environment threading
+- [ ] REPL for testing
+
+### Phase 2: Expansion
+- [ ] `collect-bindings`
+- [ ] `substitute-free`
+- [ ] `expand-expr`
+- [ ] Unit tests for expansion semantics
+
+### Phase 3: LLM Integration
+- [ ] `call-llm` with API integration
+- [ ] Prompt formatting
+- [ ] Response parsing
+- [ ] Error handling for API failures
+
+### Phase 4: Advanced Features
+- [ ] User-defined functions
+- [ ] Tools integration
+- [ ] Parallel execution
+- [ ] Recursion limits
+
+---
+
+## Appendix A: Examples
+
+### A.1 Basic Evaluation
+
+```clojure
+(progn
+  (setq x "hello")
+  (setq y "world")
+  (concat x " " y))
+;; => "hello world"
+```
+
+### A.2 LLM Call
+
+```clojure
+(progn
+  (setq query "What is 2+2?")
+  (llm query))
+;; => (LLM response)
+```
+
+### A.3 Expansion Example
+
+```clojure
+;; Given env = {x: 5, y: 10}
+(expand-expr '(progn
+                (setq z 1)
+                (+ x z))
+             env)
+;; => (progn (setq z 1) (+ 5 z))
+;; x substituted (free), z preserved (internal)
+```
+
+### A.4 Passing Context to Child
+
+```clojure
+(progn
+  (setq task "Write a poem")
+  (setq draft (llm (concat "First draft: " task)))
+  (llm (list 'progn
+             (list 'setq 'previous-draft draft)
+             '(concat "Improve this: " previous-draft))))
+```
+
+---
+
+## Appendix B: Comparison to Standard Lisp
+
+| Aspect | Standard Lisp | Spell |
+|--------|---------------|-------|
+| Eval scope | Global environment | Explicit threaded env |
+| Quote | `'expr` returns expr | Same, but expansion substitutes free vars |
+| Side effects | Full OS access | Sandboxed to whitelisted tools |
+| Special primitive | None | `llm` for recursive LLM calls |
+| Memory | Global accumulation | Local to spell-eval call |
