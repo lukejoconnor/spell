@@ -1,51 +1,52 @@
 # spell
 
-A domain-specific language for LLM self-orchestration.
+A domain-specific language for LLM self-orchestration, implemented as a Lisp dialect in Clojure.
 
 ## Core Idea
 
 Instead of an external harness controlling an agent's execution loop, the LLM writes its own execution graph. The model becomes a metaprogrammer of its own execution—deciding what recursive calls to make, how to branch, and what context to pass forward.
 
-## Language Concepts (Simplified Initial Version)
+## Implementation Approach
 
-The initial implementation omits functions and patterns. Core elements:
+Building on Lisp rather than custom XML syntax. The mapping:
 
-| Concept | Syntax | Description |
-|---------|--------|-------------|
-| Completion | `<completion>...</completion>` | Fundamental unit: prefix + response |
-| Prefix | `<prefix>...</prefix>` | Input: system-prompt, interpreter-prompt, caller-prompt |
-| Response | `<response>...</response>` | Output: bindings + return expression |
-| Binding | `<name>Expr</name>` | Named intermediate result |
-| Evaluate | `$ref` | Get the *value* of a binding |
-| Quote | `@ref` | Get the *literal text* of a binding |
-| Tag navigation | `$prefix.caller-prompt` | Dot notation for nested access |
-| Return | `<return>Expr</return>` | Final expression (exactly one per response) |
-| LLM call | `llm(caller-prompt)` | Spawn a child agent |
+| Original Concept | Lisp Form |
+|------------------|-----------|
+| `<id>body</id>` | `(setq id body)` |
+| `$ref` (evaluate) | Variable lookup / `eval` |
+| `@ref` (quote) | `quote` / `'` |
+| Tag nesting | Nested lists |
 
-## Key Insight: Evaluate vs Quote
+**Implementation language:** Clojure (immutability, JVM ecosystem, built-in concurrency).
 
-- `$ref` — evaluates the expression, returns its computed value
-- `@ref` — returns the raw text between the tags (for passing structure to children)
+## Key Semantic Concept: Expansion
 
-## Example
+Spell's core differentiator from standard Lisp is how scope/environment works.
 
-```xml
-<response>
-  <search-result>search($prefix.caller-prompt.query)</search-result>
-  <return>llm(Based on: $search-result, answer the question.)</return>
-</response>
-```
+**Problem:** When LLM1 passes a quoted expression to LLM2, the expression may reference bindings in LLM1's scope that won't exist when LLM2 runs.
 
-## Current Status
+**Solution:** Before passing a thunk to a child LLM, substitute values for *free variables* (those not bound inside the thunk itself).
 
-Starting implementation. Building interpreter for the simplified language (no functions, no patterns).
+**Canonical expansion:** The smallest equivalent expression with only internal quotations. This is implementation-critical.
+
+See `lisp-foundation-decision` notebook entry for details.
 
 ## Key Files
 
 | Path | Description |
 |------|-------------|
-| `writeup/spec.md` | Full language specification |
+| `writeup/spec.md` | Language specification (semantics section updated) |
+| `writeup/spell-lisp-notes.md` | Design notes for Lisp implementation |
+
+## Current Status
+
+Design phase. Key decisions made:
+- Lisp foundation (not XML from scratch)
+- Clojure as implementation language
+- Expansion semantics formalized
+
+Next: Implementation of `spell-eval` interpreter with explicit environment threading.
 
 ## Notebook
 
-This project uses a separate notebook repository for analysis logs. See `notebook/INDEX.md` for a summary of past work.
+See `notebook/INDEX.md` for work log.
