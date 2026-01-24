@@ -2,9 +2,145 @@
 
 ## 1. Overview
 
-This document specifies a domain-specific language for LLM self-orchestration. In contrast to standard agent architectures where an external harness controls the execution loop, this language allows the LLM to write its own execution graph—including recursive calls, parallel branches, function definitions, and context management.
+This document specifies a domain-specific language, called *Spell* (self-prompting execution language for LLMs), for LLM self-orchestration. In contrast to standard agent architectures where an external harness controls the execution loop, this language allows the LLM to write its own execution graph—including recursive calls, parallel branches, function definitions, and context management. The key innovation is that recursion is moved *inside* the LLM's output. Instead of calling the LLM in a loop, the harness calls it just once and interprets its output, calling it again if instructed to do so by the LLM itself.
 
-The key insight is moving recursion control *inside* the LLM's output. The LLM becomes a metaprogrammer of its own execution, rather than a passive function being called repeatedly by a harness.
+In Spell, the only data type is a string. Objects in the language are expressions. Expressions can be evaluated, producing other expressions. In particular, they produce literals, which are defined as expressions that are equivalent to their value (see below for "equivalent"). 
+
+Expressions in Spell can be named via bindings. A binding is akin to variable assignments in other languages, but instead of the value of the expression being assigned when bound to a name, the expression itself is bound to the name. When we wish to evaluate an expression, we use the `$` operator; we are also allowed to *quote* an expression, using the `@` operator.
+
+Quotation is separate from evaluation in Spell. Evaluating an expression produces its value; quoting an expression produces its *expansion*. We define *equivalence* between expressions: two expressions are equivalent if they have the same expansion. For example, consider this expression:
+```XML
+<item>
+@item
+</item>
+```
+This expression is equivalent to:
+```XML
+@item
+```
+and also to:
+
+```XML
+<item>
+<item>
+@item
+</item>
+</item>
+```
+Moreover, all three of these expressions are literals: they are equivalent to their own value. 
+
+The primary reason for quotation is that it allows an LLM to pass items from its context window to a child LLM without repeating them and burning tokens. If it wishes its child call to see its original prompt, then it can simply tag `@prompt`, and the harness will expand this quotation before passing it to the child.
+
+How does the harness decide when to stop expanding a quote, if the expansion itself contains quotes? When expanding an subexpression `x` of an expression `y`, it only expands quotes within `x` whose binding is defined somewhere in `y` that is outside of `x`. For example:
+```XML
+<y>
+<hi>
+Hello
+</hi>
+<x>
+<earth>
+World!
+</earth>
+<greeting>
+@hi @earth
+</greeting>
+</x>
+</y>
+```
+The expansion of the subexpression `x` is:
+```XML
+<x>
+<earth>
+World!
+</earth>
+<greeting>
+Hello @earth
+</greeting>
+</x>
+```
+
+This rule reflects an important feature of Spell, which is that the *environment* of a program is almost exactly the program itself. All quotations and evaluations refer to bindings defined inside of the program, with the exception of the `llm` function itself (the `llm` function cannot be quoted, but it can be evaluated). In the example above, `@hi` must be replaced with `earth` when the `x` is expanded because the binding of `hi` is outside of `x`. This way, every expression has a canonical expansion: the smallest equivalent expression with only internal quotations. `@item` contains an external quotation. This expression:
+```XML
+<item>
+<item>
+@item
+</item>
+</item>
+```
+does have internal quotations only, but it is not the smallest such expression; the smallest is:
+```XML
+<item>
+@item
+</item>
+```
+
+A program in Spell is called a *completion* because it comprises a prompt (called a *prefix*) and a *response*, probably written by the LLM:
+```XML
+<completion>
+<prefix>
+...
+</prefix>
+<response>
+...
+</response>
+</completion>
+```
+Both the prefix and the response have their own internal structure, such as a required `<return>` statement (see below). 
+
+The evaluation scope of a binding is its suffix (that is, the entire program after the `</binding>` tag). The quotation scope of a binding is the entire program, particularly including the body of the binding. In fact, this is a common use case for quotations: consider the following examples:
+
+```XML
+<completion>
+<prefix>
+Please print 'hello ' and then invoke another llm with instructions to print 'world'.
+</prefix>
+<instruction>
+Print 'world' and terminate.
+</instruction>
+<return>
+hello $llm($instruction)
+</return>
+</completion>
+```
+
+Here is an equivalent program that uses the language-specific `@` operator:
+
+```XML
+<completion>
+<prefix>
+Please print 'hello ' and then invoke another llm with instructions to print 'world'.
+</prefix>
+<return>
+hello $llm(@completion)
+</return>
+</completion>
+```
+
+Here, `@completion` is the entire expression of the completion. In the child `llm` call, the completion would be:
+
+```XML
+<completion>
+<prefix>
+<completion>
+<prefix>
+Please print 'hello ' and then invoke another llm with instructions to print 'world'.
+</prefix>
+<return>
+hello $llm(@completion)
+</return>
+</completion>
+<return>
+world
+</return>
+</completion>
+```
+
+The completion of the parent call is the prefix of the child call. The child LLM thus has the context it needs to understand its assignment: the user has asked the first LLM to print 'hello' and the second to print 'world', the first has already printed 'hello', and it now must print 'world'. If the parent LLM attempted to pass `$completion`, this would be an error, because an expression must be defined before it is evaluated, and it is not defined until after its closing tag (`</completion>`).
+
+
+
+
+
 
 ---
 
