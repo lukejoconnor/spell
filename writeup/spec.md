@@ -78,7 +78,7 @@ The core interpreter evaluates an expression in an environment.
              val)
 
       ;; Progn: evaluate sequence, return last
-      progn (spell-eval-progn (rest expr) env)
+      do (spell-eval-do (rest expr) env)
 
       ;; If: conditional
       if (if (spell-eval (second expr) env)
@@ -96,10 +96,10 @@ The core interpreter evaluates an expression in an environment.
 
 ### 3.1 Progn with Bindings
 
-`progn` must thread environment updates from `setq`:
+`do` must thread environment updates from `setq`:
 
 ```clojure
-(defn spell-eval-progn [exprs env]
+(defn spell-eval-do [exprs env]
   (loop [remaining exprs
          current-env env
          last-val nil]
@@ -192,8 +192,8 @@ The critical operation: substitute values for free variables in a quoted express
 ;; y is free (defined outside x), so it's substituted
 
 ;; But:
-(def x '(progn (def y 41) (+ 1 y)))
-(expand x)  ;; => '(progn (def y 41) (+ 1 y))
+(def x '(do (def y 41) (+ 1 y)))
+(expand x)  ;; => '(do (def y 41) (+ 1 y))
 ;; y is internal (defined inside x), so it's preserved
 ```
 
@@ -321,7 +321,7 @@ force (deref (first args))
   (spell-eval program {}))
 
 ;; Example:
-(run-spell '(progn
+(run-spell '(do
               (setq greeting "hello")
               (concat greeting " world")))
 ;; => "hello world"
@@ -332,7 +332,7 @@ force (deref (first args))
 ## 10. Implementation Roadmap
 
 ### Phase 1: Core Interpreter
-- [ ] `spell-eval` for literals, symbols, quote, setq, progn, if
+- [ ] `spell-eval` for literals, symbols, quote, setq, do, if
 - [ ] `spell-apply` for basic operations (concat, arithmetic, list ops)
 - [ ] Environment threading
 - [ ] REPL for testing
@@ -362,7 +362,7 @@ force (deref (first args))
 ### A.1 Basic Evaluation
 
 ```clojure
-(progn
+(do
   (setq x "hello")
   (setq y "world")
   (concat x " " y))
@@ -372,7 +372,7 @@ force (deref (first args))
 ### A.2 LLM Call
 
 ```clojure
-(progn
+(do
   (setq query "What is 2+2?")
   (llm query))
 ;; => (LLM response)
@@ -382,21 +382,21 @@ force (deref (first args))
 
 ```clojure
 ;; Given env = {x: 5, y: 10}
-(expand-expr '(progn
+(expand-expr '(do
                 (setq z 1)
                 (+ x z))
              env)
-;; => (progn (setq z 1) (+ 5 z))
+;; => (do (setq z 1) (+ 5 z))
 ;; x substituted (free), z preserved (internal)
 ```
 
 ### A.4 Passing Context to Child
 
 ```clojure
-(progn
+(do
   (setq task "Write a poem")
   (setq draft (llm (concat "First draft: " task)))
-  (llm (list 'progn
+  (llm (list 'do
              (list 'setq 'previous-draft draft)
              '(concat "Improve this: " previous-draft))))
 ```

@@ -36,10 +36,10 @@ Quotes and backtick quotes are used in Spell so that a parent LLM can pass arbit
 In Spell, a *completion* is a program which comprises a prompt (called a *prefix*) and a *response*:
 
 ```clojure
-'(progn
+'(do
    (def prefix ...)
    (def response
-     (progn
+     (do
        ...
        (def return ...))))
 ```
@@ -62,7 +62,7 @@ The response is produced by an LLM, with the prefix as its prompt. Within the re
 
 ```clojure
 (def completion
-  '(progn
+  '(do
      (def prefix "Print 'Hello' and call a child LLM, who should print ' World!'")
      (def response
        (def return (cat "Hello" (llm completion))))))
@@ -71,9 +71,9 @@ The response is produced by an LLM, with the prefix as its prompt. Within the re
 The child LLM sees the completion of its parent as its prompt, producing this completion:
 
 ```clojure
-'(progn
+'(do
    (def prefix
-     "(progn
+     "(do
         (def prefix \"Print 'Hello' and call a child LLM, who should print ' World!'\")
         (def response
           (def return (cat \"Hello\" (llm completion)))))")
@@ -117,10 +117,10 @@ When expanding an expression, the interpreter substitutes *free variables* (thos
 But internal bindings are preserved:
 
 ```clojure
-(def x '(progn
+(def x '(do
           (def y 41)
           (+ 1 y)))
-(expand x)  ;; => '(progn (def y 41) (+ 1 y))
+(expand x)  ;; => '(do (def y 41) (+ 1 y))
 ;; y is internal (defined inside x), so it's preserved as a symbol
 ```
 
