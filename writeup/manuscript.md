@@ -8,20 +8,19 @@ Spell is implemented as a Lisp dialect. The LLM produces S-expressions that the 
 
 ## Data and Expressions
 
-In Spell, the only data type is a string. Objects in the language are expressions. Expressions can be evaluated, producing other expressions. In particular, they produce literals, which are defined as expressions that are equivalent to their value (see below for "equivalent").
+Values in Spell are S-expressions: strings, numbers, symbols, and lists. Expressions can be evaluated, producing values.
 
-Expressions in Spell can be named via bindings. A binding is akin to variable assignment in other languages, but instead of the value of the expression being assigned when bound to a name, the expression itself is bound to the name. When we wish to evaluate an expression, we look up the variable; we are also allowed to *quote* an expression.
+Expressions in Spell can be named via bindings. A binding evaluates the expression and associates the result with a name—standard eager evaluation, as in most Lisps. To defer evaluation, you quote the expression.
 
 ```clojure
-;; Binding an expression (not yet evaluated)
-(setq thought '(llm "analyze this"))
+;; Binding evaluates immediately
+(def x (+ 1 2))    ; x is bound to 3
 
-;; Evaluating: looks up and evaluates
-thought  ; => calls the LLM
+;; To defer evaluation, quote
+(def thunk '(llm "analyze this"))  ; thunk is bound to the list (llm "analyze this")
 
-;; Quoting: returns the expression itself
-'thought  ; => the symbol 'thought
-'(llm "analyze this")  ; => the list (llm "analyze this")
+;; Later, evaluate the thunk
+(eval thunk)  ; calls the LLM
 ```
 
 ## Quotation and Expansion
@@ -32,37 +31,34 @@ Quotation and expansion are separate operations in Spell:
 
 We define *equivalence* between expressions: two expressions are equivalent if they have the same expansion.
 
-The primary reason for expansion is that it allows an LLM to pass items from its context window to a child LLM without repeating them and burning tokens. If it wishes its child call to see its original prompt, then it can expand a quoted reference, and the harness will substitute values before passing it to the child.
+The primary reason for expansion is that it allows an LLM to pass items from its context window to a child LLM without repeating them and burning tokens. If it wishes its child call to see its original prompt, it can expand a quoted expression, and the interpreter will substitute values for free variables before passing it to the child.
 
 ## Expansion Semantics
 
 When expanding an expression, the interpreter substitutes *free variables* (those defined outside the expression) while preserving *internal bindings* (those defined inside).
 
-For example:
-
 ```clojure
-(progn
-  (def hi "Hello")
-  (def x '(progn
-            (def earth "World!")
-            (concat hi earth))))
+(def y 41)
+(def x '(+ 1 y))
+(expand x)  ;; => '(+ 1 41)
+;; y is free (defined outside x), so it's substituted
 ```
 
-The expansion of `x` is:
+But internal bindings are preserved:
 
 ```clojure
-'(progn
-   (def earth "World!")
-   (concat "Hello" earth))
+(def x '(progn
+          (def y 41)
+          (+ 1 y)))
+(expand x)  ;; => '(progn (def y 41) (+ 1 y))
+;; y is internal (defined inside x), so it's preserved as a symbol
 ```
-
-`hi` has been substituted with its value `"Hello"` because `hi` is bound outside of `x`. But `earth` is preserved as a symbol because `earth` is bound inside `x`.
 
 ## Canonical Expansion
 
-This rule reflects an important feature of Spell: the *environment* of a program is almost exactly the program itself. All quotations and evaluations refer to bindings defined inside of the program, with the exception of the `llm` function itself (the `llm` function cannot be quoted, but it can be evaluated).
+This rule reflects an important feature of Spell: the *environment* of a program is almost exactly the program itself. All references resolve to bindings defined inside the program, with the exception of built-in functions like `llm`.
 
-Every expression has a canonical expansion: the smallest equivalent expression with only internal quotations. The canonical expansion is what gets passed to child LLM calls.
+Every expression has a canonical expansion: the smallest equivalent expression with only internal references. The canonical expansion is what gets passed to child LLM calls.
 
 ## Completions
 
@@ -84,20 +80,22 @@ Consider this program:
 (completion
   (prefix "Print 'hello' and invoke another LLM to print 'world'.")
   (response
-    (setq instruction "Print 'world' and terminate.")
+    (def instruction "Print 'world' and terminate.")
     (return (concat "hello " (llm instruction)))))
 ```
 
-Here is an equivalent program that uses quotation:
+The child LLM receives just the string `"Print 'world' and terminate."` because `instruction` is evaluated before the call.
+
+Here is a version that passes more context using expansion:
 
 ```clojure
 (completion
   (prefix "Print 'hello' and invoke another LLM to print 'world'.")
   (response
-    (return (concat "hello " (llm '@completion)))))
+    (return (concat "hello " (llm (expand 'completion))))))
 ```
 
-Here, `@completion` quotes the entire completion. In the child `llm` call, the expanded completion becomes the prefix:
+Here, `'completion` quotes the entire completion, and `expand` substitutes any free variables. The child receives the expanded completion as its prefix:
 
 ```clojure
 (completion
@@ -105,11 +103,11 @@ Here, `@completion` quotes the entire completion. In the child `llm` call, the e
     (completion
       (prefix "Print 'hello' and invoke another LLM to print 'world'.")
       (response
-        (return (concat "hello " (llm '@completion))))))
+        (return (concat "hello " (llm (expand 'completion)))))))
   (response
     (return "world")))
 ```
 
-The completion of the parent call is the prefix of the child call. The child LLM thus has the context it needs to understand its assignment: the user has asked the first LLM to print 'hello' and the second to print 'world', the first has already printed 'hello', and it now must print 'world'.
+The completion of the parent call becomes the prefix of the child call. The child LLM thus has the context it needs to understand its assignment: the user asked the first LLM to print 'hello' and the second to print 'world', the first has already printed 'hello', and now it must print 'world'.
 
-If the parent LLM attempted to pass `$completion` (evaluate instead of quote), this would be an error, because an expression must be defined before it is evaluated, and the completion is not fully defined until after its closing form.
+Note: if the parent attempted to pass `completion` without quoting (evaluate instead of quote), this would be an error—the completion is not fully defined until after its closing form.
