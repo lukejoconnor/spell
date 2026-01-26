@@ -43,11 +43,16 @@ Values are full S-expressions:
 
 ## 3. The Interpreter: `spell-eval`
 
-The core interpreter evaluates an expression in an environment.
+The core interpreter evaluates an expression in an environment.  Differs from `eval` in two ways:
+1. It inputs an environment, looks up symbols in that environment, and returns an environment with bindings added to it
+2. It whitelists certain built-ins; symbols are invalid unless they are in the environment, or whitelisted
 
 ```clojure
 (defn spell-eval [expr env]
   (cond
+    ;; Empty list: nil
+    (empty? expr) nil
+  
     ;; String literal: self-evaluating
     (string? expr) expr
 
@@ -57,41 +62,14 @@ The core interpreter evaluates an expression in an environment.
     ;; Symbol: look up in environment
     (symbol? expr) (lookup env expr)
 
-    ;; Empty list: nil
-    (empty? expr) nil
-
-    ;; Special forms and function calls
-    (list? expr) (spell-eval-list expr env)
+    ;; Lists and function calls
+    (list? expr) (do
+        ;; call spell-eval on each element 
+        ;; call eval on the expression and update the env
+        )
 
     :else (throw (ex-info "Unknown expression type" {:expr expr}))))
 
-(defn spell-eval-list [expr env]
-  (let [op (first expr)]
-    (case op
-      ;; Quote: return unevaluated
-      quote (second expr)
-
-      ;; Setq: bind name to value, return value
-      setq (let [name (second expr)
-                 val (spell-eval (nth expr 2) env)]
-             ;; Note: env mutation handled by caller
-             val)
-
-      ;; Progn: evaluate sequence, return last
-      do (spell-eval-do (rest expr) env)
-
-      ;; If: conditional
-      if (if (spell-eval (second expr) env)
-           (spell-eval (nth expr 2) env)
-           (spell-eval (nth expr 3) env))
-
-      ;; Concat: string concatenation
-      concat (apply str (map #(spell-eval % env) (rest expr)))
-
-      ;; Function call (built-in, tool, or user-defined)
-      (spell-apply op
-                   (map #(spell-eval % env) (rest expr))
-                   env))))
 ```
 
 ### 3.1 Progn with Bindings
