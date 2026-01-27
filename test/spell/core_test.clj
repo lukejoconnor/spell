@@ -1,6 +1,6 @@
 (ns spell.core-test
   (:require [clojure.test :refer [deftest is testing]]
-            [spell.core :refer [spell-eval run-spell find-free-vars substitute extract expand]]
+            [spell.core :refer [spell-eval run-spell find-free-vars substitute extract expand prepend-hooks-to-llm recurse]]
             [clojure.java.io :as io]))
 
 ;; =============================================================================
@@ -463,7 +463,35 @@
 
   (testing "missing symbol throws"
     (let [env {'prompt '(do (def x 1))}]
-      (is (nil? (extract '[prompt missing] env))))))  ; nil for missing, or throw?
+      (is (nil? (extract '[prompt missing] env)))))  ; nil for missing, or throw?
+
+  (testing "llm call in def value throws"
+    (let [env {'prompt '(do (def x (llm "test")))}]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                            #"target binding contains llm call"
+                            (extract '[prompt x] env)))))
+
+  (testing "llm call in defn body is allowed"
+    ;; defn bodies aren't evaluated during extraction - only when called
+    (let [env {'prompt '(do (defn f [x] (llm x)))}
+          f (extract '[prompt f] env)]
+      (is (fn? f))))  ; should return a function, not throw
+
+  (testing "llm call in preceding def throws"
+    (let [env {'prompt '(do (def setup (llm "init")) (def x 42))}]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                            #"preceding definition contains llm call"
+                            (extract '[prompt x] env)))))
+
+  (testing "llm call in preceding defn body is allowed"
+    ;; preceding defn bodies aren't evaluated either
+    (let [env {'prompt '(do (defn helper [x] (llm x)) (def y 42))}]
+      (is (= 42 (extract '[prompt y] env)))))
+
+  (testing "llm call after target is not evaluated"
+    ;; This should succeed - llm call comes AFTER the target
+    (let [env {'prompt '(do (def x 42) (def y (llm "test")))}]
+      (is (= 42 (extract '[prompt x] env))))))
 
 ;; =============================================================================
 ;; Expand tests
@@ -581,3 +609,108 @@
       (is (= "Hello, Charlie!" (run-spell '(cat "Hello, " (read-name) "!"))))
       (finally
         (io/delete-file "name.txt")))))
+
+;; =============================================================================
+;; prepend-hooks-to-llm tests
+;; =============================================================================
+
+(deftest prepend-hooks-to-llm-test
+  (testing "adds hooks to llm call without existing hooks"
+    (let [hooks ['hook1 'hook2]
+          code '(llm "prompt")
+          result (prepend-hooks-to-llm hooks code)]
+      (is (= '(llm "prompt" [hook1 hook2]) result))))
+
+  (testing "prepends to existing hooks"
+    (let [hooks ['new-hook]
+          code '(llm "prompt" [existing-hook])
+          result (prepend-hooks-to-llm hooks code)]
+      (is (= '(llm "prompt" [new-hook existing-hook]) result))))
+
+  (testing "processes nested llm calls"
+    (let [hooks ['h]
+          code '(do (def x (llm "outer")) (llm "inner"))
+          result (prepend-hooks-to-llm hooks code)]
+      (is (= '(do (def x (llm "outer" [h])) (llm "inner" [h])) result))))
+
+  (testing "does not descend into quotes"
+    (let [hooks ['h]
+          code '(quote (llm "quoted"))
+          result (prepend-hooks-to-llm hooks code)]
+      (is (= '(quote (llm "quoted")) result))))
+
+  (testing "processes vectors"
+    (let [hooks ['h]
+          code '[(llm "a") (llm "b")]
+          result (prepend-hooks-to-llm hooks code)]
+      (is (= '[(llm "a" [h]) (llm "b" [h])] result))))
+
+  (testing "processes maps"
+    (let [hooks ['h]
+          code '{:x (llm "val")}
+          result (prepend-hooks-to-llm hooks code)]
+      (is (= '{:x (llm "val" [h])} result))))
+
+  (testing "leaves non-llm code unchanged"
+    (let [hooks ['h]
+          code '(+ 1 2)]
+      (is (= '(+ 1 2) (prepend-hooks-to-llm hooks code)))))
+
+  (testing "processes prompt recursively"
+    (let [hooks ['h]
+          code '(llm (do (llm "inner")))
+          result (prepend-hooks-to-llm hooks code)]
+      ;; Inner llm gets hooks, outer llm gets hooks, prompt is processed
+      (is (= '(llm (do (llm "inner" [h])) [h]) result)))))
+
+;; =============================================================================
+;; recurse tests
+;; =============================================================================
+
+(deftest recurse-test
+  (testing "recurse returns a function form"
+    (let [hook '(fn [code] code)
+          result (recurse hook)]
+      (is (seq? result))
+      (is (= 'fn (first result)))))
+
+  (testing "recurse hook applies inner hook"
+    ;; The recursive hook should first apply the inner hook
+    (let [;; Inner hook adds a binding
+          inner-hook '(fn [code] (list 'do '(def injected 1) code))
+          recursive-hook (recurse inner-hook)
+          ;; Evaluate the recursive hook to get a function
+          [hook-fn _] (spell-eval recursive-hook {})
+          ;; Apply it to some code
+          input '(do (def x 10))
+          result (hook-fn input)]
+      ;; Should have injected binding
+      (is (some #(= '(def injected 1) %) (tree-seq coll? seq result)))))
+
+  (testing "recurse hook adds hooks to llm calls"
+    (let [inner-hook '(fn [code] code)  ; identity hook
+          recursive-hook (recurse inner-hook)
+          [hook-fn _] (spell-eval recursive-hook {})
+          ;; Input has an llm call
+          input '(do (llm "test"))
+          result (hook-fn input)]
+      ;; result is (do (llm "test" [hook1 hook2]))
+      (let [llm-form (second result)  ; (llm "test" [hooks])
+            hooks (nth llm-form 2)]
+        (is (vector? hooks))
+        (is (= 2 (count hooks)))
+        ;; First hook is the inner hook (quoted)
+        (is (= '(fn [code] code) (first hooks))))))
+
+  (testing "recurse hook preserves existing llm hooks"
+    (let [inner-hook '(fn [code] code)
+          recursive-hook (recurse inner-hook)
+          [hook-fn _] (spell-eval recursive-hook {})
+          ;; Input has llm with existing hook
+          input '(do (llm "test" [existing-hook]))
+          result (hook-fn input)]
+      ;; result is (do (llm "test" [inner-hook recursive-hook existing-hook]))
+      (let [llm-form (second result)
+            hooks (nth llm-form 2)]
+        (is (= 3 (count hooks)))
+        (is (= 'existing-hook (nth hooks 2)))))))

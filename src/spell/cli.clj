@@ -17,6 +17,9 @@
 (def cli-options
   [["-t" "--test" "Use dummy LLM provider (returns 'hello world')"]
    ["-m" "--model MODEL" "Model: haiku, sonnet (default), opus, or full ID"]
+   ["-d" "--depth DEPTH" "Max recursion depth (default: 8, 0 = unlimited)"
+    :parse-fn #(Integer/parseInt %)
+    :validate [#(>= % 0) "Must be non-negative"]]
    ["-v" "--verbose" "Show raw LLM response"]
    ["-h" "--help" "Show this help"]])
 
@@ -52,14 +55,19 @@
       :else
       {:exit-message (usage summary) :ok? false})))
 
-(defn run-prompt [prompt {:keys [test model verbose]}]
+(defn run-prompt [prompt {:keys [test model depth verbose]}]
   (let [resolved-model (when model (resolve-model model))
+        max-depth (cond
+                    (nil? depth) 8      ; default
+                    (zero? depth) nil   ; 0 means unlimited
+                    :else depth)
         provider (if test
                    (llm/dummy-provider {:response "(def return \"hello world\")))"})
                    (llm/anthropic-provider (cond-> {}
                                              resolved-model (assoc :model resolved-model))))]
     (llm/with-provider provider
-      (binding [spell/*verbose* verbose]
+      (binding [spell/*verbose* verbose
+                spell/*max-llm-depth* max-depth]
         (try
           {:result (spell/llm prompt)}
           (catch Exception e

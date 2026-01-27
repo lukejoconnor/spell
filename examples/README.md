@@ -8,11 +8,17 @@ Example prompts demonstrating Spell's LLM self-orchestration capabilities.
 # Set your API key
 export ANTHROPIC_API_KEY=sk-...
 
-# Run with Sonnet (recommended for complex examples)
-clojure -M:run -m claude-sonnet-4-20250514 "Your prompt here"
+# Run with Sonnet (default)
+spell "Your prompt here"
 
-# Run with Haiku (faster, works well for simple examples)
-clojure -M:run -m claude-3-5-haiku-20241022 "Your prompt here"
+# Run with Opus (for complex multi-role examples)
+spell -m opus -d 40 "Your prompt here"
+
+# Run with Haiku (faster, for simple examples)
+spell -m haiku "Your prompt here"
+
+# Verbose mode shows LLM calls
+spell -v -m opus "Your prompt here"
 ```
 
 ## Examples
@@ -22,3 +28,4 @@ clojure -M:run -m claude-3-5-haiku-20241022 "Your prompt here"
 | `hello-world.md` | Simple 2-step delegation | Haiku |
 | `coin-flip.md` | Recursive coin flipping | Sonnet |
 | `famous-greeting.md` | Tool use + delegation | Sonnet |
+| `twenty-questions.md` | Worker/checker loop (Ralph pattern) | Opus |

@@ -32,10 +32,21 @@ Lists: list first rest conj
 Logic: if cond and or not
 Binding: def let do
 Tools: read-name
+Error: spell-error?
 
 TOOLS
 
 read-name: Returns the name from name.txt. Takes no arguments. Use (read-name) to get the name.
+
+ERROR HANDLING
+
+When a child (llm ...) call fails (syntax error, evaluation error), the interpreter retries twice. If all attempts fail, llm returns an error string instead of throwing.
+
+Use spell-error? to check if a child call failed:
+(let [result (llm \"task\")]
+  (if (spell-error? result)
+    \"child failed, handle gracefully\"
+    result))
 
 FUNCTIONS
 
