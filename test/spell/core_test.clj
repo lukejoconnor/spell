@@ -1,7 +1,8 @@
 (ns spell.core-test
   (:require [clojure.test :refer [deftest is testing]]
             [spell.core :refer [spell-eval run-spell find-free-vars substitute extract expand prepend-hooks-to-llm recurse]]
-            [clojure.java.io :as io]))
+            [clojure.java.io :as io]
+            [clojure.string :as str]))
 
 ;; =============================================================================
 ;; Oracle-based tests: spell-eval should match eval
@@ -609,6 +610,44 @@
       (is (= "Hello, Charlie!" (run-spell '(cat "Hello, " (read-name) "!"))))
       (finally
         (io/delete-file "name.txt")))))
+
+;; =============================================================================
+;; bash tool tests
+;; =============================================================================
+
+(deftest bash-test
+  (testing "bash returns a map with :exit :out :err"
+    (let [result (run-spell '(bash "echo hello"))]
+      (is (map? result))
+      (is (= 0 (:exit result)))
+      (is (= "hello" (:out result)))
+      (is (= "" (:err result)))))
+
+  (testing "bash captures exit code on failure"
+    (let [result (run-spell '(bash "exit 42"))]
+      (is (= 42 (:exit result)))))
+
+  (testing "bash captures stderr"
+    (let [result (run-spell '(bash "echo oops >&2; exit 1"))]
+      (is (= 1 (:exit result)))
+      (is (= "oops" (:err result)))))
+
+  (testing "bash output accessible with keywords"
+    (is (= "hi" (run-spell '(:out (bash "echo hi")))))
+    (is (= 0 (run-spell '(:exit (bash "true"))))))
+
+  (testing "bash output usable with get"
+    (is (= "world" (run-spell '(get (bash "echo world") :out)))))
+
+  (testing "bash output usable in expressions"
+    (is (= "result: ok"
+           (run-spell '(cat "result: " (:out (bash "echo ok")))))))
+
+  (testing "bash timeout"
+    (binding [spell.core/*bash-timeout* 1]
+      (let [result (run-spell '(bash "sleep 10"))]
+        (is (= -1 (:exit result)))
+        (is (str/includes? (:err result) "timed out"))))))
 
 ;; =============================================================================
 ;; prepend-hooks-to-llm tests

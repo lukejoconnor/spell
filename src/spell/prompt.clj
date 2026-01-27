@@ -31,12 +31,17 @@ Strings: str cat
 Lists: list first rest conj
 Logic: if cond and or not
 Binding: def let do
-Tools: read-name
+Tools: read-name bash
 Error: spell-error?
 
 TOOLS
 
 read-name: Returns the name from name.txt. Takes no arguments. Use (read-name) to get the name.
+
+bash: Execute a shell command. Takes a command string, returns a map with :exit (integer), :out (stdout string), :err (stderr string).
+(bash \"ls -la\")       ; => {:exit 0 :out \"...\" :err \"\"}
+(:out (bash \"pwd\"))   ; => \"/current/dir\"
+(:exit (bash \"false\")) ; => 1
 
 ERROR HANDLING
 

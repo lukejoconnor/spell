@@ -2,7 +2,8 @@
   "Spell - a Lisp dialect for LLM self-orchestration."
   (:require [spell.llm :as llm-provider]
             [spell.prompt :as prompt]
-            [clojure.set :as set]))
+            [clojure.set :as set])
+  (:import [java.util.concurrent TimeUnit]))
 
 (declare llm extract expand prepend-hooks-to-llm recurse)
 
@@ -17,6 +18,10 @@
 (def ^:dynamic *max-llm-depth*
   "Maximum allowed LLM recursion depth. Set to nil to disable limit."
   8)
+
+(def ^:dynamic *bash-timeout*
+  "Timeout in seconds for bash commands. Set to nil to disable."
+  30)
 
 (def ^:private error-prefix
   "Prefix for error strings from failed llm calls."
@@ -39,6 +44,25 @@
     (catch java.io.FileNotFoundException _
       (throw (ex-info "name.txt not found" {:file "name.txt"})))))
 
+(defn- run-bash
+  "Execute a bash command string. Returns {:exit N :out \"...\" :err \"...\"}."
+  [command]
+  (let [pb (ProcessBuilder. ["bash" "-c" command])
+        process (.start pb)
+        out-future (future (slurp (.getInputStream process)))
+        err-future (future (slurp (.getErrorStream process)))
+        timed-out? (if *bash-timeout*
+                     (not (.waitFor process (long *bash-timeout*) TimeUnit/SECONDS))
+                     (do (.waitFor process) false))]
+    (if timed-out?
+      (do (.destroyForcibly process)
+          {:exit -1
+           :out ""
+           :err (str "Command timed out after " *bash-timeout* " seconds")})
+      {:exit (.exitValue process)
+       :out (clojure.string/trim @out-future)
+       :err (clojure.string/trim @err-future)})))
+
 (def ^:private builtins
   "Whitelisted operations - effectively appended to env."
   {'+ +, '- -, '* *, '/ /, '< <, '> >, '<= <=, '>= >=, '= =, 'not= not=,
@@ -51,6 +75,7 @@
    'prepend-hooks-to-llm #'prepend-hooks-to-llm,
    'recurse #'recurse,
    'read-name read-name,
+   'bash run-bash,
    'spell-error? spell-error?})
 
 (declare spell-eval)
