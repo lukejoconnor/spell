@@ -1,8 +1,11 @@
 (ns spell.prompt
   "System prompt for Spell LLM calls.")
 
-(def system-prompt
-  "System prompt for Spell LLM calls. Instructs model to output valid Spell code."
+;; =============================================================================
+;; Static template sections
+;; =============================================================================
+
+(def ^:private preamble
   "SPELL INTERPRETER
 
 You are executing Spell, a Lisp dialect for LLM self-orchestration. In Spell, LLMs write code that calls other LLMs, enabling recursive reasoning and task delegation.
@@ -23,27 +26,10 @@ PARENTHESES
 
 Missing closing parentheses are auto-balanced by the interpreter. Focus on writing correct code; don't worry about matching the exact number of closing parens.
 
-BUILTINS
+")
 
-Math: + - * / rand
-Compare: < > =
-Strings: str cat
-Lists: list first rest conj
-Logic: if cond and or not
-Binding: def let do
-Tools: read-name bash
-Error: spell-error?
-
-TOOLS
-
-read-name: Returns the name from name.txt. Takes no arguments. Use (read-name) to get the name.
-
-bash: Execute a shell command. Takes a command string, returns a map with :exit (integer), :out (stdout string), :err (stderr string).
-(bash \"ls -la\")       ; => {:exit 0 :out \"...\" :err \"\"}
-(:out (bash \"pwd\"))   ; => \"/current/dir\"
-(:exit (bash \"false\")) ; => 1
-
-ERROR HANDLING
+(def ^:private postamble
+  "ERROR HANDLING
 
 When a child (llm ...) call fails (syntax error, evaluation error), the interpreter retries twice. If all attempts fail, llm returns an error string instead of throwing.
 
@@ -88,7 +74,46 @@ Create a minimal thunk with just the function definition:
 Child extracts and calls:
 (do (def work (extract [parent-code work])) (def return (work parent-code)))
 
-Note: completion is bound to your full code, but extracting from full completions re-runs all logic. Use minimal thunks for replicating functions.
+completion is bound to your full code as a string. Use minimal thunks (not completion) for replicating functions.
+
+HOOKS
+
+Hooks transform code before evaluation. Pass hooks as a vector in the second argument to llm:
+(llm \"task\" [hook1 hook2])
+
+Hooks compose left-to-right. Each hook is a function that takes code and returns transformed code.
+
+with-env: Inject bindings into child code.
+(llm \"task\" [(with-env {:secret 42 :name \"Alice\"})])
+; Child receives (def secret 42) and (def name \"Alice\") in scope
+
+with-env-hints: Inject bindings AND document them in descendant prompts.
+(llm \"task\" [(with-env-hints {:api-key [\"sk-123\" \"API key for service\"]})])
+; Child receives the binding AND sees documentation about available bindings
+
+recurse: Make a hook propagate to all descendants.
+(llm \"task\" [(recurse (with-env {:level 0}))])
+; Every descendant LLM call also receives the binding
+
+Combining:
+(llm \"task\" [(recurse (with-env-hints {:config [cfg \"Global config map\"]}))])
+; All descendants get the config binding and know it exists
+
+CALL-NOW (TOOL USE CONTINUATION)
+
+(call-now {:binding-name expr ...}) evaluates each expr, then continues your generation with the results in scope. Use this when you need a tool result before continuing your reasoning.
+
+(def return (call-now {:files (:out (bash \"ls\"))}))
+
+The continuation receives each binding (files in this example) and generates a new return value. Your full completion is preserved as context, so the continuation sees everything you wrote.
+
+Multiple bindings:
+(def return (call-now {:files (:out (bash \"ls\")) :count (:out (bash \"wc -l < data.txt\"))}))
+
+Recursive tool use (continuation can call call-now again):
+(def return (call-now {:files (:out (bash \"ls\"))}))
+; In continuation:
+(def return (call-now {:contents (:out (bash (cat \"cat \" (first files))))}))
 
 EXAMPLES
 
@@ -103,3 +128,74 @@ Output: (do (def thought \"delegate World to child\") (def return (cat \"Hello\"
 
 Task: Greet the person in name.txt
 Output: (do (def thought \"use read-name then greet\") (def return (cat \"Hello, \" (read-name) \"!\")))")
+
+;; =============================================================================
+;; Generated sections
+;; =============================================================================
+
+(defn- builtins-section
+  "Generate the BUILTINS section from tool and llm metadata."
+  [tools llms]
+  (let [tool-names (map #(name (:name %)) tools)
+        ;; llm entries other than 'llm (self-recursion)
+        agent-names (keep #(when (not= % 'llm) (name %)) (keys llms))]
+    (str "BUILTINS\n\n"
+         "Math: + - * / rand\n"
+         "Compare: < > =\n"
+         "Strings: str cat\n"
+         "Lists: list first rest conj\n"
+         "Logic: if cond and or not\n"
+         "Binding: def let do\n"
+         (when (contains? llms 'llm) "Self: llm\n")
+         "Continuation: call-now\n"
+         (when (seq tool-names)
+           (str "Tools: " (clojure.string/join " " tool-names) "\n"))
+         (when (seq agent-names)
+           (str "Agents: " (clojure.string/join " " agent-names) "\n"))
+         "Error: spell-error?\n")))
+
+(defn- tools-section
+  "Generate the TOOLS section from tool metadata."
+  [tools]
+  (when (seq tools)
+    (str "\nTOOLS\n\n"
+         (clojure.string/join "\n\n"
+           (map (fn [{:keys [name doc]}]
+                  (str (clojure.core/name name) ": " doc))
+                tools))
+         "\n")))
+
+(defn- agents-section
+  "Generate the AGENTS section from llm metadata (excluding self-recursion)."
+  [llms]
+  (let [external (dissoc llms 'llm)]
+    (when (seq external)
+      (str "\nAGENTS\n\n"
+           "Other agents available as functions. Each returns its result value, like (llm ...).\n\n"
+           (clojure.string/join "\n"
+             (map (fn [[sym {:keys [doc]}]]
+                    (str "(" (name sym) " \"prompt\") - " (or doc "No description.")))
+                  external))
+           "\n"))))
+
+;; =============================================================================
+;; Public API
+;; =============================================================================
+
+(defn generate-system-prompt
+  "Build a system prompt from tool and llm metadata.
+   tools: vector of {:name sym, :fn f, :doc str}
+   llms:  map of {sym fn-or-meta}, where values are either functions or
+          maps with :fn and :doc keys. The symbol 'llm denotes self-recursion."
+  [tools llms]
+  (str preamble
+       (builtins-section tools llms)
+       (tools-section tools)
+       (agents-section llms)
+       "\n"
+       postamble))
+
+;; Default system prompt (backwards compatibility)
+(def system-prompt
+  "System prompt for Spell LLM calls. Instructs model to output valid Spell code."
+  nil)  ;; set by spell.core after tool definitions exist

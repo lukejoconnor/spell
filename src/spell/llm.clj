@@ -56,7 +56,8 @@
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt opts]
-    (let [request (anthropic-request api-key model prompt (:system opts))
+    (let [effective-model (or (:model opts) model)
+          request (anthropic-request api-key effective-model prompt (:system opts))
           response (.send http-client request (HttpResponse$BodyHandlers/ofString))
           status (.statusCode response)]
       (if (<= 200 status 299)

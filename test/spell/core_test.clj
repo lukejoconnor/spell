@@ -1,6 +1,11 @@
 (ns spell.core-test
   (:require [clojure.test :refer [deftest is testing]]
-            [spell.core :refer [spell-eval run-spell find-free-vars substitute extract expand prepend-hooks-to-llm recurse]]
+            [spell.core :refer [spell-eval run-spell find-free-vars substitute extract expand
+                                prepend-hooks-to-llm recurse make-llm read-all
+                                default-tools read-name-tool bash-tool
+                                with-env with-env-hints prefix-prompt]]
+            [spell.llm :as llm-provider]
+            [spell.prompt :as prompt]
             [clojure.java.io :as io]
             [clojure.string :as str]))
 
@@ -650,6 +655,30 @@
         (is (str/includes? (:err result) "timed out"))))))
 
 ;; =============================================================================
+;; read-all tests
+;; =============================================================================
+
+(deftest read-all-test
+  (testing "single form"
+    (is (= ['(+ 1 2)] (read-all "(+ 1 2)"))))
+
+  (testing "multiple forms"
+    (is (= ['(def x 1) '(def y 2) '(+ x y)]
+           (read-all "(def x 1) (def y 2) (+ x y)"))))
+
+  (testing "empty string"
+    (is (= [] (read-all ""))))
+
+  (testing "do block followed by defs (call-now pattern)"
+    (is (= ['(do (def response "hi") (def return 42))
+            '(def files "result")]
+           (read-all "(do (def response \"hi\") (def return 42))\n(def files \"result\")"))))
+
+  (testing "mixed form types"
+    (is (= [42 "hello" '(+ 1 2)]
+           (read-all "42 \"hello\" (+ 1 2)")))))
+
+;; =============================================================================
 ;; prepend-hooks-to-llm tests
 ;; =============================================================================
 
@@ -753,3 +782,338 @@
             hooks (nth llm-form 2)]
         (is (= 3 (count hooks)))
         (is (= 'existing-hook (nth hooks 2)))))))
+
+;; =============================================================================
+;; Dynamic builtins tests
+;; =============================================================================
+
+(deftest dynamic-builtins-test
+  (testing "spell-eval uses *builtins* for symbol resolution"
+    (let [custom-builtins (merge @#'spell.core/core-builtins
+                                 {'my-fn (fn [] 99)})]
+      (binding [spell.core/*builtins* custom-builtins]
+        (is (= 99 (first (spell-eval '(my-fn) {})))))))
+
+  (testing "symbol not in *builtins* throws"
+    (binding [spell.core/*builtins* @#'spell.core/core-builtins]
+      ;; bash is not in core-builtins, should be unbound
+      (is (thrown-with-msg? Exception #"Unbound symbol"
+            (spell-eval 'bash {})))))
+
+  (testing "find-free-vars respects *builtins*"
+    (let [custom-builtins (merge @#'spell.core/core-builtins
+                                 {'custom-sym identity})]
+      (binding [spell.core/*builtins* custom-builtins]
+        ;; custom-sym is a builtin, not free
+        (is (= #{} (find-free-vars 'custom-sym)))
+        ;; unknown-sym is free
+        (is (= #{'unknown-sym} (find-free-vars 'unknown-sym)))))))
+
+;; =============================================================================
+;; make-llm factory tests
+;; =============================================================================
+
+(deftest make-llm-test
+  (testing "make-llm with custom tool resolves during evaluation"
+    (let [test-tool {:name 'my-tool
+                     :fn   (fn [] "tool-result")
+                     :doc  "A test tool."}
+          custom-llm (make-llm {:tools [test-tool]
+                                :llms  {'llm #'spell.core/llm}})]
+      (llm-provider/with-provider
+        (llm-provider/dummy-provider
+          {:response "(def return (my-tool))))"})
+        (is (= "tool-result" (custom-llm "use tool"))))))
+
+  (testing "make-llm without tool excludes it from evaluation"
+    ;; Create an llm with NO tools - bash should be unbound
+    (let [bare-llm (make-llm {:llms {'llm #'spell.core/llm}})]
+      (llm-provider/with-provider
+        (llm-provider/dummy-provider
+          {:response "(def return \"no tools here\")))"})
+        ;; Should work for basic expressions
+        (is (= "no tools here" (bare-llm "test"))))))
+
+  (testing "make-llm with named agent function"
+    (let [helper-fn (fn
+                      ([prompt] "helper-result")
+                      ([prompt hooks] "helper-result"))
+          parent-llm (make-llm {:tools []
+                                :llms  {'llm #'spell.core/llm
+                                        'helper helper-fn}})]
+      (llm-provider/with-provider
+        (llm-provider/dummy-provider
+          {:response "(def return (helper \"do something\"))))"})
+        (is (= "helper-result" (parent-llm "delegate"))))))
+
+  (testing "default-tools contains read-name and bash"
+    (is (= 2 (count default-tools)))
+    (is (= #{'read-name 'bash} (set (map :name default-tools)))))
+
+  (testing "tool definitions have required keys"
+    (doseq [tool default-tools]
+      (is (contains? tool :name))
+      (is (contains? tool :fn))
+      (is (contains? tool :doc)))))
+
+;; =============================================================================
+;; call-now tests
+;; =============================================================================
+
+(deftest call-now-test
+  (testing "basic call-now with string result"
+    (let [call-count (atom 0)
+          test-llm (make-llm {:tools [] :llms {'llm #'spell.core/llm}})]
+      (llm-provider/with-provider
+        (llm-provider/dummy-provider
+          {:response-fn (fn [_prompt]
+                          (let [n (swap! call-count inc)]
+                            (if (= n 1)
+                              ;; First call: use call-now with a literal value
+                              "\"thinking\") (def return (call-now {:result \"tool-output\"})))"
+                              ;; Continuation: use the bound result
+                              "(def return (cat \"got: \" result))")))})
+        (is (= "got: tool-output" (test-llm "test"))))))
+
+  (testing "call-now with map result (like bash tool)"
+    (let [call-count (atom 0)
+          test-llm (make-llm {:tools [bash-tool] :llms {'llm #'spell.core/llm}})]
+      (llm-provider/with-provider
+        (llm-provider/dummy-provider
+          {:response-fn (fn [_prompt]
+                          (let [n (swap! call-count inc)]
+                            (if (= n 1)
+                              ;; First call: bash returns a map, pass via call-now
+                              "\"running\") (def return (call-now {:output (:out (bash \"echo hello\"))})))"
+                              ;; Continuation: use the bound output
+                              "(def return output)")))})
+        (is (= "hello" (test-llm "test"))))))
+
+  (testing "call-now with multiple bindings"
+    (let [call-count (atom 0)
+          test-llm (make-llm {:tools [] :llms {'llm #'spell.core/llm}})]
+      (llm-provider/with-provider
+        (llm-provider/dummy-provider
+          {:response-fn (fn [_prompt]
+                          (let [n (swap! call-count inc)]
+                            (if (= n 1)
+                              "\"plan\") (def return (call-now {:a \"first\" :b \"second\"})))"
+                              "(def return (cat a \" and \" b))")))})
+        (is (= "first and second" (test-llm "test"))))))
+
+  (testing "call-now passes completion to continuation"
+    ;; The continuation should have access to the extended completion string
+    (let [call-count (atom 0)
+          test-llm (make-llm {:tools [] :llms {'llm #'spell.core/llm}})]
+      (llm-provider/with-provider
+        (llm-provider/dummy-provider
+          {:response-fn (fn [_prompt]
+                          (let [n (swap! call-count inc)]
+                            (if (= n 1)
+                              "\"hi\") (def return (call-now {:x \"val\"})))"
+                              ;; Verify completion is a string containing original code
+                              "(def return (if (and (not (nil? completion)) (> (count completion) 0)) \"has-completion\" \"no-completion\"))")))})
+        (is (= "has-completion" (test-llm "test"))))))
+
+  (testing "recursive call-now (continuation uses call-now again)"
+    (let [call-count (atom 0)
+          test-llm (make-llm {:tools [] :llms {'llm #'spell.core/llm}})]
+      (llm-provider/with-provider
+        (llm-provider/dummy-provider
+          {:response-fn (fn [_prompt]
+                          (let [n (swap! call-count inc)]
+                            (case n
+                              1 "\"start\") (def return (call-now {:step1 \"one\"})))"
+                              2 "(def return (call-now {:step2 (cat step1 \"-two\")}))"
+                              3 "(def return (cat step2 \"-three\"))")))})
+        (is (= "one-two-three" (test-llm "test"))))))
+
+  (testing "call-now with empty bindings"
+    (let [call-count (atom 0)
+          test-llm (make-llm {:tools [] :llms {'llm #'spell.core/llm}})]
+      (llm-provider/with-provider
+        (llm-provider/dummy-provider
+          {:response-fn (fn [_prompt]
+                          (let [n (swap! call-count inc)]
+                            (if (= n 1)
+                              "\"start\") (def return (call-now {})))"
+                              "(def return \"continued\")")))})
+        (is (= "continued" (test-llm "test")))))))
+
+;; =============================================================================
+;; System prompt generation tests
+;; =============================================================================
+
+(deftest generate-system-prompt-test
+  (testing "includes tool documentation"
+    (let [p (prompt/generate-system-prompt
+              [{:name 'my-tool :doc "Does things."}]
+              {})]
+      (is (str/includes? p "my-tool: Does things."))))
+
+  (testing "includes agent documentation"
+    (let [p (prompt/generate-system-prompt
+              []
+              {'helper {:doc "Helps with stuff."}})]
+      (is (str/includes? p "(helper \"prompt\") - Helps with stuff."))))
+
+  (testing "self-recursion listed in builtins"
+    (let [p (prompt/generate-system-prompt [] {'llm #'spell.core/llm})]
+      (is (str/includes? p "Self: llm"))))
+
+  (testing "agents section only appears for non-self llms"
+    (let [self-only (prompt/generate-system-prompt [] {'llm #'spell.core/llm})
+          with-agent (prompt/generate-system-prompt [] {'llm #'spell.core/llm
+                                                        'helper {:doc "Helps."}})]
+      (is (not (str/includes? self-only "AGENTS")))
+      (is (str/includes? with-agent "AGENTS"))))
+
+  (testing "default prompt contains expected sections"
+    (let [p (prompt/generate-system-prompt default-tools {'llm #'spell.core/llm})]
+      (is (str/includes? p "SPELL INTERPRETER"))
+      (is (str/includes? p "BUILTINS"))
+      (is (str/includes? p "TOOLS"))
+      (is (str/includes? p "read-name"))
+      (is (str/includes? p "bash"))
+      (is (str/includes? p "ERROR HANDLING"))
+      (is (str/includes? p "EXAMPLES")))))
+
+;; =============================================================================
+;; prefix-prompt tests
+;; =============================================================================
+
+(deftest prefix-prompt-test
+  (testing "string prompt gets docs prepended"
+    (let [result (prefix-prompt "DOCS" "task")]
+      (is (string? result))
+      (is (str/starts-with? result "DOCS"))
+      (is (str/ends-with? result "task"))))
+
+  (testing "thunk prompt gets env-hints binding"
+    (let [result (prefix-prompt "DOCS" '(do (def return 1)))]
+      (is (seq? result))
+      (is (= 'do (first result)))
+      ;; Should contain (def env-hints "DOCS")
+      (is (= '(def env-hints "DOCS") (second result)))
+      ;; Original thunk is third element
+      (is (= '(do (def return 1)) (nth (seq result) 2)))))
+
+  (testing "non-string non-thunk returned unchanged"
+    (is (= 42 (prefix-prompt "DOCS" 42)))
+    (is (= nil (prefix-prompt "DOCS" nil)))))
+
+;; =============================================================================
+;; inject-docs-into-llm-prompts tests
+;; =============================================================================
+
+(deftest inject-docs-into-llm-prompts-test
+  (testing "rewrites llm call prompt"
+    (let [inject @#'spell.core/inject-docs-into-llm-prompts
+          result (inject "DOCS" '(llm "task"))]
+      (is (= 'llm (first result)))
+      ;; prompt should be (prefix-prompt "DOCS" "task")
+      (is (= '(prefix-prompt "DOCS" "task") (second result)))))
+
+  (testing "handles llm with hooks"
+    (let [inject @#'spell.core/inject-docs-into-llm-prompts
+          result (inject "DOCS" '(llm "task" [hook1]))]
+      (is (= 'llm (first result)))
+      (is (= '(prefix-prompt "DOCS" "task") (second result)))
+      (is (= '[hook1] (nth (seq result) 2)))))
+
+  (testing "skips quoted forms"
+    (let [inject @#'spell.core/inject-docs-into-llm-prompts
+          result (inject "DOCS" '(quote (llm "task")))]
+      (is (= '(quote (llm "task")) result))))
+
+  (testing "recurses into nested structures"
+    (let [inject @#'spell.core/inject-docs-into-llm-prompts
+          result (inject "DOCS" '(do (def x (llm "inner"))))]
+      ;; The llm call inside should be rewritten
+      (is (= 'do (first result)))
+      (let [def-form (second result)
+            llm-call (nth def-form 2)]
+        (is (= 'llm (first llm-call)))
+        (is (= '(prefix-prompt "DOCS" "inner") (second llm-call)))))))
+
+;; =============================================================================
+;; with-env tests
+;; =============================================================================
+
+(deftest with-env-test
+  (testing "basic binding injection"
+    (let [hook (with-env {:x 42})
+          code '(+ x 1)
+          result (hook code)]
+      ;; Result should be (do (def x 42) (+ x 1))
+      (is (= 43 (run-spell result)))))
+
+  (testing "multiple bindings"
+    (let [hook (with-env {:x 10 :y 20})
+          result (hook '(+ x y))]
+      (is (= 30 (run-spell result)))))
+
+  (testing "error on non-keyword keys"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"keys must be keywords"
+                          (with-env {'x 42}))))
+
+  (testing "quoted values survive re-evaluation"
+    ;; A symbol value needs quoting to not be re-evaluated
+    (let [hook (with-env {:s 'hello})
+          result (hook '(list s))]
+      (is (= '(hello) (run-spell result)))))
+
+  (testing "list values survive re-evaluation"
+    (let [hook (with-env {:xs '(1 2 3)})
+          result (hook '(first xs))]
+      (is (= 1 (run-spell result))))))
+
+;; =============================================================================
+;; with-env-hints tests
+;; =============================================================================
+
+(deftest with-env-hints-test
+  (testing "binding injection works"
+    (let [hook (with-env-hints {:x [42 "the answer"]})
+          code '(+ x 1)
+          result (hook code)]
+      ;; Should evaluate correctly with x bound
+      (is (= 43 (run-spell result)))))
+
+  (testing "multiple bindings with docs"
+    (let [hook (with-env-hints {:x [10 "first number"] :y [20 "second number"]})
+          result (hook '(+ x y))]
+      (is (= 30 (run-spell result)))))
+
+  (testing "llm calls get rewritten with prefix-prompt"
+    (let [hook (with-env-hints {:x [42 "the answer"]})
+          code '(llm "task")
+          result (hook code)]
+      ;; The result should contain a prefix-prompt wrapping the llm prompt
+      (let [llm-forms (filter #(and (seq? %) (= 'llm (first %)))
+                              (tree-seq coll? seq result))]
+        (is (seq llm-forms))
+        ;; Each llm's prompt arg should be a (prefix-prompt ...) call
+        (doseq [llm-form llm-forms]
+          (let [prompt-arg (second llm-form)]
+            (is (and (seq? prompt-arg) (= 'prefix-prompt (first prompt-arg)))))))))
+
+  (testing "documentation includes all binding descriptions"
+    (let [hook (with-env-hints {:api-key ["sk-123" "API key for service"]
+                                :timeout [30 "Timeout in seconds"]})
+          result (hook '(llm "task"))
+          ;; Find the docs string in the prefix-prompt call
+          llm-form (first (filter #(and (seq? %) (= 'llm (first %)))
+                                  (tree-seq coll? seq result)))
+          prefix-call (second llm-form)
+          docs-str (second prefix-call)]
+      (is (str/includes? docs-str "api-key"))
+      (is (str/includes? docs-str "API key for service"))
+      (is (str/includes? docs-str "timeout"))
+      (is (str/includes? docs-str "Timeout in seconds"))))
+
+  (testing "error on non-keyword keys"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"keys must be keywords"
+                          (with-env-hints {'x [42 "doc"]})))))

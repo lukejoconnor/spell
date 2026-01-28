@@ -2,10 +2,11 @@
   "Spell - a Lisp dialect for LLM self-orchestration."
   (:require [spell.llm :as llm-provider]
             [spell.prompt :as prompt]
-            [clojure.set :as set])
+            [clojure.set :as set]
+            [clojure.string :as str])
   (:import [java.util.concurrent TimeUnit]))
 
-(declare llm extract expand prepend-hooks-to-llm recurse)
+(declare llm extract expand prepend-hooks-to-llm recurse make-llm prefix-prompt)
 
 (def ^:dynamic *verbose*
   "When true, print LLM prompts and responses."
@@ -63,20 +64,46 @@
        :out (clojure.string/trim @out-future)
        :err (clojure.string/trim @err-future)})))
 
-(def ^:private builtins
-  "Whitelisted operations - effectively appended to env."
+;; =============================================================================
+;; Builtins: core (always available) + dynamic (per-llm-variant)
+;; =============================================================================
+
+(def ^:private core-builtins
+  "Language primitives - always available in every llm variant."
   {'+ +, '- -, '* *, '/ /, '< <, '> >, '<= <=, '>= >=, '= =, 'not= not=,
    'str str, 'list list, 'vector vector, 'first first, 'rest rest,
    'cons cons, 'conj conj, 'get get, 'assoc assoc, 'not not, 'count count,
    'inc inc, 'dec dec, 'nil? nil?, 'empty? empty?, 'rand rand,
    'cat (fn [& args] (apply str args)),
-   'llm #'llm,
-   'expand #'expand,
-   'prepend-hooks-to-llm #'prepend-hooks-to-llm,
-   'recurse #'recurse,
-   'read-name read-name,
-   'bash run-bash,
    'spell-error? spell-error?})
+
+(def ^:dynamic *builtins*
+  "Active builtins map. Rebound by each llm variant during evaluation.
+   Root binding set at bottom of file after all definitions exist."
+  nil)
+
+;; =============================================================================
+;; Tool definitions
+;; =============================================================================
+
+(def read-name-tool
+  "Tool metadata for read-name."
+  {:name 'read-name
+   :fn   read-name
+   :doc  "Returns the name from name.txt. Takes no arguments. Use (read-name) to get the name."})
+
+(def bash-tool
+  "Tool metadata for bash."
+  {:name 'bash
+   :fn   run-bash
+   :doc  "Execute a shell command. Takes a command string, returns a map with :exit (integer), :out (stdout string), :err (stderr string).
+(bash \"ls -la\")       ; => {:exit 0 :out \"...\" :err \"\"}
+(:out (bash \"pwd\"))   ; => \"/current/dir\"
+(:exit (bash \"false\")) ; => 1"})
+
+(def default-tools
+  "Default tool set for the standard llm function."
+  [read-name-tool bash-tool])
 
 (declare spell-eval)
 
@@ -96,7 +123,7 @@
    (cond
      (symbol? expr)
      (if (or (contains? bound expr)
-             (contains? builtins expr)
+             (contains? (or *builtins* core-builtins) expr)
              (contains? special-forms expr))
        #{}
        #{expr})
@@ -359,9 +386,9 @@
     (or (nil? expr) (string? expr) (number? expr) (boolean? expr) (keyword? expr))
     [expr env]
 
-    ;; Symbol: lookup in env, fallback to builtins
+    ;; Symbol: lookup in env, fallback to *builtins*
     (symbol? expr)
-    (if-let [entry (or (find env expr) (find builtins expr))]
+    (if-let [entry (or (find env expr) (find (or *builtins* core-builtins) expr))]
       [(val entry) env]
       (throw (ex-info "Unbound symbol" {:symbol expr})))
 
@@ -473,6 +500,16 @@
       (str s (apply str (repeat balance \))))
       s)))
 
+(defn read-all
+  "Read all forms from a string. Returns a vector of parsed forms."
+  [s]
+  (let [rdr (java.io.PushbackReader. (java.io.StringReader. s))]
+    (loop [forms []]
+      (let [form (try (read rdr) (catch Exception _ ::eof))]
+        (if (= form ::eof)
+          forms
+          (recur (conj forms form)))))))
+
 (defn- escape-string
   "Escape a string for embedding in Lisp code."
   [s]
@@ -544,6 +581,90 @@
                                         (list 'recurse (list 'quote hook)))]
               (list 'prepend-hooks-to-llm 'hooks-to-add 'transformed))))
 
+;; =============================================================================
+;; Convenience hooks: with-env, with-env-hints
+;; =============================================================================
+
+(defn- quote-value
+  "Wrap non-self-evaluating values in (quote ...) for safe embedding in generated code."
+  [v]
+  (if (or (nil? v) (number? v) (string? v) (boolean? v) (keyword? v))
+    v
+    (list 'quote v)))
+
+(defn with-env
+  "Create a hook that injects bindings into code.
+   bindings is a map of keywords to values, e.g. {:secret 42 :name \"Alice\"}.
+   Returns a function code->code that wraps code with def forms."
+  [bindings]
+  (when-not (every? keyword? (keys bindings))
+    (throw (ex-info "with-env: keys must be keywords" {:keys (keys bindings)})))
+  (let [defs (mapv (fn [[k v]]
+                     (list 'def (symbol (name k)) (quote-value v)))
+                   bindings)]
+    (fn [code]
+      (list* 'do (concat defs [code])))))
+
+(defn prefix-prompt
+  "Prepend documentation string to a prompt.
+   If prompt is a string, prepends docs with separator.
+   If prompt is a thunk (list), wraps with env-hints binding."
+  [docs prompt]
+  (cond
+    (string? prompt)
+    (str docs "\n\n" prompt)
+
+    (or (seq? prompt) (list? prompt))
+    (list 'do (list 'def 'env-hints docs) prompt)
+
+    :else prompt))
+
+(defn- inject-docs-into-llm-prompts
+  "Walk code and wrap llm call prompts with prefix-prompt.
+   (llm prompt) -> (llm (prefix-prompt docs prompt))
+   Does not descend into quotes."
+  [docs code]
+  (cond
+    (and (seq? code) (= 'quote (first code)))
+    code
+
+    (and (seq? code) (= 'llm (first code)))
+    (let [prompt (second code)
+          wrapped-prompt (list 'prefix-prompt docs (inject-docs-into-llm-prompts docs prompt))
+          rest-args (drop 2 code)]
+      (list* 'llm wrapped-prompt rest-args))
+
+    (seq? code)
+    (apply list (map #(inject-docs-into-llm-prompts docs %) code))
+
+    (vector? code)
+    (mapv #(inject-docs-into-llm-prompts docs %) code)
+
+    (map? code)
+    (into {} (map (fn [[k v]] [k (inject-docs-into-llm-prompts docs v)]) code))
+
+    :else code))
+
+(defn with-env-hints
+  "Create a hook that injects bindings AND documents them in descendant prompts.
+   bindings is a map of keywords to [value, doc-string] pairs.
+   Example: {:api-key [\"sk-123\" \"API key for external service\"]}
+   Returns a function code->code."
+  [bindings]
+  (when-not (every? keyword? (keys bindings))
+    (throw (ex-info "with-env-hints: keys must be keywords" {:keys (keys bindings)})))
+  (let [defs (mapv (fn [[k [v _]]]
+                     (list 'def (symbol (name k)) (quote-value v)))
+                   bindings)
+        docs (str "Available bindings:\n"
+                  (str/join "\n"
+                    (map (fn [[k [_ doc]]]
+                           (str "  " (name k) " - " doc))
+                         bindings)))]
+    (fn [code]
+      (let [with-bindings (list* 'do (concat defs [code]))]
+        (inject-docs-into-llm-prompts docs with-bindings)))))
+
 (defn- format-llm-error
   "Format an error message for a failed llm call."
   [response error]
@@ -566,84 +687,198 @@
           code
           hooks))
 
-(defn llm
-  "The llm primitive: send prompt to LLM, evaluate response, return 'return binding.
+;; =============================================================================
+;; LLM implementation and factory
+;; =============================================================================
 
-   1. Wraps prompt in (do (def prefix \"...\") (def response form
-      - If prompt is a thunk (list), also binds parent-code to the thunk
-   2. Calls the LLM provider with the wrapped prompt (+ system prompt)
-   3. Concatenates wrapped prompt + response into a 'completion'
-   4. Auto-balances parens if LLM forgot closing parens
-   5. Applies hooks to transform completion into program
-   6. Parses and evaluates the program with spell-eval
-   7. Returns the value bound to 'return in the resulting environment
+(defn- make-call-now
+  "Create a call-now closure for continuing an LLM generation with tool results.
+   completion-str: the raw completion string from the current LLM call.
+   hooks: hooks to apply to continuation code.
+   sys-prompt: system prompt for continuation LLM calls.
+   model-override: optional model name."
+  [completion-str hooks sys-prompt model-override]
+  (fn [bindings-map]
+    (when-not (map? bindings-map)
+      (throw (ex-info "call-now: argument must be a map" {:got bindings-map})))
+    (let [indent (apply str (repeat *llm-depth* "  "))
+          ;; Format bindings as def forms
+          def-strs (map (fn [[k v]]
+                          (str "(def " (name k) " " (pr-str (quote-value v)) ")"))
+                        bindings-map)
+          result-text (str/join " " def-strs)
+          ;; Extend the completion prefix
+          new-prefix (str completion-str "\n" result-text "\n")
+          _ (when *verbose*
+              (println (str indent "=== call-now ==="))
+              (println (str indent "Bindings: " (pr-str (into {} (map (fn [[k v]] [(name k) v]) bindings-map)))))
+              (println (str indent "Continuation prefix length: " (count new-prefix))))
+          ;; Call LLM to continue
+          call-opts (cond-> {:system sys-prompt}
+                      model-override (assoc :model model-override))
+          continuation (llm-provider/llm-call new-prefix call-opts)
+          _ (when *verbose*
+              (println (str indent "Continuation: " continuation)))
+          ;; Parse continuation text (tool result defs + model's continuation)
+          new-text (str result-text "\n" continuation)
+          balanced (balance-parens new-text)
+          forms (read-all balanced)
+          ;; Wrap in do for hooks
+          program (if (= 1 (count forms))
+                    (first forms)
+                    (list* 'do forms))
+          program' (if (empty? hooks)
+                     program
+                     (apply-hooks hooks program))
+          _ (when (and *verbose* (seq hooks))
+              (println (str indent "Continuation program (after hooks): " (pr-str program'))))
+          ;; Create new call-now for recursive use
+          extended-completion (str new-prefix continuation)
+          new-call-now (make-call-now extended-completion hooks sys-prompt model-override)
+          ;; Build env with bindings + new call-now + updated completion
+          eval-env (reduce (fn [e [k v]]
+                             (assoc e (symbol (name k)) v))
+                           {'completion extended-completion
+                            'call-now new-call-now}
+                           bindings-map)
+          ;; Evaluate continuation
+          [_ final-env] (binding [*llm-depth* (inc *llm-depth*)]
+                          (spell-eval program' eval-env))]
+      (get final-env 'return))))
 
-   On error (syntax or evaluation), retries up to max-retries times.
-   If all attempts fail, returns an error string (detectable via spell-error?).
+(defn- llm-impl
+  "Core llm implementation. Assumes *builtins* is already bound by the caller.
+   sys-prompt: the system prompt string for this llm variant.
+   model-override: optional model name (nil to use provider default)."
+  [prompt hooks sys-prompt model-override]
+  (when (and *max-llm-depth* (>= *llm-depth* *max-llm-depth*))
+    (throw (ex-info "LLM recursion limit exceeded"
+                    {:depth *llm-depth* :limit *max-llm-depth*})))
+  (let [indent (apply str (repeat *llm-depth* "  "))
+        is-thunk (or (seq? prompt) (list? prompt))
+        prompt-str (if is-thunk (pr-str prompt) (str prompt))
+        parent-code-binding (when is-thunk
+                              (str "(def parent-code '" (pr-str prompt) ") "))
+        wrapped-prompt (str "(do (def prefix \"" (escape-string prompt-str) "\") "
+                           (or parent-code-binding "")
+                           "(def response ")]
+    (when *verbose*
+      (println (str indent "=== LLM Call (depth " *llm-depth* ") ==="))
+      (println (str indent "Prompt: " (pr-str prompt))))
+    ;; Retry loop: attempt up to (1 + max-retries) times
+    (loop [attempt 0
+           last-response nil
+           last-error nil]
+      (if (> attempt max-retries)
+        ;; All attempts exhausted, return error string
+        (do
+          (when *verbose*
+            (println (str indent "All " (inc max-retries) " attempts failed, returning error")))
+          (format-llm-error last-response last-error))
+        ;; Try LLM call + eval
+        (let [call-opts (cond-> {:system sys-prompt}
+                          model-override (assoc :model model-override))
+              response (llm-provider/llm-call wrapped-prompt call-opts)]
+          (when *verbose*
+            (when (pos? attempt)
+              (println (str indent "Retry attempt " attempt)))
+            (println (str indent "Response: " response)))
+          (let [result (try
+                         (let [raw-completion (str wrapped-prompt response)
+                               completion (balance-parens raw-completion)
+                               _ (when (and *verbose* (not= completion raw-completion))
+                                   (println (str indent "(auto-balanced parens)")))
+                               parsed (read-string completion)
+                               ;; Apply hooks to transform completion into program
+                               program (if (empty? hooks)
+                                         parsed
+                                         (apply-hooks hooks parsed))
+                               _ (when (and *verbose* (seq hooks))
+                                   (println (str indent "Program (after hooks): " (pr-str program))))
+                               call-now-fn (make-call-now raw-completion hooks sys-prompt model-override)
+                               initial-env {'completion raw-completion
+                                            'call-now call-now-fn}
+                               [_ env] (binding [*llm-depth* (inc *llm-depth*)]
+                                         (spell-eval program initial-env))]
+                           {:success true :value (get env 'return)})
+                         (catch Exception e
+                           (when *verbose*
+                             (println (str indent "Error: " (ex-message e))))
+                           {:success false :response response :error e}))]
+            (if (:success result)
+              (:value result)
+              (recur (inc attempt) (:response result) (:error result)))))))))
 
-   Hooks are quoted macros (code->code transformers). Each hook is evaluated
-   to get a function, then applied to the code. Hooks compose left-to-right:
-   (hook2 (hook1 completion))."
-  ([prompt] (llm prompt []))
-  ([prompt hooks]
-   (when (and *max-llm-depth* (>= *llm-depth* *max-llm-depth*))
-     (throw (ex-info "LLM recursion limit exceeded"
-                     {:depth *llm-depth* :limit *max-llm-depth*})))
-   (let [indent (apply str (repeat *llm-depth* "  "))
-         is-thunk (or (seq? prompt) (list? prompt))
-         prompt-str (if is-thunk (pr-str prompt) (str prompt))
-         parent-code-binding (when is-thunk
-                               (str "(def parent-code '" (pr-str prompt) ") "))
-         wrapped-prompt (str "(do (def prefix \"" (escape-string prompt-str) "\") "
-                            (or parent-code-binding "")
-                            "(def response ")]
-     (when *verbose*
-       (println (str indent "=== LLM Call (depth " *llm-depth* ") ==="))
-       (println (str indent "Prompt: " (pr-str prompt))))
-     ;; Retry loop: attempt up to (1 + max-retries) times
-     (loop [attempt 0
-            last-response nil
-            last-error nil]
-       (if (> attempt max-retries)
-         ;; All attempts exhausted, return error string
-         (do
-           (when *verbose*
-             (println (str indent "All " (inc max-retries) " attempts failed, returning error")))
-           (format-llm-error last-response last-error))
-         ;; Try LLM call + eval
-         (let [response (llm-provider/llm-call wrapped-prompt {:system prompt/system-prompt})]
-           (when *verbose*
-             (when (pos? attempt)
-               (println (str indent "Retry attempt " attempt)))
-             (println (str indent "Response: " response)))
-           (let [result (try
-                          (let [raw-completion (str wrapped-prompt response)
-                                completion (balance-parens raw-completion)
-                                _ (when (and *verbose* (not= completion raw-completion))
-                                    (println (str indent "(auto-balanced parens)")))
-                                parsed (read-string completion)
-                                ;; Apply hooks to transform completion into program
-                                program (if (empty? hooks)
-                                          parsed
-                                          (apply-hooks hooks parsed))
-                                _ (when (and *verbose* (seq hooks))
-                                    (println (str indent "Program (after hooks): " (pr-str program))))
-                                initial-env {'completion (list 'quote parsed)}
-                                [_ env] (binding [*llm-depth* (inc *llm-depth*)]
-                                          (spell-eval program initial-env))]
-                            {:success true :value (get env 'return)})
-                          (catch Exception e
-                            (when *verbose*
-                              (println (str indent "Error: " (ex-message e))))
-                            {:success false :response response :error e}))]
-             (if (:success result)
-               (:value result)
-               (recur (inc attempt) (:response result) (:error result))))))))))
+(defn make-llm
+  "Factory: create an llm function with specific tools and agent access.
+
+   Options:
+   - :tools - vector of tool maps {:name sym, :fn f, :doc str}
+   - :llms  - map of {symbol fn-or-var} for available agent functions.
+              Use 'llm with a var ref for self-recursion: {'llm #'my-var}
+              Values can also be maps with :fn and :doc for prompt generation.
+   - :model - optional model name override (nil uses provider default)
+
+   Returns a function with the same signature as llm:
+   (f prompt) or (f prompt hooks)."
+  [{:keys [tools llms model]
+    :or {tools [] llms {}}}]
+  (let [tool-builtins (into {} (map (fn [{:keys [name fn]}] [name fn]) tools))
+        ;; Extract fns from llm entries (support both bare fns and {:fn f :doc d} maps)
+        llm-builtins (into {} (map (fn [[sym v]]
+                                     [sym (if (map? v) (:fn v) v)])
+                                   llms))
+        variant-builtins (merge core-builtins
+                                {'expand #'expand
+                                 'prepend-hooks-to-llm #'prepend-hooks-to-llm
+                                 'recurse #'recurse
+                                 'prefix-prompt #'prefix-prompt
+                                 'with-env with-env
+                                 'with-env-hints with-env-hints}
+                                tool-builtins
+                                llm-builtins)
+        ;; For prompt generation, normalize llm entries to include :doc
+        llms-for-prompt (into {} (map (fn [[sym v]]
+                                        [sym (if (map? v) v {:fn v})])
+                                      llms))
+        sys-prompt (prompt/generate-system-prompt tools llms-for-prompt)]
+    (fn the-llm
+      ([prompt] (the-llm prompt []))
+      ([prompt hooks]
+       (binding [*builtins* variant-builtins]
+         (llm-impl prompt hooks sys-prompt model))))))
+
+;; =============================================================================
+;; Default llm function
+;; =============================================================================
+
+(def llm
+  "The default llm function with all standard tools and self-recursion."
+  (make-llm {:tools default-tools
+             :llms  {'llm #'llm}}))
 
 (defn run-spell
   "Run a spell program, returning just the value."
   [program]
   (first (spell-eval program {})))
+
+;; Set root binding for *builtins* — used by direct spell-eval/run-spell calls
+;; (tests, REPL) that don't go through an llm function.
+(alter-var-root #'*builtins*
+  (constantly (merge core-builtins
+                     {'llm #'llm
+                      'expand #'expand
+                      'prepend-hooks-to-llm #'prepend-hooks-to-llm
+                      'recurse #'recurse
+                      'prefix-prompt #'prefix-prompt
+                      'with-env with-env
+                      'with-env-hints with-env-hints
+                      'read-name read-name
+                      'bash run-bash})))
+
+;; Set the default system prompt for backwards compatibility
+(alter-var-root #'prompt/system-prompt
+  (constantly (prompt/generate-system-prompt default-tools {'llm #'llm})))
 
 (comment
   ;; REPL testing
