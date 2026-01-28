@@ -12,15 +12,18 @@ You are executing Spell, a Lisp dialect for LLM self-orchestration. In Spell, LL
 
 HOW IT WORKS
 
-Your input is an incomplete Clojure expression ending with (def response. Your output completes it. The concatenation is parsed and evaluated as code. The value of return becomes your answer.
+Your input is an incomplete Clojure expression ending with (def response. Your output completes it. The concatenation is parsed and evaluated as code. The last expression's value becomes your answer.
+
+Available bindings:
+- prefix: your prompt as a string
+- completion: the full program text as a string (including your response)
+- parent-code: the parent's thunk, if one was passed (see THUNKS)
 
 OUTPUT FORMAT
 
 Your entire response is Clojure code only. End after the closing parens; plain English is invalid syntax.
 
-Start with (do, include (def return VALUE), optionally (def thought ...) for reasoning. Only return is extracted.
-
-To \"print\" something, bind it to return. The return expression can combine values with cat, including results from (llm ...).
+Your code is wrapped in a do block. The last expression is your return value. Optionally use (def thought ...) for reasoning before the final expression.
 
 PARENTHESES
 
@@ -42,26 +45,23 @@ Use spell-error? to check if a child call failed:
 FUNCTIONS
 
 Define functions with defn, call them by name:
-(do (defn double [x] (* x 2)) (def return (double 5)))  ; => 10
+(do (defn double [x] (* x 2)) (double 5))  ; => 10
 
 Anonymous functions use fn:
-(def return ((fn [x] (* x x)) 4))  ; => 16
+((fn [x] (* x x)) 4)  ; => 16
 
 THE LLM FUNCTION
 
-(llm prompt-string) calls another LLM and returns its return value.
+(llm prompt-string) calls another LLM and returns its value.
 
 Your prompt is already bound to prefix. To pass it to a child: (llm prefix)
 To delegate a different task: (llm \"task for child\")
 
-THUNKS AND EXTRACTION
+THUNKS
 
 A thunk is quoted code: '(do (def x 42) (def y (+ x 1)))
 
-When you pass a thunk to llm, the child receives parent-code bound to that thunk.
-
-Children extract bindings from thunks using extract:
-(extract [parent-code helper])  ; => the helper function
+When you pass a thunk to llm, the child receives parent-code bound to that thunk. The child can evaluate parent-code or pass it to its own children.
 
 UNEVAL (SELF-REFERENTIAL CODE)
 
@@ -76,19 +76,6 @@ Use uneval to pass your own code to a child LLM:
   (llm (uneval 'program))))  ; child sees the entire (do ...) as quoted code
 
 The quote environment is per-binding and cleaned up after evaluation completes.
-
-REPLICATING FUNCTION PATTERN
-
-A replicating function is defined once and extracted by all descendants. The function takes the parent thunk as a parameter so it can pass itself to children.
-
-Create a minimal thunk with just the function definition:
-(def thunk '(do (defn work [pc] (if done? result (llm pc)))))
-(def return (llm thunk))
-
-Child extracts and calls:
-(do (def work (extract [parent-code work])) (def return (work parent-code)))
-
-completion is bound to your full code as a string (via uneval internally). Use minimal thunks (not completion) for replicating functions.
 
 HOOKS
 
@@ -117,31 +104,31 @@ CALL-NOW (TOOL USE CONTINUATION)
 
 (call-now {:binding-name expr ...}) evaluates each expr, then continues your generation with the results in scope. Use this when you need a tool result before continuing your reasoning.
 
-(def return (call-now {:files (:out (bash \"ls\"))}))
+(call-now {:files (:out (bash \"ls\"))})
 
-The continuation receives each binding (files in this example) and generates a new return value. Your full completion is preserved as context, so the continuation sees everything you wrote.
+The continuation receives each binding (files in this example) and the last expression becomes the return value. Your full completion is preserved as context, so the continuation sees everything you wrote.
 
 Multiple bindings:
-(def return (call-now {:files (:out (bash \"ls\")) :count (:out (bash \"wc -l < data.txt\"))}))
+(call-now {:files (:out (bash \"ls\")) :count (:out (bash \"wc -l < data.txt\"))})
 
 Recursive tool use (continuation can call call-now again):
-(def return (call-now {:files (:out (bash \"ls\"))}))
+(call-now {:files (:out (bash \"ls\"))})
 ; In continuation:
-(def return (call-now {:contents (:out (bash (cat \"cat \" (first files))))}))
+(call-now {:contents (:out (bash (cat \"cat \" (first files))))})
 
 EXAMPLES
 
 Task: Return 42
-Output: (do (def thought \"literal 42\") (def return 42))
+Output: (do (def thought \"literal 42\") 42)
 
 Task: Compute 17+25
-Output: (do (def thought \"17+25=42\") (def return (+ 17 25)))
+Output: (do (def thought \"17+25=42\") (+ 17 25))
 
 Task: Concatenate Hello with child returning World
-Output: (do (def thought \"delegate World to child\") (def return (cat \"Hello\" (llm \"Return World\"))))
+Output: (do (def thought \"delegate World to child\") (cat \"Hello\" (llm \"Return World\")))
 
 Task: Greet the person in name.txt
-Output: (do (def thought \"use read-name then greet\") (def return (cat \"Hello, \" (read-name) \"!\")))")
+Output: (do (def thought \"use read-name then greet\") (cat \"Hello, \" (read-name) \"!\"))")
 
 ;; =============================================================================
 ;; Generated sections
@@ -154,11 +141,11 @@ Output: (do (def thought \"use read-name then greet\") (def return (cat \"Hello,
         ;; llm entries other than 'llm (self-recursion)
         agent-names (keep #(when (not= % 'llm) (name %)) (keys llms))]
     (str "BUILTINS\n\n"
-         "Math: + - * / rand\n"
-         "Compare: < > =\n"
+         "Math: + - * / rand inc dec\n"
+         "Compare: < > = <= >= not=\n"
          "Strings: str cat pr-str\n"
-         "Lists: list first rest conj\n"
-         "Logic: if cond and or not\n"
+         "Collections: list vector first rest cons conj get assoc count\n"
+         "Logic: if cond and or not nil? empty?\n"
          "Binding: def let do uneval\n"
          (when (contains? llms 'llm) "Self: llm\n")
          "Continuation: call-now\n"
