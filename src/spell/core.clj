@@ -76,7 +76,7 @@
 (def ^:private core-builtins
   "Language primitives - always available in every llm variant."
   {'+ +, '- -, '* *, '/ /, '< <, '> >, '<= <=, '>= >=, '= =, 'not= not=,
-   'str str, 'list list, 'vector vector, 'first first, 'rest rest,
+   'str str, 'pr-str pr-str, 'list list, 'vector vector, 'first first, 'rest rest,
    'cons cons, 'conj conj, 'get get, 'assoc assoc, 'not not, 'count count,
    'inc inc, 'dec dec, 'nil? nil?, 'empty? empty?, 'rand rand,
    'cat (fn [& args] (apply str args)),
@@ -780,7 +780,11 @@
         prompt-str (if is-thunk (pr-str prompt) (str prompt))
         parent-code-binding (when is-thunk
                               (str "(def parent-code '" (pr-str prompt) ") "))
-        wrapped-prompt (str "(do (def prefix \"" (escape-string prompt-str) "\") "
+        ;; Structure: (def interior (do (def completion ...) (def prefix ...) (def response ...)))
+        ;; completion is naturally bound via uneval, no special injection needed
+        wrapped-prompt (str "(def interior (do "
+                           "(def completion (cat \"(def interior \" (pr-str (uneval 'interior)) \")\")) "
+                           "(def prefix \"" (escape-string prompt-str) "\") "
                            (or parent-code-binding "")
                            "(def response ")]
     (when *verbose*
@@ -817,8 +821,9 @@
                                _ (when (and *verbose* (seq hooks))
                                    (println (str indent "Program (after hooks): " (pr-str program))))
                                call-now-fn (make-call-now raw-completion hooks sys-prompt model-override)
-                               initial-env {'completion raw-completion
-                                            'call-now call-now-fn}
+                               ;; completion is now bound via (def interior ...) using uneval
+                               ;; only call-now needs to be injected
+                               initial-env {'call-now call-now-fn}
                                [_ env] (binding [*llm-depth* (inc *llm-depth*)]
                                          (spell-eval program initial-env))]
                            {:success true :value (get env 'return)})

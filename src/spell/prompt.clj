@@ -88,7 +88,7 @@ Create a minimal thunk with just the function definition:
 Child extracts and calls:
 (do (def work (extract [parent-code work])) (def return (work parent-code)))
 
-completion is bound to your full code as a string. Use minimal thunks (not completion) for replicating functions.
+completion is bound to your full code as a string (via uneval internally). Use minimal thunks (not completion) for replicating functions.
 
 HOOKS
 
@@ -156,7 +156,7 @@ Output: (do (def thought \"use read-name then greet\") (def return (cat \"Hello,
     (str "BUILTINS\n\n"
          "Math: + - * / rand\n"
          "Compare: < > =\n"
-         "Strings: str cat\n"
+         "Strings: str cat pr-str\n"
          "Lists: list first rest conj\n"
          "Logic: if cond and or not\n"
          "Binding: def let do uneval\n"
