@@ -63,6 +63,20 @@ When you pass a thunk to llm, the child receives parent-code bound to that thunk
 Children extract bindings from thunks using extract:
 (extract [parent-code helper])  ; => the helper function
 
+UNEVAL (SELF-REFERENTIAL CODE)
+
+(uneval 'symbol) returns the quoted source expression of the binding while it's being evaluated. This enables a program to reference its own code.
+
+(def my-code (vector (uneval 'my-code)))
+; my-code => [(quote (vector (uneval 'my-code)))]
+
+Use uneval to pass your own code to a child LLM:
+(def program (do
+  (def setup \"context\")
+  (llm (uneval 'program))))  ; child sees the entire (do ...) as quoted code
+
+The quote environment is per-binding and cleaned up after evaluation completes.
+
 REPLICATING FUNCTION PATTERN
 
 A replicating function is defined once and extracted by all descendants. The function takes the parent thunk as a parameter so it can pass itself to children.
@@ -145,7 +159,7 @@ Output: (do (def thought \"use read-name then greet\") (def return (cat \"Hello,
          "Strings: str cat\n"
          "Lists: list first rest conj\n"
          "Logic: if cond and or not\n"
-         "Binding: def let do\n"
+         "Binding: def let do uneval\n"
          (when (contains? llms 'llm) "Self: llm\n")
          "Continuation: call-now\n"
          (when (seq tool-names)

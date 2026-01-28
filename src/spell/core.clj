@@ -24,6 +24,11 @@
   "Timeout in seconds for bash commands. Set to nil to disable."
   30)
 
+(def ^:dynamic *quote-env*
+  "Maps symbols to their quoted definition expressions during evaluation.
+   Used by uneval to retrieve the source code of a binding while it's being evaluated."
+  {})
+
 (def ^:private error-prefix
   "Prefix for error strings from failed llm calls."
   "[SPELL-ERROR] ")
@@ -113,7 +118,7 @@
 
 (def ^:private special-forms
   "Special forms that are not free variables."
-  #{'quote 'def 'do 'if 'let 'fn 'defn 'cond 'and 'or 'extract})
+  #{'quote 'def 'do 'if 'let 'fn 'defn 'cond 'and 'or 'extract 'uneval})
 
 (defn find-free-vars
   "Find symbols in expr that aren't bound locally or builtins.
@@ -407,8 +412,12 @@
     (case (first expr)
       nil   [nil env]
       quote [(second expr) env]
-      def   (let [[v e'] (spell-eval (nth expr 2) env)]
-              [v (assoc e' (second expr) v)])
+      def   (let [sym (second expr)
+                  val-expr (nth expr 2)
+                  ;; Bind sym -> quoted val-expr in *quote-env* during evaluation
+                  [v e'] (binding [*quote-env* (assoc *quote-env* sym (list 'quote val-expr))]
+                           (spell-eval val-expr env))]
+              [v (assoc e' sym v)])
       do    (eval-seq (rest expr) env)
       if    (let [[test-v e'] (spell-eval (second expr) env)]
               (spell-eval (nth expr (if test-v 2 3) nil) e'))
@@ -474,6 +483,18 @@
       ;; Special form because it needs unevaluated path symbols and the env
       extract (let [path (second expr)]
                 [(extract path env) env])
+
+      ;; uneval: (uneval 'sym) - get the quoted source of a binding during its evaluation
+      ;; Enables self-referential programs (quines) by looking up in *quote-env*
+      uneval (let [[sym-v _] (spell-eval (second expr) env)]
+               (when-not (symbol? sym-v)
+                 (throw (ex-info "uneval: argument must evaluate to a symbol"
+                                {:got sym-v :type (type sym-v)})))
+               (if-let [quoted (get *quote-env* sym-v)]
+                 [quoted env]
+                 (throw (ex-info "uneval: symbol not found in quote environment"
+                                {:symbol sym-v
+                                 :available (keys *quote-env*)}))))
 
       ;; Function application: evaluate all, apply first to rest
       (let [[vals e'] (reduce (fn [[acc e] x] (let [[v e'] (spell-eval x e)] [(conj acc v) e']))

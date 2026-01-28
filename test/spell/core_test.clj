@@ -326,6 +326,59 @@
     (is (= 5 (run-spell '(or 5))))))
 
 ;; =============================================================================
+;; uneval tests
+;; =============================================================================
+
+(deftest uneval-form
+  (testing "basic uneval returns quoted expression"
+    ;; (def x (uneval 'x)) should bind x to the quote of its own expression
+    (let [[val _] (spell-eval '(def x (uneval 'x)) {})]
+      (is (= '(quote (uneval 'x)) val))))
+
+  (testing "uneval enables self-referential code"
+    ;; uneval returns (quote expr) - the quoted definition expression
+    ;; We can use it to build self-referential structures
+    (let [[val _] (spell-eval '(def my-code (vector (uneval 'my-code))) {})]
+      ;; my-code is a vector containing its own quoted definition
+      (is (= ['(quote (vector (uneval 'my-code)))] val))))
+
+  (testing "uneval inside larger expression"
+    ;; (def x (do (def inner 1) (uneval 'x)))
+    ;; should return the quote of the entire expression
+    (let [[val _] (spell-eval '(def x (do (def inner 1) (uneval 'x))) {})]
+      (is (= '(quote (do (def inner 1) (uneval 'x))) val))))
+
+  (testing "uneval requires symbol argument"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"argument must evaluate to a symbol"
+                          (spell-eval '(def x (uneval 42)) {})))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"argument must evaluate to a symbol"
+                          (spell-eval '(def x (uneval "str")) {}))))
+
+  (testing "uneval on undefined symbol throws"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"symbol not found in quote environment"
+                          (spell-eval '(do (uneval 'undefined)) {}))))
+
+  (testing "uneval only sees current binding's quote-env"
+    ;; After (def a ...) completes, its quote is no longer available
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"symbol not found in quote environment"
+                          (spell-eval '(do (def a 1) (def b (uneval 'a))) {}))))
+
+  (testing "uneval with computed symbol"
+    ;; (uneval (first '[x])) should work - argument evaluates to symbol 'x
+    (let [[val _] (spell-eval '(def x (uneval (first '[x]))) {})]
+      (is (= '(quote (uneval (first '[x]))) val))))
+
+  (testing "nested def does not pollute outer quote-env"
+    ;; Inner def's quote-env shouldn't leak to outer
+    (let [[val _] (spell-eval '(def outer (do (def inner 1) (uneval 'outer))) {})]
+      ;; Should get quote of outer's expression, not inner's
+      (is (= '(quote (do (def inner 1) (uneval 'outer))) val)))))
+
+;; =============================================================================
 ;; Free variable analysis tests
 ;; =============================================================================
 
