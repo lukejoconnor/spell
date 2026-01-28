@@ -77,6 +77,19 @@ Use uneval to pass your own code to a child LLM:
 
 The quote environment is per-binding and cleaned up after evaluation completes.
 
+EXPAND (PORTABLE EXPRESSIONS)
+
+(expand expr) substitutes free variables in expr with their current values, returning the result as data (not evaluated).
+
+(do (def x 42) (expand '(+ x 1)))  ; => '(+ 42 1)
+
+This makes expressions portable — an expanded expression can be passed to a child LLM, stored, or evaluated in a different environment. expand only substitutes variables from the current env; builtins like + remain as symbols.
+
+Internal bindings are preserved: (expand '(do (def y 10) (+ y 1))) leaves y as-is because it's defined within the expression.
+
+expand and uneval: (uneval 'sym) forms have no free variables (the argument is quoted data), so they pass through expand unchanged.
+(def expr (expand '(uneval 'expr)))  ; => expr bound to '(uneval 'expr)
+
 HOOKS
 
 Hooks transform code before evaluation. Pass hooks as a vector in the second argument to llm:
@@ -146,7 +159,7 @@ Output: (do (def thought \"use read-name then greet\") (cat \"Hello, \" (read-na
          "Strings: str cat pr-str\n"
          "Collections: list vector first rest cons conj get assoc count\n"
          "Logic: if cond and or not nil? empty?\n"
-         "Binding: def let do uneval\n"
+         "Binding: def let do uneval expand\n"
          (when (contains? llms 'llm) "Self: llm\n")
          "Continuation: call-now\n"
          (when (seq tool-names)

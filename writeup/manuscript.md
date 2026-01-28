@@ -2,9 +2,9 @@
 
 ## Overview
 
-This document describes Spell (Self-Prompting Execution Language for LLMs), a domain-specific language embedded in Clojure for LLM self-orchestration and own-context manipulation. In contrast to standard agent architectures where an external harness calls the LLM in a loop, Spell gives the LLM the ability to call itself recursively. The user prompts the LLM once, and then the harness evaluates its outputs recursively. The LLM can call itself to emulate a simple agent loop—but it can also manipulate its own chain of thought in arbitrary and possibly unexpected ways.
+This document describes Spell (Self-Prompting Execution Language for LLMs), a domain-specific language embedded in Clojure for LLM self-orchestration and own-context manipulation. In contrast to standard agent architectures where an external harness calls the LLM in a loop, Spell gives the LLM the ability to call itself recursively. The user prompts the LLM once, and then the harness evaluates its outputs recursively. The LLM can call itself to emulate a simple agent loop—but it can also manipulate its own chain of thought in arbitrary unexpected ways.
 
-As an embedded DSL, Spell uses Clojure's S-expression syntax but has its own evaluation semantics, implemented by the `spell-eval` interpreter. The key primitive is `llm`, which generates code, optionally transforms it via macros, and evaluates it. `llm` accepts a prompt, generates Spell code, optionally modifies it using macros, and evaluates it. Spell differs from Clojure in its rules related to scope and environments, motivated by the fact that the LLM called by `llm` cannot observe variables defined outside of its local context window.
+Spell uses Clojure's syntax and most of its built-in forms. It adds one key primitive, `llm`. `llm` accepts a prompt, generates Spell code, optionally modifies it using macros, and evaluates it. It removes built-ins with side effects (particularly I/O), so the agent is sandboxed by default. It also has its own rules related to scope and environments, motivated by the fact that the LLM called by `llm` cannot observe variables defined outside of its local context window.
 
 ## Background
 
@@ -21,30 +21,25 @@ Clojure is a modern dialect of Lisp. In Clojure, like in other Lisps, objects ar
 (eval thunk) -> 42
 ```
 
-Quotes are used in Spell so that a parent LLM can pass arbitrary source code as context to a child LLM (in Lisp, "code is data"). This "source code" will often have trivial logic yet contain important information, like a prompt (in Spell, "data is code").
+Lisp allows and (unlike most languages) encourages the manipulation of source code, since source code itself comprises S-expressions: "code is data". In Spell, LLM completions are themselves code: "data is code". Natural-language chains of thought are string literals, which can be bound with names and manipulted as constants. 
 
 
 ## Completions and `llm`
 
-In Spell, a *completion* is a program which comprises a prompt (called a *prefix*) and a *response*:
+In Spell, a *completion* is a program with the following structure: 
 
 ```clojure
-'(do
-   (def prefix ...)
-   (def response
-     (do
-       ...
-       (def return ...))))
+TODO
 ```
 
-The response is produced by an LLM, with the prefix as its prompt. Within the response, the value of `return` is the actual output (i.e., what would be viewed by a user in a chat). This is orchestrated by the `llm` primitive. A simplified implementation of `llm` is:
+The response is usually produced by an LLM. The value of `interior` (the last expression within `response`) is returned. This is orchestrated by the `llm` primitive. A simplified implementation of `llm` is:
 
 ```clojure
 (defn llm [prompt]
   (let [response (call-LLM prompt) ; generate response
         completion (str prompt response) ; concatenate prompt + response
         env (spell-eval completion {})] ; evaluate into an environment
-    (get env 'return))) ; return the variable called return
+    (get env 'interior))) ; return the variable called interior
 ```
 
 `spell-eval` is a special evaluation function that takes as input both an expression and an environment (here, `{}`) and returns a new environment (here bound to `env`). This environment contains a binding for the symbol `return`, which is the return value of `llm`.
@@ -52,7 +47,7 @@ The response is produced by an LLM, with the prefix as its prompt. Within the re
 
 ## Example: Passing Context to a Child
 
-
+TODO update
 ```clojure
 (def completion
   '(do
@@ -63,6 +58,7 @@ The response is produced by an LLM, with the prefix as its prompt. Within the re
 
 The child LLM sees the completion of its parent as its prompt, producing this completion:
 
+TODO update
 ```clojure
 '(do
    (def prefix
@@ -73,6 +69,8 @@ The child LLM sees the completion of its parent as its prompt, producing this co
    (def response
      (def return " World!")))
 ```
+
+TODO update
 
 In order of operations:
 1. the parent `llm` call passes the initial prompt to an API call, gets `completion`, and calls `spell-eval` on it.
@@ -90,59 +88,10 @@ Spell solves this challenge by introducing an evaluation function, `spell-eval`,
 
 This behavior reflects an important principle in Spell: the environment of a program is almost exactly the program itself. All references resolve to bindings defined inside the program, with the exception of built-in functions like `llm`, as well as bindings that are explicitly undisclosed (see below).
 
-## Extraction from thunks
+## Self-referencing
+A **quine** is a program that reproduces its own source code. Quines can be defined in any programming language, normally as an exercize, but Spell makes it convenient to produce quines. The motivation is that often, a parent LLM wishes to call a child LLM on 
 
-When a parent LLM passes a thunk to a child LLM, this thunk may define bindings - or even bindings to thunks that define bindings - which the LLM wishes to extract. For example, consider the following prompt:
-
-```clojure
-;; A thunk, bound to `prompt`, containing bindings for `item1` and `item2`
-(def prompt
-  '(do
-     (def item1 "Write unit tests for the parser")
-     (def item2 "Update the README with new API docs")
-     (def prefix "Complete both tasks below.")
-     (def response ...)))
-```
-
-The parent LLM receives this prompt and wants to delegate: pass `item1` to one child and `item2` to another. But `item1` and `item2` are bound *inside* the quoted thunk—they aren't directly accessible. The parent cannot simply write `(llm item1)` because `item1` is not bound in its environment; it's bound inside `prompt`. How can the LLM pass each to-do item to a different LLM? 
-
-Spell implements a function `extract` which takes as input a 'path'. This path is a vector of symbols; the last symbol is the binding to be extracted, and each preceding symbol is the name of the thunk which defines the binding for its successor.
-
-```clojure
-;; Extract item1 from the prompt thunk
-(extract [prompt item1])  ; => "Write unit tests for the parser"
-
-;; The parent LLM can now delegate each item to a child
-(def response
-  (do
-    (def result1 (llm (extract [prompt item1])))
-    (def result2 (llm (extract [prompt item2])))
-    (def return (cat result1 result2))))
-```
-
-For nested thunks, the path grows longer. If `prompt` contained a thunk `subtask` which itself bound `detail`, the extraction would be `(extract [prompt subtask detail])`.
-
-Most instances of extraction are expected to follow a simple pattern similar to nested map lookup. However, some could require evaluating logic:
-
-```clojure
-;; A thunk with conditional logic
-(def prompt
-  '(do
-     (def file-status
-       (if (file-exists? "config.yaml")
-         "exists"
-         "does not exist"))
-     (def prefix "Check if the config file exists and report.")
-     (def response ...)))
-
-;; Extraction must evaluate the `if` to determine the value
-(extract [prompt file-status])  ; => "exists" or "does not exist"
-```
-
-Here, extracting `file-status` requires evaluating the `if` expression, which in turn calls a built-in function. The extraction is no longer a simple map lookup—it requires running `spell-eval` on the thunk up to the point where the target binding is defined.
-
-## Expansion of thunks
-
+## Expansion
 A further challenge arises when attempting to extract a binding from a thunk whose logic depends on externally defined values. Suppose that the parent LLM produces a thunk which references a binding from outside of it, and passes that thunk to a child LLM without passing the binding:
 
 ```clojure

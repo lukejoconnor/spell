@@ -118,7 +118,7 @@
 
 (def ^:private special-forms
   "Special forms that are not free variables."
-  #{'quote 'def 'do 'if 'let 'fn 'defn 'cond 'and 'or 'uneval})
+  #{'quote 'def 'do 'if 'let 'fn 'defn 'cond 'and 'or 'uneval 'expand})
 
 (defn find-free-vars
   "Find symbols in expr that aren't bound locally or builtins.
@@ -248,6 +248,87 @@
 
     :else expr))
 
+(defn- quote-value
+  "Wrap non-self-evaluating values in (quote ...) for safe embedding in generated code."
+  [v]
+  (if (or (nil? v) (number? v) (string? v) (boolean? v) (keyword? v))
+    v
+    (list 'quote v)))
+
+(defn- expand-expr
+  "Walk expr substituting outer-env values for free symbols not in inner (locally defined).
+   Mirrors spell-eval's structure but returns transformed data instead of evaluating."
+  [expr outer-env inner]
+  (cond
+    ;; Self-evaluating
+    (or (nil? expr) (string? expr) (number? expr) (boolean? expr) (keyword? expr))
+    expr
+
+    ;; Symbol: inner (locally defined) -> leave; outer-env -> substitute; else -> leave
+    (symbol? expr)
+    (cond
+      (contains? inner expr) expr
+      (contains? (or *builtins* core-builtins) expr) expr
+      (contains? special-forms expr) expr
+      (contains? outer-env expr) (quote-value (get outer-env expr))
+      :else expr)
+
+    ;; Vector
+    (vector? expr)
+    (mapv #(expand-expr % outer-env inner) expr)
+
+    ;; Map
+    (map? expr)
+    (into {} (map (fn [[k v]] [k (expand-expr v outer-env inner)]) expr))
+
+    ;; List
+    (seq? expr)
+    (case (first expr)
+      nil   expr
+      quote expr
+
+      def (let [sym (second expr)
+                val-expanded (expand-expr (nth expr 2) outer-env inner)]
+            (list 'def sym val-expanded))
+
+      do (let [[forms _]
+               (reduce (fn [[acc i] sub-expr]
+                         (let [expanded (expand-expr sub-expr outer-env i)
+                               new-inner (if (and (seq? sub-expr) (= 'def (first sub-expr)))
+                                           (conj i (second sub-expr))
+                                           i)]
+                           [(conj acc expanded) new-inner]))
+                       [[] inner]
+                       (rest expr))]
+           (list* 'do forms))
+
+      if (list* 'if (map #(expand-expr % outer-env inner) (rest expr)))
+
+      let (let [pairs (partition 2 (second expr))
+                [expanded-bindings final-inner]
+                (reduce (fn [[acc i] [sym val-expr]]
+                          [(conj acc sym (expand-expr val-expr outer-env i))
+                           (conj i sym)])
+                        [[] inner] pairs)
+                expanded-body (map #(expand-expr % outer-env final-inner) (drop 2 expr))]
+            (list* 'let (vec expanded-bindings) expanded-body))
+
+      fn (let [params (set (second expr))
+               body-inner (into inner params)]
+           (list* 'fn (second expr) (map #(expand-expr % outer-env body-inner) (drop 2 expr))))
+
+      defn (let [name-sym (second expr)
+                 params (set (nth expr 2))
+                 body-inner (into inner (conj params name-sym))]
+             (list* 'defn name-sym (nth expr 2) (map #(expand-expr % outer-env body-inner) (drop 3 expr))))
+
+      (cond and or) (list* (first expr) (map #(expand-expr % outer-env inner) (rest expr)))
+
+      ;; Default: recurse into all sub-expressions
+      (apply list (map #(expand-expr % outer-env inner) expr)))
+
+    :else expr))
+
 (defn- eval-seq
   "Evaluate a sequence of expressions, returning [last-value final-env]."
   [exprs env]
@@ -361,6 +442,11 @@
                                 {:symbol sym-v
                                  :available (keys *quote-env*)}))))
 
+      ;; expand: (expand expr) - single-pass walk mirroring spell-eval
+      ;; Substitutes free variables from env, returns data (not evaluated)
+      expand (let [[quoted-expr e'] (spell-eval (second expr) env)]
+               [(expand-expr quoted-expr e' #{}) e'])
+
       ;; Function application: evaluate all, apply first to rest
       (let [[vals e'] (reduce (fn [[acc e] x] (let [[v e'] (spell-eval x e)] [(conj acc v) e']))
                               [[] env] expr)]
@@ -470,13 +556,6 @@
 ;; =============================================================================
 ;; Convenience hooks: with-env, with-env-hints
 ;; =============================================================================
-
-(defn- quote-value
-  "Wrap non-self-evaluating values in (quote ...) for safe embedding in generated code."
-  [v]
-  (if (or (nil? v) (number? v) (string? v) (boolean? v) (keyword? v))
-    v
-    (list 'quote v)))
 
 (defn with-env
   "Create a hook that injects bindings into code.

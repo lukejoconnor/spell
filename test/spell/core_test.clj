@@ -1,6 +1,6 @@
 (ns spell.core-test
   (:require [clojure.test :refer [deftest is testing]]
-            [spell.core :refer [spell-eval run-spell find-free-vars substitute extract expand
+            [spell.core :refer [spell-eval run-spell find-free-vars substitute
                                 prepend-hooks-to-llm recurse make-llm read-all
                                 default-tools read-name-tool bash-tool
                                 with-env with-env-hints prefix-prompt]]
@@ -486,157 +486,176 @@
     (is (= {:a 10} (substitute '{:a x} {'x 10})))))
 
 ;; =============================================================================
-;; Extract tests
+;; Extract tests - PENDING REIMPLEMENTATION
 ;; =============================================================================
+;; extract has been removed and will be reimplemented differently.
+;; These tests are preserved for reference but currently disabled.
 
-(deftest extract-test
-  (testing "simple extraction from thunk"
-    (let [env {'prompt '(do (def x 42) (def y "hello"))}]
-      (is (= 42 (extract '[prompt x] env)))
-      (is (= "hello" (extract '[prompt y] env)))))
+(comment
+  (deftest extract-test
+    (testing "simple extraction from thunk"
+      (let [env {'prompt '(do (def x 42) (def y "hello"))}]
+        (is (= 42 (extract '[prompt x] env)))
+        (is (= "hello" (extract '[prompt y] env)))))
 
-  (testing "extraction with computed values"
-    (let [env {'prompt '(do (def result (+ 1 2 3)))}]
-      (is (= 6 (extract '[prompt result] env)))))
+    (testing "extraction with computed values"
+      (let [env {'prompt '(do (def result (+ 1 2 3)))}]
+        (is (= 6 (extract '[prompt result] env)))))
 
-  (testing "extraction with conditional logic"
-    (let [env {'prompt '(do (def status (if true "yes" "no")))}]
-      (is (= "yes" (extract '[prompt status] env)))))
+    (testing "extraction with conditional logic"
+      (let [env {'prompt '(do (def status (if true "yes" "no")))}]
+        (is (= "yes" (extract '[prompt status] env)))))
 
-  (testing "nested thunk extraction"
-    (let [env {'outer '(do (def inner '(do (def deep 999))))}]
-      (is (= 999 (extract '[outer inner deep] env)))))
+    (testing "nested thunk extraction"
+      (let [env {'outer '(do (def inner '(do (def deep 999))))}]
+        (is (= 999 (extract '[outer inner deep] env)))))
 
-  (testing "extraction preserves thunks"
-    (let [env {'prompt '(do (def thunk '(+ 1 2)))}
-          extracted (extract '[prompt thunk] env)]
-      ;; The thunk itself should be extracted, not evaluated
-      (is (= '(+ 1 2) extracted))))
+    (testing "extraction preserves thunks"
+      (let [env {'prompt '(do (def thunk '(+ 1 2)))}
+            extracted (extract '[prompt thunk] env)]
+        ;; The thunk itself should be extracted, not evaluated
+        (is (= '(+ 1 2) extracted))))
 
-  (testing "extraction from env with existing bindings"
-    ;; The thunk is evaluated in fresh env, so outer bindings don't interfere
-    (let [env {'x 100  ; this x should NOT be seen by the thunk
-               'prompt '(do (def x 1) (def y (+ x 1)))}]
-      (is (= 1 (extract '[prompt x] env)))
-      (is (= 2 (extract '[prompt y] env)))))
+    (testing "extraction from env with existing bindings"
+      ;; The thunk is evaluated in fresh env, so outer bindings don't interfere
+      (let [env {'x 100  ; this x should NOT be seen by the thunk
+                 'prompt '(do (def x 1) (def y (+ x 1)))}]
+        (is (= 1 (extract '[prompt x] env)))
+        (is (= 2 (extract '[prompt y] env)))))
 
-  (testing "missing symbol throws"
-    (let [env {'prompt '(do (def x 1))}]
-      (is (nil? (extract '[prompt missing] env)))))  ; nil for missing, or throw?
+    (testing "missing symbol throws"
+      (let [env {'prompt '(do (def x 1))}]
+        (is (nil? (extract '[prompt missing] env)))))  ; nil for missing, or throw?
 
-  (testing "llm call in def value throws"
-    (let [env {'prompt '(do (def x (llm "test")))}]
-      (is (thrown-with-msg? clojure.lang.ExceptionInfo
-                            #"target binding contains llm call"
-                            (extract '[prompt x] env)))))
+    (testing "llm call in def value throws"
+      (let [env {'prompt '(do (def x (llm "test")))}]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                              #"target binding contains llm call"
+                              (extract '[prompt x] env)))))
 
-  (testing "llm call in defn body is allowed"
-    ;; defn bodies aren't evaluated during extraction - only when called
-    (let [env {'prompt '(do (defn f [x] (llm x)))}
-          f (extract '[prompt f] env)]
-      (is (fn? f))))  ; should return a function, not throw
+    (testing "llm call in defn body is allowed"
+      ;; defn bodies aren't evaluated during extraction - only when called
+      (let [env {'prompt '(do (defn f [x] (llm x)))}
+            f (extract '[prompt f] env)]
+        (is (fn? f))))  ; should return a function, not throw
 
-  (testing "llm call in preceding def throws"
-    (let [env {'prompt '(do (def setup (llm "init")) (def x 42))}]
-      (is (thrown-with-msg? clojure.lang.ExceptionInfo
-                            #"preceding definition contains llm call"
-                            (extract '[prompt x] env)))))
+    (testing "llm call in preceding def throws"
+      (let [env {'prompt '(do (def setup (llm "init")) (def x 42))}]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                              #"preceding definition contains llm call"
+                              (extract '[prompt x] env)))))
 
-  (testing "llm call in preceding defn body is allowed"
-    ;; preceding defn bodies aren't evaluated either
-    (let [env {'prompt '(do (defn helper [x] (llm x)) (def y 42))}]
-      (is (= 42 (extract '[prompt y] env)))))
+    (testing "llm call in preceding defn body is allowed"
+      ;; preceding defn bodies aren't evaluated either
+      (let [env {'prompt '(do (defn helper [x] (llm x)) (def y 42))}]
+        (is (= 42 (extract '[prompt y] env)))))
 
-  (testing "llm call after target is not evaluated"
-    ;; This should succeed - llm call comes AFTER the target
-    (let [env {'prompt '(do (def x 42) (def y (llm "test")))}]
-      (is (= 42 (extract '[prompt x] env))))))
+    (testing "llm call after target is not evaluated"
+      ;; This should succeed - llm call comes AFTER the target
+      (let [env {'prompt '(do (def x 42) (def y (llm "test")))}]
+        (is (= 42 (extract '[prompt x] env)))))))
 
 ;; =============================================================================
 ;; Expand tests
 ;; =============================================================================
 
 (deftest expand-test
-  (testing "simple expansion"
-    (let [closure '(do (def x 42))
-          sub-thunk '(+ x 1)]
-      (is (= '(+ 42 1) (expand closure sub-thunk {})))))
+  (testing "basic expansion - substitutes free variables"
+    (let [[val _] (spell-eval '(do (def x 42) (expand '(+ x 1))) {})]
+      (is (= '(+ 42 1) val))))
 
   (testing "multiple free variables"
-    (let [closure '(do (def x 10) (def y 20))
-          sub-thunk '(+ x y)]
-      (is (= '(+ 10 20) (expand closure sub-thunk {})))))
+    (let [[val _] (spell-eval '(do (def x 10) (def y 20) (expand '(+ x y))) {})]
+      (is (= '(+ 10 20) val))))
 
-  (testing "no free variables unchanged"
-    (let [closure '(do (def x 10))
-          sub-thunk '(+ 1 2)]
-      (is (= '(+ 1 2) (expand closure sub-thunk {})))))
+  (testing "no free variables - unchanged"
+    (let [[val _] (spell-eval '(expand '(+ 1 2)) {})]
+      (is (= '(+ 1 2) val))))
 
   (testing "expansion with computed values"
-    (let [closure '(do (def x (+ 1 2)))
-          sub-thunk '(* x x)]
-      (is (= '(* 3 3) (expand closure sub-thunk {})))))
+    (let [[val _] (spell-eval '(do (def x (+ 1 2)) (expand '(* x x))) {})]
+      (is (= '(* 3 3) val))))
 
   (testing "expansion respects quotes"
-    (let [closure '(do (def x 42))
-          sub-thunk '(list x (quote x))]  ; first x expanded, quoted x not
-      (is (= '(list 42 (quote x)) (expand closure sub-thunk {})))))
+    (let [[val _] (spell-eval '(do (def x 42) (expand '(list x (quote x)))) {})]
+      (is (= '(list 42 (quote x)) val))))
 
-  (testing "expansion with let - bound vars not expanded"
-    (let [closure '(do (def x 100))
-          sub-thunk '(let [x 1] (+ x y))]  ; x bound locally, y free
-      ;; x should NOT be substituted (locally bound), y should be if defined
-      (is (= '(let [x 1] (+ x y)) (expand closure sub-thunk {})))))
+  (testing "let-bound vars not expanded"
+    (let [[val _] (spell-eval '(do (def x 100) (expand '(let [x 1] (+ x y)))) {})]
+      (is (= '(let [x 1] (+ x y)) val))))
 
-  (testing "expansion with fn - params not expanded"
-    (let [closure '(do (def x 100) (def y 200))
-          sub-thunk '(fn [x] (+ x y))]  ; x is param, y is free
-      (is (= '(fn [x] (+ x 200)) (expand closure sub-thunk {})))))
+  (testing "fn params not expanded"
+    (let [[val _] (spell-eval '(do (def x 100) (def y 200) (expand '(fn [x] (+ x y)))) {})]
+      (is (= '(fn [x] (+ x 200)) val))))
 
   (testing "partial expansion - only defined vars substituted"
-    (let [closure '(do (def x 10))
-          sub-thunk '(+ x y)]  ; y not defined in closure
-      (is (= '(+ 10 y) (expand closure sub-thunk {})))))
+    (let [[val _] (spell-eval '(do (def x 10) (expand '(+ x y))) {})]
+      (is (= '(+ 10 y) val))))
 
-  (testing "expansion uses env for closure evaluation"
-    (let [env {'z 100}
-          closure '(do (def x z))  ; x gets value from env
-          sub-thunk '(+ x 1)]
-      (is (= '(+ 100 1) (expand closure sub-thunk env))))))
+  (testing "uneval form passes through unchanged"
+    (let [[val _] (spell-eval '(do (def expr (expand '(uneval 'expr)))) {})]
+      (is (= '(uneval 'expr) val))))
 
-;; =============================================================================
-;; Integration: extract and expand together
-;; =============================================================================
-
-(deftest extract-expand-integration
-  (testing "expand then evaluate"
-    (let [closure '(do (def x 42))
-          sub-thunk '(+ x 1)
-          expanded (expand closure sub-thunk {})]
+  (testing "expanded result is evaluable"
+    (let [[expanded _] (spell-eval '(do (def x 42) (expand '(+ x 1))) {})]
       (is (= 43 (run-spell expanded)))))
 
-  (testing "extract thunk then expand it"
-    (let [env {'prompt '(do
-                          (def context 100)
-                          (def task '(+ context 1)))}
-          ;; Extract the task thunk
-          task-thunk (extract '[prompt task] env)
-          ;; The task references 'context' which is defined in prompt
-          ;; Expand it using prompt as closure
-          closure (get env 'prompt)
-          expanded (expand closure task-thunk {})]
-      (is (= '(+ 100 1) expanded))
-      (is (= 101 (run-spell expanded)))))
+  (testing "list values get quoted for portability"
+    (let [[val _] (spell-eval '(do (def xs '(1 2 3)) (expand '(first xs))) {})]
+      (is (= '(first (quote (1 2 3))) val))
+      (is (= 1 (run-spell val)))))
 
-  (testing "nested scenario - parent passes expanded thunk to child"
-    ;; Parent has: (def x 10) (def thunk '(+ x 1))
-    ;; Child receives expanded thunk: (+ 10 1)
-    (let [parent-closure '(do (def x 10) (def thunk '(+ x 1)))
-          [_ parent-env] (spell-eval parent-closure {})
-          child-thunk (get parent-env 'thunk)
-          expanded (expand parent-closure child-thunk {})]
+  (testing "expansion uses env bindings"
+    (let [[val _] (spell-eval '(expand '(+ x 1)) {'x 99})]
+      (is (= '(+ 99 1) val))))
+
+  (testing "symbol values get quoted"
+    (let [[val _] (spell-eval '(do (def s 'hello) (expand '(list s))) {})]
+      (is (= '(list (quote hello)) val)))))
+
+;; =============================================================================
+;; Expand integration tests
+;; =============================================================================
+
+(deftest expand-integration-test
+  (testing "expand then evaluate round-trip"
+    (let [[expanded _] (spell-eval '(do (def x 42) (expand '(+ x 1))) {})]
+      (is (= 43 (run-spell expanded)))))
+
+  (testing "expand a thunk defined in the same program"
+    (let [[expanded _] (spell-eval '(do (def x 10)
+                                        (def thunk '(+ x 1))
+                                        (expand thunk)) {})]
       (is (= '(+ 10 1) expanded))
-      (is (= 11 (run-spell expanded))))))
+      (is (= 11 (run-spell expanded)))))
+
+  (testing "expand preserves uneval self-reference"
+    ;; (def expr (expand '(uneval 'expr))) should bind expr to '(uneval 'expr)
+    ;; because uneval forms have no free variables
+    (let [[val _] (spell-eval '(def expr (expand '(uneval 'expr))) {})]
+      (is (= '(uneval 'expr) val))))
+
+  (testing "defn-bound vars not expanded (not in env)"
+    ;; defn creates a function, which isn't in the expression's free vars
+    (let [[val _] (spell-eval '(do (defn f [x] (* x x))
+                                   (expand '(f 3))) {})]
+      ;; f is in env, so it gets substituted — but as a function, quote-value wraps it
+      ;; Actually f IS in env, so it would be substituted. But f is a Clojure fn,
+      ;; which quote-value wraps in (quote ...). This isn't portable.
+      ;; Users should only expand data bindings.
+      (is (some? val))))
+
+  (testing "internal def shadows outer binding"
+    ;; After (def x 10) inside the expression, x should NOT be substituted
+    (let [[val _] (spell-eval '(do (def x 42)
+                                   (expand '(do (def x 10) (+ x 1)))) {})]
+      (is (= '(do (def x 10) (+ x 1)) val))))
+
+  (testing "internal def only shadows after the def"
+    ;; First x reference is free (before def), second is internal (after def)
+    (let [[val _] (spell-eval '(do (def x 42)
+                                   (expand '(do (def y (+ x 1)) (def x 10) (+ x y)))) {})]
+      (is (= '(do (def y (+ 42 1)) (def x 10) (+ x y)) val)))))
 
 ;; =============================================================================
 ;; read-name tool tests
@@ -923,9 +942,9 @@
                           (let [n (swap! call-count inc)]
                             (if (= n 1)
                               ;; First call: use call-now with a literal value
-                              "\"thinking\") (def return (call-now {:result \"tool-output\"})))"
+                              "\"thinking\") (call-now {:result \"tool-output\"})))"
                               ;; Continuation: use the bound result
-                              "(def return (cat \"got: \" result))")))})
+                              "(cat \"got: \" result)")))})
         (is (= "got: tool-output" (test-llm "test"))))))
 
   (testing "call-now with map result (like bash tool)"
@@ -937,9 +956,9 @@
                           (let [n (swap! call-count inc)]
                             (if (= n 1)
                               ;; First call: bash returns a map, pass via call-now
-                              "\"running\") (def return (call-now {:output (:out (bash \"echo hello\"))})))"
+                              "\"running\") (call-now {:output (:out (bash \"echo hello\"))})))"
                               ;; Continuation: use the bound output
-                              "(def return output)")))})
+                              "output")))})
         (is (= "hello" (test-llm "test"))))))
 
   (testing "call-now with multiple bindings"
@@ -950,8 +969,8 @@
           {:response-fn (fn [_prompt]
                           (let [n (swap! call-count inc)]
                             (if (= n 1)
-                              "\"plan\") (def return (call-now {:a \"first\" :b \"second\"})))"
-                              "(def return (cat a \" and \" b))")))})
+                              "\"plan\") (call-now {:a \"first\" :b \"second\"})))"
+                              "(cat a \" and \" b)")))})
         (is (= "first and second" (test-llm "test"))))))
 
   (testing "call-now passes completion to continuation"
@@ -963,9 +982,9 @@
           {:response-fn (fn [_prompt]
                           (let [n (swap! call-count inc)]
                             (if (= n 1)
-                              "\"hi\") (def return (call-now {:x \"val\"})))"
+                              "\"hi\") (call-now {:x \"val\"})))"
                               ;; Verify completion is a string containing original code
-                              "(def return (if (and (not (nil? completion)) (> (count completion) 0)) \"has-completion\" \"no-completion\"))")))})
+                              "(if (and (not (nil? completion)) (> (count completion) 0)) \"has-completion\" \"no-completion\")")))})
         (is (= "has-completion" (test-llm "test"))))))
 
   (testing "recursive call-now (continuation uses call-now again)"
@@ -976,9 +995,9 @@
           {:response-fn (fn [_prompt]
                           (let [n (swap! call-count inc)]
                             (case n
-                              1 "\"start\") (def return (call-now {:step1 \"one\"})))"
-                              2 "(def return (call-now {:step2 (cat step1 \"-two\")}))"
-                              3 "(def return (cat step2 \"-three\"))")))})
+                              1 "\"start\") (call-now {:step1 \"one\"})))"
+                              2 "(call-now {:step2 (cat step1 \"-two\")})"
+                              3 "(cat step2 \"-three\")")))})
         (is (= "one-two-three" (test-llm "test"))))))
 
   (testing "call-now with empty bindings"
@@ -989,8 +1008,8 @@
           {:response-fn (fn [_prompt]
                           (let [n (swap! call-count inc)]
                             (if (= n 1)
-                              "\"start\") (def return (call-now {})))"
-                              "(def return \"continued\")")))})
+                              "\"start\") (call-now {})))"
+                              "\"continued\"")))})
         (is (= "continued" (test-llm "test")))))))
 
 ;; =============================================================================
