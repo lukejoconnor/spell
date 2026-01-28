@@ -6,7 +6,7 @@
             [clojure.string :as str])
   (:import [java.util.concurrent TimeUnit]))
 
-(declare llm extract expand prepend-hooks-to-llm recurse make-llm prefix-prompt)
+(declare llm prepend-hooks-to-llm recurse make-llm prefix-prompt)
 
 (def ^:dynamic *verbose*
   "When true, print LLM prompts and responses."
@@ -118,7 +118,7 @@
 
 (def ^:private special-forms
   "Special forms that are not free variables."
-  #{'quote 'def 'do 'if 'let 'fn 'defn 'cond 'and 'or 'extract 'uneval})
+  #{'quote 'def 'do 'if 'let 'fn 'defn 'cond 'and 'or 'uneval})
 
 (defn find-free-vars
   "Find symbols in expr that aren't bound locally or builtins.
@@ -248,136 +248,6 @@
 
     :else expr))
 
-;; =============================================================================
-;; Extract and Expand
-;; =============================================================================
-
-(defn- contains-llm-call?
-  "Check if form contains any (llm ...) calls. Used to prevent accidental
-   LLM invocations during extraction."
-  [form]
-  (cond
-    (not (coll? form)) false
-    (and (seq? form) (= 'llm (first form))) true
-    (and (seq? form) (= 'quote (first form))) false  ; don't descend into quotes
-    :else (some contains-llm-call? form)))
-
-(defn- def-value-contains-llm?
-  "Check if a def form's value expression contains llm calls.
-   Returns false for defn (function bodies aren't evaluated during extraction)."
-  [form]
-  (and (seq? form)
-       (= 'def (first form))  ; only def, not defn
-       (>= (count form) 3)
-       (contains-llm-call? (nth form 2))))
-
-(defn- extract-binding-from-ast
-  "Find a def/defn binding in a form via AST traversal (no evaluation).
-   Returns [form-to-eval preceding-defs] if found, nil otherwise.
-   preceding-defs is a list of def/defn forms that come before the target in a do block."
-  ([form target-sym] (extract-binding-from-ast form target-sym []))
-  ([form target-sym preceding]
-   (cond
-     ;; Unwrap quote
-     (and (seq? form) (= 'quote (first form)))
-     (extract-binding-from-ast (second form) target-sym preceding)
-
-     ;; defn: (defn name [params] body...) → return as fn form
-     (and (seq? form) (= 'defn (first form)) (= target-sym (second form)))
-     [(list* 'fn (nth form 2) (drop 3 form)) preceding]
-
-     ;; def: (def name value) → return the value expression
-     (and (seq? form) (= 'def (first form)) (= target-sym (second form)))
-     [(nth form 2) preceding]
-
-     ;; do: search sub-forms, tracking preceding def/defn forms
-     (and (seq? form) (= 'do (first form)))
-     (loop [remaining (rest form)
-            prec preceding]
-       (when (seq remaining)
-         (let [sub-form (first remaining)]
-           (if-let [result (extract-binding-from-ast sub-form target-sym prec)]
-             result
-             ;; Not found in this sub-form; if it's a def/defn, add to preceding
-             (let [new-prec (if (and (seq? sub-form)
-                                     (or (= 'def (first sub-form))
-                                         (= 'defn (first sub-form))))
-                              (conj prec sub-form)
-                              prec)]
-               (recur (rest remaining) new-prec))))))
-
-     :else nil)))
-
-(defn extract
-  "Extract a value from nested thunks via path.
-   Path is [sym] for direct lookup, or [thunk-sym binding-sym ...] for nested extraction.
-
-   Uses AST traversal to find bindings without evaluating the entire thunk,
-   avoiding side effects from code after the target binding.
-
-   Example: (extract [parent-code helper] env)
-   - Looks up 'parent-code' in env (a thunk)
-   - Finds 'helper' binding in thunk's AST
-   - Evaluates preceding definitions and the binding, returns the value"
-  [path env]
-  (when (empty? path)
-    (throw (ex-info "extract: empty path" {})))
-
-  (let [first-sym (first path)]
-    (when-not (contains? env first-sym)
-      (throw (ex-info "extract: symbol not found" {:symbol first-sym})))
-
-    (if (= 1 (count path))
-      ;; Base case: return value from env
-      (get env first-sym)
-
-      ;; Recursive case: AST-extract from thunk, then recurse
-      (let [thunk (get env first-sym)
-            next-sym (second path)
-            result (extract-binding-from-ast thunk next-sym)]
-        (when result
-          (let [[form preceding] result
-                ;; fn forms are safe - body isn't evaluated during extraction
-                form-is-fn? (and (seq? form) (= 'fn (first form)))]
-            ;; Check for llm calls in forms we're about to evaluate
-            ;; (skip fn forms since their bodies aren't evaluated)
-            (when (and (not form-is-fn?) (contains-llm-call? form))
-              (throw (ex-info "extract: target binding contains llm call"
-                             {:target next-sym :form form})))
-            ;; Only check def values (not defn bodies) in preceding forms
-            (when-let [bad-def (some #(when (def-value-contains-llm? %) %) preceding)]
-              (throw (ex-info "extract: preceding definition contains llm call"
-                             {:def bad-def})))
-            ;; Evaluate preceding def/defn forms to build context
-            (let [eval-env (reduce (fn [e def-form]
-                                     (second (spell-eval def-form e)))
-                                   {}  ; fresh env for thunk evaluation
-                                   preceding)]
-              (if (= 2 (count path))
-                ;; Final element: evaluate the extracted form
-                (first (spell-eval form eval-env))
-                ;; More elements: extracted form becomes new thunk, recurse
-                (extract (rest path) {next-sym form})))))))))
-
-(defn expand
-  "Substitute free variables in sub-thunk with values from closure.
-
-   closure: a thunk that defines the context (evaluated to get bindings)
-   sub-thunk: expression whose free variables should be substituted
-   env: environment in which closure's symbols are defined
-
-   Example: (expand '(do (def x 42)) '(+ x 1) {})
-   - Evaluates closure to get {x 42}
-   - Finds free vars in sub-thunk: #{x}
-   - Returns (+ 42 1)"
-  [closure sub-thunk env]
-  (let [[_ closure-env] (spell-eval closure env)
-        free (find-free-vars sub-thunk)
-        bindings (into {} (for [v free
-                                :when (contains? closure-env v)]
-                            [v (get closure-env v)]))]
-    (substitute sub-thunk bindings)))
-
 (defn- eval-seq
   "Evaluate a sequence of expressions, returning [last-value final-env]."
   [exprs env]
@@ -478,11 +348,6 @@
                   (if v
                     [v e']
                     (recur (rest exprs) e' v)))))
-
-      ;; extract: (extract [thunk-sym binding-sym]) - get binding from thunk
-      ;; Special form because it needs unevaluated path symbols and the env
-      extract (let [path (second expr)]
-                [(extract path env) env])
 
       ;; uneval: (uneval 'sym) - get the quoted source of a binding during its evaluation
       ;; Enables self-referential programs (quines) by looking up in *quote-env*
@@ -744,28 +609,28 @@
           new-text (str result-text "\n" continuation)
           balanced (balance-parens new-text)
           forms (read-all balanced)
-          ;; Wrap in do for hooks
-          program (if (= 1 (count forms))
-                    (first forms)
-                    (list* 'do forms))
+          ;; Create new call-now for recursive use
+          extended-completion (str new-prefix continuation)
+          new-call-now (make-call-now extended-completion hooks sys-prompt model-override)
+          ;; Build program with completion as proper binding (not injected into env)
+          ;; Prepend (def completion "...") so it's a real def like in initial call
+          completion-def (list 'def 'completion extended-completion)
+          all-forms (cons completion-def forms)
+          program (list* 'do all-forms)
           program' (if (empty? hooks)
                      program
                      (apply-hooks hooks program))
           _ (when (and *verbose* (seq hooks))
               (println (str indent "Continuation program (after hooks): " (pr-str program'))))
-          ;; Create new call-now for recursive use
-          extended-completion (str new-prefix continuation)
-          new-call-now (make-call-now extended-completion hooks sys-prompt model-override)
-          ;; Build env with bindings + new call-now + updated completion
+          ;; Build env with call-now + tool result bindings (completion now via def, not injection)
           eval-env (reduce (fn [e [k v]]
                              (assoc e (symbol (name k)) v))
-                           {'completion extended-completion
-                            'call-now new-call-now}
+                           {'call-now new-call-now}
                            bindings-map)
           ;; Evaluate continuation
-          [_ final-env] (binding [*llm-depth* (inc *llm-depth*)]
-                          (spell-eval program' eval-env))]
-      (get final-env 'return))))
+          [value _] (binding [*llm-depth* (inc *llm-depth*)]
+                      (spell-eval program' eval-env))]
+      value)))
 
 (defn- llm-impl
   "Core llm implementation. Assumes *builtins* is already bound by the caller.
@@ -824,9 +689,9 @@
                                ;; completion is now bound via (def interior ...) using uneval
                                ;; only call-now needs to be injected
                                initial-env {'call-now call-now-fn}
-                               [_ env] (binding [*llm-depth* (inc *llm-depth*)]
-                                         (spell-eval program initial-env))]
-                           {:success true :value (get env 'return)})
+                               [value _] (binding [*llm-depth* (inc *llm-depth*)]
+                                           (spell-eval program initial-env))]
+                           {:success true :value value})
                          (catch Exception e
                            (when *verbose*
                              (println (str indent "Error: " (ex-message e))))
@@ -855,8 +720,7 @@
                                      [sym (if (map? v) (:fn v) v)])
                                    llms))
         variant-builtins (merge core-builtins
-                                {'expand #'expand
-                                 'prepend-hooks-to-llm #'prepend-hooks-to-llm
+                                {'prepend-hooks-to-llm #'prepend-hooks-to-llm
                                  'recurse #'recurse
                                  'prefix-prompt #'prefix-prompt
                                  'with-env with-env
@@ -893,7 +757,6 @@
 (alter-var-root #'*builtins*
   (constantly (merge core-builtins
                      {'llm #'llm
-                      'expand #'expand
                       'prepend-hooks-to-llm #'prepend-hooks-to-llm
                       'recurse #'recurse
                       'prefix-prompt #'prefix-prompt
