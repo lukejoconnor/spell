@@ -90,6 +90,16 @@ Internal bindings are preserved: (expand '(do (def y 10) (+ y 1))) leaves y as-i
 expand and uneval: (uneval 'sym) forms have no free variables (the argument is quoted data), so they pass through expand unchanged.
 (def expr (expand '(uneval 'expr)))  ; => expr bound to '(uneval 'expr)
 
+SPELL-EVAL (DYNAMIC EVALUATION)
+
+(spell-eval expr) evaluates expr in a fresh environment (builtins only) and returns the result.
+
+(spell-eval '(+ 1 2))  ; => 3
+(spell-eval '(do (def x 5) (+ x 1)))  ; => 6
+
+Use expand to close over current bindings before evaluating:
+(do (def x 42) (spell-eval (expand '(+ x 1))))  ; => 43
+
 HOOKS
 
 Hooks transform code before evaluation. Pass hooks as a vector in the second argument to llm:
@@ -112,6 +122,15 @@ recurse: Make a hook propagate to all descendants.
 Combining:
 (llm \"task\" [(recurse (with-env-hints {:config [cfg \"Global config map\"]}))])
 ; All descendants get the config binding and know it exists
+
+STRIP (EXTENDING COMPLETIONS)
+
+(strip n s) removes n trailing close-parens from string s.
+(strip 2 \"(do (+ 1 2))\") => \"(do (+ 1 2\"
+
+To extend your completion (let a child continue your do block), end with:
+'(llm (strip 2 completion))
+The child inherits your bindings and continues where you left off.
 
 CALL-NOW (TOOL USE CONTINUATION)
 
@@ -156,10 +175,10 @@ Output: (do (def thought \"use read-name then greet\") (cat \"Hello, \" (read-na
     (str "BUILTINS\n\n"
          "Math: + - * / rand inc dec\n"
          "Compare: < > = <= >= not=\n"
-         "Strings: str cat pr-str\n"
+         "Strings: str cat pr-str strip\n"
          "Collections: list vector first rest cons conj get assoc count\n"
          "Logic: if cond and or not nil? empty?\n"
-         "Binding: def let do uneval expand\n"
+         "Binding: def let do uneval expand spell-eval\n"
          (when (contains? llms 'llm) "Self: llm\n")
          "Continuation: call-now\n"
          (when (seq tool-names)
