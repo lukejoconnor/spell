@@ -15,6 +15,8 @@
 (def spell-eval eval/spell-eval)
 (def run-spell eval/run-spell)
 (def spell-error? eval/spell-error?)
+(def find-free-vars eval/find-free-vars)
+(def substitute eval/substitute)
 
 (def ^:dynamic *bash-timeout*
   "Timeout in seconds for bash commands. Set to nil to disable."

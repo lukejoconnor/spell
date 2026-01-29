@@ -28,10 +28,6 @@
   "Prefix for error strings from failed llm calls."
   "[SPELL-ERROR] ")
 
-(def ^:private max-retries
-  "Number of times to retry a failed llm call before returning error."
-  2)
-
 (defn spell-error?
   "Returns true if value is an error string from a failed llm call."
   [v]
@@ -48,6 +44,8 @@
 ;; Builtins
 ;; =============================================================================
 
+(declare spell-eval)
+
 (def core-builtins
   "Language primitives - always available in every llm variant."
   {'+ +, '- -, '* *, '/ /, '< <, '> >, '<= <=, '>= >=, '= =, 'not= not=,
@@ -56,7 +54,8 @@
    'inc inc, 'dec dec, 'nil? nil?, 'empty? empty?, 'rand rand,
    'cat (fn [& args] (apply str args)),
    'strip parse/strip-trailing-parens,
-   'spell-error? spell-error?})
+   'spell-error? spell-error?,
+   'spell-eval (fn [expr] (first (spell-eval expr {})))})
 
 (def ^:dynamic *builtins*
   "Active builtins map. Rebound by each llm variant during evaluation.
@@ -69,7 +68,7 @@
 
 (def special-forms
   "Special forms that are not free variables."
-  #{'quote 'def 'do 'do-eval-last 'if 'let 'fn 'defn 'cond 'and 'or 'uneval 'expand})
+  #{'quote 'def 'do 'if 'let 'fn 'defn 'cond 'and 'or 'uneval 'expand})
 
 (defn quote-value
   "Wrap non-self-evaluating values in (quote ...) for safe embedding in generated code."
@@ -114,8 +113,7 @@
                 val-expanded (expand-expr (nth expr 2) outer-env inner)]
             (list 'def sym val-expanded))
 
-      (do do-eval-last)
-         (let [[forms _]
+      do (let [[forms _]
                (reduce (fn [[acc i] sub-expr]
                          (let [expanded (expand-expr sub-expr outer-env i)
                                new-inner (if (and (seq? sub-expr) (= 'def (first sub-expr)))
@@ -156,8 +154,6 @@
 ;; =============================================================================
 ;; Evaluator
 ;; =============================================================================
-
-(declare spell-eval)
 
 (defn- eval-seq
   "Evaluate a sequence of expressions, returning [last-value final-env]."
@@ -200,9 +196,6 @@
                            (spell-eval val-expr env))]
               [v (assoc e' sym v)])
       do    (eval-seq (rest expr) env)
-      do-eval-last (let [[last-val final-env] (eval-seq (rest expr) env)
-                         [result result-env] (spell-eval last-val final-env)]
-                     [result result-env])
       if    (let [[test-v e'] (spell-eval (second expr) env)]
               (spell-eval (nth expr (if test-v 2 3) nil) e'))
 

@@ -319,53 +319,23 @@
     (is (= 5 (run-spell '(or 5))))))
 
 ;; =============================================================================
-;; do-eval-last tests
+;; spell-eval builtin tests
 ;; =============================================================================
 
-(deftest do-eval-last-form
-  (testing "quoted last expr gets extra eval"
-    (is (= 2 (run-spell '(do-eval-last (def x 1) '(+ x 1))))))
+(deftest spell-eval-builtin
+  (testing "evaluate quoted expression"
+    (is (= 3 (run-spell '(spell-eval '(+ 1 2))))))
 
-  (testing "non-quoted last expr: extra eval is identity for self-evaluating"
-    (is (= 2 (run-spell '(do-eval-last (def x 1) (+ x 1))))))
+  (testing "evaluate self-evaluating value"
+    (is (= 42 (run-spell '(spell-eval 42))))
+    (is (= "hi" (run-spell '(spell-eval "hi")))))
 
-  (testing "single quoted expression"
-    (is (= 3 (run-spell '(do-eval-last '(+ 1 2))))))
+  (testing "evaluate quoted program"
+    (is (= 6 (run-spell '(spell-eval '(do (def x 3) (+ x 3)))))))
 
-  (testing "empty do-eval-last"
-    (is (nil? (run-spell '(do-eval-last)))))
-
-  (testing "middle quoted exprs are inert values"
-    ;; The middle quote is just data (discarded), only last expr matters
-    (is (= "hello" (run-spell '(do-eval-last
-                                  (def x 1)
-                                  '(this would fail if evaluated)
-                                  "hello")))))
-
-  (testing "env from defs available in extra eval"
-    (is (= 30 (run-spell '(do-eval-last
-                              (def a 10)
-                              (def b 20)
-                              '(+ a b))))))
-
-  (testing "extra eval of def form binds in env"
-    (let [[val env] (spell-eval '(do-eval-last '(def y 10)) {})]
-      (is (= 10 val))
-      (is (= 10 (env 'y)))))
-
-  (testing "env threading preserves defs"
-    (let [[val env] (spell-eval '(do-eval-last (def x 5) '(+ x 1)) {})]
-      (is (= 6 val))
-      (is (= 5 (env 'x)))))
-
-  (testing "string last expr: extra eval is harmless"
-    (is (= "hi" (run-spell '(do-eval-last "hi"))))))
-
-(deftest do-eval-last-expand
-  (testing "expand substitutes free vars in do-eval-last"
-    (let [[val _] (spell-eval '(do (def x 42) (expand '(do-eval-last (def y x) '(+ y 1)))) {})]
-      ;; x should be substituted, but '(+ y 1) is quoted so y stays
-      (is (= '(do-eval-last (def y 42) (quote (+ y 1))) val)))))
+  (testing "evaluates in fresh env"
+    ;; outer x is not visible to spell-eval
+    (is (thrown? Exception (run-spell '(do (def x 10) (spell-eval '(+ x 1))))))))
 
 ;; =============================================================================
 ;; uneval tests
