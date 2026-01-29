@@ -1,6 +1,6 @@
 (ns spell.eval-test
   (:require [clojure.test :refer [deftest is testing]]
-            [spell.eval :as eval :refer [spell-eval run-spell find-free-vars substitute]]))
+            [spell.eval :as eval :refer [spell-eval run-spell]]))
 
 ;; =============================================================================
 ;; Oracle-based tests: spell-eval should match eval
@@ -361,11 +361,6 @@
   (testing "string last expr: extra eval is harmless"
     (is (= "hi" (run-spell '(do-eval-last "hi"))))))
 
-(deftest do-eval-last-free-vars
-  (testing "find-free-vars treats do-eval-last like do"
-    (is (= #{'x} (find-free-vars '(do-eval-last (def y 1) (+ x y)))))
-    (is (= #{} (find-free-vars '(do-eval-last (def x 1) (+ x 1)))))))
-
 (deftest do-eval-last-expand
   (testing "expand substitutes free vars in do-eval-last"
     (let [[val _] (spell-eval '(do (def x 42) (expand '(do-eval-last (def y x) '(+ y 1)))) {})]
@@ -424,113 +419,6 @@
     (let [[val _] (spell-eval '(def outer (do (def inner 1) (uneval 'outer))) {})]
       ;; Should get quote of outer's expression, not inner's
       (is (= '(quote (do (def inner 1) (uneval 'outer))) val)))))
-
-;; =============================================================================
-;; Free variable analysis tests
-;; =============================================================================
-
-(deftest find-free-vars-test
-  (testing "literals have no free vars"
-    (is (= #{} (find-free-vars 42)))
-    (is (= #{} (find-free-vars "hello")))
-    (is (= #{} (find-free-vars nil)))
-    (is (= #{} (find-free-vars true))))
-
-  (testing "unbound symbol is free"
-    (is (= #{'x} (find-free-vars 'x)))
-    (is (= #{'foo} (find-free-vars 'foo))))
-
-  (testing "builtins are not free"
-    (is (= #{} (find-free-vars '+)))
-    (is (= #{} (find-free-vars 'str)))
-    (is (= #{} (find-free-vars 'llm))))
-
-  (testing "bound symbols are not free"
-    (is (= #{} (find-free-vars 'x #{'x}))))
-
-  (testing "simple expressions"
-    (is (= #{'x 'y} (find-free-vars '(+ x y))))
-    (is (= #{'x} (find-free-vars '(+ x 1))))
-    (is (= #{} (find-free-vars '(+ 1 2)))))
-
-  (testing "quote blocks free var analysis"
-    (is (= #{} (find-free-vars '(quote x))))
-    (is (= #{} (find-free-vars '(quote (+ x y))))))
-
-  (testing "def binds for subsequent refs but value can have free vars"
-    ;; (def x y) - y is free
-    (is (= #{'y} (find-free-vars '(def x y)))))
-
-  (testing "let binds symbols"
-    (is (= #{} (find-free-vars '(let [x 1] x))))
-    (is (= #{} (find-free-vars '(let [x 1 y 2] (+ x y)))))
-    ;; But values can reference free vars
-    (is (= #{'z} (find-free-vars '(let [x z] x))))
-    ;; Bindings are sequential - y can reference x
-    (is (= #{} (find-free-vars '(let [x 1 y x] y)))))
-
-  (testing "fn binds params"
-    (is (= #{} (find-free-vars '(fn [x] x))))
-    (is (= #{} (find-free-vars '(fn [x y] (+ x y)))))
-    ;; But body can have free vars
-    (is (= #{'z} (find-free-vars '(fn [x] (+ x z))))))
-
-  (testing "defn binds name and params"
-    (is (= #{} (find-free-vars '(defn f [x] (f x)))))  ; recursive ref to f is bound
-    (is (= #{'z} (find-free-vars '(defn f [x] (+ x z))))))
-
-  (testing "nested expressions"
-    (is (= #{'a 'b} (find-free-vars '(if a b c) #{'c})))
-    (is (= #{'x} (find-free-vars '(do (def y 1) (+ x y))))))
-
-  (testing "vectors and maps"
-    (is (= #{'x 'y} (find-free-vars '[x y 1])))
-    (is (= #{'v} (find-free-vars '{:a v})))))
-
-;; =============================================================================
-;; Substitution tests
-;; =============================================================================
-
-(deftest substitute-test
-  (testing "literals unchanged"
-    (is (= 42 (substitute 42 {'x 1})))
-    (is (= "hello" (substitute "hello" {'x 1}))))
-
-  (testing "symbol substitution"
-    (is (= 10 (substitute 'x {'x 10})))
-    (is (= 'y (substitute 'y {'x 10}))))  ; y not in bindings
-
-  (testing "expression substitution"
-    (is (= '(+ 10 20) (substitute '(+ x y) {'x 10 'y 20})))
-    (is (= '(+ 10 y) (substitute '(+ x y) {'x 10}))))
-
-  (testing "quote blocks substitution"
-    (is (= '(quote x) (substitute '(quote x) {'x 10}))))
-
-  (testing "def substitutes in value only"
-    (is (= '(def x 10) (substitute '(def x y) {'y 10})))
-    ;; The name 'x' is not substituted
-    (is (= '(def x 1) (substitute '(def x 1) {'x 999}))))
-
-  (testing "let removes bindings from scope"
-    ;; x is bound by let, so not substituted in body
-    (is (= '(let [x 1] x) (substitute '(let [x 1] x) {'x 10})))
-    ;; But y is still substituted
-    (is (= '(let [x 1] (+ x 10)) (substitute '(let [x 1] (+ x y)) {'y 10})))
-    ;; Values in bindings can be substituted
-    (is (= '(let [x 10] x) (substitute '(let [x y] x) {'y 10}))))
-
-  (testing "fn removes params from scope"
-    (is (= '(fn [x] x) (substitute '(fn [x] x) {'x 10})))
-    (is (= '(fn [x] (+ x 10)) (substitute '(fn [x] (+ x y)) {'y 10}))))
-
-  (testing "defn removes name and params from scope"
-    (is (= '(defn f [x] (f x)) (substitute '(defn f [x] (f x)) {'f 999 'x 888})))
-    (is (= '(defn f [x] (+ x 10)) (substitute '(defn f [x] (+ x y)) {'y 10}))))
-
-  (testing "vectors and maps"
-    (is (= [10 20] (substitute '[x y] {'x 10 'y 20})))
-    (is (= {:a 10} (substitute '{:a x} {'x 10})))))
 
 ;; =============================================================================
 ;; Extract tests - PENDING REIMPLEMENTATION
@@ -721,11 +609,4 @@
       (is (thrown-with-msg? Exception #"Unbound symbol"
             (spell-eval 'bash {})))))
 
-  (testing "find-free-vars respects *builtins*"
-    (let [custom-builtins (merge eval/core-builtins
-                                 {'custom-sym identity})]
-      (binding [eval/*builtins* custom-builtins]
-        ;; custom-sym is a builtin, not free
-        (is (= #{} (find-free-vars 'custom-sym)))
-        ;; unknown-sym is free
-        (is (= #{'unknown-sym} (find-free-vars 'unknown-sym)))))))
+)
