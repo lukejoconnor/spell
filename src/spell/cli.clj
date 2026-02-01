@@ -5,6 +5,7 @@
             [clojure.java.io :as io]
             [spell.core :as spell]
             [spell.eval :as eval]
+            [spell.parse :as parse]
             [spell.provider :as provider])
   (:gen-class))
 
@@ -65,6 +66,15 @@
   (let [f (io/file path)]
     (when (.exists f)
       (str/trim (slurp f)))))
+
+(defn- wrap-prompt
+  "Auto-wrap natural-language prompts into a code prefix.
+   If prompt already starts with '(', pass through unchanged.
+   Otherwise, wrap as (do (def prompt \"...\") so the LLM continues with code."
+  [s]
+  (if (str/starts-with? (str/triml s) "(")
+    s
+    (str "(do (def prompt \"" (parse/escape-string s) "\") ")))
 
 (def cli-options
   [["-t" "--test" "Use dummy LLM provider (returns 'hello world')"]
@@ -142,7 +152,7 @@
 
 (defn- make-provider [{:keys [test model]}]
   (if test
-    (provider/dummy-provider {:response "(def return \"hello world\")))"})
+    (provider/dummy-provider {:response "\"hello world\""})
     (let [{:keys [provider model]} (if model
                                      (parse-model-spec model)
                                      {:provider nil :model nil})
@@ -173,7 +183,7 @@
                 provider/*usage* usage-atom
                 provider/*budget* budget]
         (try
-          {:result (spell/llm prompt) :usage usage-atom}
+          {:result (spell/llm (wrap-prompt prompt)) :usage usage-atom}
           (catch Exception e
             {:error (.getMessage e)
              :error-data (ex-data e)

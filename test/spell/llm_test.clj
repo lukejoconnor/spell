@@ -11,7 +11,6 @@
 
 (deftest llm-basic-test
   (testing "llm evaluates response and extracts return"
-    ;; Dummy provider returns a response that completes the prompt
     ;; Prompt: "(do " -> Response: "(def return 42))"
     ;; Full completion: "(do (def return 42))"
     (provider/with-provider
@@ -20,7 +19,6 @@
 
 (deftest llm-with-computation-test
   (testing "llm can evaluate expressions in response"
-    ;; Response includes computation
     (provider/with-provider
       (provider/dummy-provider {:response "(def return (+ 1 2 3)))"})
       (is (= 6 (spell/llm "(do "))))))
@@ -53,10 +51,6 @@
 
 (deftest greeting-task-dummy-test
   (testing "greeting task with dummy provider - expected completion"
-    ;; The expected LLM response for the greeting task
-    ;; Response needs net -2 to close input's 2 open parens
-    ;; Opens: (do, (def return, (cat, (read-name = 4 + def thought opens/closes = 4
-    ;; Need: 4 + 2 = 6 closing parens minimum
     (spit "name.txt" "Alice")
     (try
       (provider/with-provider
@@ -67,43 +61,32 @@
       (finally
         (io/delete-file "name.txt")))))
 
-;; Delegation test omitted for now - escaping is complex
-;; The simple greeting test demonstrates the read-name tool works
-
 ;; =============================================================================
 ;; Hook tests
 ;; =============================================================================
 
 (deftest llm-hooks-basic-test
   (testing "hook transforms completion before evaluation"
-    ;; The completion returns 10, but our hook wraps it to add 5
-    ;; Hook: adds a binding that modifies return
     (provider/with-provider
       (provider/dummy-provider {:response "(def return 10))"})
-      (let [;; Hook that intercepts the program and wraps return value
-            hook '(fn [code]
-                    ;; code is: (do (def depth 0) (def prefix "...") (def response (def return 10)))
-                    ;; We wrap it to add 5 to return
+      (let [hook '(fn [code]
                     (list 'do code '(def return (+ return 5))))
             result (spell/llm "(do " [hook])]
         (is (= 15 result))))))
 
 (deftest llm-hooks-multiple-test
   (testing "multiple hooks compose left-to-right"
-    ;; First hook adds 10, second hook doubles
     (provider/with-provider
       (provider/dummy-provider {:response "(def return 5))"})
       (let [add-hook '(fn [code]
                         (list 'do code '(def return (+ return 10))))
             double-hook '(fn [code]
                            (list 'do code '(def return (* return 2))))
-            ;; Apply add-hook first: 5+10=15, then double: 15*2=30
             result (spell/llm "(do " [add-hook double-hook])]
         (is (= 30 result))))))
 
 (deftest llm-hooks-inject-binding-test
   (testing "hook can inject bindings into program"
-    ;; LLM uses 'secret' which hook injects
     (provider/with-provider
       (provider/dummy-provider {:response "(def return (+ secret 1)))"})
       (let [inject-hook '(fn [code]
@@ -193,35 +176,19 @@
 
 (deftest llm-recursive-hook-test
   (testing "recursive hook propagates to nested llm calls"
-    ;; Outer call returns (llm "nested")
+    ;; Outer call returns (llm "(do ...")
     ;; Inner call returns 10
-    ;; Recursive hook: (1) applies add-hook, (2) prepends [add-hook, recursive-hook] to llm calls
-    ;;
-    ;; Flow:
-    ;; - Outer completion transformed by recursive-hook:
-    ;;   - add-hook adds (def return (+ return 5))
-    ;;   - prepends [add-hook, recursive-hook] to nested llm
-    ;; - Outer evaluates:
-    ;;   - Inner llm runs with [add-hook, recursive-hook]
-    ;;     - LLM returns 10
-    ;;     - add-hook: 10 + 5 = 15
-    ;;     - recursive-hook: applies add-hook (15 + 5 = 20)
-    ;;     - Inner returns 20
-    ;;   - Outer return = 20
-    ;;   - Outer's (def return (+ return 5)) -> 20 + 5 = 25
     (let [call-count (atom 0)
-          responses ["(def return (llm \"nested\")))"  ; outer calls nested
-                     "(def return 10))"]]               ; nested returns 10
+          responses ["(def return (llm \"(do \")))"  ; outer calls nested with code prefix
+                     "(def return 10))"]]             ; nested returns 10
       (provider/with-provider
         (provider/dummy-provider
           {:response-fn (fn [_]
                           (let [r (nth responses @call-count)]
                             (swap! call-count inc)
                             r))})
-        (let [;; Hook that adds 5 to return
-              add-hook '(fn [code]
+        (let [add-hook '(fn [code]
                           (list 'do code '(def return (+ return 5))))
-              ;; Make it recursive
               recursive-hook (spell/recurse add-hook)
               result (spell/llm "(do " [recursive-hook])]
           (is (= 25 result)))))))
@@ -239,17 +206,15 @@
                                 :llms  {'llm #'spell/llm}})]
       (provider/with-provider
         (provider/dummy-provider
-          {:response "(def return (my-tool))))"})
-        (is (= "tool-result" (custom-llm "use tool"))))))
+          {:response "(def return (my-tool)))"})
+        (is (= "tool-result" (custom-llm "(do "))))))
 
   (testing "make-llm without tool excludes it from evaluation"
-    ;; Create an llm with NO tools - bash should be unbound
     (let [bare-llm (spell/make-llm {:llms {'llm #'spell/llm}})]
       (provider/with-provider
         (provider/dummy-provider
-          {:response "(def return \"no tools here\")))"})
-        ;; Should work for basic expressions
-        (is (= "no tools here" (bare-llm "test"))))))
+          {:response "(def return \"no tools here\"))"})
+        (is (= "no tools here" (bare-llm "(do "))))))
 
   (testing "make-llm with named agent function"
     (let [helper-fn (fn
@@ -260,12 +225,10 @@
                                         'helper helper-fn}})]
       (provider/with-provider
         (provider/dummy-provider
-          {:response "(def return (helper \"do something\"))))"})
-        (is (= "helper-result" (parent-llm "delegate"))))))
+          {:response "(def return (helper \"do something\")))"})
+        (is (= "helper-result" (parent-llm "(do "))))))
 
   (testing "llm-self provides automatic self-recursion"
-    ;; Create a custom llm variant with NO explicit self-reference in :llms
-    ;; llm-self should still allow recursive calls
     (let [call-count (atom 0)
           custom-llm (spell/make-llm {:tools [] :llms {}})]
       (provider/with-provider
@@ -273,9 +236,9 @@
           {:response-fn (fn [_]
                           (let [n (swap! call-count inc)]
                             (if (= n 1)
-                              "(cat \"outer-\" (llm-self \"inner\"))"
+                              "(cat \"outer-\" (llm-self \"(do \"))"
                               "\"inner-result\"")))})
-        (is (= "outer-inner-result" (custom-llm "test")))))))
+        (is (= "outer-inner-result" (custom-llm "(do ")))))))
 
 ;; =============================================================================
 ;; prelude tests
@@ -283,15 +246,13 @@
 
 (deftest prelude-basic-test
   (testing "prelude function is available in LLM completion"
-    ;; Prelude defines (defn double [x] (* x 2))
-    ;; LLM response uses it: (double 21) => 42
     (let [test-llm (spell/make-llm
                      {:tools []
                       :llms {'llm #'spell/llm}
                       :prelude ['(defn double [x] (* x 2))]})]
       (provider/with-provider
-        (provider/dummy-provider {:response "(double 21))))"})
-        (is (= 42 (test-llm "test")))))))
+        (provider/dummy-provider {:response "(double 21))"})
+        (is (= 42 (test-llm "(do ")))))))
 
 (deftest prelude-multiple-forms-test
   (testing "multiple prelude forms are all available"
@@ -301,8 +262,8 @@
                       :prelude ['(defn add1 [x] (+ x 1))
                                 '(defn mul2 [x] (* x 2))]})]
       (provider/with-provider
-        (provider/dummy-provider {:response "(mul2 (add1 3)))))"})
-        (is (= 8 (test-llm "test")))))))
+        (provider/dummy-provider {:response "(mul2 (add1 3)))"})
+        (is (= 8 (test-llm "(do ")))))))
 
 (deftest prelude-empty-test
   (testing "empty prelude works identically to no prelude"
@@ -311,120 +272,8 @@
                       :llms {'llm #'spell/llm}
                       :prelude []})]
       (provider/with-provider
-        (provider/dummy-provider {:response "42))"})
-        (is (= 42 (test-llm "test")))))))
-
-(deftest prelude-with-call-now-test
-  (testing "prelude functions available in call-now continuation"
-    (let [call-count (atom 0)
-          test-llm (spell/make-llm
-                     {:tools []
-                      :llms {'llm #'spell/llm}
-                      :prelude ['(defn double [x] (* x 2))]})]
-      (provider/with-provider
-        (provider/dummy-provider
-          {:response-fn (fn [_prompt]
-                          (let [n (swap! call-count inc)]
-                            (if (= n 1)
-                              "(def thought \"start\") (call-now {:x 21})"
-                              "(double x)")))})
-        (is (= 42 (test-llm "test")))))))
-
-(deftest prelude-completion-excludes-prelude-test
-  (testing "completion binding is a string that starts with (def interior"
-    ;; completion captures (def interior ...) via uneval, not the outer (do <prelude> ...)
-    (let [test-llm (spell/make-llm
-                     {:tools []
-                      :llms {'llm #'spell/llm}
-                      :prelude ['(defn double [x] (* x 2))]})]
-      (provider/with-provider
-        (provider/dummy-provider
-          {:response "(if (not (nil? completion)) (count completion) -1))))"})
-        (is (pos? (test-llm "test")))))))
-
-;; =============================================================================
-;; call-now tests
-;; =============================================================================
-
-(deftest call-now-test
-  (testing "basic call-now with string result"
-    (let [call-count (atom 0)
-          test-llm (spell/make-llm {:tools [] :llms {'llm #'spell/llm}})]
-      (provider/with-provider
-        (provider/dummy-provider
-          {:response-fn (fn [_prompt]
-                          (let [n (swap! call-count inc)]
-                            (if (= n 1)
-                              ;; First call: use call-now with a literal value
-                              "(def thought \"thinking\") (call-now {:result \"tool-output\"})"
-                              ;; Continuation: use the bound result
-                              "(cat \"got: \" result)")))})
-        (is (= "got: tool-output" (test-llm "test"))))))
-
-  (testing "call-now with map result (like bash tool)"
-    (let [call-count (atom 0)
-          test-llm (spell/make-llm {:tools [tools/bash-tool] :llms {'llm #'spell/llm}})]
-      (provider/with-provider
-        (provider/dummy-provider
-          {:response-fn (fn [_prompt]
-                          (let [n (swap! call-count inc)]
-                            (if (= n 1)
-                              ;; First call: bash returns a map, pass via call-now
-                              "(def thought \"running\") (call-now {:output (:out (bash \"echo hello\"))})"
-                              ;; Continuation: use the bound output
-                              "output")))})
-        (is (= "hello" (test-llm "test"))))))
-
-  (testing "call-now with multiple bindings"
-    (let [call-count (atom 0)
-          test-llm (spell/make-llm {:tools [] :llms {'llm #'spell/llm}})]
-      (provider/with-provider
-        (provider/dummy-provider
-          {:response-fn (fn [_prompt]
-                          (let [n (swap! call-count inc)]
-                            (if (= n 1)
-                              "(def thought \"plan\") (call-now {:a \"first\" :b \"second\"})"
-                              "(cat a \" and \" b)")))})
-        (is (= "first and second" (test-llm "test"))))))
-
-  (testing "call-now passes completion to continuation"
-    ;; The continuation should have access to the extended completion string
-    (let [call-count (atom 0)
-          test-llm (spell/make-llm {:tools [] :llms {'llm #'spell/llm}})]
-      (provider/with-provider
-        (provider/dummy-provider
-          {:response-fn (fn [_prompt]
-                          (let [n (swap! call-count inc)]
-                            (if (= n 1)
-                              "(def thought \"hi\") (call-now {:x \"val\"})"
-                              ;; Verify completion is a string containing original code
-                              "(if (and (not (nil? completion)) (> (count completion) 0)) \"has-completion\" \"no-completion\")")))})
-        (is (= "has-completion" (test-llm "test"))))))
-
-  (testing "recursive call-now (continuation uses call-now again)"
-    (let [call-count (atom 0)
-          test-llm (spell/make-llm {:tools [] :llms {'llm #'spell/llm}})]
-      (provider/with-provider
-        (provider/dummy-provider
-          {:response-fn (fn [_prompt]
-                          (let [n (swap! call-count inc)]
-                            (case n
-                              1 "(def thought \"start\") (call-now {:step1 \"one\"})"
-                              2 "(call-now {:step2 (cat step1 \"-two\")})"
-                              3 "(cat step2 \"-three\")")))})
-        (is (= "one-two-three" (test-llm "test"))))))
-
-  (testing "call-now with empty bindings"
-    (let [call-count (atom 0)
-          test-llm (spell/make-llm {:tools [] :llms {'llm #'spell/llm}})]
-      (provider/with-provider
-        (provider/dummy-provider
-          {:response-fn (fn [_prompt]
-                          (let [n (swap! call-count inc)]
-                            (if (= n 1)
-                              "(def thought \"start\") (call-now {})"
-                              "\"continued\"")))})
-        (is (= "continued" (test-llm "test")))))))
+        (provider/dummy-provider {:response "42)"})
+        (is (= 42 (test-llm "(do ")))))))
 
 ;; =============================================================================
 ;; System prompt generation tests
@@ -461,7 +310,6 @@
       (is (str/includes? p "TOOLS"))
       (is (str/includes? p "read-name"))
       (is (str/includes? p "bash"))
-      (is (str/includes? p "ERROR HANDLING"))
       (is (str/includes? p "EXAMPLES")))))
 
 ;; =============================================================================

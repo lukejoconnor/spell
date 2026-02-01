@@ -20,10 +20,10 @@ Functions use dynamic scoping: `fn`/`defn` return source-form data (`{:spell/fn 
 Expansion and dynamic scoping work together: `expand` substitutes function values as their source forms, so `(expand '(f 3))` where `f` was `(defn f [x] (* x x))` produces `((fn [x] (* x x)) 3)` — fully portable code.
 
 ### Uneval (Self-Referential Code)
-`(uneval 'sym)` returns the quoted definition of `sym` while it's being evaluated. Solves the circular reference problem where a binding needs access to its own code. Used internally to bind `completion` (the full program text) without special injection.
+`(uneval 'sym)` returns the quoted definition of `sym` while it's being evaluated. Solves the circular reference problem where a binding needs access to its own code.
 
-### Call-Now (Tool-Use Continuations)
-`(call-now {:name (tool-expr)})` evaluates tool expressions, binds results, and continues the LLM's generation as a single continuous completion. Preserves KV cache by appending `(def name value)` forms after the current completion text. Enables the standard agent loop: generate code → call tool → continue with results.
+### Prompt-as-Prefix Semantics
+The `llm` function uses the prompt string as both the user message and the assistant prefix. The LLM's response is concatenated with the prefix, then the full string is parsed and evaluated. This means the prompt IS the beginning of the program — the LLM continues writing code from where the prompt left off.
 
 ### Hooks
 Quoted macros (code→code transformers) applied to LLM completions before evaluation. Three types:
@@ -37,7 +37,7 @@ See `hooks-implementation` notebook entry for details.
 `(make-llm {:tools [...] :llms {...} :model "..."})` creates llm functions with configurable tool sets, agent access, and model override. System prompt is auto-generated from the same metadata that configures runtime builtins. Single source of truth — no documentation drift. Every variant automatically provides `llm-self` for self-recursion without needing explicit var wiring.
 
 ### Prelude (Code Library Layer)
-`(make-llm {:prelude [...]})` accepts a vector of Spell forms prepended in an outer `do` block before the caller's program. Prelude definitions are real Spell code — they land in the environment, compose with `expand`, and propagate via `completion`. Used for reusable patterns like error-handling wrappers. See `spl-lib/patterns.spl` for examples.
+`(make-llm {:prelude [...]})` accepts a vector of Spell forms prepended before the parsed response forms. Prelude definitions are real Spell code — they land in the environment and compose with `expand`. Used for reusable patterns like error-handling wrappers. See `spl-lib/patterns.spl` for examples.
 
 ### Concurrency (Future/Await)
 `(future expr)` evaluates `expr` in a new thread, capturing the current env. `(await f)` blocks until the future completes and returns its value. Dynamic bindings (`*usage*`, `*builtins*`, etc.) are conveyed via `bound-fn`. Futures are isolated: env updates don't leak back to the parent. Enables parallel LLM calls.
@@ -55,11 +55,11 @@ Programs return the value of their last expression (standard Lisp semantics). No
 | `src/spell/core.clj` | Top-level wiring (default `llm`, root builtin registration, re-exports) |
 | `src/spell/prompt.clj` | System prompt (preamble/postamble + metadata-driven generation) |
 | `src/spell/provider.clj` | LLM providers (Anthropic, OpenAI, Ollama, Dummy), `*provider*`, `llm-call`, token/cost/budget tracking |
-| `src/spell/llm.clj` | LLM engine (llm-impl, eval-forms, make-call-now, build-fresh-prefix, make-llm) |
+| `src/spell/llm.clj` | LLM engine (`-llm` core loop, `make-llm` factory) |
 | `src/spell/parse.clj` | S-expression parser (read-all for multi-form input) |
 | `src/spell/hooks.clj` | Hooks system (apply-hooks, prepend-hooks-to-llm, recurse) |
 | `src/spell/tools.clj` | Tool implementations (bash, read-name, read-file, write-file, str-replace) + `default-tools` |
-| `src/spell/cli.clj` | CLI with `-t`, `-m provider:model`, `-v`, `-d`, `-b` flags; accepts `.spl` files |
+| `src/spell/cli.clj` | CLI with `-t`, `-m provider:model`, `-v`, `-d`, `-b` flags; accepts `.spl` files; auto-wraps NL prompts |
 | `test/spell/*_test.clj` | 6 test files (core, eval, hooks, llm, parse, tools) |
 | `dev/benchmark.clj` | Orchestration benchmark harness |
 | `spl-lib/patterns.spl` | Reusable Spell patterns (try-bash, safe-llm, retry-llm) for `:prelude` |
@@ -68,11 +68,10 @@ Programs return the value of their last expression (standard Lisp semantics). No
 
 ## Current Status
 
-Core interpreter and tooling complete (86 tests / 424 assertions across 6 test files):
+Core interpreter and tooling complete:
 - `spell-eval` with environment threading
-- Special forms: `def`, `do`, `if`, `let`, `fn`, `defn`, `cond`, `and`, `or`, `quote`, `uneval`, `expand`, `call-now`, `future`
-- `llm` with auto-expansion, hooks, prefix/parent-code binding, and assistant prefill
-- `call-now` for tool-use continuations with KV cache preservation
+- Special forms: `def`, `do`, `if`, `let`, `fn`, `defn`, `cond`, `and`, `or`, `quote`, `uneval`, `expand`, `future`
+- `llm` with prompt-as-prefix semantics, hooks, and prelude support
 - `make-llm` factory for configurable agents (tools, sub-agents, model override, prelude)
 - `llm-self` for automatic self-recursion (atom-based forward ref, available in all `make-llm` variants)
 - Prelude mechanism for reusable Spell code libraries via `:prelude` in `make-llm`
@@ -81,11 +80,11 @@ Core interpreter and tooling complete (86 tests / 424 assertions across 6 test f
 - Tools: `bash`, `read-name`, `read-file`, `write-file`, `str-replace`
 - Three LLM providers: Anthropic, OpenAI, Ollama — unified `-m provider:model` CLI syntax
 - CLI with `-t` (test), `-m provider:model`, `-v` (verbose), `-d` (depth limit), `-b` (budget) flags; accepts `.spl` files
-- `completion` binding via `uneval` (self-referential program text)
+- CLI auto-wraps natural-language prompts into code prefixes
 - Implicit return values (last expression)
 - Token/cost tracking via `*usage*` dynamic var (accumulated across recursive calls, printed with `-v`)
 - Budget limit via `*budget*` dynamic var (halts execution when cumulative cost exceeds threshold)
-- Pattern library (`spl-lib/patterns.spl`): try-bash, safe-llm, retry-llm
+- Pattern library (`spl-lib/patterns.spl`): try-bash, safe-llm, retry-llm (TODO: redesign for exception semantics)
 - Orchestration benchmark harness (`dev/benchmark.clj`) with pilot results in `docs/`
 
 **Next priorities** (see `notebook/TODO.md`):
@@ -94,9 +93,15 @@ Core interpreter and tooling complete (86 tests / 424 assertions across 6 test f
 - MCP support (#30)
 - Globals mechanism for large data sharing (#29)
 
-**Key insight:** Fresh `spell-eval` calls have no access to parent env. The `llm` function auto-expands free variables in prompts and binds `parent-code`. For tool use within a single generation, use `call-now`. For behavior propagation across generations, use recursive hooks.
+**TODOs from scaffolding removal:**
+- call-now convenience function: reads completion from scope, formats bindings, calls `llm` with extended prefix
+- Scaffolding convenience function: constructs quine-friendly prefix with `completion` binding via `uneval`
+- patterns.spl redesign: `safe-llm`/`retry-llm` need exception-handling semantics; `try-bash` needs code-prefix prompts
+- Auto-expansion of thunks: CLAUDE.md claims `llm` auto-expands free vars in thunks, but this was never implemented
 
-**Architecture:** The LLM engine has a layered design: `eval-forms` is the shared eval path (hooks, call-now, spell-eval) used by both fresh calls (`llm-impl`) and continuations (`make-call-now`). `build-fresh-prefix` constructs the `(def interior (do ...))` scaffolding; continuations extend the existing completion prefix directly. Both paths converge on `eval-forms`.
+**Key insight:** Fresh `spell-eval` calls have no access to parent env. The `llm` function uses prompt-as-prefix semantics — the prompt string is sent as both the user message and the assistant prefix, so the response continues the prompt as code. For behavior propagation across generations, use recursive hooks.
+
+**Architecture:** The LLM engine is a simple loop in `-llm`: call the LLM provider, concatenate prefix + response, parse with `read-all`, prepend prelude forms, apply hooks, then `spell-eval`. `make-llm` constructs the configuration (builtins, system prompt, call function) and returns the `llm` function.
 
 ## System Prompt Best Practices
 

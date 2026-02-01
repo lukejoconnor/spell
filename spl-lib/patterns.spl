@@ -13,6 +13,10 @@
 ;;
 ;; (try-bash "count lines in data.csv" "wc -l data.csv")
 ;; (try-bash "find project root" "git rev-parse --show-toplevel")
+;;
+;; TODO: The llm call uses a NL prompt which is now used as a code prefix.
+;; This needs redesign to wrap the NL prompt in a code prefix, e.g.:
+;;   (llm (cat "(do (def task \"" ... "\") "))
 
 (defn try-bash [intent cmd]
   (let [result (bash cmd)]
@@ -36,6 +40,9 @@
 ;;
 ;; (safe-llm "compute the 10th fibonacci number" 55)
 ;; (safe-llm (cat "summarize: " text) "summary unavailable")
+;;
+;; TODO: With retry logic removed, llm now throws exceptions instead of
+;; returning error strings. safe-llm needs redesign with exception handling.
 
 (defn safe-llm [task fallback]
   (let [result (llm task)]
@@ -54,6 +61,9 @@
 ;; context so it can adjust its strategy.
 ;;
 ;; (retry-llm "write a regex that matches ISO dates")
+;;
+;; TODO: With retry logic removed, llm now throws exceptions instead of
+;; returning error strings. retry-llm needs redesign with exception handling.
 
 (defn retry-llm [task]
   (let [result (llm task)]

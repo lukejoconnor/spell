@@ -12,12 +12,7 @@ You are executing Spell, a Lisp dialect for LLM self-orchestration. In Spell, LL
 
 HOW IT WORKS
 
-Your input is an incomplete Clojure expression — a do block. Your output continues it. The concatenation is parsed and evaluated as code. The value of the last expression in the do block is your answer.
-
-Available bindings:
-- prefix: your prompt as a string
-- completion: the full program text as a string (including your response)
-- parent-code: the parent's thunk, if one was passed (see THUNKS)
+Your input is a code prefix — the beginning of a Spell expression. Your output continues it. The concatenation (prefix + your response) is parsed and evaluated as code. The value of the last expression is your answer.
 
 OUTPUT FORMAT
 
@@ -32,17 +27,7 @@ Missing closing parentheses are auto-balanced by the interpreter. Focus on writi
 ")
 
 (def ^:private postamble
-  "ERROR HANDLING
-
-When a child (llm ...) call fails (syntax error, evaluation error), the interpreter retries twice. If all attempts fail, llm returns an error string instead of throwing.
-
-Use spell-error? to check if a child call failed:
-(let [result (llm \"task\")]
-  (if (spell-error? result)
-    \"child failed, handle gracefully\"
-    result))
-
-FUNCTIONS
+  "FUNCTIONS
 
 Define functions with defn, call them by name:
 (do (defn double [x] (* x 2)) (double 5))  ; => 10
@@ -61,16 +46,7 @@ Return values directly when the task is straightforward. Use llm to delegate sub
 
 Each child runs in its own context. The child's reasoning — any (def thought ...) steps — stays inside the child. The parent receives only the return value. Delegating a subtask keeps the parent's context focused: the child can reason at length, and only the final answer comes back.
 
-Your prompt is already bound to prefix. To pass it to a child: (llm prefix)
-To delegate a different task: (llm \"task for child\")
-
 llm-self is always available and calls the same llm variant you are running in. Use (llm-self prompt) for self-recursion without needing to know your function's name.
-
-THUNKS
-
-A thunk is quoted code: '(do (def x 42) (def y (+ x 1)))
-
-When you pass a thunk to llm, the child receives parent-code bound to that thunk. The child can evaluate parent-code or pass it to its own children.
 
 UNEVAL (SELF-REFERENTIAL CODE)
 
@@ -78,11 +54,6 @@ UNEVAL (SELF-REFERENTIAL CODE)
 
 (def my-code (vector (uneval 'my-code)))
 ; my-code => [(quote (vector (uneval 'my-code)))]
-
-Use uneval to pass your own code to a child LLM:
-(def program (do
-  (def setup \"context\")
-  (llm (uneval 'program))))  ; child sees the entire (do ...) as quoted code
 
 The quote environment is per-binding and cleaned up after evaluation completes.
 
@@ -140,26 +111,6 @@ STRIP (EXTENDING COMPLETIONS)
 (strip n s) removes n trailing close-parens from string s.
 (strip 2 \"(do (+ 1 2))\") => \"(do (+ 1 2\"
 
-To extend your completion (let a child continue your do block), end with:
-'(llm (strip 2 completion))
-The child inherits your bindings and continues where you left off.
-
-CALL-NOW (TOOL USE CONTINUATION)
-
-(call-now {:binding-name expr ...}) evaluates each expr, then continues your generation with the results in scope. Use this when you need a tool result before continuing your reasoning.
-
-(call-now {:files (:out (bash \"ls\"))})
-
-The continuation receives each binding (files in this example) and the last expression becomes the return value. Your full completion is preserved as context, so the continuation sees everything you wrote.
-
-Multiple bindings:
-(call-now {:files (:out (bash \"ls\")) :count (:out (bash \"wc -l < data.txt\"))})
-
-Recursive tool use (continuation can call call-now again):
-(call-now {:files (:out (bash \"ls\"))})
-; In continuation:
-(call-now {:contents (:out (bash (cat \"cat \" (first files))))})
-
 CONCURRENCY
 
 (future expr) starts evaluating expr in a separate thread and returns a future handle immediately. (await handle) blocks until the future completes and returns its value.
@@ -171,10 +122,6 @@ CONCURRENCY
 Futures capture the current environment at creation time. Environment changes inside a future do not leak to the parent.
 
 Place futures at the end of your program, with minimal code after them. Every token generated after a future expression delays when it starts executing.
-
-For tasks where the continuation logic depends on inspecting results, use call-now instead:
-(call-now {:a (llm \"analyze X\") :b (llm \"analyze Y\")})
-; continuation sees a and b, can branch on their values
 
 Futures can await other futures (DAG dependencies):
 (def a (future (llm \"research A\")))
@@ -232,7 +179,6 @@ Output: (cat \"Hello, \" (read-name) \"!\")")
          "Concurrency: future await\n"
          (when (contains? llms 'llm) "Self: llm\n")
          "Self (any variant): llm-self\n"
-         "Continuation: call-now\n"
          (when (seq tool-names)
            (str "Tools: " (clojure.string/join " " tool-names) "\n"))
          (when (seq agent-names)
