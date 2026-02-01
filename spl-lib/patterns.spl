@@ -1,0 +1,65 @@
+;; Spell Pattern Library
+;;
+;; Reusable defn forms for common Spell idioms.
+;; Load via (make-llm {:prelude [<forms>]}).
+
+;; ---------------------------------------------------------------------------
+;; try-bash — bash with automatic error recovery
+;; ---------------------------------------------------------------------------
+;; Runs a bash command. On success (exit 0), returns stdout.
+;; On failure, delegates to a child LLM with the goal, the failed
+;; command, and full error output. The child has bash access and
+;; can try different commands or approaches to accomplish the goal.
+;;
+;; (try-bash "count lines in data.csv" "wc -l data.csv")
+;; (try-bash "find project root" "git rev-parse --show-toplevel")
+
+(defn try-bash [intent cmd]
+  (let [result (bash cmd)]
+    (if (= 0 (:exit result))
+      (:out result)
+      (llm (cat "A bash command failed. You have bash — diagnose and accomplish the goal.\n"
+                 "Goal: " intent "\n"
+                 "Command: " cmd "\n"
+                 "Exit code: " (str (:exit result)) "\n"
+                 "Stderr: " (:err result) "\n"
+                 "Stdout: " (:out result) "\n"
+                 "Return the result as a string. "
+                 "If the goal is unachievable, return a description of why.")))))
+
+;; ---------------------------------------------------------------------------
+;; safe-llm — delegation with fallback
+;; ---------------------------------------------------------------------------
+;; Delegates to a child LLM. If the child fails after all retries
+;; (syntax error, eval error), returns fallback instead of an error
+;; string. Use when you need a guaranteed non-error value.
+;;
+;; (safe-llm "compute the 10th fibonacci number" 55)
+;; (safe-llm (cat "summarize: " text) "summary unavailable")
+
+(defn safe-llm [task fallback]
+  (let [result (llm task)]
+    (if (spell-error? result)
+      fallback
+      result)))
+
+;; ---------------------------------------------------------------------------
+;; retry-llm — error-informed second attempt
+;; ---------------------------------------------------------------------------
+;; Delegates to a child LLM. If the child fails, sends the task
+;; AND the error to a fresh child so it can try a different approach.
+;;
+;; Different from llm's built-in retries: those re-submit the same
+;; prompt hoping to fix syntax. This gives a new child the error
+;; context so it can adjust its strategy.
+;;
+;; (retry-llm "write a regex that matches ISO dates")
+
+(defn retry-llm [task]
+  (let [result (llm task)]
+    (if (spell-error? result)
+      (llm (cat "A previous attempt at this task failed.\n"
+                 "Task: " task "\n"
+                 "Error: " result "\n"
+                 "Try a different approach. Return the result."))
+      result)))

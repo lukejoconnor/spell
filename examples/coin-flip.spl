@@ -1,0 +1,1 @@
+Flip a coin programmatically. If it lands heads, print an h and pass this exact prompt onto a child LLM, using its binding, so that they can do the same thing. If it lands tails, print a t.

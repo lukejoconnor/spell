@@ -33,6 +33,11 @@
   [v]
   (and (string? v) (.startsWith ^String v error-prefix)))
 
+(defn spell-future?
+  "Returns true if v is a Spell future handle."
+  [v]
+  (and (map? v) (:spell/future v)))
+
 (defn format-llm-error
   "Format an error message for a failed llm call."
   [response error]
@@ -55,7 +60,11 @@
    'cat (fn [& args] (apply str args)),
    'strip parse/strip-trailing-parens,
    'spell-error? spell-error?,
-   'spell-eval (fn [expr] (first (spell-eval expr {})))})
+   'spell-eval (fn [expr] (first (spell-eval expr {}))),
+   'await (fn [future-val]
+            (when-not (spell-future? future-val)
+              (throw (ex-info "await: argument must be a future" {:got future-val})))
+            (deref (:ref future-val)))})
 
 (def ^:dynamic *builtins*
   "Active builtins map. Rebound by each llm variant during evaluation.
@@ -68,88 +77,102 @@
 
 (def special-forms
   "Special forms that are not free variables."
-  #{'quote 'def 'do 'if 'let 'fn 'defn 'cond 'and 'or 'uneval 'expand})
+  #{'quote 'def 'do 'if 'let 'fn 'defn 'cond 'and 'or 'uneval 'expand 'future})
+
+(defn spell-fn?
+  "Returns true if v is a Spell function (dynamic-scoping function map)."
+  [v]
+  (and (map? v) (:spell/fn v)))
 
 (defn quote-value
   "Wrap non-self-evaluating values in (quote ...) for safe embedding in generated code."
   [v]
-  (if (or (nil? v) (number? v) (string? v) (boolean? v) (keyword? v))
-    v
-    (list 'quote v)))
+  (cond
+    (or (nil? v) (number? v) (string? v) (boolean? v) (keyword? v)) v
+    (spell-fn? v) (list* 'fn (:params v) (:body v))
+    :else (list 'quote v)))
 
-(defn- expand-expr
+(defn- -expand-expr
   "Walk expr substituting outer-env values for free symbols not in inner (locally defined).
-   Mirrors spell-eval's structure but returns transformed data instead of evaluating."
+   Returns [expanded-expr updated-inner]. Mirrors spell-eval's structure but returns
+   transformed data instead of evaluating."
   [expr outer-env inner]
   (cond
     ;; Self-evaluating
     (or (nil? expr) (string? expr) (number? expr) (boolean? expr) (keyword? expr))
-    expr
+    [expr inner]
 
     ;; Symbol: inner (locally defined) -> leave; outer-env -> substitute; else -> leave
     (symbol? expr)
-    (cond
-      (contains? inner expr) expr
-      (contains? (or *builtins* core-builtins) expr) expr
-      (contains? special-forms expr) expr
-      (contains? outer-env expr) (quote-value (get outer-env expr))
-      :else expr)
+    [(cond
+       (contains? inner expr) expr
+       (contains? (or *builtins* core-builtins) expr) expr
+       (contains? special-forms expr) expr
+       (contains? outer-env expr) (quote-value (get outer-env expr))
+       :else expr)
+     inner]
 
     ;; Vector
     (vector? expr)
-    (mapv #(expand-expr % outer-env inner) expr)
+    [(mapv #(first (-expand-expr % outer-env inner)) expr) inner]
 
     ;; Map
     (map? expr)
-    (into {} (map (fn [[k v]] [k (expand-expr v outer-env inner)]) expr))
+    [(into {} (map (fn [[k v]] [k (first (-expand-expr v outer-env inner))]) expr)) inner]
 
     ;; List
     (seq? expr)
-    (case (first expr)
-      nil   expr
-      quote expr
+    (let [expand1 #(first (-expand-expr % outer-env inner))]
+      (case (first expr)
+        nil   [expr inner]
+        quote [expr inner]
 
-      def (let [sym (second expr)
-                val-expanded (expand-expr (nth expr 2) outer-env inner)]
-            (list 'def sym val-expanded))
+        def (let [sym (second expr)
+                  [val-expanded _] (-expand-expr (nth expr 2) outer-env inner)]
+              [(list 'def sym val-expanded) (conj inner sym)])
 
-      do (let [[forms _]
-               (reduce (fn [[acc i] sub-expr]
-                         (let [expanded (expand-expr sub-expr outer-env i)
-                               new-inner (if (and (seq? sub-expr) (= 'def (first sub-expr)))
-                                           (conj i (second sub-expr))
-                                           i)]
-                           [(conj acc expanded) new-inner]))
-                       [[] inner]
-                       (rest expr))]
-           (list* (first expr) forms))
+        do (let [[forms final-inner]
+                 (reduce (fn [[acc i] sub-expr]
+                           (let [[expanded new-i] (-expand-expr sub-expr outer-env i)]
+                             [(conj acc expanded) new-i]))
+                         [[] inner]
+                         (rest expr))]
+             [(list* 'do forms) final-inner])
 
-      if (list* 'if (map #(expand-expr % outer-env inner) (rest expr)))
+        if [(list* 'if (map expand1 (rest expr))) inner]
 
-      let (let [pairs (partition 2 (second expr))
-                [expanded-bindings final-inner]
-                (reduce (fn [[acc i] [sym val-expr]]
-                          [(conj acc sym (expand-expr val-expr outer-env i))
-                           (conj i sym)])
-                        [[] inner] pairs)
-                expanded-body (map #(expand-expr % outer-env final-inner) (drop 2 expr))]
-            (list* 'let (vec expanded-bindings) expanded-body))
+        let (let [pairs (partition 2 (second expr))
+                  [expanded-bindings final-inner]
+                  (reduce (fn [[acc i] [sym val-expr]]
+                            [(conj acc sym (first (-expand-expr val-expr outer-env i)))
+                             (conj i sym)])
+                          [[] inner] pairs)
+                  expanded-body (map #(first (-expand-expr % outer-env final-inner)) (drop 2 expr))]
+              [(list* 'let (vec expanded-bindings) expanded-body) inner])
 
-      fn (let [params (set (second expr))
-               body-inner (into inner params)]
-           (list* 'fn (second expr) (map #(expand-expr % outer-env body-inner) (drop 2 expr))))
+        fn (let [params (set (second expr))
+                 body-inner (into inner params)]
+             [(list* 'fn (second expr) (map #(first (-expand-expr % outer-env body-inner)) (drop 2 expr))) inner])
 
-      defn (let [name-sym (second expr)
-                 params (set (nth expr 2))
-                 body-inner (into inner (conj params name-sym))]
-             (list* 'defn name-sym (nth expr 2) (map #(expand-expr % outer-env body-inner) (drop 3 expr))))
+        defn (let [name-sym (second expr)
+                   params (set (nth expr 2))
+                   body-inner (into inner (conj params name-sym))]
+               [(list* 'defn name-sym (nth expr 2) (map #(first (-expand-expr % outer-env body-inner)) (drop 3 expr)))
+                (conj inner name-sym)])
 
-      (cond and or) (list* (first expr) (map #(expand-expr % outer-env inner) (rest expr)))
+        future [(list 'future (expand1 (second expr))) inner]
 
-      ;; Default: recurse into all sub-expressions
-      (apply list (map #(expand-expr % outer-env inner) expr)))
+        (cond and or) [(list* (first expr) (map expand1 (rest expr))) inner]
 
-    :else expr))
+        ;; Default: recurse into all sub-expressions
+        [(apply list (map expand1 expr)) inner]))
+
+    :else [expr inner]))
+
+(defn- expand-expr
+  "Expand expr, substituting free variables from outer-env. Returns expanded expression."
+  [expr outer-env]
+  (first (-expand-expr expr outer-env #{})))
 
 ;; =============================================================================
 ;; Evaluator
@@ -179,10 +202,12 @@
     (reduce (fn [[acc e] x] (let [[v e'] (spell-eval x e)] [(conj acc v) e']))
             [[] env] expr)
 
-    ;; Map: evaluate values, threading env
+    ;; Map: spell-fn maps are self-evaluating; otherwise evaluate values
     (map? expr)
-    (reduce (fn [[acc e] [k v]] (let [[v' e'] (spell-eval v e)] [(assoc acc k v') e']))
-            [{} env] expr)
+    (if (spell-fn? expr)
+      [expr env]
+      (reduce (fn [[acc e] [k v]] (let [[v' e'] (spell-eval v e)] [(assoc acc k v') e']))
+              [{} env] expr))
 
     ;; List: special forms or function application
     (seq? expr)
@@ -209,15 +234,9 @@
                   [result _] (eval-seq body local-env)]
               [result env])  ; let bindings don't escape
 
-      ;; fn: (fn [params...] body...) - creates closure
-      fn    (let [params (second expr)
-                  body (drop 2 expr)
-                  closure-env env]
-              [(fn [& args]
-                 (let [local-env (into closure-env (map vector params args))
-                       [result _] (eval-seq body local-env)]
-                   result))
-               env])
+      ;; fn: (fn [params...] body...) - dynamic scoping, returns source form
+      fn    [{:spell/fn true :params (second expr) :body (drop 2 expr)}
+             env]
 
       ;; defn: (defn name [params...] body...)
       defn  (let [name (second expr)
@@ -271,12 +290,26 @@
       ;; expand: (expand expr) - single-pass walk mirroring spell-eval
       ;; Substitutes free variables from env, returns data (not evaluated)
       expand (let [[quoted-expr e'] (spell-eval (second expr) env)]
-               [(expand-expr quoted-expr e' #{}) e'])
+               [(expand-expr quoted-expr e') e'])
+
+      ;; future: (future expr) - evaluate expr in a new thread, return future handle
+      ;; Captures env at creation time (immutable map, safe to share).
+      ;; Conveys dynamic bindings via bound-fn. Env updates inside future don't leak.
+      future (let [body (second expr)
+                   captured-env env
+                   f (bound-fn [] (first (spell-eval body captured-env)))]
+               [{:spell/future true :ref (clojure.core/future (f))} env])
 
       ;; Function application: evaluate all, apply first to rest
       (let [[vals e'] (reduce (fn [[acc e] x] (let [[v e'] (spell-eval x e)] [(conj acc v) e']))
-                              [[] env] expr)]
-        [(apply (first vals) (rest vals)) e']))
+                              [[] env] expr)
+            f (first vals)
+            args (rest vals)]
+        (if (spell-fn? f)
+          (let [local-env (into e' (map vector (:params f) args))
+                [result _] (eval-seq (:body f) local-env)]
+            [result e'])
+          [(apply f args) e'])))
 
     :else (throw (ex-info "Unknown expression type" {:expr expr}))))
 

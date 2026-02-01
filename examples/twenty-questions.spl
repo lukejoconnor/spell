@@ -1,0 +1,1 @@
+Play 20 questions. You are the orchestrator who picks a secret word. Create two subagent roles: (1) a CHECKER who knows the secret and answers yes/no honestly, (2) a WORKER who does NOT know the secret and must guess by asking questions. The worker should adapt its questions based on previous answers. Loop until the worker guesses correctly or runs out of guesses.

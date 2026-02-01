@@ -247,25 +247,23 @@
   (testing "fn with multiple body exprs"
     (is (= 3 (run-spell '((fn [x] (+ x 1) (+ x 2)) 1)))))
 
-  (testing "closure captures value at definition time, not reference"
-    ;; Define f when y=10, change y to 100, f should still see y=10
+  (testing "dynamic scoping - function sees caller's env"
+    ;; Define f when y=10, change y to 100, f should see y=100 (dynamic)
     (let [env1 {'y 10}
           [_ env2] (spell-eval '(defn f [x] (+ x y)) env1)
           env3 (assoc env2 'y 100)
           [result _] (spell-eval '(f 5) env3)]
-      (is (= 15 result) "closure should capture y=10, not see y=100")))
+      (is (= 105 result) "dynamic scoping: f should see y=100 from call site")))
 
-  (testing "closure in fresh spell-eval has no access to outer context"
-    ;; Thunk defines f (referencing y) and calls f, but y is never defined
-    ;; This should fail - the closure's env is empty, y is unbound
-    (is (thrown-with-msg? Exception #"Unbound symbol"
-          (spell-eval '(do (defn f [x] (+ x y)) (f 3)) {})))))
+  (testing "dynamic scoping - function sees def'd vars at call site"
+    ;; y is not defined when f is defined, but is defined before f is called
+    (is (= 8 (run-spell '(do (defn f [x] (+ x y)) (def y 5) (f 3)))))))
 
 (deftest defn-form
   (testing "defn creates function in env"
     (let [[val env] (spell-eval '(defn square [x] (* x x)) {})]
-      (is (fn? val))
-      (is (fn? (env 'square)))))
+      (is (eval/spell-fn? val))
+      (is (eval/spell-fn? (env 'square)))))
 
   (testing "defn function can be called"
     (is (= 9 (run-spell '(do (defn square [x] (* x x)) (square 3))))))
@@ -540,15 +538,12 @@
     (let [[val _] (spell-eval '(def expr (expand '(uneval 'expr))) {})]
       (is (= '(uneval 'expr) val))))
 
-  (testing "defn-bound vars not expanded (not in env)"
-    ;; defn creates a function, which isn't in the expression's free vars
+  (testing "defn-bound vars expanded as source form"
+    ;; defn creates a spell-fn map, which expand reconstructs as (fn ...) source
     (let [[val _] (spell-eval '(do (defn f [x] (* x x))
                                    (expand '(f 3))) {})]
-      ;; f is in env, so it gets substituted — but as a function, quote-value wraps it
-      ;; Actually f IS in env, so it would be substituted. But f is a Clojure fn,
-      ;; which quote-value wraps in (quote ...). This isn't portable.
-      ;; Users should only expand data bindings.
-      (is (some? val))))
+      (is (= '((fn [x] (* x x)) 3) val))
+      (is (= 9 (run-spell val)))))
 
   (testing "internal def shadows outer binding"
     ;; After (def x 10) inside the expression, x should NOT be substituted
@@ -580,3 +575,91 @@
             (spell-eval 'bash {})))))
 
 )
+
+;; =============================================================================
+;; Future / Await tests
+;; =============================================================================
+
+(deftest future-await-basic
+  (testing "basic future + await returns value"
+    (is (= 3 (run-spell '(await (future (+ 1 2)))))))
+
+  (testing "future returns a spell future map"
+    (let [[val _] (spell-eval '(future 42) {})]
+      (is (map? val))
+      (is (:spell/future val))
+      (is (instance? clojure.lang.IDeref (:ref val)))))
+
+  (testing "await on non-future throws"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"await: argument must be a future"
+          (run-spell '(await 42)))))
+
+  (testing "double await returns cached value"
+    (is (= 5 (run-spell '(do (def f (future (+ 2 3)))
+                              (def first-await (await f))
+                              (await f)))))))
+
+(deftest future-env-capture
+  (testing "future captures enclosing env"
+    (is (= 6 (run-spell '(let [x 5] (await (future (+ x 1))))))))
+
+  (testing "future sees defs from before its creation"
+    (is (= 15 (run-spell '(do (def x 10) (def y 5)
+                               (await (future (+ x y)))))))))
+
+(deftest future-isolation
+  (testing "defs inside future don't leak to parent env"
+    (let [[val env] (spell-eval '(do (def f (future (do (def leaked 99) leaked)))
+                                      (await f))
+                                 {})]
+      (is (= 99 val))
+      (is (not (contains? env 'leaked))))))
+
+(deftest future-concurrency
+  (testing "two futures run concurrently (not sequentially)"
+    ;; Each future sleeps 100ms. If sequential, total >= 200ms; if concurrent, ~100ms.
+    (let [sleep-fn (fn [ms] (Thread/sleep (long ms)) ms)
+          builtins (merge eval/core-builtins {'sleep sleep-fn})
+          start (System/currentTimeMillis)
+          result (binding [eval/*builtins* builtins]
+                   (first (spell-eval
+                            '(do (def a (future (sleep 100)))
+                                 (def b (future (sleep 100)))
+                                 (list (await a) (await b)))
+                            {})))
+          elapsed (- (System/currentTimeMillis) start)]
+      (is (= '(100 100) result))
+      ;; Allow generous margin but should be well under 200ms
+      (is (< elapsed 180) (str "Expected concurrent execution, took " elapsed "ms")))))
+
+(deftest future-error-propagation
+  (testing "exception in future body re-throws on await"
+    (is (thrown? Exception
+          (run-spell '(await (future (/ 1 0))))))))
+
+(deftest future-nested
+  (testing "nested future + await"
+    (is (= 42 (run-spell '(await (future (await (future 42))))))))
+
+  (testing "DAG: future C awaits futures A and B"
+    (let [result (run-spell
+                   '(do (def a (future (+ 10 1)))
+                        (def b (future (+ 20 2)))
+                        (def c (future (do (def ra (await a))
+                                           (def rb (await b))
+                                           (+ ra rb))))
+                        (await c)))]
+      (is (= 33 result)))))
+
+(deftest future-dynamic-bindings
+  (testing "future conveys *builtins* via bound-fn"
+    (let [custom-builtins (merge eval/core-builtins
+                                 {'my-tool (fn [] "tool-result")})]
+      (binding [eval/*builtins* custom-builtins]
+        (is (= "tool-result"
+               (first (spell-eval '(await (future (my-tool))) {}))))))))
+
+(deftest future-expand
+  (testing "expand handles future form"
+    (let [[val _] (spell-eval '(do (def x 10) (expand '(future (+ x 1)))) {})]
+      (is (= '(future (+ 10 1)) val)))))

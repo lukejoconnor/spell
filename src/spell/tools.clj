@@ -1,8 +1,64 @@
 (ns spell.tools
-  "File manipulation tools for Spell agents.
+  "Tool implementations for Spell agents.
 
-   These tools provide reliable file I/O that avoids the escaping issues
-   inherent in bash echo/heredoc approaches.")
+   File tools provide reliable file I/O that avoids the escaping issues
+   inherent in bash echo/heredoc approaches.
+   Bash and read-name tools provide shell access and name lookup."
+  (:import [java.util.concurrent TimeUnit]))
+
+;; =============================================================================
+;; read-name
+;; =============================================================================
+
+(defn read-name
+  "Read the name from name.txt file."
+  []
+  (try
+    (clojure.string/trim (slurp "name.txt"))
+    (catch java.io.FileNotFoundException _
+      (throw (ex-info "name.txt not found" {:file "name.txt"})))))
+
+(def read-name-tool
+  "Tool metadata for read-name."
+  {:name 'read-name
+   :fn   read-name
+   :doc  "Returns the name from name.txt. Takes no arguments. Use (read-name) to get the name."})
+
+;; =============================================================================
+;; bash
+;; =============================================================================
+
+(def ^:dynamic *bash-timeout*
+  "Timeout in seconds for bash commands. Set to nil to disable."
+  30)
+
+(defn run-bash
+  "Execute a bash command string. Returns {:exit N :out \"...\" :err \"...\"}."
+  [command]
+  (let [pb (ProcessBuilder. ["bash" "-c" command])
+        process (.start pb)
+        out-future (future (slurp (.getInputStream process)))
+        err-future (future (slurp (.getErrorStream process)))
+        timed-out? (if *bash-timeout*
+                     (not (.waitFor process (long *bash-timeout*) TimeUnit/SECONDS))
+                     (do (.waitFor process) false))]
+    (if timed-out?
+      (do (.destroyForcibly process)
+          {:exit -1
+           :out ""
+           :err (str "Command timed out after " *bash-timeout* " seconds")})
+      {:exit (.exitValue process)
+       :out (clojure.string/trim @out-future)
+       :err (clojure.string/trim @err-future)})))
+
+(def bash-tool
+  "Tool metadata for bash."
+  {:name 'bash
+   :fn   run-bash
+   :doc  "Execute a shell command. Takes a command string, returns a map with :exit (integer), :out (stdout string), :err (stderr string).
+(bash \"ls -la\")       ; => {:exit 0 :out \"...\" :err \"\"}
+(:out (bash \"pwd\"))   ; => \"/current/dir\"
+(:exit (bash \"false\")) ; => 1"})
 
 ;; =============================================================================
 ;; read-file
@@ -108,9 +164,13 @@ Tip: include surrounding context to ensure uniqueness:
   Use: (str-replace f \"(def x\" \"(def y\")  ; more specific"})
 
 ;; =============================================================================
-;; All file tools
+;; All tools
 ;; =============================================================================
 
 (def file-tools
   "All file manipulation tools."
   [read-file-tool write-file-tool str-replace-tool])
+
+(def default-tools
+  "Default tool set for the standard llm function."
+  [read-name-tool bash-tool read-file-tool write-file-tool str-replace-tool])

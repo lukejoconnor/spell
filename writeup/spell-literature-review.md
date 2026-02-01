@@ -5,17 +5,66 @@
 This review surveys existing work related to Spell, a domain-specific language for LLM self-orchestration. The core innovation of Spell—enabling LLMs to write programs that control their own recursive execution—occupies a distinctive position in the literature. While related concepts exist across multiple research traditions, no prior work combines all of Spell's key properties: natural language as orchestration medium, arbitrary control flow (not fixed patterns), and the LLM as both author and subject of execution programs.
 
 **Closest prior work:**
+- Kimi K2.5 PARL - Jan 2026 - trainable orchestrator learns task decomposition via RL; orchestration in weights
+- Cursor Agent Swarm - Jan 2026 - human-designed Planner/Worker/Judge hierarchy; orchestration in harness code
 - Recursive Language Models (RLM) - Dec 2024 - treats prompts as variables, LLM writes code to call itself
 - MemGPT - Oct 2023 - self-directed memory management via function calls
 - 3-Lisp - 1982 - reflective lambdas execute one meta-level above caller
 
-**Key gap identified:** No existing system treats natural language itself as the orchestration/control language where the LLM defines its own execution topology without code intermediaries or fixed patterns.
+**Key gap identified:** PARL demonstrates that model-designed orchestration can achieve state-of-the-art results, but the orchestration policy is opaque (learned in weights). Cursor demonstrates that orchestration topology is critical, but relies on human design. No existing system represents model-designed orchestration as inspectable, composable source code.
 
 ---
 
-## 1. Recent LLM Agent Architectures (2023-2025)
+## 1. Recent LLM Agent Architectures (2023-2026)
 
-### 1.1 Recursive Language Models (RLM)
+### 1.1 Kimi K2.5 PARL (Parallel-Agent Reinforcement Learning)
+
+**Source:** Moonshot AI, Jan 2026 - kimi.com/blog/kimi-k2-5.html
+
+The closest existing system to Spell's core thesis: model-designed orchestration. A 1-trillion-parameter Mixture-of-Experts model (32B activated per token) with a trainable orchestrator that learns to decompose tasks into parallel subtasks via RL. During inference, the model dynamically spawns up to 100 sub-agents across 1500 tool calls with no predefined agent roles.
+
+**Key innovations:**
+- **Frozen sub-agents, trained orchestrator:** Only the orchestration policy is trained via RL; spawned agents are frozen copies of the base model
+- **PARL reward function:** Rt = λaux(e) · r_parallel + (1 − λaux(e)) · (I[success] · Q(τ)). Early training rewards parallelism; late training rewards task quality. Prevents "serial collapse" and "fake parallelism" pathologies
+- **Critical Steps metric:** Latency-aware evaluation measuring the longest dependency chain, not just concurrency
+- **Results:** 3-4.5x speedup on coding tasks; 76.8% on SWE-bench Verified (state-of-the-art at release); open weights
+
+**Relevance to Spell:** PARL validates Spell's core bet—that models can design their own orchestration and outperform fixed topologies. The key difference is the representation of the orchestration policy:
+
+| Aspect | PARL | Spell |
+|--------|------|-------|
+| Orchestration is... | In weights (learned via RL) | In source code (written by LLM) |
+| Inspectable? | No | Yes |
+| Composable? | No (monolithic policy) | Yes (function composition) |
+| Debuggable? | No | Yes (read the program) |
+| Trainable? | Yes (RL on reward signal) | Not yet (zero-shot generation) |
+
+PARL is the "compiled" approach to model-designed orchestration; Spell is the "interpreted" approach. The natural synthesis is training a model with RL to write Spell programs—combining PARL's learned orchestration with Spell's transparency and composability. PARL's critical-steps reward metric could apply directly to Spell program outputs.
+
+### 1.2 Cursor Agent Swarm
+
+**Source:** Cursor, Jan 2026 - cursor.com/blog/scaling-agents
+
+Cursor ran hundreds of GPT-5.2 agents for ~1 week to build a web browser from scratch in Rust (1M+ lines, 1000 files, 3342 commits, zero human intervention during execution). The experiment went through two failed orchestration topologies before finding one that worked.
+
+**Failed topologies:**
+1. **Flat peer coordination with file locking:** Deadlocks everywhere; 20 agents reduced to 2-3 effective throughput
+2. **Optimistic concurrency control:** Agents became risk-averse, avoiding hard tasks to minimize merge conflicts
+3. **Planner/Worker/Judge hierarchy** (the breakthrough): Planners decompose tasks recursively, workers execute in isolation (deliberately oblivious to each other), judges evaluate progress
+
+**Key findings:**
+- Orchestration topology dramatically affects outcomes—same model, different topology, different results
+- Success came from *restricting* agent autonomy (workers had no inter-worker communication)
+- Prompts mattered more than harness or model choice
+- Distributed computing patterns (locks, optimistic concurrency) did not transfer to LLM agents
+
+**Relevance to Spell:** The Cursor experiment provides evidence both for and against self-orchestration:
+
+- **For:** Topology is a first-class concern that requires iteration. Spell makes topology programmable, enabling faster iteration than rewriting harness code.
+- **Against:** Agents failed when given coordination freedom (attempts 1-2). Success required human-imposed structure. A self-orchestrating model might reproduce the failure modes rather than the working topology.
+- **Reconciliation:** Models may not need to *invent* topologies from scratch. A pattern library (planner-worker, map-reduce, debate) lets the model *select and compose* known-good patterns. Composition is where Spell has a structural advantage: in harness-based systems, combining patterns requires new glue code; in Spell, it is function composition.
+
+### 1.3 Recursive Language Models (RLM)
 
 **Source:** Zhang & Khattab, Dec 2024 - arxiv.org/abs/2512.24601
 
@@ -28,7 +77,7 @@ The closest recent work to Spell's core concept. RLM treats prompts as Python va
 
 **Distinction from Spell:** RLM uses Python as the orchestration layer. The LLM writes Python code that manipulates prompts. Spell proposes the LLM write S-expressions/natural language that *directly specify* execution topology. RLM's recursion is mediated by code; Spell's is declarative.
 
-### 1.2 MemGPT
+### 1.4 MemGPT
 
 **Source:** Packer et al., Oct 2023 - arxiv.org/abs/2310.08560
 
@@ -41,7 +90,7 @@ OS-inspired virtual context management where the LLM manages its own memory via 
 
 **Distinction from Spell:** MemGPT focuses specifically on memory management within a fixed agent loop. Spell addresses arbitrary control flow—memory management is one possible application but not the central concern.
 
-### 1.3 Tree of Thoughts (ToT)
+### 1.5 Tree of Thoughts (ToT)
 
 **Source:** Yao et al., May 2023 - arxiv.org/abs/2305.10601
 
@@ -54,7 +103,7 @@ Explores multiple reasoning paths as a tree structure with LLM self-evaluation.
 
 **Distinction from Spell:** ToT uses pre-defined search algorithms. The tree structure and search strategy are external. In Spell, the LLM would write the branching logic itself—potentially ToT-like patterns, but also patterns ToT cannot express.
 
-### 1.4 ReAct
+### 1.6 ReAct
 
 **Source:** Yao et al., 2022 - react-lm.github.io
 
@@ -67,7 +116,7 @@ The foundational Thought → Action → Observation loop pattern.
 
 **Distinction from Spell:** ReAct is a fixed pattern. Every iteration follows the same structure. Spell enables the LLM to write arbitrary patterns—including ReAct, but also parallel branches, recursive decomposition, context surgery, etc.
 
-### 1.5 DSPy
+### 1.7 DSPy
 
 **Source:** Stanford NLP, Oct 2023 - github.com/stanfordnlp/dspy
 
@@ -80,7 +129,7 @@ The foundational Thought → Action → Observation loop pattern.
 
 **Distinction from Spell:** DSPy's programs are written by humans and optimized by algorithms. The LLM is the *subject* of optimization, not the *author* of orchestration logic. Spell inverts this: the LLM writes its own orchestration.
 
-### 1.6 Other Notable Recent Work
+### 1.8 Other Notable Recent Work
 
 | System | Date | Key Idea | Distinction from Spell |
 |--------|------|----------|----------------------|
@@ -88,6 +137,57 @@ The foundational Thought → Action → Observation loop pattern.
 | **SICA** | Sep 2025 | Self-improving coding agent | Optimizes prompts/code, but external overseer controls loop |
 | **Sculptor** | Aug 2025 | Active Context Management | LLM manages attention/memory, not execution topology |
 | **MARS** | Jan 2025 | Metacognitive reflection | Single recurrence cycle, not arbitrary recursion |
+
+### 1.9 Open-Source Coding Agent Implementations
+
+Examining how production coding agents implement their core loops reveals a structural invariant relevant to Spell's positioning.
+
+#### Opencode (opencode-ai/opencode)
+
+A Go-based coding agent whose entire orchestration logic is a ~35-line for-loop in `internal/llm/agent/agent.go`:
+
+```go
+for {
+    agentMessage, toolResults, err := a.streamAndHandleEvents(ctx, sessionID, msgHistory)
+    // ...
+    if (agentMessage.FinishReason() == message.FinishReasonToolUse) && toolResults != nil {
+        msgHistory = append(msgHistory, agentMessage, *toolResults)
+        continue
+    }
+    return AgentEvent{Type: AgentEventTypeResponse, Message: agentMessage, Done: true}
+}
+```
+
+Each iteration streams an LLM response, executes any tool calls sequentially, appends results as a `Tool`-role message, and loops. The LLM controls the loop solely by choosing whether to emit tool calls.
+
+#### LangGraph (langchain-ai/langgraph)
+
+Expresses the same pattern as a declarative graph over a Pregel (Bulk Synchronous Parallel) execution engine. The standard React agent defines two nodes and a conditional edge:
+
+```python
+workflow.add_node("agent", call_model)
+workflow.add_node("tools", tool_node)
+workflow.add_conditional_edges("agent", should_continue, path_map=["tools", END])
+workflow.add_edge("tools", "agent")
+```
+
+Where `should_continue` performs the same check as opencode's `if FinishReason == ToolUse`:
+
+```python
+def should_continue(state):
+    last_message = state["messages"][-1]
+    if not isinstance(last_message, AIMessage) or not last_message.tool_calls:
+        return END
+    return "tools"
+```
+
+The Pregel engine adds parallel node execution, checkpoint-based resumability, and dynamic branching via `Send()` objects—but for the basic agent case, the control flow is identical to opencode's for-loop.
+
+#### The agent loop invariant
+
+Despite architectural differences (simple loop vs. graph engine, sequential vs. parallel, mutable vs. immutable state), the LLM's role is structurally identical in both systems: it receives the current message history, produces one response, and external code decides what happens next. The LLM never plans multiple steps, never sees the graph topology, and never specifies its own control flow. It is a passive, one-step-at-a-time participant in a developer-authored harness.
+
+**Distinction from Spell:** This invariant is precisely what Spell breaks. In these frameworks, the developer writes the execution topology and the LLM fills in content. In Spell, the LLM writes the execution topology itself—deciding what recursive calls to make, what context to pass, and how to branch—using the same natural language medium it already operates in.
 
 ---
 
@@ -382,38 +482,39 @@ A novel observation: natural language is naturally "homoiconic" for LLMs.
 
 ### 8.1 Comparison Matrix
 
-| Property | RLM | MemGPT | ToT | ReAct | DSPy | LMQL | Guidance | Spell |
-|----------|-----|--------|-----|-------|------|------|----------|-------|
-| LLM controls execution | Partial | Memory only | No | No | No | No | No | **Yes** |
-| Arbitrary control flow | Via Python | No | No | No | No | Via Python | Via Python | **Yes** |
-| Recursive self-calls | Yes | No | No | Loop only | No | Nested queries | No | **Yes** |
-| Natural language medium | No (Python) | No | No | Yes | No | Hybrid | Hybrid | **Yes** |
-| Context surgery | No | Memory ops | Backtrack | No | No | No | No | **Yes** |
-| Meta-level hooks | No | No | No | No | No | No | No | **Yes** |
-| Output constraints | No | No | No | No | Yes | **Yes** | **Yes** | Patterns |
+| Property | PARL | Cursor | RLM | MemGPT | ToT | ReAct | DSPy | LMQL | Spell |
+|----------|------|--------|-----|--------|-----|-------|------|------|-------|
+| Model-designed orchestration | **Yes** (weights) | No (human) | Partial | No | No | No | No | No | **Yes** (code) |
+| Inspectable orchestration | No | Yes (harness) | Via Python | No | No | No | No | No | **Yes** |
+| Arbitrary control flow | Learned | Fixed | Via Python | No | No | No | No | Via Python | **Yes** |
+| Recursive self-calls | Spawns agents | No | Yes | No | No | Loop only | No | Nested queries | **Yes** |
+| Natural language medium | No | No | No (Python) | No | No | Yes | No | Hybrid | **Yes** |
+| Context surgery | No | No | No | Memory ops | Backtrack | No | No | No | **Yes** |
+| Meta-level hooks | No | No | No | No | No | No | No | No | **Yes** |
+| Trainable via RL | **Yes** | No | No | No | No | No | **Yes** (prompts) | No | Possible |
 
 ### 8.2 Unique Contributions
 
-1. **Natural language as orchestration language:** RLM uses Python; Spell proposes the orchestration *is* the natural language output. The S-expression syntax is a formalization, but the LLM's "native" output is the program.
+1. **Orchestration as inspectable code:** PARL demonstrates that model-designed orchestration works, but the policy is opaque (in weights). Spell represents the same capability as source code—readable, debuggable, composable. This is the "interpreted" vs "compiled" distinction applied to orchestration.
 
-2. **Arbitrary control flow without fixed patterns:** ToT has trees, ReAct has loops. Spell imposes no structure—the LLM can write any pattern, including novel ones.
+2. **Composable orchestration patterns:** Cursor's experiment shows that topology matters and requires iteration. In harness-based systems, combining patterns (e.g., planner-worker + map-reduce) requires new glue code. In Spell, it is function composition—a structural advantage for rapid iteration over topologies.
 
-3. **Context surgery:** No prior work explicitly addresses the LLM's ability to manipulate what context its children see. The "pruning failed reasoning" example (§10.3 in spec) has no clear precedent.
+3. **Natural language as orchestration language:** RLM uses Python; Spell proposes the orchestration *is* the natural language output. The S-expression syntax is a formalization, but the LLM's "native" output is the program.
 
-4. **Hooks as metareasoning:** The undisclosed context hooks, return hooks, and recursive hooks are a novel architectural contribution for implementing meta-level control.
+4. **Context surgery:** No prior work explicitly addresses the LLM's ability to manipulate what context its children see. Hooks enable progressive disclosure, closures across LLM boundaries, and CoT pruning.
 
-5. **Formal semantics in Lisp tradition:** By grounding Spell in Lisp, the project connects to decades of formal semantics work. This enables precise reasoning about scope, evaluation order, and environment threading.
+5. **Hooks as metareasoning:** The undisclosed context hooks, return hooks, and recursive hooks are a novel architectural contribution for implementing meta-level control.
+
+6. **Formal semantics in Lisp tradition:** By grounding Spell in Lisp, the project connects to decades of formal semantics work. This enables precise reasoning about scope, evaluation order, and environment threading.
+
+7. **RL action space for self-orchestration:** Spell provides a small, formal language that could serve as the action space for RL-driven improvement in self-orchestration—analogous to how structured function-calling schemas enabled RL to make tool use reliable.
 
 ### 8.3 Gap in Literature
 
-The literature search found no prior work that combines:
-- LLM as author of orchestration programs
-- Natural language (or S-expressions as formalized NL) as the medium
-- Arbitrary recursive control flow
-- Explicit environment/scope management
-- Formal semantics
-
-Individual elements exist, but not the combination.
+PARL proves model-designed orchestration can outperform fixed topologies. Cursor proves orchestration topology is a first-class concern requiring iteration. But no existing system represents model-designed orchestration as inspectable, composable source code with formal semantics. Spell occupies this gap:
+- PARL: model-designed, opaque, learned
+- Cursor: human-designed, inspectable, fixed
+- Spell: model-designed, inspectable, composable
 
 ---
 
@@ -423,21 +524,25 @@ Individual elements exist, but not the combination.
 
 Frame Spell in relation to:
 
-1. **RLM:** "While RLM treats prompts as Python variables, Spell treats the LLM's output itself as a program. The orchestration is not mediated by code—it *is* the output."
+1. **PARL (primary comparison):** "PARL demonstrates that model-designed orchestration achieves state-of-the-art results via RL. Spell proposes a complementary representation: orchestration as source code rather than weights. This provides transparency, composability, and debuggability. The natural next step is RL training over Spell programs, combining PARL's learning with Spell's inspectability."
 
-2. **MemGPT:** "MemGPT enables self-directed memory management within a fixed loop. Spell generalizes this to self-directed *execution* management with arbitrary topology."
+2. **Cursor Agent Swarm:** "Cursor's experiment shows orchestration topology is a first-class concern requiring iteration. Three topologies failed before one succeeded. Spell makes topology programmable, enabling faster iteration. A pattern library of known-good topologies lets models select and compose rather than invent from scratch."
 
-3. **3-Lisp:** "Smith's reflective lambdas (1982) execute one tower level above their caller. Spell's `llm` primitive creates analogous meta-level execution, but with natural language as the medium and LLMs as the processors."
+3. **RLM:** "While RLM treats prompts as Python variables, Spell treats the LLM's output itself as a program. The orchestration is not mediated by code—it *is* the output."
+
+4. **3-Lisp:** "Smith's reflective lambdas (1982) execute one tower level above their caller. Spell's `llm` primitive creates analogous meta-level execution, but with natural language as the medium and LLMs as the processors."
 
 ### 9.2 Key Claims to Support
 
-1. **Novelty:** The combination is new, even if elements exist.
+1. **Model-designed orchestration works:** PARL provides the evidence. The question is not whether models can orchestrate, but how to represent the orchestration policy.
 
-2. **Generality:** Spell subsumes ReAct, ToT, and similar patterns as special cases.
+2. **Code representation offers unique advantages:** Transparency (read the strategy), composability (combine patterns), debuggability (see why decomposition failed), transferability (patterns work across tasks).
 
-3. **Formalization:** Lisp grounding provides formal semantics unavailable in natural-language-only approaches.
+3. **Spell as RL action space:** The language provides a formal, constrained action space for training orchestration policies—analogous to how function-calling schemas enabled RL to make tool use reliable.
 
-4. **Practical relevance:** Context surgery, hooks, and environment threading address real LLM orchestration challenges.
+4. **Generality:** Spell subsumes ReAct, ToT, and similar patterns as special cases.
+
+5. **Formalization:** Lisp grounding provides formal semantics unavailable in natural-language-only approaches.
 
 ### 9.3 Terminology Alignment
 
@@ -457,13 +562,15 @@ The literature uses various terms. Suggested mappings:
 
 ### Essential Papers
 
-1. **RLM:** arxiv.org/abs/2512.24601 - Closest recent work
-2. **3-Lisp:** link.springer.com/article/10.1007/BF01806174 - Historical foundation
-3. **MemGPT:** arxiv.org/abs/2310.08560 - Self-directed memory
-4. **SICP Ch. 4:** sarabander.github.io/sicp/html/4_002e1.xhtml - Meta-circular evaluation
-5. **Gödel Machine:** arxiv.org/abs/cs/0309048 - Theoretical limit
-6. **LMQL:** arxiv.org/abs/2212.06094 - "Prompting Is Programming" (PLDI'23)
-7. **XGrammar:** arxiv.org/pdf/2411.15100 - Efficient constrained decoding
+1. **Kimi K2.5 PARL:** kimi.com/blog/kimi-k2-5.html - Primary comparison; trainable orchestrator via RL
+2. **Cursor Agent Swarm:** cursor.com/blog/scaling-agents - Orchestration topology matters; human-designed hierarchy
+3. **RLM:** arxiv.org/abs/2512.24601 - LLM writes recursive Python to call itself
+4. **3-Lisp:** link.springer.com/article/10.1007/BF01806174 - Historical foundation
+5. **MemGPT:** arxiv.org/abs/2310.08560 - Self-directed memory
+6. **SICP Ch. 4:** sarabander.github.io/sicp/html/4_002e1.xhtml - Meta-circular evaluation
+7. **Gödel Machine:** arxiv.org/abs/cs/0309048 - Theoretical limit
+8. **LMQL:** arxiv.org/abs/2212.06094 - "Prompting Is Programming" (PLDI'23)
+9. **XGrammar:** arxiv.org/pdf/2411.15100 - Efficient constrained decoding
 
 ### Surveys
 
@@ -484,8 +591,8 @@ The literature uses various terms. Suggested mappings:
 
 ## 11. Conclusion
 
-Spell occupies a distinctive position in the landscape of LLM orchestration. Its core insight—that LLMs can write programs controlling their own execution—builds on foundational ideas from reflective programming (3-Lisp), cognitive architectures (SOAR's impasses), and recent LLM agent research (RLM, MemGPT). 
+Spell occupies a distinctive position in the landscape of LLM orchestration. PARL (Kimi K2.5) validates the core premise—model-designed orchestration can outperform fixed topologies—but represents the orchestration policy in weights. Cursor's agent swarm demonstrates that orchestration topology is a first-class engineering concern requiring iteration. Spell proposes a third path: orchestration as inspectable, composable source code written by the model itself.
 
-The contribution is not any single feature but the combination: natural language as orchestration medium, arbitrary control flow, formal Lisp semantics, and explicit meta-level hooks. This combination has no direct precedent in the literature surveyed.
+The contribution is the representation choice: orchestration as code rather than weights (PARL) or harness configuration (Cursor/LangGraph). This provides transparency, debuggability, and composability—properties that become increasingly important as orchestration strategies grow more sophisticated. The formal Lisp grounding connects to decades of work on meta-circular evaluation, reflective programming (3-Lisp), and program semantics.
 
-The project is well-positioned to contribute to both practical LLM engineering (novel orchestration patterns) and theoretical understanding (formal semantics of LLM self-reference).
+The natural next step is RL training over Spell programs, combining PARL's demonstrated ability to learn orchestration with Spell's transparent, composable representation. The language provides a constrained, formal action space—analogous to how structured function-calling schemas enabled RL to make tool use reliable.

@@ -1,6 +1,7 @@
 (ns spell.core-test
   (:require [clojure.test :refer [deftest is testing]]
-            [spell.core :refer [run-spell default-tools]]
+            [spell.core :refer [run-spell]]
+            [spell.tools :refer [default-tools]]
             [clojure.java.io :as io]
             [clojure.string :as str]))
 
@@ -68,7 +69,7 @@
            (run-spell '(cat "result: " (:out (bash "echo ok")))))))
 
   (testing "bash timeout"
-    (binding [spell.core/*bash-timeout* 1]
+    (binding [spell.tools/*bash-timeout* 1]
       (let [result (run-spell '(bash "sleep 10"))]
         (is (= -1 (:exit result)))
         (is (str/includes? (:err result) "timed out"))))))
@@ -103,9 +104,10 @@
 ;; =============================================================================
 
 (deftest default-tools-test
-  (testing "default-tools contains read-name and bash"
-    (is (= 2 (count default-tools)))
-    (is (= #{'read-name 'bash} (set (map :name default-tools)))))
+  (testing "default-tools contains read-name, bash, and file tools"
+    (is (= 5 (count default-tools)))
+    (is (= #{'read-name 'bash 'read-file 'write-file 'str-replace}
+           (set (map :name default-tools)))))
 
   (testing "tool definitions have required keys"
     (doseq [tool default-tools]

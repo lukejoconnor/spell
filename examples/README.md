@@ -29,3 +29,4 @@ spell -v -m opus "Your prompt here"
 | `coin-flip.md` | Recursive coin flipping | Sonnet |
 | `famous-greeting.md` | Tool use + delegation | Sonnet |
 | `twenty-questions.md` | Worker/checker loop (Ralph pattern) | Opus |
+| `explain-spell.md` | Self-reflection + multi-agent debate | Opus |

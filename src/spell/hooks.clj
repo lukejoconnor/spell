@@ -145,14 +145,18 @@
 (defn apply-hooks
   "Apply hooks (quoted macros) to code, left-to-right.
    Each hook is either a quoted form that evaluates to a function code->code,
-   or an already-evaluated function. Returns the transformed code."
+   or an already-evaluated Clojure function. Returns the transformed code."
   [hooks code]
   (reduce (fn [c hook]
-            ;; If hook is already a function, use it directly
-            ;; Otherwise evaluate it to get the transformer function
-            (let [hook-fn (if (fn? hook)
-                            hook
-                            (first (eval/spell-eval hook {})))]
-              (hook-fn c)))
+            (cond
+              ;; Clojure function (e.g. with-env, with-env-hints) - call directly
+              (fn? hook) (hook c)
+              ;; Spell function map - apply via spell-eval with quoted arg
+              (eval/spell-fn? hook) (first (eval/spell-eval (list hook (list 'quote c)) {}))
+              ;; Quoted form - evaluate to get a function, then apply
+              :else (let [hook-fn (first (eval/spell-eval hook {}))]
+                      (if (eval/spell-fn? hook-fn)
+                        (first (eval/spell-eval (list hook-fn (list 'quote c)) {}))
+                        (hook-fn c)))))
           code
           hooks))

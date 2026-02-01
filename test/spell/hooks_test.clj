@@ -76,9 +76,9 @@
           recursive-hook (recurse inner-hook)
           ;; Evaluate the recursive hook to get a function
           [hook-fn _] (spell-eval recursive-hook {})
-          ;; Apply it to some code
+          ;; Apply it to some code via spell-eval (spell-fn, not Clojure fn)
           input '(do (def x 10))
-          result (hook-fn input)]
+          [result _] (spell-eval (list hook-fn (list 'quote input)) {})]
       ;; Should have injected binding
       (is (some #(= '(def injected 1) %) (tree-seq coll? seq result)))))
 
@@ -88,7 +88,7 @@
           [hook-fn _] (spell-eval recursive-hook {})
           ;; Input has an llm call
           input '(do (llm "test"))
-          result (hook-fn input)]
+          [result _] (spell-eval (list hook-fn (list 'quote input)) {})]
       ;; result is (do (llm "test" [hook1 hook2]))
       (let [llm-form (second result)  ; (llm "test" [hooks])
             hooks (nth llm-form 2)]
@@ -103,7 +103,7 @@
           [hook-fn _] (spell-eval recursive-hook {})
           ;; Input has llm with existing hook
           input '(do (llm "test" [existing-hook]))
-          result (hook-fn input)]
+          [result _] (spell-eval (list hook-fn (list 'quote input)) {})]
       ;; result is (do (llm "test" [inner-hook recursive-hook existing-hook]))
       (let [llm-form (second result)
             hooks (nth llm-form 2)]
