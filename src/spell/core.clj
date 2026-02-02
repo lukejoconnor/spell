@@ -9,6 +9,7 @@
             [spell.tools :as tools]))
 
 (declare llm)
+(declare leaf-llm)
 
 ;; Re-export from spell.eval
 (def spell-eval eval/spell-eval)
@@ -24,21 +25,29 @@
 
 ;; Re-export from spell.llm
 (def make-llm llm-engine/make-llm)
+(def make-leaf-llm llm-engine/make-leaf-llm)
 
 ;; =============================================================================
 ;; Default llm function
 ;; =============================================================================
 
+(def leaf-llm
+  "Plain text-in/text-out LLM. No Spell parsing, evaluation, tools, or sub-agents."
+  (make-leaf-llm {}))
+
 (def llm
   "The default llm function with all standard tools and self-recursion."
   (make-llm {:tools tools/default-tools
-             :llms  {'llm #'llm}}))
+             :llms  {'llm      #'llm
+                     'leaf-llm {:fn  leaf-llm
+                                :doc "Plain text LLM — no code execution. Takes a prompt string, returns a response string."}}}))
 
 ;; Set root binding for eval/*builtins* — used by direct spell-eval/run-spell calls
 ;; (tests, REPL) that don't go through an llm function.
 (alter-var-root #'eval/*builtins*
   (constantly (merge eval/core-builtins
                      {'llm #'llm
+                      'leaf-llm leaf-llm
                       'prepend-hooks-to-llm #'prepend-hooks-to-llm
                       'recurse #'recurse
                       'prefix-prompt #'prefix-prompt
@@ -52,4 +61,6 @@
 
 ;; Set the default system prompt for backwards compatibility
 (alter-var-root #'prompt/system-prompt
-  (constantly (prompt/generate-system-prompt tools/default-tools {'llm #'llm})))
+  (constantly (prompt/generate-system-prompt tools/default-tools
+                {'llm #'llm
+                 'leaf-llm {:fn leaf-llm :doc "Plain text LLM — no code execution. Takes a prompt string, returns a response string."}})))
