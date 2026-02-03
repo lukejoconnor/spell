@@ -55,8 +55,8 @@
     (try
       (provider/with-provider
         (provider/dummy-provider
-          {:response "(do (def thought \"use read-name tool\") (def return (cat \"Hello, \" (read-name) \"!\"))))))"})
-        (let [result (spell/llm "(do (def prefix \"Read name.txt and greet the person\") (def response ")]
+          {:response "(import tools :read-name) (def thought \"use read-name tool\") (cat \"Hello, \" (read-name) \"!\"))"})
+        (let [result (spell/llm "(do ")]
           (is (= "Hello, Alice!" result))))
       (finally
         (io/delete-file "name.txt")))))
@@ -198,39 +198,39 @@
 ;; =============================================================================
 
 (deftest make-llm-test
-  (testing "make-llm with custom tool resolves during evaluation"
-    (let [test-tool {:name 'my-tool
-                     :fn   (fn [] "tool-result")
-                     :doc  "A test tool."}
-          custom-llm (spell/make-llm {:tools [test-tool]
-                                :llms  {'llm #'spell/llm}})]
+  (testing "make-llm with custom tool via registry"
+    (let [reg {:name 'tools
+               :desc {:my-tool "A test tool."}
+               :items {:my-tool {:type :tool :fn (fn [] "tool-result")}}}
+          custom-llm (spell/make-llm {:registries [reg]})]
       (provider/with-provider
         (provider/dummy-provider
-          {:response "(def return (my-tool)))"})
+          {:response "(import tools :my-tool) (my-tool))"})
         (is (= "tool-result" (custom-llm "(do "))))))
 
-  (testing "make-llm without tool excludes it from evaluation"
-    (let [bare-llm (spell/make-llm {:llms {'llm #'spell/llm}})]
+  (testing "make-llm without registry has no tools"
+    (let [bare-llm (spell/make-llm {:registries []})]
       (provider/with-provider
         (provider/dummy-provider
-          {:response "(def return \"no tools here\"))"})
+          {:response "\"no tools here\""})
         (is (= "no tools here" (bare-llm "(do "))))))
 
-  (testing "make-llm with named agent function"
+  (testing "make-llm with agent in registry"
     (let [helper-fn (fn
                       ([prompt] "helper-result")
                       ([prompt hooks] "helper-result"))
-          parent-llm (spell/make-llm {:tools []
-                                :llms  {'llm #'spell/llm
-                                        'helper helper-fn}})]
+          reg {:name 'agents
+               :desc {:helper "Helper agent"}
+               :items {:helper {:type :agent :fn helper-fn}}}
+          parent-llm (spell/make-llm {:registries [reg]})]
       (provider/with-provider
         (provider/dummy-provider
-          {:response "(def return (helper \"do something\")))"})
+          {:response "(import agents :helper) (helper \"do something\"))"})
         (is (= "helper-result" (parent-llm "(do "))))))
 
   (testing "llm-self provides automatic self-recursion"
     (let [call-count (atom 0)
-          custom-llm (spell/make-llm {:tools [] :llms {}})]
+          custom-llm (spell/make-llm {:registries []})]
       (provider/with-provider
         (provider/dummy-provider
           {:response-fn (fn [_]
@@ -238,79 +238,103 @@
                             (if (= n 1)
                               "(cat \"outer-\" (llm-self \"(do \"))"
                               "\"inner-result\"")))})
-        (is (= "outer-inner-result" (custom-llm "(do ")))))))
+        (is (= "outer-inner-result" (custom-llm "(do "))))))
 
-;; =============================================================================
-;; prelude tests
-;; =============================================================================
-
-(deftest prelude-basic-test
-  (testing "prelude function is available in LLM completion"
-    (let [test-llm (spell/make-llm
-                     {:tools []
-                      :llms {'llm #'spell/llm}
-                      :prelude ['(defn double [x] (* x 2))]})]
+  (testing "spell items in registry evaluate at import"
+    (let [reg {:name 'lib
+               :desc {:double "double fn"}
+               :items {:double {:type :spell :form '(fn [x] (* x 2))}}}
+          test-llm (spell/make-llm {:registries [reg]})]
       (provider/with-provider
-        (provider/dummy-provider {:response "(double 21))"})
+        (provider/dummy-provider {:response "(import lib :double) (double 21))"})
         (is (= 42 (test-llm "(do ")))))))
 
-(deftest prelude-multiple-forms-test
-  (testing "multiple prelude forms are all available"
-    (let [test-llm (spell/make-llm
-                     {:tools []
-                      :llms {'llm #'spell/llm}
-                      :prelude ['(defn add1 [x] (+ x 1))
-                                '(defn mul2 [x] (* x 2))]})]
-      (provider/with-provider
-        (provider/dummy-provider {:response "(mul2 (add1 3)))"})
-        (is (= 8 (test-llm "(do ")))))))
+;; =============================================================================
+;; Registry import tests
+;; =============================================================================
 
-(deftest prelude-empty-test
-  (testing "empty prelude works identically to no prelude"
-    (let [test-llm (spell/make-llm
-                     {:tools []
-                      :llms {'llm #'spell/llm}
-                      :prelude []})]
+(deftest registry-import-test
+  (testing "model can import and use tool"
+    (let [reg {:name 'tools
+               :desc {:bash "run command"}
+               :items {:bash {:type :tool :fn (fn [_] {:exit 0 :out "ok" :err ""})}}}
+          test-llm (spell/make-llm {:registries [reg]})]
       (provider/with-provider
-        (provider/dummy-provider {:response "42)"})
+        (provider/dummy-provider {:response "(import tools :bash) (:out (bash \"test\")))"})
+        (is (= "ok" (test-llm "(do ")))))))
+
+(deftest registry-import-verbose-test
+  (testing "import-verbose inlines source"
+    (let [reg {:name 'lib
+               :desc {:double "double fn"}
+               :items {:double {:type :spell :form '(fn [x] (* x 2))}}}
+          test-llm (spell/make-llm {:registries [reg]})]
+      (provider/with-provider
+        (provider/dummy-provider {:response "(import-verbose lib :double) (double 21))"})
         (is (= 42 (test-llm "(do ")))))))
+
+(deftest registry-describe-test
+  (testing "describe returns registry descriptions"
+    (let [reg {:name 'r :desc {:a "first" :b "second"} :items {:a {:type :tool :fn identity}}}
+          test-llm (spell/make-llm {:registries [reg]})]
+      (provider/with-provider
+        (provider/dummy-provider {:response "(describe r))"})
+        (is (= {:a "first" :b "second"} (test-llm "(do ")))))))
+
+(deftest registry-multiple-imports-test
+  (testing "can import multiple items from same registry"
+    (let [reg {:name 'tools
+               :desc {:add "add fn" :sub "sub fn"}
+               :items {:add {:type :tool :fn +}
+                       :sub {:type :tool :fn -}}}
+          test-llm (spell/make-llm {:registries [reg]})]
+      (provider/with-provider
+        (provider/dummy-provider {:response "(import tools :add) (import tools :sub) (add (sub 10 3) 5))"})
+        (is (= 12 (test-llm "(do ")))))))
+
+(deftest registry-agent-import-test
+  (testing "can import agent from registry"
+    (let [mock-agent (fn ([p] (str "result: " p))
+                         ([p _] (str "result: " p)))
+          reg {:name 'agents
+               :desc {:helper "helper agent"}
+               :items {:helper {:type :agent :fn mock-agent}}}
+          test-llm (spell/make-llm {:registries [reg]})]
+      (provider/with-provider
+        (provider/dummy-provider {:response "(import agents :helper) (helper \"test\"))"})
+        (is (= "result: test" (test-llm "(do ")))))))
 
 ;; =============================================================================
 ;; System prompt generation tests
 ;; =============================================================================
 
 (deftest generate-system-prompt-test
-  (testing "includes tool documentation"
-    (let [p (prompt/generate-system-prompt
-              [{:name 'my-tool :doc "Does things."}]
-              {})]
+  (testing "includes registry item descriptions"
+    (let [reg {:name 'tools
+               :desc {:my-tool "Does things."}
+               :items {:my-tool {:type :tool :fn identity}}}
+          p (prompt/generate-system-prompt [reg])]
       (is (str/includes? p "my-tool: Does things."))))
 
-  (testing "includes agent documentation"
-    (let [p (prompt/generate-system-prompt
-              []
-              {'helper {:doc "Helps with stuff."}})]
-      (is (str/includes? p "(helper \"prompt\") - Helps with stuff."))))
-
-  (testing "self-recursion listed in builtins"
-    (let [p (prompt/generate-system-prompt [] {'llm #'spell/llm})]
-      (is (str/includes? p "Self: llm"))))
-
-  (testing "agents section only appears for non-self llms"
-    (let [self-only (prompt/generate-system-prompt [] {'llm #'spell/llm})
-          with-agent (prompt/generate-system-prompt [] {'llm #'spell/llm
-                                                        'helper {:doc "Helps."}})]
-      (is (not (str/includes? self-only "AGENTS")))
-      (is (str/includes? with-agent "AGENTS"))))
+  (testing "includes registry section header"
+    (let [reg {:name 'mytools :desc {:a "tool a"} :items {}}
+          p (prompt/generate-system-prompt [reg])]
+      (is (str/includes? p "REGISTRIES"))
+      (is (str/includes? p "## mytools"))))
 
   (testing "default prompt contains expected sections"
-    (let [p (prompt/generate-system-prompt tools/default-tools {'llm #'spell/llm})]
+    (let [p (prompt/generate-system-prompt [spell/default-registry])]
       (is (str/includes? p "SPELL INTERPRETER"))
       (is (str/includes? p "BUILTINS"))
-      (is (str/includes? p "TOOLS"))
-      (is (str/includes? p "read-name"))
+      (is (str/includes? p "REGISTRIES"))
+      (is (str/includes? p "read-file"))
       (is (str/includes? p "bash"))
-      (is (str/includes? p "EXAMPLES")))))
+      (is (str/includes? p "EXAMPLES"))))
+
+  (testing "import usage instructions included"
+    (let [p (prompt/generate-system-prompt [spell/default-registry])]
+      (is (str/includes? p "(import <registry> :name)")))))
+
 
 ;; =============================================================================
 ;; Ollama provider tests

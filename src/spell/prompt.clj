@@ -22,6 +22,12 @@ The value of the last expression in the do block is your answer. If that value i
 
 The prefix is already part of the program. Your response is the remainder.
 
+IMPORT BEFORE USE
+
+Items from registries must be imported before use:
+  (import tools :bash)
+  (bash \"ls -la\")
+
 QUINE (SELF-REFERENTIAL CODE)
 
 (quine name body) binds name to the entire (quine name body) form as data, then evaluates body. This gives body access to its own source code.
@@ -181,80 +187,76 @@ Output:
 (def thought \"For nearly-sorted data, insertion sort runs in O(n). Better choice.\")
 (llm \"Explain why insertion sort is optimal for nearly-sorted data.\")
 
+Task: List files in current directory
+Output:
+(import tools :bash)
+(:out (bash \"ls -la\"))
+
 Task: Greet the person in name.txt
-Output: (cat \"Hello, \" (read-name) \"!\")")
+Output:
+(import tools :read-file)
+(cat \"Hello, \" (:ok (read-file \"name.txt\")) \"!\")")
 
 ;; =============================================================================
 ;; Generated sections
 ;; =============================================================================
 
 (defn- builtins-section
-  "Generate the BUILTINS section from tool and llm metadata."
-  [tools llms]
-  (let [tool-names (map #(name (:name %)) tools)
-        ;; llm entries other than 'llm (self-recursion)
-        agent-names (keep #(when (not= % 'llm) (name %)) (keys llms))]
-    (str "BUILTINS\n\n"
-         "Math: + - * / rand inc dec\n"
-         "Compare: < > = <= >= not=\n"
-         "Strings: str cat pr-str subs starts-with? includes? trim replace split join lower-case upper-case\n"
-         "Regex: re-find re-matches\n"
-         "Type: string? number? list? seq? vector? map? fn?\n"
-         "Collections: list vector first rest last cons conj get assoc nth keys vals into concat reverse sort count range repeat apply\n"
-         "Logic: if cond and or not nil? empty?\n"
-         "Binding: def let do quine uneval expand spell-eval\n"
-         "Concurrency: future await\n"
-         "Strip: strip-parens reopen\n"
-         (when (contains? llms 'llm) "Self: llm\n")
-         "Self (any variant): llm-self\n"
-         (when (seq tool-names)
-           (str "Tools: " (clojure.string/join " " tool-names) "\n"))
-         (when (seq agent-names)
-           (str "Agents: " (clojure.string/join " " agent-names) "\n"))
-         "Error: spell-error?\n")))
+  "Generate the BUILTINS section (core language only, no tools/agents)."
+  []
+  (str "BUILTINS\n\n"
+       "Math: + - * / rand inc dec\n"
+       "Compare: < > = <= >= not=\n"
+       "Strings: str cat pr-str subs starts-with? includes? trim replace split join lower-case upper-case\n"
+       "Regex: re-find re-matches\n"
+       "Type: string? number? list? seq? vector? map? fn?\n"
+       "Collections: list vector first rest last cons conj get assoc nth keys vals into concat reverse sort count range repeat apply take drop split-at\n"
+       "Higher-order: map filter remove reduce some every? keep mapcat take-while drop-while group-by sort-by find-first not-any?\n"
+       "Combinators: comp partial juxt complement\n"
+       "Collection utils: distinct flatten frequencies partition partition-all interleave interpose zipmap\n"
+       "Logic: if cond and or not nil? empty?\n"
+       "Binding: def let do quine uneval expand spell-eval\n"
+       "Concurrency: future await\n"
+       "Strip: strip-parens reopen\n"
+       "Registry: import import-verbose describe\n"
+       "Error: spell-error?\n"))
 
-(defn- tools-section
-  "Generate the TOOLS section from tool metadata."
-  [tools]
-  (when (seq tools)
-    (str "\nTOOLS\n\n"
+(defn- registries-section
+  "Generate the REGISTRIES section from registry metadata."
+  [registries]
+  (when (seq registries)
+    (str "\nREGISTRIES\n\n"
+         "Import items before use. Each registry is bound under its name.\n\n"
          (clojure.string/join "\n\n"
-           (map (fn [{:keys [name doc]}]
-                  (str (clojure.core/name name) ": " doc))
-                tools))
-         "\n")))
-
-(defn- agents-section
-  "Generate the AGENTS section from llm metadata (excluding self-recursion)."
-  [llms]
-  (let [external (dissoc llms 'llm)]
-    (when (seq external)
-      (str "\nAGENTS\n\n"
-           "Other agents available as functions. Each returns its result value, like (llm ...).\n\n"
-           (clojure.string/join "\n"
-             (map (fn [[sym {:keys [doc]}]]
-                    (str "(" (name sym) " \"prompt\") - " (or doc "No description.")))
-                  external))
-           "\n"))))
+           (map (fn [reg]
+                  (str "## " (:name reg) "\n"
+                       (clojure.string/join "\n"
+                         (map (fn [[k desc]]
+                                (str "  " (name k) ": " desc))
+                              (:desc reg)))))
+                registries))
+         "\n\n"
+         "Usage:\n"
+         "  (import <registry> :name)         — import silently\n"
+         "  (import-verbose <registry> :name) — import with source visible\n"
+         "  (describe <registry>)             — list all items\n"
+         "  (describe <registry> :name)       — details for one item\n")))
 
 ;; =============================================================================
 ;; Public API
 ;; =============================================================================
 
 (defn generate-system-prompt
-  "Build a system prompt from tool and llm metadata.
-   tools: vector of {:name sym, :fn f, :doc str}
-   llms:  map of {sym fn-or-meta}, where values are either functions or
-          maps with :fn and :doc keys. The symbol 'llm denotes self-recursion."
-  [tools llms]
+  "Build a system prompt from registries.
+   registries: vector of registry maps with :name, :desc, :items"
+  [registries]
   (str preamble
-       (builtins-section tools llms)
-       (tools-section tools)
-       (agents-section llms)
+       (builtins-section)
+       (registries-section registries)
        "\n"
        postamble))
 
-;; Default system prompt (backwards compatibility)
+;; Default system prompt
 (def system-prompt
   "System prompt for Spell LLM calls. Instructs model to output valid Spell code."
   nil)  ;; set by spell.core after tool definitions exist

@@ -1,6 +1,7 @@
 (ns spell.eval
   "Spell evaluator: spell-eval, expand, free variable analysis, builtins."
   (:require [spell.parse :as parse]
+            [spell.registry :as registry]
             [clojure.set :as set]))
 
 ;; =============================================================================
@@ -61,6 +62,15 @@
   [v]
   (and (map? v) (:spell/fn v)))
 
+(defn- invoke-fn
+  "Invoke f with args. Handles both spell-fns and Clojure fns.
+   Uses *spell-env* for spell-fn body evaluation."
+  [f args]
+  (if (spell-fn? f)
+    (let [local-env (into *spell-env* (map vector (:params f) args))]
+      (first (spell-eval (cons 'do (:body f)) local-env)))
+    (apply f args)))
+
 (def core-builtins
   "Language primitives - always available in every llm variant."
   {;; Math
@@ -113,6 +123,62 @@
                 (let [local-env (into *spell-env* (map vector (:params f) all-args))]
                   (first (spell-eval (cons 'do (:body f)) local-env)))
                 (clojure.core/apply f all-args)))),
+   ;; Higher-order collection functions (spell-fn aware)
+   'map (fn [f coll] (mapv #(invoke-fn f [%]) coll)),
+   'filter (fn [pred coll] (filterv #(invoke-fn pred [%]) coll)),
+   'remove (fn [pred coll] (filterv #(not (invoke-fn pred [%])) coll)),
+   'reduce (fn
+             ([f coll] (clojure.core/reduce #(invoke-fn f [%1 %2]) coll))
+             ([f init coll] (clojure.core/reduce #(invoke-fn f [%1 %2]) init coll))),
+   'some (fn [pred coll] (some #(invoke-fn pred [%]) coll)),
+   'every? (fn [pred coll] (every? #(invoke-fn pred [%]) coll)),
+   'keep (fn [f coll]
+           (vec (for [x coll
+                      :let [v (invoke-fn f [x])]
+                      :when (some? v)]
+                  v))),
+   'mapcat (fn [f coll] (vec (mapcat #(invoke-fn f [%]) coll))),
+   'take-while (fn [pred coll] (vec (take-while #(invoke-fn pred [%]) coll))),
+   'drop-while (fn [pred coll] (vec (drop-while #(invoke-fn pred [%]) coll))),
+   'group-by (fn [f coll]
+               (clojure.core/reduce
+                 (fn [m x]
+                   (let [k (invoke-fn f [x])]
+                     (update m k (fnil conj []) x)))
+                 {} coll)),
+   'sort-by (fn [keyfn coll]
+              (vec (sort-by #(invoke-fn keyfn [%]) coll))),
+   'find-first (fn [pred coll] (some #(when (invoke-fn pred [%]) %) coll)),
+   'not-any? (fn [pred coll] (not-any? #(invoke-fn pred [%]) coll)),
+   ;; Non-HOF collection utilities
+   'distinct (fn [coll] (vec (distinct coll))),
+   'flatten (fn [coll] (vec (flatten coll))),
+   'frequencies (fn [coll] (frequencies coll)),
+   'partition (fn
+                ([n coll] (vec (map vec (partition n coll))))
+                ([n step coll] (vec (map vec (partition n step coll))))),
+   'partition-all (fn
+                    ([n coll] (vec (map vec (partition-all n coll))))
+                    ([n step coll] (vec (map vec (partition-all n step coll))))),
+   'interleave (fn [& colls] (vec (apply interleave colls))),
+   'interpose (fn [sep coll] (vec (interpose sep coll))),
+   'zipmap (fn [ks vs] (zipmap ks vs)),
+   'take (fn [n coll] (vec (take n coll))),
+   'drop (fn [n coll] (vec (drop n coll))),
+   'split-at (fn [n coll] [(vec (take n coll)) (vec (drop n coll))]),
+   ;; Function combinators
+   'comp (fn [& fns]
+           (fn [x]
+             (reduce (fn [v f] (invoke-fn f [v])) x (reverse fns)))),
+   'partial (fn [f & args]
+              (fn [& more]
+                (invoke-fn f (concat args more)))),
+   'juxt (fn [& fns]
+           (fn [& args]
+             (mapv #(invoke-fn % args) fns))),
+   'complement (fn [f]
+                 (fn [& args]
+                   (not (invoke-fn f args)))),
    ;; Strip / Reopen
    'strip-parens parse/strip-trailing-parens,
    'reopen (fn [s] (parse/strip-trailing-parens 3 s)),
@@ -137,7 +203,7 @@
 
 (def special-forms
   "Special forms that are not free variables."
-  #{'quote 'def 'do 'if 'let 'fn 'defn 'cond 'and 'or 'uneval 'expand 'future 'quine})
+  #{'quote 'def 'do 'if 'let 'fn 'defn 'cond 'and 'or 'uneval 'expand 'future 'quine 'import})
 
 (defn quote-value
   "Wrap non-self-evaluating values in (quote ...) for safe embedding in generated code."
@@ -220,6 +286,11 @@
         quine (let [name-sym (second expr)
                     [body-expanded _] (-expand-expr (nth expr 2) outer-env (conj inner name-sym))]
                 [(list 'quine name-sym body-expanded) (conj inner name-sym)])
+
+        import [(list 'import
+                      (first (-expand-expr (second expr) outer-env inner))
+                      (first (-expand-expr (nth expr 2) outer-env inner)))
+                inner]
 
         (cond and or) [(list* (first expr) (map expand1 (rest expr))) inner]
 
@@ -357,6 +428,12 @@
                   body (nth expr 2)
                   env' (assoc env name-sym expr)]
               (spell-eval body env'))
+
+      ;; import: (import registry :key) — import item from registry, bind to name
+      import (let [[reg env1] (spell-eval (second expr) env)
+                   [key env2] (spell-eval (nth expr 2) env1)
+                   [val name-sym] (registry/import-item reg key spell-eval env2)]
+               [val (assoc env2 name-sym val)])
 
       ;; future: (future expr) - evaluate expr in a new thread, return future handle
       ;; Captures env at creation time (immutable map, safe to share).

@@ -6,6 +6,7 @@
             [spell.prompt :as prompt]
             [spell.eval :as eval]
             [spell.hooks :as hooks]
+            [spell.registry :as registry]
             [spell.tools :as tools]))
 
 (declare llm)
@@ -28,31 +29,53 @@
 (def make-leaf-llm llm-engine/make-leaf-llm)
 
 ;; =============================================================================
-;; Default llm function
+;; Default registry
 ;; =============================================================================
 
 (def leaf-llm
   "Plain text-in/text-out LLM. No Spell parsing, evaluation, tools, or sub-agents."
   (make-leaf-llm {}))
 
+(def default-registry
+  "Default registry with tools and agents."
+  {:name 'tools
+   :desc {:bash "Execute shell command. Returns {:exit N :out \"...\" :err \"...\"}."
+          :read-file "Read file contents. Returns {:ok content} or {:error msg}."
+          :write-file "Write content to file. Returns {:ok path} or {:error msg}."
+          :str-replace "Replace unique string in file. Returns {:ok path} or {:error msg}."
+          :read-name "Read name from name.txt."
+          :leaf-llm "Plain text LLM — no code execution."}
+   :items {:bash {:type :tool :fn tools/run-bash}
+           :read-file {:type :tool :fn tools/read-file}
+           :write-file {:type :tool :fn tools/write-file}
+           :str-replace {:type :tool :fn tools/str-replace}
+           :read-name {:type :tool :fn tools/read-name}
+           :leaf-llm {:type :agent :fn leaf-llm}}})
+
+;; =============================================================================
+;; Default llm function
+;; =============================================================================
+
 (def llm
-  "The default llm function with all standard tools and self-recursion."
-  (make-llm {:tools tools/default-tools
-             :llms  {'llm      #'llm
-                     'leaf-llm {:fn  leaf-llm
-                                :doc "Plain text LLM — no code execution. Takes a prompt string, returns a response string."}}}))
+  "The default llm function with all standard tools via registry."
+  (make-llm {:registries [default-registry]
+             :llm-var #'llm}))
 
 ;; Set root binding for eval/*builtins* — used by direct spell-eval/run-spell calls
 ;; (tests, REPL) that don't go through an llm function.
+;; Includes tools directly for backwards compatibility.
 (alter-var-root #'eval/*builtins*
   (constantly (merge eval/core-builtins
                      {'llm #'llm
                       'leaf-llm leaf-llm
+                      'tools default-registry
+                      'describe registry/describe
                       'prepend-hooks-to-llm #'prepend-hooks-to-llm
                       'recurse #'recurse
                       'prefix-prompt #'prefix-prompt
                       'with-env with-env
                       'with-env-hints with-env-hints
+                      ;; Legacy: tools available directly in builtins for REPL/test use
                       'read-name tools/read-name
                       'bash tools/run-bash
                       'read-file tools/read-file
@@ -61,6 +84,4 @@
 
 ;; Set the default system prompt for backwards compatibility
 (alter-var-root #'prompt/system-prompt
-  (constantly (prompt/generate-system-prompt tools/default-tools
-                {'llm #'llm
-                 'leaf-llm {:fn leaf-llm :doc "Plain text LLM — no code execution. Takes a prompt string, returns a response string."}})))
+  (constantly (prompt/generate-system-prompt [default-registry])))

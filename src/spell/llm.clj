@@ -7,6 +7,7 @@
             [spell.parse :as parse]
             [spell.prompt :as prompt]
             [spell.provider :as provider]
+            [spell.registry :as registry]
             [spell.trace :as trace]))
 
 ;; ---------------------------------------------------------------------------
@@ -15,7 +16,7 @@
 
 (defn- -llm
   "Core llm: call LLM, concat prefix+response, parse, apply hooks, eval."
-  [{:keys [call-fn builtins prelude]} prompt hooks]
+  [{:keys [call-fn builtins registries]} prompt hooks]
   (when (and eval/*max-llm-depth* (>= eval/*llm-depth* eval/*max-llm-depth*))
     (throw (ex-info "LLM recursion limit exceeded"
                     {:depth eval/*llm-depth* :limit eval/*max-llm-depth*})))
@@ -34,10 +35,12 @@
         raw       (str prompt-str response)
         balanced  (parse/balance-parens raw)
         forms     (parse/read-all balanced)
-        all-forms (if (seq prelude) (concat prelude forms) forms)
-        program   (if (> (count (vec all-forms)) 1)
-                    (list* 'do all-forms)
-                    (first all-forms))
+        ;; Build registry map for import-verbose preprocessing
+        reg-map   (into {} (map (fn [r] [(:name r) r]) registries))
+        forms     (registry/resolve-import-verbose forms reg-map)
+        program   (if (> (count (vec forms)) 1)
+                    (list* 'do forms)
+                    (first forms))
         program'  (if (empty? hooks)
                     program
                     (hooks/apply-hooks hooks program))
@@ -61,52 +64,44 @@
     (if err (throw err) value)))
 
 (defn make-llm
-  "Factory: create an llm function with specific tools and agent access.
+  "Factory: create an llm function with registries.
 
    Options:
-   - :tools   - vector of tool maps {:name sym, :fn f, :doc str}
-   - :llms    - map of {symbol fn-or-var} for available agent functions.
-                Use 'llm with a var ref for self-recursion: {'llm #'my-var}
-                Values can also be maps with :fn and :doc for prompt generation.
-   - :model   - optional model name override (nil uses provider default)
-   - :prelude - vector of Spell forms prepended as library definitions.
-                Wrapped in an outer (do ...) block before the program body.
+   - :registries  - vector of registry maps. Each registry has :name, :desc, :items.
+                    Registries are bound under their :name symbol in the builtins.
+   - :model       - optional model name override (nil uses provider default)
+   - :llm-var     - optional var ref to bind as 'llm for self-recursion (e.g., #'llm)
 
    Returns a function with the same signature as llm:
    (f prompt) or (f prompt hooks).
 
    The returned function is automatically available as 'llm-self in Spell code,
    providing self-recursion without needing to wire up var refs."
-  [{:keys [tools llms model prelude]
-    :or {tools [] llms {} prelude []}}]
+  [{:keys [registries model llm-var]
+    :or {registries [] model nil}}]
   (let [self-ref (atom nil)
         self-fn (fn llm-self
                   ([prompt] (@self-ref prompt))
                   ([prompt hooks] (@self-ref prompt hooks)))
-        tool-builtins (into {} (map (fn [{:keys [name fn]}] [name fn]) tools))
-        ;; Extract fns from llm entries (support both bare fns and {:fn f :doc d} maps)
-        llm-builtins (into {} (map (fn [[sym v]]
-                                     [sym (if (map? v) (:fn v) v)])
-                                   llms))
+        ;; Build registry builtins: each registry bound under its :name
+        reg-builtins (into {} (map (fn [r] [(:name r) r]) registries))
+        hook-builtins {'prepend-hooks-to-llm #'hooks/prepend-hooks-to-llm
+                       'recurse #'hooks/recurse
+                       'prefix-prompt #'hooks/prefix-prompt
+                       'with-env hooks/with-env
+                       'with-env-hints hooks/with-env-hints}
         variant-builtins (merge eval/core-builtins
-                                {'prepend-hooks-to-llm #'hooks/prepend-hooks-to-llm
-                                 'recurse #'hooks/recurse
-                                 'prefix-prompt #'hooks/prefix-prompt
-                                 'with-env hooks/with-env
-                                 'with-env-hints hooks/with-env-hints
-                                 'llm-self self-fn}
-                                tool-builtins
-                                llm-builtins)
-        ;; For prompt generation, normalize llm entries to include :doc
-        llms-for-prompt (into {} (map (fn [[sym v]]
-                                        [sym (if (map? v) v {:fn v})])
-                                      llms))
-        sys-prompt (prompt/generate-system-prompt tools llms-for-prompt)
+                                hook-builtins
+                                {'llm-self self-fn
+                                 'describe registry/describe}
+                                reg-builtins
+                                (when llm-var {'llm llm-var}))
+        sys-prompt (prompt/generate-system-prompt registries)
         call-fn  (fn [prompt-str]
                    (provider/llm-call prompt-str
                      (cond-> {:system sys-prompt :prefix prompt-str}
                        model (assoc :model model))))
-        config   {:call-fn call-fn :builtins variant-builtins :prelude prelude}
+        config   {:call-fn call-fn :builtins variant-builtins :registries registries}
         wrap-nl  (fn [p]
                    (let [s (if (or (seq? p) (list? p)) (pr-str p) (str p))]
                      (if (.startsWith (.trim ^String s) "(")
@@ -123,6 +118,10 @@
                         (-llm config (wrap-nl prompt') hooks)))))]
     (reset! self-ref the-llm)
     the-llm))
+
+;; ---------------------------------------------------------------------------
+;; Leaf LLM
+;; ---------------------------------------------------------------------------
 
 (defn make-leaf-llm
   "Factory: create a plain text-in/text-out LLM function.
