@@ -19,8 +19,11 @@ Functions use dynamic scoping: `fn`/`defn` return source-form data (`{:spell/fn 
 
 Expansion and dynamic scoping work together: `expand` substitutes function values as their source forms, so `(expand '(f 3))` where `f` was `(defn f [x] (* x x))` produces `((fn [x] (* x x)) 3)` — fully portable code.
 
-### Uneval (Self-Referential Code)
-`(uneval 'sym)` returns the quoted definition of `sym` while it's being evaluated. Solves the circular reference problem where a binding needs access to its own code.
+### Quine (Self-Referential Code)
+`(quine name body)` binds `name` to the entire `(quine name body)` form as data, then evaluates `body`. The name binding is available inside `body`, giving the program access to its own source code. Used in the default NL prefix to provide the `completion` binding — the program's own source as data.
+
+### Uneval (Legacy Self-Reference)
+`(uneval 'sym)` returns the raw source expression of `sym`'s definition while it's being evaluated. Solves the circular reference problem where a binding needs access to its own code. Returns the expression directly (no `(quote ...)` wrapper), so `(pr-str (uneval 'x))` faithfully reconstructs the source. Largely superseded by `quine`.
 
 ### Prompt-as-Prefix Semantics
 The `llm` function uses the prompt string as both the user message and the assistant prefix. The LLM's response is concatenated with the prefix, then the full string is parsed and evaluated. This means the prompt IS the beginning of the program — the LLM continues writing code from where the prompt left off.
@@ -70,7 +73,8 @@ Programs return the value of their last expression (standard Lisp semantics). No
 
 Core interpreter and tooling complete:
 - `spell-eval` with environment threading
-- Special forms: `def`, `do`, `if`, `let`, `fn`, `defn`, `cond`, `and`, `or`, `quote`, `uneval`, `expand`, `future`
+- Special forms: `def`, `do`, `if`, `let`, `fn`, `defn`, `cond`, `and`, `or`, `quote`, `uneval`, `expand`, `future`, `quine`
+- Core builtins: arithmetic, comparison, logic, list ops (`map`, `reduce`, `filter`, etc.), string ops (`subs`, `starts-with?`, `includes?`, `trim`, `cat`, `pr-str`), `spell-eval`, `llm-self`
 - `llm` with prompt-as-prefix semantics, hooks, and prelude support
 - `make-llm` factory for configurable agents (tools, sub-agents, model override, prelude)
 - `llm-self` for automatic self-recursion (atom-based forward ref, available in all `make-llm` variants)
@@ -94,12 +98,9 @@ Core interpreter and tooling complete:
 - Globals mechanism for large data sharing (#29)
 
 **TODOs from scaffolding removal:**
-- call-now convenience function: reads completion from scope, formats bindings, calls `llm` with extended prefix
-- Scaffolding convenience function: constructs quine-friendly prefix with `completion` binding via `uneval`
 - patterns.spl redesign: `safe-llm`/`retry-llm` need exception-handling semantics; `try-bash` needs code-prefix prompts
-- Auto-expansion of thunks: CLAUDE.md claims `llm` auto-expands free vars in thunks, but this was never implemented
 
-**Key insight:** Fresh `spell-eval` calls have no access to parent env. The `llm` function uses prompt-as-prefix semantics — the prompt string is sent as both the user message and the assistant prefix, so the response continues the prompt as code. For behavior propagation across generations, use recursive hooks.
+**Key insight:** The `llm` function uses prompt-as-prefix semantics — the prompt string is sent as both the user message and the assistant prefix, so the response continues the prompt as code. Natural-language prompts are wrapped in a `(quine completion (spell-eval (do ...)))` preamble, giving the program access to its own source as data via the `completion` binding. The `spell-eval` builtin auto-expands free variables from the caller's env before evaluating in a fresh env `{}`. For behavior propagation across generations, use recursive hooks.
 
 **Architecture:** The LLM engine is a simple loop in `-llm`: call the LLM provider, concatenate prefix + response, parse with `read-all`, prepend prelude forms, apply hooks, then `spell-eval`. `make-llm` constructs the configuration (builtins, system prompt, call function) and returns the `llm` function.
 

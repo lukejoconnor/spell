@@ -75,29 +75,40 @@
         (is (str/includes? (:err result) "timed out"))))))
 
 ;; =============================================================================
-;; strip tests
+;; strip-parens and reopen tests
 ;; =============================================================================
 
-(deftest strip-test
+(deftest strip-parens-test
   (testing "removes trailing close-parens"
-    (is (= "(do (+ 1 2" (run-spell '(strip 2 "(do (+ 1 2))")))))
+    (is (= "(do (+ 1 2" (run-spell '(strip-parens 2 "(do (+ 1 2))")))))
 
   (testing "removes one paren"
-    (is (= "(+ 1 2" (run-spell '(strip 1 "(+ 1 2)")))))
+    (is (= "(+ 1 2" (run-spell '(strip-parens 1 "(+ 1 2)")))))
 
   (testing "zero parens is identity"
-    (is (= "(+ 1 2)" (run-spell '(strip 0 "(+ 1 2)")))))
+    (is (= "(+ 1 2)" (run-spell '(strip-parens 0 "(+ 1 2)")))))
 
   (testing "ignores trailing whitespace"
-    (is (= "(do (+ 1 2" (run-spell '(strip 2 "(do (+ 1 2))  \n")))))
+    (is (= "(do (+ 1 2" (run-spell '(strip-parens 2 "(do (+ 1 2))  \n")))))
 
   (testing "throws when not enough parens"
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"not enough closing parens"
-          (run-spell '(strip 5 "))")))))
+          (run-spell '(strip-parens 5 "))")))))
 
   (testing "throws on non-paren character"
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"expected"
-          (run-spell '(strip 2 "(+ 1 2)x)"))))))
+          (run-spell '(strip-parens 2 "(+ 1 2)x)"))))))
+
+(deftest reopen-test
+  (testing "strips exactly 3 trailing parens"
+    (is (= "(outer (do (+ 1 2" (run-spell '(reopen "(outer (do (+ 1 2)))")))))
+
+  (testing "works on completion-like prefix with spell-eval"
+    (is (= "(def interior (spell-eval (do " (run-spell '(reopen "(def interior (spell-eval (do )))")))))
+
+  (testing "works on quine-style prefix"
+    (is (= "(quine completion (spell-eval (do "
+           (run-spell '(reopen "(quine completion (spell-eval (do )))"))))))
 
 ;; =============================================================================
 ;; default-tools tests

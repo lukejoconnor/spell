@@ -24,6 +24,11 @@
    Used by uneval to retrieve the source code of a binding while it's being evaluated."
   {})
 
+(def ^:dynamic *spell-env*
+  "Current spell-eval environment during function application.
+   Allows Clojure builtins (like apply) to access the current env for spell-fn support."
+  {})
+
 (def ^:private error-prefix
   "Prefix for error strings from failed llm calls."
   "[SPELL-ERROR] ")
@@ -49,18 +54,73 @@
 ;; Builtins
 ;; =============================================================================
 
-(declare spell-eval)
+(declare spell-eval expand-expr)
+
+(defn spell-fn?
+  "Returns true if v is a Spell function (dynamic-scoping function map)."
+  [v]
+  (and (map? v) (:spell/fn v)))
 
 (def core-builtins
   "Language primitives - always available in every llm variant."
-  {'+ +, '- -, '* *, '/ /, '< <, '> >, '<= <=, '>= >=, '= =, 'not= not=,
-   'str str, 'pr-str pr-str, 'list list, 'vector vector, 'first first, 'rest rest,
-   'cons cons, 'conj conj, 'get get, 'assoc assoc, 'not not, 'count count,
-   'inc inc, 'dec dec, 'nil? nil?, 'empty? empty?, 'rand rand,
+  {;; Math
+   '+ +, '- -, '* *, '/ /, 'inc inc, 'dec dec, 'rand rand,
+   ;; Comparison
+   '< <, '> >, '<= <=, '>= >=, '= =, 'not= not=,
+   ;; Logic
+   'not not, 'nil? nil?, 'empty? empty?,
+   ;; Strings
+   'str str, 'pr-str pr-str,
    'cat (fn [& args] (apply str args)),
-   'strip parse/strip-trailing-parens,
+   'subs (fn
+           ([s start] (subs s start))
+           ([s start end] (subs s start end))),
+   'starts-with? (fn [s prefix] (.startsWith ^String (str s) (str prefix))),
+   'includes? (fn [s substr] (.contains ^String (str s) (str substr))),
+   'trim (fn [s] (clojure.string/trim (str s))),
+   'replace (fn [s match replacement] (clojure.string/replace (str s) (str match) (str replacement))),
+   'split (fn [s pattern] (clojure.string/split (str s) (re-pattern pattern))),
+   'join (fn
+           ([coll] (clojure.string/join coll))
+           ([sep coll] (clojure.string/join sep coll))),
+   'lower-case (fn [s] (clojure.string/lower-case (str s))),
+   'upper-case (fn [s] (clojure.string/upper-case (str s))),
+   ;; Regex
+   're-find (fn [pattern s] (re-find (re-pattern pattern) s)),
+   're-matches (fn [pattern s] (re-matches (re-pattern pattern) s)),
+   ;; Type predicates
+   'string? string?, 'number? number?, 'list? list?, 'seq? seq?, 'vector? vector?,
+   'map? (fn [v] (and (map? v) (not (spell-fn? v)) (not (spell-future? v)))),
+   'fn? (fn [v] (or (fn? v) (spell-fn? v))),
+   ;; Collections
+   'list list, 'vector vector, 'first first, 'rest rest, 'last last,
+   'cons cons, 'conj conj, 'get get, 'assoc assoc, 'count count,
+   'nth (fn
+          ([coll idx] (nth coll idx))
+          ([coll idx not-found] (nth coll idx not-found))),
+   'keys keys, 'vals vals,
+   'into (fn [to from] (into to from)),
+   'concat concat, 'reverse reverse,
+   'sort (fn [coll] (sort coll)),
+   'range (fn
+            ([end] (range end))
+            ([start end] (range start end))
+            ([start end step] (range start end step))),
+   'repeat (fn [n x] (repeat n x)),
+   'apply (fn [f & args]
+            (let [all-args (concat (butlast args) (last args))]
+              (if (spell-fn? f)
+                (let [local-env (into *spell-env* (map vector (:params f) all-args))]
+                  (first (spell-eval (cons 'do (:body f)) local-env)))
+                (clojure.core/apply f all-args)))),
+   ;; Strip / Reopen
+   'strip-parens parse/strip-trailing-parens,
+   'reopen (fn [s] (parse/strip-trailing-parens 3 s)),
+   ;; Error handling
    'spell-error? spell-error?,
-   'spell-eval (fn [expr] (first (spell-eval expr {}))),
+   ;; Eval — auto-expands free vars from caller's env, then evaluates in fresh env
+   'spell-eval (fn [expr] (first (spell-eval (expand-expr expr *spell-env*) {}))),
+   ;; Concurrency
    'await (fn [future-val]
             (when-not (spell-future? future-val)
               (throw (ex-info "await: argument must be a future" {:got future-val})))
@@ -77,12 +137,7 @@
 
 (def special-forms
   "Special forms that are not free variables."
-  #{'quote 'def 'do 'if 'let 'fn 'defn 'cond 'and 'or 'uneval 'expand 'future})
-
-(defn spell-fn?
-  "Returns true if v is a Spell function (dynamic-scoping function map)."
-  [v]
-  (and (map? v) (:spell/fn v)))
+  #{'quote 'def 'do 'if 'let 'fn 'defn 'cond 'and 'or 'uneval 'expand 'future 'quine})
 
 (defn quote-value
   "Wrap non-self-evaluating values in (quote ...) for safe embedding in generated code."
@@ -162,6 +217,10 @@
 
         future [(list 'future (expand1 (second expr))) inner]
 
+        quine (let [name-sym (second expr)
+                    [body-expanded _] (-expand-expr (nth expr 2) outer-env (conj inner name-sym))]
+                [(list 'quine name-sym body-expanded) (conj inner name-sym)])
+
         (cond and or) [(list* (first expr) (map expand1 (rest expr))) inner]
 
         ;; Default: recurse into all sub-expressions
@@ -169,7 +228,7 @@
 
     :else [expr inner]))
 
-(defn- expand-expr
+(defn expand-expr
   "Expand expr, substituting free variables from outer-env. Returns expanded expression."
   [expr outer-env]
   (first (-expand-expr expr outer-env #{})))
@@ -216,8 +275,8 @@
       quote [(second expr) env]
       def   (let [sym (second expr)
                   val-expr (nth expr 2)
-                  ;; Bind sym -> quoted val-expr in *quote-env* during evaluation
-                  [v e'] (binding [*quote-env* (assoc *quote-env* sym (list 'quote val-expr))]
+                  ;; Bind sym -> val-expr (the raw source form) in *quote-env* during evaluation
+                  [v e'] (binding [*quote-env* (assoc *quote-env* sym val-expr)]
                            (spell-eval val-expr env))]
               [v (assoc e' sym v)])
       do    (eval-seq (rest expr) env)
@@ -292,6 +351,13 @@
       expand (let [[quoted-expr e'] (spell-eval (second expr) env)]
                [(expand-expr quoted-expr e') e'])
 
+      ;; quine: (quine name body) — bind name to the source form (= expr), eval body
+      ;; Enables self-referential programs: name evaluates to '(quine name body)
+      quine (let [name-sym (second expr)
+                  body (nth expr 2)
+                  env' (assoc env name-sym expr)]
+              (spell-eval body env'))
+
       ;; future: (future expr) - evaluate expr in a new thread, return future handle
       ;; Captures env at creation time (immutable map, safe to share).
       ;; Conveys dynamic bindings via bound-fn. Env updates inside future don't leak.
@@ -309,7 +375,7 @@
           (let [local-env (into e' (map vector (:params f) args))
                 [result _] (eval-seq (:body f) local-env)]
             [result e'])
-          [(apply f args) e'])))
+          [(binding [*spell-env* e'] (apply f args)) e'])))
 
     :else (throw (ex-info "Unknown expression type" {:expr expr}))))
 

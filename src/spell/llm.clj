@@ -6,7 +6,8 @@
             [spell.hooks :as hooks]
             [spell.parse :as parse]
             [spell.prompt :as prompt]
-            [spell.provider :as provider]))
+            [spell.provider :as provider]
+            [spell.trace :as trace]))
 
 ;; ---------------------------------------------------------------------------
 ;; LLM Engine
@@ -21,6 +22,9 @@
   (let [indent    (apply str (repeat eval/*llm-depth* "  "))
         is-thunk  (or (seq? prompt) (list? prompt))
         prompt-str (if is-thunk (pr-str prompt) (str prompt))
+        node-id   (when trace/*trace*
+                    (trace/begin-node! trace/*trace-node-id*
+                                       eval/*llm-depth* :default prompt-str))
         _         (when eval/*verbose*
                     (println (str indent "=== LLM Call (depth " eval/*llm-depth* ") ==="))
                     (println (str indent "Prompt: " (pr-str prompt))))
@@ -39,9 +43,22 @@
                     (hooks/apply-hooks hooks program))
         _         (when (and eval/*verbose* (seq hooks))
                     (println (str indent "Program (after hooks): " (pr-str program'))))
-        [value _] (binding [eval/*llm-depth* (inc eval/*llm-depth*)]
-                    (eval/spell-eval program' {}))]
-    value))
+        [value err]
+        (try
+          [(first (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
+                            trace/*trace-node-id* node-id]
+                    (eval/spell-eval program' {})))
+           nil]
+          (catch Exception e [nil e]))
+        _  (when node-id
+             (trace/complete-node! node-id
+               {:response response
+                :raw-text raw
+                :program  program
+                :hooked   (when (seq hooks) program')
+                :value    value
+                :error    err}))]
+    (if err (throw err) value)))
 
 (defn make-llm
   "Factory: create an llm function with specific tools and agent access.
@@ -90,10 +107,50 @@
                      (cond-> {:system sys-prompt :prefix prompt-str}
                        model (assoc :model model))))
         config   {:call-fn call-fn :builtins variant-builtins :prelude prelude}
+        wrap-nl  (fn [p]
+                   (let [s (if (or (seq? p) (list? p)) (pr-str p) (str p))]
+                     (if (.startsWith (.trim ^String s) "(")
+                       p
+                       (str "(quine completion (spell-eval (do "
+                            "(def prompt \"" (parse/escape-string s) "\") "))))
         the-llm  (fn the-llm
                    ([prompt] (the-llm prompt []))
                    ([prompt hooks]
-                    (binding [eval/*builtins* variant-builtins]
-                      (-llm config prompt hooks))))]
+                    (let [prompt' (if (or (seq? prompt) (list? prompt))
+                                   (eval/expand-expr prompt (or eval/*spell-env* {}))
+                                   prompt)]
+                      (binding [eval/*builtins* variant-builtins]
+                        (-llm config (wrap-nl prompt') hooks)))))]
     (reset! self-ref the-llm)
     the-llm))
+
+(defn make-leaf-llm
+  "Factory: create a plain text-in/text-out LLM function.
+   No Spell parsing, evaluation, tools, or sub-agents.
+
+   Options:
+   - :system - system prompt string (default: generic assistant)
+   - :model  - optional model name override (nil uses provider default)
+
+   Returns (fn [prompt] response-string)."
+  ([] (make-leaf-llm {}))
+  ([{:keys [system model]
+     :or {system "You are a helpful assistant. Respond concisely."}}]
+   (fn [prompt]
+     (let [prompt-str (str prompt)
+           node-id  (when trace/*trace*
+                      (trace/begin-node! trace/*trace-node-id*
+                                         eval/*llm-depth* :leaf prompt-str))
+           indent   (apply str (repeat eval/*llm-depth* "  "))
+           _        (when eval/*verbose*
+                      (println (str indent "=== Leaf LLM Call (depth " eval/*llm-depth* ") ==="))
+                      (println (str indent "Prompt: " (pr-str prompt))))
+           response (provider/llm-call prompt-str
+                      (cond-> {:system system}
+                        model (assoc :model model)))
+           _        (when eval/*verbose*
+                      (println (str indent "Response: " response)))
+           _        (when node-id
+                      (trace/complete-node! node-id
+                        {:response response :raw-text response :value response}))]
+       response))))

@@ -116,7 +116,34 @@
     ;; not
     (not true)
     (not false)
-    (not nil)])
+    (not nil)
+
+    ;; type predicates
+    (string? "hello")
+    (string? 42)
+    (number? 42)
+    (number? "hello")
+    (list? '(1 2))
+    (list? [1 2])
+    (vector? [1 2])
+    (vector? '(1 2))
+
+    ;; more collections
+    (nth [10 20 30] 1)
+    (last [1 2 3])
+    (into [] '(1 2 3))
+    (reverse [1 2 3])
+    (sort [3 1 2])
+    (range 5)
+    (repeat 3 "x")
+    (keys {:a 1})
+    (vals {:a 1})
+    (concat [1 2] [3 4])
+
+    ;; apply
+    (apply + [1 2 3])
+    (apply + 1 [2 3])
+    (apply str ["a" "b" "c"])])
 
 (deftest spell-eval-matches-eval
   (doseq [expr should-match-eval]
@@ -138,9 +165,8 @@
     (spit "foo.txt" "data")
     (println "hello")
 
-    ;; eval/apply (non-whitelisted)
+    ;; eval (non-whitelisted)
     (eval '(+ 1 2))
-    (apply + [1 2])
 
     ;; reflection/interop
     (.toString 42)
@@ -158,6 +184,44 @@
   (doseq [expr should-throw]
     (testing (str expr)
       (is (thrown? Exception (run-spell expr))))))
+
+;; =============================================================================
+;; New builtins (not in should-match-eval because API differs from clojure.core)
+;; =============================================================================
+
+(deftest string-builtins
+  (testing "replace"
+    (is (= "hello clojure" (run-spell '(replace "hello world" "world" "clojure")))))
+  (testing "split"
+    (is (= ["a" "b" "c"] (run-spell '(split "a,b,c" ",")))))
+  (testing "join"
+    (is (= "a,b,c" (run-spell '(join "," ["a" "b" "c"]))))
+    (is (= "abc" (run-spell '(join ["a" "b" "c"])))))
+  (testing "lower-case"
+    (is (= "hello" (run-spell '(lower-case "HELLO")))))
+  (testing "upper-case"
+    (is (= "HELLO" (run-spell '(upper-case "hello"))))))
+
+(deftest regex-builtins
+  (testing "re-find"
+    (is (= "123" (run-spell '(re-find "\\d+" "abc123def")))))
+  (testing "re-matches"
+    (is (= "123" (run-spell '(re-matches "\\d+" "123"))))
+    (is (nil? (run-spell '(re-matches "\\d+" "abc123"))))))
+
+(deftest type-predicates
+  (testing "map? excludes spell-fns"
+    (is (true? (run-spell '(map? {:a 1}))))
+    (is (false? (run-spell '(map? (fn [x] x))))))
+  (testing "fn? includes spell-fns"
+    (is (true? (run-spell '(fn? +))))
+    (is (true? (run-spell '(fn? (fn [x] x)))))))
+
+(deftest apply-with-spell-fn
+  (testing "apply with spell function"
+    (is (= 9 (run-spell '(do (defn square [x] (* x x)) (apply square [3]))))))
+  (testing "apply with multi-arg spell function"
+    (is (= 7 (run-spell '(do (defn add [a b] (+ a b)) (apply add [3 4])))))))
 
 ;; =============================================================================
 ;; Env threading tests (need to check returned env, not just value)
@@ -331,32 +395,36 @@
   (testing "evaluate quoted program"
     (is (= 6 (run-spell '(spell-eval '(do (def x 3) (+ x 3)))))))
 
-  (testing "evaluates in fresh env"
-    ;; outer x is not visible to spell-eval
-    (is (thrown? Exception (run-spell '(do (def x 10) (spell-eval '(+ x 1))))))))
+  (testing "auto-expands free variables from caller env"
+    ;; spell-eval auto-expands, so outer x is inlined before evaluation in {}
+    (is (= 11 (run-spell '(do (def x 10) (spell-eval '(+ x 1)))))))
+
+  (testing "internal bindings in spell-eval are independent"
+    ;; def inside spell-eval's argument doesn't leak to outer env
+    (is (= 42 (run-spell '(do (spell-eval '(do (def y 99)))
+                               (def y 42) y))))))
 
 ;; =============================================================================
 ;; uneval tests
 ;; =============================================================================
 
 (deftest uneval-form
-  (testing "basic uneval returns quoted expression"
-    ;; (def x (uneval 'x)) should bind x to the quote of its own expression
+  (testing "basic uneval returns raw source expression"
+    ;; (def x (uneval 'x)) should bind x to its own source expression
     (let [[val _] (spell-eval '(def x (uneval 'x)) {})]
-      (is (= '(quote (uneval 'x)) val))))
+      (is (= '(uneval 'x) val))))
 
   (testing "uneval enables self-referential code"
-    ;; uneval returns (quote expr) - the quoted definition expression
-    ;; We can use it to build self-referential structures
+    ;; uneval returns the raw source expression (no quote wrapper)
     (let [[val _] (spell-eval '(def my-code (vector (uneval 'my-code))) {})]
-      ;; my-code is a vector containing its own quoted definition
-      (is (= ['(quote (vector (uneval 'my-code)))] val))))
+      ;; my-code is a vector containing its own source expression
+      (is (= ['(vector (uneval 'my-code))] val))))
 
   (testing "uneval inside larger expression"
     ;; (def x (do (def inner 1) (uneval 'x)))
-    ;; should return the quote of the entire expression
+    ;; should return the source of the entire val-expr
     (let [[val _] (spell-eval '(def x (do (def inner 1) (uneval 'x))) {})]
-      (is (= '(quote (do (def inner 1) (uneval 'x))) val))))
+      (is (= '(do (def inner 1) (uneval 'x)) val))))
 
   (testing "uneval requires symbol argument"
     (is (thrown-with-msg? clojure.lang.ExceptionInfo
@@ -380,13 +448,22 @@
   (testing "uneval with computed symbol"
     ;; (uneval (first '[x])) should work - argument evaluates to symbol 'x
     (let [[val _] (spell-eval '(def x (uneval (first '[x]))) {})]
-      (is (= '(quote (uneval (first '[x]))) val))))
+      (is (= '(uneval (first '[x])) val))))
 
   (testing "nested def does not pollute outer quote-env"
     ;; Inner def's quote-env shouldn't leak to outer
     (let [[val _] (spell-eval '(def outer (do (def inner 1) (uneval 'outer))) {})]
-      ;; Should get quote of outer's expression, not inner's
-      (is (= '(quote (do (def inner 1) (uneval 'outer))) val)))))
+      ;; Should get source of outer's expression, not inner's
+      (is (= '(do (def inner 1) (uneval 'outer)) val))))
+
+  (testing "uneval + pr-str reconstructs source faithfully"
+    ;; Key property: (cat "(def x " (pr-str (uneval 'x)) ")") reproduces the source
+    ;; The reconstructed string should start with (def x (cat ..., not (def x (quote (cat ...
+    (let [[val _] (spell-eval '(def x (cat "(def x " (pr-str (uneval 'x)) ")")) {})]
+      (is (string? val))
+      (is (.startsWith ^String val "(def x (cat"))
+      ;; No extra (quote ...) wrapper around the val-expr
+      (is (not (.startsWith ^String val "(def x (quote "))))))
 
 ;; =============================================================================
 ;; Extract tests - PENDING REIMPLEMENTATION
@@ -556,6 +633,43 @@
     (let [[val _] (spell-eval '(do (def x 42)
                                    (expand '(do (def y (+ x 1)) (def x 10) (+ x y)))) {})]
       (is (= '(do (def y (+ 42 1)) (def x 10) (+ x y)) val)))))
+
+;; =============================================================================
+;; Quine tests
+;; =============================================================================
+
+(deftest quine-form
+  (testing "basic quine binds name to source"
+    ;; (quine x (+ 1 2)) should return 3, with x bound to the quine form
+    (let [[val env] (spell-eval '(quine x (+ 1 2)) {})]
+      (is (= 3 val))
+      (is (= '(quine x (+ 1 2)) (env 'x)))))
+
+  (testing "body can access quine binding"
+    ;; self is bound to the quine form itself
+    (let [[val _] (spell-eval '(quine self self) {})]
+      (is (= '(quine self self) val))))
+
+  (testing "defs in body propagate to outer env"
+    (let [[val env] (spell-eval '(quine q (do (def z 3) z)) {})]
+      (is (= 3 val))
+      (is (= 3 (env 'z)))
+      (is (= '(quine q (do (def z 3) z)) (env 'q)))))
+
+  (testing "quine is stable under re-evaluation"
+    ;; The source form, when evaluated, produces the same binding
+    (let [[_ env] (spell-eval '(quine self 42) {})]
+      (is (= '(quine self 42) (env 'self)))))
+
+  (testing "quine works with spell-eval body"
+    ;; Mirrors the actual usage in the preamble
+    (let [[val _] (spell-eval '(quine c (do (def x (pr-str c)) x)) {})]
+      (is (string? val))
+      (is (.startsWith ^String val "(quine c"))))
+
+  (testing "expand handles quine"
+    (let [[val _] (spell-eval '(do (def x 42) (expand '(quine q (+ x 1)))) {})]
+      (is (= '(quine q (+ 42 1)) val)))))
 
 ;; =============================================================================
 ;; Dynamic builtins tests
