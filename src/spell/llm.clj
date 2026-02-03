@@ -7,8 +7,18 @@
             [spell.parse :as parse]
             [spell.prompt :as prompt]
             [spell.provider :as provider]
-            [spell.registry :as registry]
             [spell.trace :as trace]))
+
+;; ---------------------------------------------------------------------------
+;; Describe builtin (defined here to avoid circular deps with core)
+;; ---------------------------------------------------------------------------
+
+(defn describe
+  "Get documentation from a namespace.
+   (describe ns) — all docs
+   (describe ns :key) — doc for specific item"
+  ([ns] (:docs ns))
+  ([ns key] (get-in ns [:docs key])))
 
 ;; ---------------------------------------------------------------------------
 ;; LLM Engine
@@ -16,7 +26,7 @@
 
 (defn- -llm
   "Core llm: call LLM, concat prefix+response, parse, apply hooks, eval."
-  [{:keys [call-fn builtins registries]} prompt hooks]
+  [{:keys [call-fn builtins]} prompt hooks]
   (when (and eval/*max-llm-depth* (>= eval/*llm-depth* eval/*max-llm-depth*))
     (throw (ex-info "LLM recursion limit exceeded"
                     {:depth eval/*llm-depth* :limit eval/*max-llm-depth*})))
@@ -35,9 +45,6 @@
         raw       (str prompt-str response)
         balanced  (parse/balance-parens raw)
         forms     (parse/read-all balanced)
-        ;; Build registry map for import-verbose preprocessing
-        reg-map   (into {} (map (fn [r] [(:name r) r]) registries))
-        forms     (registry/resolve-import-verbose forms reg-map)
         program   (if (> (count (vec forms)) 1)
                     (list* 'do forms)
                     (first forms))
@@ -64,27 +71,27 @@
     (if err (throw err) value)))
 
 (defn make-llm
-  "Factory: create an llm function with registries.
+  "Factory: create an llm function with namespaces.
 
    Options:
-   - :registries  - vector of registry maps. Each registry has :name, :desc, :items.
-                    Registries are bound under their :name symbol in the builtins.
-   - :model       - optional model name override (nil uses provider default)
-   - :llm-var     - optional var ref to bind as 'llm for self-recursion (e.g., #'llm)
+   - :namespaces - map of {symbol -> namespace-map}. Each namespace has :docs and items.
+                   Namespaces are bound under their symbol in the builtins.
+   - :model      - optional model name override (nil uses provider default)
+   - :llm-var    - optional var ref to bind as 'llm for self-recursion (e.g., #'llm)
 
    Returns a function with the same signature as llm:
    (f prompt) or (f prompt hooks).
 
    The returned function is automatically available as 'llm-self in Spell code,
    providing self-recursion without needing to wire up var refs."
-  [{:keys [registries model llm-var]
-    :or {registries [] model nil}}]
+  [{:keys [namespaces model llm-var]
+    :or {namespaces {} model nil}}]
   (let [self-ref (atom nil)
         self-fn (fn llm-self
                   ([prompt] (@self-ref prompt))
                   ([prompt hooks] (@self-ref prompt hooks)))
-        ;; Build registry builtins: each registry bound under its :name
-        reg-builtins (into {} (map (fn [r] [(:name r) r]) registries))
+        ;; Build namespace builtins: each namespace bound under its symbol
+        ns-builtins (into {} (map (fn [[sym ns-map]] [sym ns-map]) namespaces))
         hook-builtins {'prepend-hooks-to-llm #'hooks/prepend-hooks-to-llm
                        'recurse #'hooks/recurse
                        'prefix-prompt #'hooks/prefix-prompt
@@ -93,15 +100,15 @@
         variant-builtins (merge eval/core-builtins
                                 hook-builtins
                                 {'llm-self self-fn
-                                 'describe registry/describe}
-                                reg-builtins
+                                 'describe describe}
+                                ns-builtins
                                 (when llm-var {'llm llm-var}))
-        sys-prompt (prompt/generate-system-prompt registries)
+        sys-prompt (prompt/generate-system-prompt namespaces)
         call-fn  (fn [prompt-str]
                    (provider/llm-call prompt-str
                      (cond-> {:system sys-prompt :prefix prompt-str}
                        model (assoc :model model))))
-        config   {:call-fn call-fn :builtins variant-builtins :registries registries}
+        config   {:call-fn call-fn :builtins variant-builtins}
         wrap-nl  (fn [p]
                    (let [s (if (or (seq? p) (list? p)) (pr-str p) (str p))]
                      (if (.startsWith (.trim ^String s) "(")

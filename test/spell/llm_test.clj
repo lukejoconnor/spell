@@ -55,7 +55,7 @@
     (try
       (provider/with-provider
         (provider/dummy-provider
-          {:response "(import tools :read-name) (def thought \"use read-name tool\") (cat \"Hello, \" (read-name) \"!\"))"})
+          {:response "(def thought \"use read-name tool\") (cat \"Hello, \" (tools/read-name) \"!\"))"})
         (let [result (spell/llm "(do ")]
           (is (= "Hello, Alice!" result))))
       (finally
@@ -198,39 +198,37 @@
 ;; =============================================================================
 
 (deftest make-llm-test
-  (testing "make-llm with custom tool via registry"
-    (let [reg {:name 'tools
-               :desc {:my-tool "A test tool."}
-               :items {:my-tool {:type :tool :fn (fn [] "tool-result")}}}
-          custom-llm (spell/make-llm {:registries [reg]})]
+  (testing "make-llm with custom tool via namespace"
+    (let [ns-map {'tools {:docs {:my-tool "A test tool."}
+                          :my-tool (fn [] "tool-result")}}
+          custom-llm (spell/make-llm {:namespaces ns-map})]
       (provider/with-provider
         (provider/dummy-provider
-          {:response "(import tools :my-tool) (my-tool))"})
+          {:response "(tools/my-tool))"})
         (is (= "tool-result" (custom-llm "(do "))))))
 
-  (testing "make-llm without registry has no tools"
-    (let [bare-llm (spell/make-llm {:registries []})]
+  (testing "make-llm without namespaces has no tools"
+    (let [bare-llm (spell/make-llm {:namespaces {}})]
       (provider/with-provider
         (provider/dummy-provider
           {:response "\"no tools here\""})
         (is (= "no tools here" (bare-llm "(do "))))))
 
-  (testing "make-llm with agent in registry"
+  (testing "make-llm with agent in namespace"
     (let [helper-fn (fn
                       ([prompt] "helper-result")
                       ([prompt hooks] "helper-result"))
-          reg {:name 'agents
-               :desc {:helper "Helper agent"}
-               :items {:helper {:type :agent :fn helper-fn}}}
-          parent-llm (spell/make-llm {:registries [reg]})]
+          ns-map {'agents {:docs {:helper "Helper agent"}
+                           :helper helper-fn}}
+          parent-llm (spell/make-llm {:namespaces ns-map})]
       (provider/with-provider
         (provider/dummy-provider
-          {:response "(import agents :helper) (helper \"do something\"))"})
+          {:response "(agents/helper \"do something\"))"})
         (is (= "helper-result" (parent-llm "(do "))))))
 
   (testing "llm-self provides automatic self-recursion"
     (let [call-count (atom 0)
-          custom-llm (spell/make-llm {:registries []})]
+          custom-llm (spell/make-llm {:namespaces {}})]
       (provider/with-provider
         (provider/dummy-provider
           {:response-fn (fn [_]
@@ -238,70 +236,48 @@
                             (if (= n 1)
                               "(cat \"outer-\" (llm-self \"(do \"))"
                               "\"inner-result\"")))})
-        (is (= "outer-inner-result" (custom-llm "(do "))))))
-
-  (testing "spell items in registry evaluate at import"
-    (let [reg {:name 'lib
-               :desc {:double "double fn"}
-               :items {:double {:type :spell :form '(fn [x] (* x 2))}}}
-          test-llm (spell/make-llm {:registries [reg]})]
-      (provider/with-provider
-        (provider/dummy-provider {:response "(import lib :double) (double 21))"})
-        (is (= 42 (test-llm "(do ")))))))
+        (is (= "outer-inner-result" (custom-llm "(do ")))))))
 
 ;; =============================================================================
-;; Registry import tests
+;; Namespace tests
 ;; =============================================================================
 
-(deftest registry-import-test
-  (testing "model can import and use tool"
-    (let [reg {:name 'tools
-               :desc {:bash "run command"}
-               :items {:bash {:type :tool :fn (fn [_] {:exit 0 :out "ok" :err ""})}}}
-          test-llm (spell/make-llm {:registries [reg]})]
+(deftest namespace-qualified-test
+  (testing "model can use qualified symbol"
+    (let [ns-map {'tools {:docs {:bash "run command"}
+                          :bash (fn [_] {:exit 0 :out "ok" :err ""})}}
+          test-llm (spell/make-llm {:namespaces ns-map})]
       (provider/with-provider
-        (provider/dummy-provider {:response "(import tools :bash) (:out (bash \"test\")))"})
+        (provider/dummy-provider {:response "(:out (tools/bash \"test\")))"})
         (is (= "ok" (test-llm "(do ")))))))
 
-(deftest registry-import-verbose-test
-  (testing "import-verbose inlines source"
-    (let [reg {:name 'lib
-               :desc {:double "double fn"}
-               :items {:double {:type :spell :form '(fn [x] (* x 2))}}}
-          test-llm (spell/make-llm {:registries [reg]})]
-      (provider/with-provider
-        (provider/dummy-provider {:response "(import-verbose lib :double) (double 21))"})
-        (is (= 42 (test-llm "(do ")))))))
-
-(deftest registry-describe-test
-  (testing "describe returns registry descriptions"
-    (let [reg {:name 'r :desc {:a "first" :b "second"} :items {:a {:type :tool :fn identity}}}
-          test-llm (spell/make-llm {:registries [reg]})]
+(deftest namespace-describe-test
+  (testing "describe returns namespace docs"
+    (let [ns-map {'r {:docs {:a "first" :b "second"} :a identity}}
+          test-llm (spell/make-llm {:namespaces ns-map})]
       (provider/with-provider
         (provider/dummy-provider {:response "(describe r))"})
         (is (= {:a "first" :b "second"} (test-llm "(do ")))))))
 
-(deftest registry-multiple-imports-test
-  (testing "can import multiple items from same registry"
-    (let [reg {:name 'tools
-               :desc {:add "add fn" :sub "sub fn"}
-               :items {:add {:type :tool :fn +}
-                       :sub {:type :tool :fn -}}}
-          test-llm (spell/make-llm {:registries [reg]})]
+(deftest namespace-multiple-calls-test
+  (testing "can use multiple items from same namespace"
+    (let [ns-map {'tools {:docs {:add "add fn" :sub "sub fn"}
+                          :add +
+                          :sub -}}
+          test-llm (spell/make-llm {:namespaces ns-map})]
       (provider/with-provider
-        (provider/dummy-provider {:response "(import tools :add) (import tools :sub) (add (sub 10 3) 5))"})
+        (provider/dummy-provider {:response "(tools/add (tools/sub 10 3) 5))"})
         (is (= 12 (test-llm "(do ")))))))
 
-(deftest registry-agent-import-test
-  (testing "can import agent from registry"
+(deftest namespace-agent-test
+  (testing "can call agent from namespace"
     (let [mock-agent (fn ([p] (str "result: " p))
                          ([p _] (str "result: " p)))
-          reg {:name 'agents
-               :desc {:helper "helper agent"}
-               :items {:helper {:type :agent :fn mock-agent}}}
-          test-llm (spell/make-llm {:registries [reg]})]
+          ns-map {'agents {:docs {:helper "helper agent"}
+                           :helper mock-agent}}
+          test-llm (spell/make-llm {:namespaces ns-map})]
       (provider/with-provider
-        (provider/dummy-provider {:response "(import agents :helper) (helper \"test\"))"})
+        (provider/dummy-provider {:response "(agents/helper \"test\"))"})
         (is (= "result: test" (test-llm "(do ")))))))
 
 ;; =============================================================================
@@ -309,31 +285,30 @@
 ;; =============================================================================
 
 (deftest generate-system-prompt-test
-  (testing "includes registry item descriptions"
-    (let [reg {:name 'tools
-               :desc {:my-tool "Does things."}
-               :items {:my-tool {:type :tool :fn identity}}}
-          p (prompt/generate-system-prompt [reg])]
+  (testing "includes namespace item descriptions"
+    (let [ns-map {'tools {:docs {:my-tool "Does things."}
+                          :my-tool identity}}
+          p (prompt/generate-system-prompt ns-map)]
       (is (str/includes? p "my-tool: Does things."))))
 
-  (testing "includes registry section header"
-    (let [reg {:name 'mytools :desc {:a "tool a"} :items {}}
-          p (prompt/generate-system-prompt [reg])]
-      (is (str/includes? p "REGISTRIES"))
+  (testing "includes namespace section header"
+    (let [ns-map {'mytools {:docs {:a "tool a"} :a identity}}
+          p (prompt/generate-system-prompt ns-map)]
+      (is (str/includes? p "NAMESPACES"))
       (is (str/includes? p "## mytools"))))
 
   (testing "default prompt contains expected sections"
-    (let [p (prompt/generate-system-prompt [spell/default-registry])]
+    (let [p (prompt/generate-system-prompt spell/all-namespaces)]
       (is (str/includes? p "SPELL INTERPRETER"))
       (is (str/includes? p "BUILTINS"))
-      (is (str/includes? p "REGISTRIES"))
+      (is (str/includes? p "NAMESPACES"))
       (is (str/includes? p "read-file"))
       (is (str/includes? p "bash"))
       (is (str/includes? p "EXAMPLES"))))
 
-  (testing "import usage instructions included"
-    (let [p (prompt/generate-system-prompt [spell/default-registry])]
-      (is (str/includes? p "(import <registry> :name)")))))
+  (testing "qualified symbol usage instructions included"
+    (let [p (prompt/generate-system-prompt spell/all-namespaces)]
+      (is (str/includes? p "tools/bash")))))
 
 
 ;; =============================================================================

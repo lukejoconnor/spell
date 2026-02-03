@@ -1,7 +1,7 @@
 (ns spell.eval
   "Spell evaluator: spell-eval, expand, free variable analysis, builtins."
   (:require [spell.parse :as parse]
-            [spell.registry :as registry]
+            [clojure.string :as str]
             [clojure.set :as set]))
 
 ;; =============================================================================
@@ -72,37 +72,22 @@
     (apply f args)))
 
 (def core-builtins
-  "Language primitives - always available in every llm variant."
+  "Language primitives - always available in every llm variant.
+   Extended functions are in stdlib registries (strings, seqs, fns)."
   {;; Math
-   '+ +, '- -, '* *, '/ /, 'inc inc, 'dec dec, 'rand rand,
+   '+ +, '- -, '* *, '/ /, 'inc inc, 'dec dec,
    ;; Comparison
    '< <, '> >, '<= <=, '>= >=, '= =, 'not= not=,
    ;; Logic
    'not not, 'nil? nil?, 'empty? empty?,
-   ;; Strings
+   ;; Strings (core only - extended in strings registry)
    'str str, 'pr-str pr-str,
    'cat (fn [& args] (apply str args)),
-   'subs (fn
-           ([s start] (subs s start))
-           ([s start end] (subs s start end))),
-   'starts-with? (fn [s prefix] (.startsWith ^String (str s) (str prefix))),
-   'includes? (fn [s substr] (.contains ^String (str s) (str substr))),
-   'trim (fn [s] (clojure.string/trim (str s))),
-   'replace (fn [s match replacement] (clojure.string/replace (str s) (str match) (str replacement))),
-   'split (fn [s pattern] (clojure.string/split (str s) (re-pattern pattern))),
-   'join (fn
-           ([coll] (clojure.string/join coll))
-           ([sep coll] (clojure.string/join sep coll))),
-   'lower-case (fn [s] (clojure.string/lower-case (str s))),
-   'upper-case (fn [s] (clojure.string/upper-case (str s))),
-   ;; Regex
-   're-find (fn [pattern s] (re-find (re-pattern pattern) s)),
-   're-matches (fn [pattern s] (re-matches (re-pattern pattern) s)),
    ;; Type predicates
    'string? string?, 'number? number?, 'list? list?, 'seq? seq?, 'vector? vector?,
    'map? (fn [v] (and (map? v) (not (spell-fn? v)) (not (spell-future? v)))),
    'fn? (fn [v] (or (fn? v) (spell-fn? v))),
-   ;; Collections
+   ;; Collections (core only - extended in seqs registry)
    'list list, 'vector vector, 'first first, 'rest rest, 'last last,
    'cons cons, 'conj conj, 'get get, 'assoc assoc, 'count count,
    'nth (fn
@@ -110,75 +95,22 @@
           ([coll idx not-found] (nth coll idx not-found))),
    'keys keys, 'vals vals,
    'into (fn [to from] (into to from)),
-   'concat concat, 'reverse reverse,
-   'sort (fn [coll] (sort coll)),
-   'range (fn
-            ([end] (range end))
-            ([start end] (range start end))
-            ([start end step] (range start end step))),
-   'repeat (fn [n x] (repeat n x)),
+   'concat concat,
    'apply (fn [f & args]
             (let [all-args (concat (butlast args) (last args))]
               (if (spell-fn? f)
                 (let [local-env (into *spell-env* (map vector (:params f) all-args))]
                   (first (spell-eval (cons 'do (:body f)) local-env)))
                 (clojure.core/apply f all-args)))),
-   ;; Higher-order collection functions (spell-fn aware)
+   ;; Core higher-order functions (spell-fn aware)
    'map (fn [f coll] (mapv #(invoke-fn f [%]) coll)),
    'filter (fn [pred coll] (filterv #(invoke-fn pred [%]) coll)),
-   'remove (fn [pred coll] (filterv #(not (invoke-fn pred [%])) coll)),
    'reduce (fn
              ([f coll] (clojure.core/reduce #(invoke-fn f [%1 %2]) coll))
              ([f init coll] (clojure.core/reduce #(invoke-fn f [%1 %2]) init coll))),
-   'some (fn [pred coll] (some #(invoke-fn pred [%]) coll)),
-   'every? (fn [pred coll] (every? #(invoke-fn pred [%]) coll)),
-   'keep (fn [f coll]
-           (vec (for [x coll
-                      :let [v (invoke-fn f [x])]
-                      :when (some? v)]
-                  v))),
-   'mapcat (fn [f coll] (vec (mapcat #(invoke-fn f [%]) coll))),
-   'take-while (fn [pred coll] (vec (take-while #(invoke-fn pred [%]) coll))),
-   'drop-while (fn [pred coll] (vec (drop-while #(invoke-fn pred [%]) coll))),
-   'group-by (fn [f coll]
-               (clojure.core/reduce
-                 (fn [m x]
-                   (let [k (invoke-fn f [x])]
-                     (update m k (fnil conj []) x)))
-                 {} coll)),
-   'sort-by (fn [keyfn coll]
-              (vec (sort-by #(invoke-fn keyfn [%]) coll))),
-   'find-first (fn [pred coll] (some #(when (invoke-fn pred [%]) %) coll)),
-   'not-any? (fn [pred coll] (not-any? #(invoke-fn pred [%]) coll)),
-   ;; Non-HOF collection utilities
-   'distinct (fn [coll] (vec (distinct coll))),
-   'flatten (fn [coll] (vec (flatten coll))),
-   'frequencies (fn [coll] (frequencies coll)),
-   'partition (fn
-                ([n coll] (vec (map vec (partition n coll))))
-                ([n step coll] (vec (map vec (partition n step coll))))),
-   'partition-all (fn
-                    ([n coll] (vec (map vec (partition-all n coll))))
-                    ([n step coll] (vec (map vec (partition-all n step coll))))),
-   'interleave (fn [& colls] (vec (apply interleave colls))),
-   'interpose (fn [sep coll] (vec (interpose sep coll))),
-   'zipmap (fn [ks vs] (zipmap ks vs)),
+   ;; Slicing
    'take (fn [n coll] (vec (take n coll))),
    'drop (fn [n coll] (vec (drop n coll))),
-   'split-at (fn [n coll] [(vec (take n coll)) (vec (drop n coll))]),
-   ;; Function combinators
-   'comp (fn [& fns]
-           (fn [x]
-             (reduce (fn [v f] (invoke-fn f [v])) x (reverse fns)))),
-   'partial (fn [f & args]
-              (fn [& more]
-                (invoke-fn f (concat args more)))),
-   'juxt (fn [& fns]
-           (fn [& args]
-             (mapv #(invoke-fn % args) fns))),
-   'complement (fn [f]
-                 (fn [& args]
-                   (not (invoke-fn f args)))),
    ;; Strip / Reopen
    'strip-parens parse/strip-trailing-parens,
    'reopen (fn [s] (parse/strip-trailing-parens 3 s)),
@@ -203,7 +135,23 @@
 
 (def special-forms
   "Special forms that are not free variables."
-  #{'quote 'def 'do 'if 'let 'fn 'defn 'cond 'and 'or 'uneval 'expand 'future 'quine 'import})
+  #{'quote 'def 'do 'if 'let 'fn 'defn 'cond 'and 'or 'uneval 'expand 'future 'quine '-> '->>})
+
+(defn- thread-first
+  "Transform (-> x (f a) (g b)) into (g (f x a) b)."
+  [initial forms]
+  (reduce (fn [acc form]
+            (let [form (if (seq? form) form (list form))]
+              (list* (first form) acc (rest form))))
+          initial forms))
+
+(defn- thread-last
+  "Transform (->> x (f a) (g b)) into (g b (f a x))."
+  [initial forms]
+  (reduce (fn [acc form]
+            (let [form (if (seq? form) form (list form))]
+              (concat form [acc])))
+          initial forms))
 
 (defn quote-value
   "Wrap non-self-evaluating values in (quote ...) for safe embedding in generated code."
@@ -223,15 +171,27 @@
     (or (nil? expr) (string? expr) (number? expr) (boolean? expr) (keyword? expr))
     [expr inner]
 
-    ;; Symbol: inner (locally defined) -> leave; outer-env -> substitute; else -> leave
+    ;; Symbol: qualified (a/b) -> leave as-is (global ref);
+    ;; inner (locally defined) -> leave; outer-env -> substitute; else -> leave
     (symbol? expr)
-    [(cond
-       (contains? inner expr) expr
-       (contains? (or *builtins* core-builtins) expr) expr
-       (contains? special-forms expr) expr
-       (contains? outer-env expr) (quote-value (get outer-env expr))
-       :else expr)
-     inner]
+    (let [;; Use str to get full symbol including namespace
+          sym-str (str expr)
+          ;; Check if this is a qualified symbol (has / with content on both sides)
+          qualified? (when (str/includes? sym-str "/")
+                       (let [p (str/split sym-str #"/")]
+                         (and (> (count p) 1)
+                              (seq (first p))
+                              (seq (second p)))))]
+      (if qualified?
+        ;; Qualified symbols are self-contained namespace references - leave intact
+        [expr inner]
+        [(cond
+           (contains? inner expr) expr
+           (contains? (or *builtins* core-builtins) expr) expr
+           (contains? special-forms expr) expr
+           (contains? outer-env expr) (quote-value (get outer-env expr))
+           :else expr)
+         inner]))
 
     ;; Vector
     (vector? expr)
@@ -287,10 +247,9 @@
                     [body-expanded _] (-expand-expr (nth expr 2) outer-env (conj inner name-sym))]
                 [(list 'quine name-sym body-expanded) (conj inner name-sym)])
 
-        import [(list 'import
-                      (first (-expand-expr (second expr) outer-env inner))
-                      (first (-expand-expr (nth expr 2) outer-env inner)))
-                inner]
+        ;; Threading macros: transform then expand
+        -> (-expand-expr (thread-first (second expr) (drop 2 expr)) outer-env inner)
+        ->> (-expand-expr (thread-last (second expr) (drop 2 expr)) outer-env inner)
 
         (cond and or) [(list* (first expr) (map expand1 (rest expr))) inner]
 
@@ -321,11 +280,30 @@
     (or (nil? expr) (string? expr) (number? expr) (boolean? expr) (keyword? expr))
     [expr env]
 
-    ;; Symbol: lookup in env, fallback to *builtins*
+    ;; Symbol: qualified (a/b/c) -> recursive namespace lookup; else env/*builtins*
     (symbol? expr)
-    (if-let [entry (or (find env expr) (find (or *builtins* core-builtins) expr))]
-      [(val entry) env]
-      (throw (ex-info "Unbound symbol" {:symbol expr})))
+    (let [;; Use str to get full symbol including namespace (name only gives local part)
+          sym-str (str expr)
+          ;; Only treat as qualified if there's a / with content on both sides
+          ;; This excludes "/" (division) and symbols that start or end with /
+          parts (when (str/includes? sym-str "/")
+                  (let [p (str/split sym-str #"/")]
+                    (when (and (> (count p) 1)
+                               (seq (first p))
+                               (seq (second p)))
+                      p)))]
+      (if parts
+        ;; Qualified symbol: strings/trim or nested/path/item
+        (let [root-sym (symbol (first parts))
+              [root-val _] (spell-eval root-sym env)
+              result (reduce #(get %1 (keyword %2)) root-val (rest parts))]
+          (if (nil? result)
+            (throw (ex-info "Namespace lookup failed" {:symbol expr :parts parts}))
+            [result env]))
+        ;; Unqualified: lookup in env, fallback to *builtins*
+        (if-let [entry (or (find env expr) (find (or *builtins* core-builtins) expr))]
+          [(val entry) env]
+          (throw (ex-info "Unbound symbol" {:symbol expr})))))
 
     ;; Vector: evaluate each element, threading env
     (vector? expr)
@@ -429,12 +407,6 @@
                   env' (assoc env name-sym expr)]
               (spell-eval body env'))
 
-      ;; import: (import registry :key) — import item from registry, bind to name
-      import (let [[reg env1] (spell-eval (second expr) env)
-                   [key env2] (spell-eval (nth expr 2) env1)
-                   [val name-sym] (registry/import-item reg key spell-eval env2)]
-               [val (assoc env2 name-sym val)])
-
       ;; future: (future expr) - evaluate expr in a new thread, return future handle
       ;; Captures env at creation time (immutable map, safe to share).
       ;; Conveys dynamic bindings via bound-fn. Env updates inside future don't leak.
@@ -442,6 +414,12 @@
                    captured-env env
                    f (bound-fn [] (first (spell-eval body captured-env)))]
                [{:spell/future true :ref (clojure.core/future (f))} env])
+
+      ;; ->: (-> x (f a) (g b)) - thread-first, inserts x as first arg
+      -> (spell-eval (thread-first (second expr) (drop 2 expr)) env)
+
+      ;; ->>: (->> x (f a) (g b)) - thread-last, inserts x as last arg
+      ->> (spell-eval (thread-last (second expr) (drop 2 expr)) env)
 
       ;; Function application: evaluate all, apply first to rest
       (let [[vals e'] (reduce (fn [[acc e] x] (let [[v e'] (spell-eval x e)] [(conj acc v) e']))

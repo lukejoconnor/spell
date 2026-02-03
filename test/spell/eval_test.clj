@@ -1,7 +1,33 @@
 (ns spell.eval-test
   (:require [clojure.test :refer [deftest is testing]]
             [spell.eval :as eval :refer [spell-eval run-spell]]
-            [spell.registry :as registry]))
+            [spell.stdlib :as stdlib]
+            [spell.core :as core]))
+
+;; =============================================================================
+;; Test helpers - include stdlib functions directly for testing
+;; =============================================================================
+
+(defn- extract-ns-fns
+  "Extract all functions from a namespace map (excluding :docs)."
+  [ns-map]
+  (into {}
+    (for [[k v] ns-map
+          :when (not= k :docs)]
+      [(symbol (name k)) v])))
+
+(def test-builtins
+  "Full builtins including all stdlib functions for testing."
+  (merge eval/core-builtins
+         (extract-ns-fns stdlib/strings)
+         (extract-ns-fns stdlib/seqs)
+         (extract-ns-fns stdlib/fns)))
+
+(defn run-spell-full
+  "Run spell with full builtins (including stdlib) for testing."
+  [program]
+  (binding [eval/*builtins* test-builtins]
+    (first (spell-eval program {}))))
 
 ;; =============================================================================
 ;; Oracle-based tests: spell-eval should match eval
@@ -149,7 +175,7 @@
 (deftest spell-eval-matches-eval
   (doseq [expr should-match-eval]
     (testing (str expr)
-      (is (= (eval expr) (run-spell expr))))))
+      (is (= (eval expr) (run-spell-full expr))))))
 
 ;; =============================================================================
 ;; Expressions that should throw
@@ -189,23 +215,23 @@
 
 (deftest string-builtins
   (testing "replace"
-    (is (= "hello clojure" (run-spell '(replace "hello world" "world" "clojure")))))
+    (is (= "hello clojure" (run-spell-full '(replace "hello world" "world" "clojure")))))
   (testing "split"
-    (is (= ["a" "b" "c"] (run-spell '(split "a,b,c" ",")))))
+    (is (= ["a" "b" "c"] (run-spell-full '(split "a,b,c" ",")))))
   (testing "join"
-    (is (= "a,b,c" (run-spell '(join "," ["a" "b" "c"]))))
-    (is (= "abc" (run-spell '(join ["a" "b" "c"])))))
+    (is (= "a,b,c" (run-spell-full '(join "," ["a" "b" "c"]))))
+    (is (= "abc" (run-spell-full '(join ["a" "b" "c"])))))
   (testing "lower-case"
-    (is (= "hello" (run-spell '(lower-case "HELLO")))))
+    (is (= "hello" (run-spell-full '(lower-case "HELLO")))))
   (testing "upper-case"
-    (is (= "HELLO" (run-spell '(upper-case "hello"))))))
+    (is (= "HELLO" (run-spell-full '(upper-case "hello"))))))
 
 (deftest regex-builtins
   (testing "re-find"
-    (is (= "123" (run-spell '(re-find "\\d+" "abc123def")))))
+    (is (= "123" (run-spell-full '(re-find "\\d+" "abc123def")))))
   (testing "re-matches"
-    (is (= "123" (run-spell '(re-matches "\\d+" "123"))))
-    (is (nil? (run-spell '(re-matches "\\d+" "abc123"))))))
+    (is (= "123" (run-spell-full '(re-matches "\\d+" "123"))))
+    (is (nil? (run-spell-full '(re-matches "\\d+" "abc123"))))))
 
 (deftest type-predicates
   (testing "map? excludes spell-fns"
@@ -217,9 +243,9 @@
 
 (deftest apply-with-spell-fn
   (testing "apply with spell function"
-    (is (= 9 (run-spell '(do (defn square [x] (* x x)) (apply square [3]))))))
+    (is (= 9 (run-spell-full '(do (defn square [x] (* x x)) (apply square [3]))))))
   (testing "apply with multi-arg spell function"
-    (is (= 7 (run-spell '(do (defn add [a b] (+ a b)) (apply add [3 4])))))))
+    (is (= 7 (run-spell-full '(do (defn add [a b] (+ a b)) (apply add [3 4])))))))
 
 ;; =============================================================================
 ;; Higher-order collection functions
@@ -229,7 +255,7 @@
   (testing "map with clojure fn"
     (is (= [2 3 4] (run-spell '(map inc [1 2 3])))))
   (testing "map with spell fn"
-    (is (= [1 4 9] (run-spell '(do (defn sq [x] (* x x)) (map sq [1 2 3]))))))
+    (is (= [1 4 9] (run-spell-full '(do (defn sq [x] (* x x)) (map sq [1 2 3]))))))
   (testing "map with inline fn"
     (is (= [2 4 6] (run-spell '(map (fn [x] (* x 2)) [1 2 3])))))
   (testing "map returns vector"
@@ -241,7 +267,7 @@
   (testing "filter with predicate fn"
     (is (= [3 4 5] (run-spell '(filter (fn [x] (> x 2)) [1 2 3 4 5])))))
   (testing "filter with spell fn"
-    (is (= [4 5 6] (run-spell '(do (defn big [x] (> x 3)) (filter big [1 2 3 4 5 6]))))))
+    (is (= [4 5 6] (run-spell-full '(do (defn big [x] (> x 3)) (filter big [1 2 3 4 5 6]))))))
   (testing "filter truthy values"
     (is (= [1 2 3] (run-spell '(filter (fn [x] x) [nil 1 nil 2 3 nil])))))
   (testing "filter returns vector"
@@ -251,9 +277,9 @@
 
 (deftest remove-builtin
   (testing "remove keeps non-matching"
-    (is (= [1 2 3] (run-spell '(remove (fn [x] (> x 3)) [1 2 3 4 5])))))
+    (is (= [1 2 3] (run-spell-full '(remove (fn [x] (> x 3)) [1 2 3 4 5])))))
   (testing "remove with spell fn"
-    (is (= [1 2] (run-spell '(do (defn big [x] (> x 2)) (remove big [1 2 3 4])))))))
+    (is (= [1 2] (run-spell-full '(do (defn big [x] (> x 2)) (remove big [1 2 3 4])))))))
 
 (deftest reduce-builtin
   (testing "reduce with clojure fn"
@@ -269,131 +295,131 @@
 
 (deftest some-builtin
   (testing "some finds first truthy result"
-    (is (= 3 (run-spell '(some (fn [x] (if (> x 2) x nil)) [1 2 3 4])))))
+    (is (= 3 (run-spell-full '(some (fn [x] (if (> x 2) x nil)) [1 2 3 4])))))
   (testing "some returns nil when no match"
-    (is (nil? (run-spell '(some (fn [x] (if (> x 10) x nil)) [1 2 3])))))
+    (is (nil? (run-spell-full '(some (fn [x] (if (> x 10) x nil)) [1 2 3])))))
   (testing "some with spell fn"
-    (is (= 4 (run-spell '(do (defn find-big [x] (if (> x 3) x nil)) (some find-big [1 2 3 4 5]))))))
+    (is (= 4 (run-spell-full '(do (defn find-big [x] (if (> x 3) x nil)) (some find-big [1 2 3 4 5]))))))
   (testing "some empty"
-    (is (nil? (run-spell '(some (fn [x] x) []))))))
+    (is (nil? (run-spell-full '(some (fn [x] x) []))))))
 
 (deftest every?-builtin
   (testing "every? all match"
-    (is (true? (run-spell '(every? (fn [x] (> x 0)) [1 2 3])))))
+    (is (true? (run-spell-full '(every? (fn [x] (> x 0)) [1 2 3])))))
   (testing "every? some fail"
-    (is (false? (run-spell '(every? (fn [x] (> x 2)) [1 2 3])))))
+    (is (false? (run-spell-full '(every? (fn [x] (> x 2)) [1 2 3])))))
   (testing "every? with spell fn"
-    (is (true? (run-spell '(do (defn pos [x] (> x 0)) (every? pos [1 2 3]))))))
+    (is (true? (run-spell-full '(do (defn pos [x] (> x 0)) (every? pos [1 2 3]))))))
   (testing "every? empty is true"
-    (is (true? (run-spell '(every? (fn [x] false) []))))))
+    (is (true? (run-spell-full '(every? (fn [x] false) []))))))
 
 (deftest keep-builtin
   (testing "keep removes nils"
-    (is (= [3 4] (run-spell '(keep (fn [x] (if (> x 2) x nil)) [1 2 3 4])))))
+    (is (= [3 4] (run-spell-full '(keep (fn [x] (if (> x 2) x nil)) [1 2 3 4])))))
   (testing "keep with spell fn"
-    (is (= [9 16] (run-spell '(do (defn sq-if-big [x] (if (> x 2) (* x x) nil)) (keep sq-if-big [1 2 3 4]))))))
+    (is (= [9 16] (run-spell-full '(do (defn sq-if-big [x] (if (> x 2) (* x x) nil)) (keep sq-if-big [1 2 3 4]))))))
   (testing "keep empty"
-    (is (= [] (run-spell '(keep (fn [x] nil) [1 2 3]))))))
+    (is (= [] (run-spell-full '(keep (fn [x] nil) [1 2 3]))))))
 
 (deftest mapcat-builtin
   (testing "mapcat flattens"
-    (is (= [1 1 2 2 3 3] (run-spell '(mapcat (fn [x] [x x]) [1 2 3])))))
+    (is (= [1 1 2 2 3 3] (run-spell-full '(mapcat (fn [x] [x x]) [1 2 3])))))
   (testing "mapcat with spell fn"
-    (is (= [1 2 2 3 3 4] (run-spell '(do (defn expand [x] [x (+ x 1)]) (mapcat expand [1 2 3]))))))
+    (is (= [1 2 2 3 3 4] (run-spell-full '(do (defn expand [x] [x (+ x 1)]) (mapcat expand [1 2 3]))))))
   (testing "mapcat returns vector"
-    (is (vector? (run-spell '(mapcat (fn [x] [x]) [1 2]))))))
+    (is (vector? (run-spell-full '(mapcat (fn [x] [x]) [1 2]))))))
 
 (deftest take-while-builtin
   (testing "take-while basic"
-    (is (= [1 2] (run-spell '(take-while (fn [x] (< x 3)) [1 2 3 4])))))
+    (is (= [1 2] (run-spell-full '(take-while (fn [x] (< x 3)) [1 2 3 4])))))
   (testing "take-while none match"
-    (is (= [] (run-spell '(take-while (fn [x] (> x 10)) [1 2 3])))))
+    (is (= [] (run-spell-full '(take-while (fn [x] (> x 10)) [1 2 3])))))
   (testing "take-while with spell fn"
-    (is (= [1 2 3] (run-spell '(do (defn small [x] (< x 4)) (take-while small [1 2 3 4 5])))))))
+    (is (= [1 2 3] (run-spell-full '(do (defn small [x] (< x 4)) (take-while small [1 2 3 4 5])))))))
 
 (deftest drop-while-builtin
   (testing "drop-while basic"
-    (is (= [3 4 5] (run-spell '(drop-while (fn [x] (< x 3)) [1 2 3 4 5])))))
+    (is (= [3 4 5] (run-spell-full '(drop-while (fn [x] (< x 3)) [1 2 3 4 5])))))
   (testing "drop-while all match"
-    (is (= [] (run-spell '(drop-while (fn [x] (< x 10)) [1 2 3])))))
+    (is (= [] (run-spell-full '(drop-while (fn [x] (< x 10)) [1 2 3])))))
   (testing "drop-while with spell fn"
-    (is (= [4 5] (run-spell '(do (defn small [x] (< x 4)) (drop-while small [1 2 3 4 5])))))))
+    (is (= [4 5] (run-spell-full '(do (defn small [x] (< x 4)) (drop-while small [1 2 3 4 5])))))))
 
 (deftest group-by-builtin
   (testing "group-by basic"
     (is (= {true [4 5] false [1 2 3]}
-           (run-spell '(group-by (fn [x] (> x 3)) [1 2 3 4 5])))))
+           (run-spell-full '(group-by (fn [x] (> x 3)) [1 2 3 4 5])))))
   (testing "group-by with spell fn"
     (is (= {"small" [1 2] "big" [4 5]}
-           (run-spell '(do (defn size [x] (if (> x 3) "big" "small")) (group-by size [1 2 4 5])))))))
+           (run-spell-full '(do (defn size [x] (if (> x 3) "big" "small")) (group-by size [1 2 4 5])))))))
 
 (deftest sort-by-builtin
   (testing "sort-by basic"
     (is (= [{:n 1} {:n 2} {:n 3}]
-           (run-spell '(sort-by (fn [x] (get x :n)) [{:n 3} {:n 1} {:n 2}])))))
+           (run-spell-full '(sort-by (fn [x] (get x :n)) [{:n 3} {:n 1} {:n 2}])))))
   (testing "sort-by with spell fn"
     (is (= ["a" "bb" "ccc"]
-           (run-spell '(do (defn len [s] (count s)) (sort-by len ["bb" "ccc" "a"])))))))
+           (run-spell-full '(do (defn len [s] (count s)) (sort-by len ["bb" "ccc" "a"])))))))
 
 (deftest find-first-builtin
   (testing "find-first returns element"
-    (is (= 3 (run-spell '(find-first (fn [x] (> x 2)) [1 2 3 4])))))
+    (is (= 3 (run-spell-full '(find-first (fn [x] (> x 2)) [1 2 3 4])))))
   (testing "find-first returns nil when not found"
-    (is (nil? (run-spell '(find-first (fn [x] (> x 10)) [1 2 3])))))
+    (is (nil? (run-spell-full '(find-first (fn [x] (> x 10)) [1 2 3])))))
   (testing "find-first with spell fn"
-    (is (= 4 (run-spell '(do (defn big [x] (> x 3)) (find-first big [1 2 3 4 5])))))))
+    (is (= 4 (run-spell-full '(do (defn big [x] (> x 3)) (find-first big [1 2 3 4 5])))))))
 
 (deftest not-any?-builtin
   (testing "not-any? all fail predicate"
-    (is (true? (run-spell '(not-any? (fn [x] (> x 10)) [1 2 3])))))
+    (is (true? (run-spell-full '(not-any? (fn [x] (> x 10)) [1 2 3])))))
   (testing "not-any? some pass predicate"
-    (is (false? (run-spell '(not-any? (fn [x] (> x 2)) [1 2 3])))))
+    (is (false? (run-spell-full '(not-any? (fn [x] (> x 2)) [1 2 3])))))
   (testing "not-any? empty is true"
-    (is (true? (run-spell '(not-any? (fn [x] true) []))))))
+    (is (true? (run-spell-full '(not-any? (fn [x] true) []))))))
 
 (deftest distinct-builtin
   (testing "distinct removes duplicates"
-    (is (= [1 2 3] (run-spell '(distinct [1 2 1 3 2 1])))))
+    (is (= [1 2 3] (run-spell-full '(distinct [1 2 1 3 2 1])))))
   (testing "distinct preserves order"
-    (is (= [3 1 2] (run-spell '(distinct [3 1 2 3 1]))))))
+    (is (= [3 1 2] (run-spell-full '(distinct [3 1 2 3 1]))))))
 
 (deftest flatten-builtin
   (testing "flatten nested"
-    (is (= [1 2 3 4 5] (run-spell '(flatten [[1 2] [3 [4 5]]])))))
+    (is (= [1 2 3 4 5] (run-spell-full '(flatten [[1 2] [3 [4 5]]])))))
   (testing "flatten already flat"
-    (is (= [1 2 3] (run-spell '(flatten [1 2 3]))))))
+    (is (= [1 2 3] (run-spell-full '(flatten [1 2 3]))))))
 
 (deftest frequencies-builtin
   (testing "frequencies counts"
-    (is (= {1 3 2 2 3 1} (run-spell '(frequencies [1 1 1 2 2 3]))))))
+    (is (= {1 3 2 2 3 1} (run-spell-full '(frequencies [1 1 1 2 2 3]))))))
 
 (deftest partition-builtin
   (testing "partition basic"
-    (is (= [[1 2] [3 4]] (run-spell '(partition 2 [1 2 3 4 5])))))
+    (is (= [[1 2] [3 4]] (run-spell-full '(partition 2 [1 2 3 4 5])))))
   (testing "partition with step"
-    (is (= [[1 2] [2 3] [3 4]] (run-spell '(partition 2 1 [1 2 3 4]))))))
+    (is (= [[1 2] [2 3] [3 4]] (run-spell-full '(partition 2 1 [1 2 3 4]))))))
 
 (deftest partition-all-builtin
   (testing "partition-all includes partial"
-    (is (= [[1 2] [3 4] [5]] (run-spell '(partition-all 2 [1 2 3 4 5])))))
+    (is (= [[1 2] [3 4] [5]] (run-spell-full '(partition-all 2 [1 2 3 4 5])))))
   (testing "partition-all with step"
-    (is (= [[1 2] [3 4] [5]] (run-spell '(partition-all 2 2 [1 2 3 4 5]))))))
+    (is (= [[1 2] [3 4] [5]] (run-spell-full '(partition-all 2 2 [1 2 3 4 5]))))))
 
 (deftest interleave-builtin
   (testing "interleave two colls"
-    (is (= [1 :a 2 :b 3 :c] (run-spell '(interleave [1 2 3] [:a :b :c])))))
+    (is (= [1 :a 2 :b 3 :c] (run-spell-full '(interleave [1 2 3] [:a :b :c])))))
   (testing "interleave uneven"
-    (is (= [1 :a 2 :b] (run-spell '(interleave [1 2 3] [:a :b]))))))
+    (is (= [1 :a 2 :b] (run-spell-full '(interleave [1 2 3] [:a :b]))))))
 
 (deftest interpose-builtin
   (testing "interpose separator"
-    (is (= [1 0 2 0 3] (run-spell '(interpose 0 [1 2 3]))))))
+    (is (= [1 0 2 0 3] (run-spell-full '(interpose 0 [1 2 3]))))))
 
 (deftest zipmap-builtin
   (testing "zipmap basic"
-    (is (= {:a 1 :b 2} (run-spell '(zipmap [:a :b] [1 2])))))
+    (is (= {:a 1 :b 2} (run-spell-full '(zipmap [:a :b] [1 2])))))
   (testing "zipmap uneven"
-    (is (= {:a 1 :b 2} (run-spell '(zipmap [:a :b :c] [1 2]))))))
+    (is (= {:a 1 :b 2} (run-spell-full '(zipmap [:a :b :c] [1 2]))))))
 
 (deftest take-drop-builtin
   (testing "take"
@@ -401,42 +427,42 @@
   (testing "drop"
     (is (= [4 5] (run-spell '(drop 3 [1 2 3 4 5])))))
   (testing "split-at"
-    (is (= [[1 2] [3 4 5]] (run-spell '(split-at 2 [1 2 3 4 5]))))))
+    (is (= [[1 2] [3 4 5]] (run-spell-full '(split-at 2 [1 2 3 4 5]))))))
 
 (deftest comp-builtin
   (testing "comp two fns"
-    (is (= 7 (run-spell '((comp inc inc) 5)))))
+    (is (= 7 (run-spell-full '((comp inc inc) 5)))))
   (testing "comp with spell-fns"
-    (is (= 11 (run-spell '(do (defn dbl [x] (* x 2))
+    (is (= 11 (run-spell-full '(do (defn dbl [x] (* x 2))
                               (defn add1 [x] (+ x 1))
                               ((comp add1 dbl) 5))))))
   (testing "comp three fns"
-    (is (= 12 (run-spell '((comp inc inc inc) 9))))))
+    (is (= 12 (run-spell-full '((comp inc inc inc) 9))))))
 
 (deftest partial-builtin
   (testing "partial with clojure fn"
-    (is (= 15 (run-spell '((partial + 10) 5)))))
+    (is (= 15 (run-spell-full '((partial + 10) 5)))))
   (testing "partial with spell-fn"
-    (is (= 15 (run-spell '(do (defn add [a b] (+ a b))
+    (is (= 15 (run-spell-full '(do (defn add [a b] (+ a b))
                               ((partial add 10) 5))))))
   (testing "partial multiple args"
-    (is (= 6 (run-spell '((partial + 1 2) 3))))))
+    (is (= 6 (run-spell-full '((partial + 1 2) 3))))))
 
 (deftest juxt-builtin
   (testing "juxt basic"
-    (is (= [6 4] (run-spell '((juxt inc dec) 5)))))
+    (is (= [6 4] (run-spell-full '((juxt inc dec) 5)))))
   (testing "juxt with spell-fns"
-    (is (= [25 10] (run-spell '(do (defn sq [x] (* x x))
+    (is (= [25 10] (run-spell-full '(do (defn sq [x] (* x x))
                                    (defn dbl [x] (* x 2))
                                    ((juxt sq dbl) 5))))))
   (testing "juxt three fns"
-    (is (= [5 6 4] (run-spell '((juxt (fn [x] x) inc dec) 5))))))
+    (is (= [5 6 4] (run-spell-full '((juxt (fn [x] x) inc dec) 5))))))
 
 (deftest complement-builtin
   (testing "complement basic"
-    (is (true? (run-spell '((complement (fn [x] (> x 10))) 5)))))
+    (is (true? (run-spell-full '((complement (fn [x] (> x 10))) 5)))))
   (testing "complement with spell-fn"
-    (is (false? (run-spell '(do (defn big [x] (> x 3))
+    (is (false? (run-spell-full '(do (defn big [x] (> x 3))
                                 ((complement big) 5)))))))
 
 ;; =============================================================================
@@ -546,10 +572,10 @@
       (is (eval/spell-fn? (env 'square)))))
 
   (testing "defn function can be called"
-    (is (= 9 (run-spell '(do (defn square [x] (* x x)) (square 3))))))
+    (is (= 9 (run-spell-full '(do (defn square [x] (* x x)) (square 3))))))
 
   (testing "defn with multiple params"
-    (is (= 7 (run-spell '(do (defn add [a b] (+ a b)) (add 3 4)))))))
+    (is (= 7 (run-spell-full '(do (defn add [a b] (+ a b)) (add 3 4)))))))
 
 (deftest cond-form
   (testing "cond first match"
@@ -595,6 +621,42 @@
 
   (testing "or single"
     (is (= 5 (run-spell '(or 5))))))
+
+(deftest thread-first-form
+  (testing "basic thread-first"
+    (is (= 5 (run-spell '(-> 1 (+ 2) (+ 2))))))
+
+  (testing "thread-first with bare symbols"
+    (is (= 2 (run-spell '(-> [1 2 3] first inc)))))
+
+  (testing "thread-first with assoc"
+    (is (= {:a 1 :b 2} (run-spell '(-> {} (assoc :a 1) (assoc :b 2))))))
+
+  (testing "thread-first single form"
+    (is (= 2 (run-spell '(-> 1 inc)))))
+
+  (testing "thread-first no forms"
+    (is (= 42 (run-spell '(-> 42))))))
+
+(deftest thread-last-form
+  (testing "basic thread-last"
+    (is (= [2 4 6] (run-spell '(->> [1 2 3] (map (fn [x] (* x 2))))))))
+
+  (testing "thread-last with reduce"
+    (is (= 6 (run-spell '(->> [1 2 3] (reduce +))))))
+
+  (testing "thread-last pipeline"
+    ;; [1 2 3 4 5] -> filter < 5 -> [1 2 3 4] -> map inc -> [2 3 4 5] -> take 2 -> [2 3]
+    (is (= [2 3] (run-spell '(->> [1 2 3 4 5]
+                                  (filter (fn [x] (< x 5)))
+                                  (map inc)
+                                  (take 2))))))
+
+  (testing "thread-last with bare symbols"
+    (is (= 3 (run-spell '(->> [1 2 3] last)))))
+
+  (testing "thread-last no forms"
+    (is (= 42 (run-spell '(->> 42))))))
 
 ;; =============================================================================
 ;; spell-eval builtin tests
@@ -682,76 +744,6 @@
       (is (not (.startsWith ^String val "(def x (quote "))))))
 
 ;; =============================================================================
-;; Extract tests - PENDING REIMPLEMENTATION
-;; =============================================================================
-;; extract has been removed and will be reimplemented differently.
-;; These tests are preserved for reference but currently disabled.
-
-(comment
-  (deftest extract-test
-    (testing "simple extraction from thunk"
-      (let [env {'prompt '(do (def x 42) (def y "hello"))}]
-        (is (= 42 (extract '[prompt x] env)))
-        (is (= "hello" (extract '[prompt y] env)))))
-
-    (testing "extraction with computed values"
-      (let [env {'prompt '(do (def result (+ 1 2 3)))}]
-        (is (= 6 (extract '[prompt result] env)))))
-
-    (testing "extraction with conditional logic"
-      (let [env {'prompt '(do (def status (if true "yes" "no")))}]
-        (is (= "yes" (extract '[prompt status] env)))))
-
-    (testing "nested thunk extraction"
-      (let [env {'outer '(do (def inner '(do (def deep 999))))}]
-        (is (= 999 (extract '[outer inner deep] env)))))
-
-    (testing "extraction preserves thunks"
-      (let [env {'prompt '(do (def thunk '(+ 1 2)))}
-            extracted (extract '[prompt thunk] env)]
-        ;; The thunk itself should be extracted, not evaluated
-        (is (= '(+ 1 2) extracted))))
-
-    (testing "extraction from env with existing bindings"
-      ;; The thunk is evaluated in fresh env, so outer bindings don't interfere
-      (let [env {'x 100  ; this x should NOT be seen by the thunk
-                 'prompt '(do (def x 1) (def y (+ x 1)))}]
-        (is (= 1 (extract '[prompt x] env)))
-        (is (= 2 (extract '[prompt y] env)))))
-
-    (testing "missing symbol throws"
-      (let [env {'prompt '(do (def x 1))}]
-        (is (nil? (extract '[prompt missing] env)))))  ; nil for missing, or throw?
-
-    (testing "llm call in def value throws"
-      (let [env {'prompt '(do (def x (llm "test")))}]
-        (is (thrown-with-msg? clojure.lang.ExceptionInfo
-                              #"target binding contains llm call"
-                              (extract '[prompt x] env)))))
-
-    (testing "llm call in defn body is allowed"
-      ;; defn bodies aren't evaluated during extraction - only when called
-      (let [env {'prompt '(do (defn f [x] (llm x)))}
-            f (extract '[prompt f] env)]
-        (is (fn? f))))  ; should return a function, not throw
-
-    (testing "llm call in preceding def throws"
-      (let [env {'prompt '(do (def setup (llm "init")) (def x 42))}]
-        (is (thrown-with-msg? clojure.lang.ExceptionInfo
-                              #"preceding definition contains llm call"
-                              (extract '[prompt x] env)))))
-
-    (testing "llm call in preceding defn body is allowed"
-      ;; preceding defn bodies aren't evaluated either
-      (let [env {'prompt '(do (defn helper [x] (llm x)) (def y 42))}]
-        (is (= 42 (extract '[prompt y] env)))))
-
-    (testing "llm call after target is not evaluated"
-      ;; This should succeed - llm call comes AFTER the target
-      (let [env {'prompt '(do (def x 42) (def y (llm "test")))}]
-        (is (= 42 (extract '[prompt x] env)))))))
-
-;; =============================================================================
 ;; Expand tests
 ;; =============================================================================
 
@@ -807,7 +799,11 @@
 
   (testing "symbol values get quoted"
     (let [[val _] (spell-eval '(do (def s 'hello) (expand '(list s))) {})]
-      (is (= '(list (quote hello)) val)))))
+      (is (= '(list (quote hello)) val))))
+
+  (testing "qualified symbols are preserved"
+    (let [[val _] (spell-eval '(expand '(strings/trim x)) {'x "  hi  "})]
+      (is (= '(strings/trim "  hi  ") val)))))
 
 ;; =============================================================================
 ;; Expand integration tests
@@ -902,9 +898,7 @@
     (binding [eval/*builtins* eval/core-builtins]
       ;; bash is not in core-builtins, should be unbound
       (is (thrown-with-msg? Exception #"Unbound symbol"
-            (spell-eval 'bash {})))))
-
-)
+            (spell-eval 'bash {}))))))
 
 ;; =============================================================================
 ;; Future / Await tests
@@ -995,60 +989,43 @@
       (is (= '(future (+ 10 1)) val)))))
 
 ;; =============================================================================
-;; Import tests
+;; Qualified symbol tests
 ;; =============================================================================
 
-(deftest import-form
-  (testing "import tool binds fn"
-    (let [reg {:name 'r :desc {:f "fn"} :items {:f {:type :tool :fn inc}}}
-          [val env] (spell-eval '(do (import r :f) (f 5)) {'r reg})]
-      (is (= 6 val))
-      (is (fn? (env 'f)))))
-
-  (testing "import agent binds fn"
-    (let [agent-fn (fn [x] (str "result: " x))
-          reg {:name 'r :desc {:a "agent"} :items {:a {:type :agent :fn agent-fn}}}
-          [val env] (spell-eval '(do (import r :a) (a "test")) {'r reg})]
-      (is (= "result: test" val))
-      (is (fn? (env 'a)))))
-
-  (testing "import spell evaluates form"
-    (let [reg {:name 'r :desc {:sq "square"} :items {:sq {:type :spell :form '(fn [x] (* x x))}}}
-          [val env] (spell-eval '(do (import r :sq) (sq 4)) {'r reg})]
-      (is (= 16 val))))
-
-  (testing "import missing key throws"
-    (let [reg {:name 'r :desc {} :items {}}]
-      (is (thrown-with-msg? Exception #"key not found"
-            (spell-eval '(import r :missing) {'r reg})))))
-
-  (testing "import returns the imported value"
-    (let [reg {:name 'r :desc {:f "fn"} :items {:f {:type :tool :fn inc}}}
-          [val _] (spell-eval '(import r :f) {'r reg})]
+(deftest qualified-symbol-test
+  (testing "qualified symbol lookup"
+    (let [ns-map {:docs {:trim "trim fn"} :trim clojure.string/trim}
+          [val _] (spell-eval 'strings/trim {'strings ns-map})]
       (is (fn? val))))
 
-  (testing "import updates env with correct symbol name"
-    (let [reg {:name 'r :desc {:my-tool "tool"} :items {:my-tool {:type :tool :fn str}}}
-          [_ env] (spell-eval '(import r :my-tool) {'r reg})]
-      (is (contains? env 'my-tool)))))
+  (testing "qualified symbol call"
+    (let [ns-map {:docs {:trim "trim fn"} :trim clojure.string/trim}
+          [val _] (spell-eval '(strings/trim "  hello  ") {'strings ns-map})]
+      (is (= "hello" val))))
 
-(deftest import-expand
-  (testing "expand handles import form"
-    (let [reg {:name 'r :desc {:f "fn"} :items {:f {:type :tool :fn inc}}}
-          [val _] (spell-eval '(expand '(import r :f)) {'r reg})]
-      ;; Import form should be preserved (registry is substituted as value)
-      (is (seq? val))
-      (is (= 'import (first val))))))
+  (testing "nested qualified symbol"
+    (let [inner {:docs {:add "add fn"} :add +}
+          outer {:docs {:math "math ns"} :math inner}
+          [val _] (spell-eval '(regs/math/add 1 2) {'regs outer})]
+      (is (= 3 val))))
+
+  (testing "qualified symbol in expansion stays intact"
+    (let [[val _] (spell-eval '(expand '(strings/trim x)) {'x "test"})]
+      (is (= '(strings/trim "test") val)))))
+
+;; =============================================================================
+;; Describe builtin tests
+;; =============================================================================
 
 (deftest describe-builtin
-  (testing "describe returns all descriptions"
-    (let [reg {:name 'r :desc {:a "first" :b "second"} :items {:a {:type :tool :fn identity}}}]
-      (is (= {:a "first" :b "second"} (registry/describe reg)))))
+  (testing "describe returns all docs"
+    (let [ns-map {:docs {:a "first" :b "second"} :a identity}]
+      (is (= {:a "first" :b "second"} (core/describe ns-map)))))
 
-  (testing "describe with key returns single description"
-    (let [reg {:name 'r :desc {:a "first" :b "second"} :items {:a {:type :tool :fn identity}}}]
-      (is (= "first" (registry/describe reg :a)))))
+  (testing "describe with key returns single doc"
+    (let [ns-map {:docs {:a "first" :b "second"} :a identity}]
+      (is (= "first" (core/describe ns-map :a)))))
 
   (testing "describe with missing key returns nil"
-    (let [reg {:name 'r :desc {:a "first"} :items {}}]
-      (is (nil? (registry/describe reg :missing))))))
+    (let [ns-map {:docs {:a "first"} :a identity}]
+      (is (nil? (core/describe ns-map :missing))))))

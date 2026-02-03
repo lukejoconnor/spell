@@ -36,35 +36,37 @@ Quoted macros (code→code transformers) applied to LLM completions before evalu
 
 See `hooks-implementation` notebook entry for details.
 
-### Registries (Tool/Agent/Library System)
-Tools, agents, and Spell library functions are organized into registries. `make-llm` accepts a `:registries` vector:
+### Namespaces (Qualified Symbol Access)
+Functions are organized into namespaces. Access them directly with qualified symbols — no import needed:
 
 ```clojure
-(make-llm {:registries [default-registry custom-registry]
+(tools/bash "ls -la")
+(strings/trim "  hello  ")
+(seqs/range 10)
+```
+
+Namespace structure (simple maps with `:docs` and items):
+```clojure
+{:docs {:bash "Execute shell command. Returns {:exit N :out \"...\" :err \"...\"}."
+        :leaf-llm "Plain text LLM — no code execution."}
+ :bash run-bash
+ :leaf-llm leaf-llm}
+```
+
+`make-llm` accepts a `:namespaces` map:
+```clojure
+(make-llm {:namespaces {'tools tools-ns 'strings strings-ns}
            :llm-var #'llm
            :model "..."})
 ```
 
-Registry structure:
+Use `describe` to inspect namespace contents:
 ```clojure
-{:name 'tools
- :desc {:bash "Execute shell command. Returns {:exit N :out \"...\" :err \"...\"}."
-        :leaf-llm "Plain text LLM — no code execution."}
- :items {:bash {:type :tool :fn run-bash}
-         :leaf-llm {:type :agent :fn leaf-llm}
-         :retry-llm {:type :spell :form '(fn [prompt n] ...)}}}
+(describe tools)        ; => {:bash "..." :leaf-llm "..."}
+(describe tools :bash)  ; => "Execute shell command..."
 ```
 
-Item types:
-- `:tool` — Clojure function, available via `(import registry :name)`
-- `:agent` — LLM function, available via `(import registry :name)`
-- `:spell` — Spell source code, evaluated at import time
-
-In Spell code, items must be imported before use:
-```clojure
-(import tools :bash)
-(:out (bash "ls -la"))
-```
+Qualified symbols work recursively: `outer/inner/item` looks up `:inner` in `outer`, then `:item` in that.
 
 ### Concurrency (Future/Await)
 `(future expr)` evaluates `expr` in a new thread, capturing the current env. `(await f)` blocks until the future completes and returns its value. Dynamic bindings (`*usage*`, `*builtins*`, etc.) are conveyed via `bound-fn`. Futures are isolated: env updates don't leak back to the parent. Enables parallel LLM calls.
@@ -85,7 +87,7 @@ Programs return the value of their last expression (standard Lisp semantics). No
 | `src/spell/llm.clj` | LLM engine (`-llm` core loop, `make-llm` factory) |
 | `src/spell/parse.clj` | S-expression parser (read-all for multi-form input) |
 | `src/spell/hooks.clj` | Hooks system (apply-hooks, prepend-hooks-to-llm, recurse) |
-| `src/spell/registry.clj` | Registry abstraction (lookup, describe, import-item, resolve-import-verbose) |
+| `src/spell/stdlib.clj` | Standard library namespaces (strings, seqs, fns) |
 | `src/spell/tools.clj` | Tool implementations (bash, read-name, read-file, write-file, str-replace) |
 | `src/spell/cli.clj` | CLI with `-t`, `-m provider:model`, `-v`, `-d`, `-b` flags; accepts `.spl` files; auto-wraps NL prompts |
 | `test/spell/*_test.clj` | 6 test files (core, eval, hooks, llm, parse, tools) |
@@ -98,15 +100,16 @@ Programs return the value of their last expression (standard Lisp semantics). No
 
 Core interpreter and tooling complete:
 - `spell-eval` with environment threading
-- Special forms: `def`, `do`, `if`, `let`, `fn`, `defn`, `cond`, `and`, `or`, `quote`, `uneval`, `expand`, `future`, `quine`, `import`
-- Core builtins: arithmetic, comparison, logic, list ops (`map`, `reduce`, `filter`, etc.), string ops (`subs`, `starts-with?`, `includes?`, `trim`, `cat`, `pr-str`), `spell-eval`, `llm-self`, `describe`
+- Special forms: `def`, `do`, `if`, `let`, `fn`, `defn`, `cond`, `and`, `or`, `quote`, `uneval`, `expand`, `future`, `quine`, `->`, `->>`
+- Core builtins: arithmetic, comparison, logic, list ops (`map`, `reduce`, `filter`, etc.), string ops (`cat`, `pr-str`), `spell-eval`, `llm-self`, `describe`
 - `llm` with prompt-as-prefix semantics and hooks support
-- `make-llm` factory with registry-based tool/agent configuration
-- Registry system: unified abstraction for tools, agents, and Spell library functions
+- `make-llm` factory with namespace-based configuration
+- Namespace system: qualified symbol access (`tools/bash`, `strings/trim`) with recursive lookup
+- Standard library namespaces: `tools`, `strings`, `seqs`, `fns`
 - `llm-self` for automatic self-recursion (atom-based forward ref, available in all `make-llm` variants)
 - `future`/`await` for concurrent evaluation with env capture and dynamic binding conveyance
 - Hooks system: `apply-hooks`, `prepend-hooks-to-llm`, `recurse`
-- Tools: `bash`, `read-name`, `read-file`, `write-file`, `str-replace` (in `default-registry`)
+- Tools: `bash`, `read-name`, `read-file`, `write-file`, `str-replace` (in `tools` namespace)
 - Three LLM providers: Anthropic, OpenAI, Ollama — unified `-m provider:model` CLI syntax
 - CLI with `-t` (test), `-m provider:model`, `-v` (verbose), `-d` (depth limit), `-b` (budget) flags; accepts `.spl` files
 - CLI auto-wraps natural-language prompts into code prefixes
@@ -123,7 +126,7 @@ Core interpreter and tooling complete:
 
 **Key insight:** The `llm` function uses prompt-as-prefix semantics — the prompt string is sent as both the user message and the assistant prefix, so the response continues the prompt as code. Natural-language prompts are wrapped in a `(quine completion (spell-eval (do ...)))` preamble, giving the program access to its own source as data via the `completion` binding. The `spell-eval` builtin auto-expands free variables from the caller's env before evaluating in a fresh env `{}`. For behavior propagation across generations, use recursive hooks.
 
-**Architecture:** The LLM engine is a simple loop in `-llm`: call the LLM provider, concatenate prefix + response, parse with `read-all`, resolve `import-verbose` forms, apply hooks, then `spell-eval`. `make-llm` constructs the configuration (builtins, system prompt, call function) and returns the `llm` function.
+**Architecture:** The LLM engine is a simple loop in `-llm`: call the LLM provider, concatenate prefix + response, parse with `read-all`, apply hooks, then `spell-eval`. `make-llm` constructs the configuration (builtins with bound namespaces, system prompt, call function) and returns the `llm` function.
 
 ## Development Principles
 

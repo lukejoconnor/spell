@@ -1,5 +1,6 @@
 (ns spell.prompt
-  "System prompt for Spell LLM calls.")
+  "System prompt for Spell LLM calls."
+  (:require [clojure.string :as str]))
 
 ;; =============================================================================
 ;; Static template sections
@@ -22,11 +23,14 @@ The value of the last expression in the do block is your answer. If that value i
 
 The prefix is already part of the program. Your response is the remainder.
 
-IMPORT BEFORE USE
+NAMESPACES
 
-Items from registries must be imported before use:
-  (import tools :bash)
-  (bash \"ls -la\")
+Functions are organized into namespaces. Access them with qualified symbols:
+  (tools/bash \"ls -la\")
+  (strings/trim \"  hello  \")
+  (seqs/range 10)
+
+No import needed — qualified symbols resolve directly.
 
 QUINE (SELF-REFERENTIAL CODE)
 
@@ -46,7 +50,11 @@ OUTPUT FORMAT
 
 Your entire response is Clojure code only. End after the closing parens; plain English is invalid syntax.
 
-Your code continues the do block opened in the prefix. The last expression is your return value. Optionally use (def thought ...) for reasoning before the final expression.
+Your code continues the do block opened in the prefix. The last expression is your return value.
+
+Begin with (def thought \"...\") to articulate your approach. This primes valid syntax and documents your reasoning. Then write the implementation. Example:
+  (def thought \"I need to compute the sum, then divide by count.\")
+  (/ (+ 1 2 3) 3)
 
 PARENTHESES
 
@@ -189,13 +197,11 @@ Output:
 
 Task: List files in current directory
 Output:
-(import tools :bash)
-(:out (bash \"ls -la\"))
+(:out (tools/bash \"ls -la\"))
 
 Task: Greet the person in name.txt
 Output:
-(import tools :read-file)
-(cat \"Hello, \" (:ok (read-file \"name.txt\")) \"!\")")
+(cat \"Hello, \" (:ok (tools/read-file \"name.txt\")) \"!\")")
 
 ;; =============================================================================
 ;; Generated sections
@@ -205,54 +211,50 @@ Output:
   "Generate the BUILTINS section (core language only, no tools/agents)."
   []
   (str "BUILTINS\n\n"
-       "Math: + - * / rand inc dec\n"
+       "Math: + - * / inc dec\n"
        "Compare: < > = <= >= not=\n"
-       "Strings: str cat pr-str subs starts-with? includes? trim replace split join lower-case upper-case\n"
-       "Regex: re-find re-matches\n"
+       "Strings: str cat pr-str\n"
        "Type: string? number? list? seq? vector? map? fn?\n"
-       "Collections: list vector first rest last cons conj get assoc nth keys vals into concat reverse sort count range repeat apply take drop split-at\n"
-       "Higher-order: map filter remove reduce some every? keep mapcat take-while drop-while group-by sort-by find-first not-any?\n"
-       "Combinators: comp partial juxt complement\n"
-       "Collection utils: distinct flatten frequencies partition partition-all interleave interpose zipmap\n"
+       "Collections: list vector first rest last cons conj get assoc nth keys vals into concat count apply take drop\n"
+       "Higher-order: map filter reduce\n"
        "Logic: if cond and or not nil? empty?\n"
        "Binding: def let do quine uneval expand spell-eval\n"
        "Concurrency: future await\n"
        "Strip: strip-parens reopen\n"
-       "Registry: import import-verbose describe\n"
+       "Namespace: describe\n"
        "Error: spell-error?\n"))
 
-(defn- registries-section
-  "Generate the REGISTRIES section from registry metadata."
-  [registries]
-  (when (seq registries)
-    (str "\nREGISTRIES\n\n"
-         "Import items before use. Each registry is bound under its name.\n\n"
-         (clojure.string/join "\n\n"
-           (map (fn [reg]
-                  (str "## " (:name reg) "\n"
-                       (clojure.string/join "\n"
+(defn- namespaces-section
+  "Generate the NAMESPACES section from namespace metadata."
+  [namespaces]
+  (when (seq namespaces)
+    (str "\nNAMESPACES\n\n"
+         "Access functions with qualified symbols: namespace/item\n\n"
+         (str/join "\n\n"
+           (map (fn [[ns-sym ns-map]]
+                  (str "## " ns-sym "\n"
+                       (str/join "\n"
                          (map (fn [[k desc]]
                                 (str "  " (name k) ": " desc))
-                              (:desc reg)))))
-                registries))
+                              (:docs ns-map)))))
+                namespaces))
          "\n\n"
          "Usage:\n"
-         "  (import <registry> :name)         — import silently\n"
-         "  (import-verbose <registry> :name) — import with source visible\n"
-         "  (describe <registry>)             — list all items\n"
-         "  (describe <registry> :name)       — details for one item\n")))
+         "  (tools/bash \"ls\")           — call function directly\n"
+         "  (describe tools)            — list all items in namespace\n"
+         "  (describe tools :bash)      — doc for specific item\n")))
 
 ;; =============================================================================
 ;; Public API
 ;; =============================================================================
 
 (defn generate-system-prompt
-  "Build a system prompt from registries.
-   registries: vector of registry maps with :name, :desc, :items"
-  [registries]
+  "Build a system prompt from namespaces.
+   namespaces: map of {symbol -> namespace-map} where each has :docs and items"
+  [namespaces]
   (str preamble
        (builtins-section)
-       (registries-section registries)
+       (namespaces-section namespaces)
        "\n"
        postamble))
 
