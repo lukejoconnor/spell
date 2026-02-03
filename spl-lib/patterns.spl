@@ -1,75 +1,33 @@
 ;; Spell Pattern Library
 ;;
-;; Reusable defn forms for common Spell idioms.
-;; Load via (make-llm {:prelude [<forms>]}).
+;; Reusable patterns for common Spell idioms.
+;; Available as patterns namespace: (patterns/call-now result 'name)
 
 ;; ---------------------------------------------------------------------------
-;; try-bash — bash with automatic error recovery
+;; call-now — tool use with continuation
 ;; ---------------------------------------------------------------------------
-;; Runs a bash command. On success (exit 0), returns stdout.
-;; On failure, delegates to a child LLM with the goal, the failed
-;; command, and full error output. The child has bash access and
-;; can try different commands or approaches to accomplish the goal.
+;; Evaluates a tool, binds the result in the completion, and extends to a
+;; child LLM that can see the result and continue reasoning.
 ;;
-;; (try-bash "count lines in data.csv" "wc -l data.csv")
-;; (try-bash "find project root" "git rev-parse --show-toplevel")
+;; (patterns/call-now (tools/bash "ls") 'files)
+;; (patterns/call-now (:out (tools/bash "wc -l data.csv")) 'line-count)
 ;;
-;; TODO: The llm call uses a NL prompt which is now used as a code prefix.
-;; This needs redesign to wrap the NL prompt in a code prefix, e.g.:
-;;   (llm (cat "(do (def task \"" ... "\") "))
+;; How it works:
+;; 1. The tool argument is evaluated (bash, read-file, etc.)
+;; 2. The result is formatted as (def name <value>) and appended to completion
+;; 3. A child LLM receives the extended prefix and continues
+;;
+;; Idempotent in extensions: when the child re-evaluates call-now, it detects
+;; that the binding already exists in the completion and returns early. The tool
+;; arg IS re-evaluated (Lisp semantics), but no new extension is created.
+;;
+;; Requires: completion binding (from quine preamble in NL prompts)
+;;
+;; For side-effecting tools, pre-compute:
+;;   (def r (tools/bash "rm ...")) (patterns/call-now r 'result)
+;; This way the side effect only runs once (before call-now).
 
-(defn try-bash [intent cmd]
-  (let [result (bash cmd)]
-    (if (= 0 (:exit result))
-      (:out result)
-      (llm (cat "A bash command failed. You have bash — diagnose and accomplish the goal.\n"
-                 "Goal: " intent "\n"
-                 "Command: " cmd "\n"
-                 "Exit code: " (str (:exit result)) "\n"
-                 "Stderr: " (:err result) "\n"
-                 "Stdout: " (:out result) "\n"
-                 "Return the result as a string. "
-                 "If the goal is unachievable, return a description of why.")))))
-
-;; ---------------------------------------------------------------------------
-;; safe-llm — delegation with fallback
-;; ---------------------------------------------------------------------------
-;; Delegates to a child LLM. If the child fails after all retries
-;; (syntax error, eval error), returns fallback instead of an error
-;; string. Use when you need a guaranteed non-error value.
-;;
-;; (safe-llm "compute the 10th fibonacci number" 55)
-;; (safe-llm (cat "summarize: " text) "summary unavailable")
-;;
-;; TODO: With retry logic removed, llm now throws exceptions instead of
-;; returning error strings. safe-llm needs redesign with exception handling.
-
-(defn safe-llm [task fallback]
-  (let [result (llm task)]
-    (if (spell-error? result)
-      fallback
-      result)))
-
-;; ---------------------------------------------------------------------------
-;; retry-llm — error-informed second attempt
-;; ---------------------------------------------------------------------------
-;; Delegates to a child LLM. If the child fails, sends the task
-;; AND the error to a fresh child so it can try a different approach.
-;;
-;; Different from llm's built-in retries: those re-submit the same
-;; prompt hoping to fix syntax. This gives a new child the error
-;; context so it can adjust its strategy.
-;;
-;; (retry-llm "write a regex that matches ISO dates")
-;;
-;; TODO: With retry logic removed, llm now throws exceptions instead of
-;; returning error strings. retry-llm needs redesign with exception handling.
-
-(defn retry-llm [task]
-  (let [result (llm task)]
-    (if (spell-error? result)
-      (llm (cat "A previous attempt at this task failed.\n"
-                 "Task: " task "\n"
-                 "Error: " result "\n"
-                 "Try a different approach. Return the result."))
-      result)))
+(defn call-now [result name]
+  (if (strings/includes? completion (cat "(def " (str name) " "))
+    result
+    (llm (cat (reopen completion) "(def " (str name) " " (pr-str result) ") "))))

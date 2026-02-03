@@ -6,8 +6,8 @@
             [spell.prompt :as prompt]
             [spell.eval :as eval]
             [spell.hooks :as hooks]
-            [spell.registry :as registry]
-            [spell.tools :as tools]))
+            [spell.tools :as tools]
+            [spell.stdlib :as stdlib]))
 
 (declare llm)
 (declare leaf-llm)
@@ -29,47 +29,69 @@
 (def make-leaf-llm llm-engine/make-leaf-llm)
 
 ;; =============================================================================
-;; Default registry
+;; Describe builtin
+;; =============================================================================
+
+(defn describe
+  "Get documentation from a namespace.
+   (describe ns) — all docs
+   (describe ns :key) — doc for specific item"
+  ([ns] (:docs ns))
+  ([ns key] (get-in ns [:docs key])))
+
+;; =============================================================================
+;; tools namespace
 ;; =============================================================================
 
 (def leaf-llm
   "Plain text-in/text-out LLM. No Spell parsing, evaluation, tools, or sub-agents."
   (make-leaf-llm {}))
 
-(def default-registry
-  "Default registry with tools and agents."
-  {:name 'tools
-   :desc {:bash "Execute shell command. Returns {:exit N :out \"...\" :err \"...\"}."
+(def tools
+  "Tools namespace with shell, file I/O, and leaf-llm."
+  {:docs {:bash "Execute shell command. Returns {:exit N :out \"...\" :err \"...\"}."
           :read-file "Read file contents. Returns {:ok content} or {:error msg}."
           :write-file "Write content to file. Returns {:ok path} or {:error msg}."
           :str-replace "Replace unique string in file. Returns {:ok path} or {:error msg}."
           :read-name "Read name from name.txt."
           :leaf-llm "Plain text LLM — no code execution."}
-   :items {:bash {:type :tool :fn tools/run-bash}
-           :read-file {:type :tool :fn tools/read-file}
-           :write-file {:type :tool :fn tools/write-file}
-           :str-replace {:type :tool :fn tools/str-replace}
-           :read-name {:type :tool :fn tools/read-name}
-           :leaf-llm {:type :agent :fn leaf-llm}}})
+   :bash tools/run-bash
+   :read-file tools/read-file
+   :write-file tools/write-file
+   :str-replace tools/str-replace
+   :read-name tools/read-name
+   :leaf-llm leaf-llm})
+
+;; =============================================================================
+;; All namespaces (for system prompt generation)
+;; =============================================================================
+
+(def all-namespaces
+  "All available namespaces: tools + stdlib."
+  (merge {'tools tools} stdlib/all-namespaces))
 
 ;; =============================================================================
 ;; Default llm function
 ;; =============================================================================
 
 (def llm
-  "The default llm function with all standard tools via registry."
-  (make-llm {:registries [default-registry]
+  "The default llm function with all standard tools via namespaces."
+  (make-llm {:namespaces all-namespaces
              :llm-var #'llm}))
 
 ;; Set root binding for eval/*builtins* — used by direct spell-eval/run-spell calls
 ;; (tests, REPL) that don't go through an llm function.
-;; Includes tools directly for backwards compatibility.
 (alter-var-root #'eval/*builtins*
   (constantly (merge eval/core-builtins
                      {'llm #'llm
                       'leaf-llm leaf-llm
-                      'tools default-registry
-                      'describe registry/describe
+                      ;; Namespaces
+                      'tools tools
+                      'strings stdlib/strings
+                      'seqs stdlib/seqs
+                      'fns stdlib/fns
+                      'patterns stdlib/patterns
+                      'describe describe
                       'prepend-hooks-to-llm #'prepend-hooks-to-llm
                       'recurse #'recurse
                       'prefix-prompt #'prefix-prompt
@@ -84,4 +106,4 @@
 
 ;; Set the default system prompt for backwards compatibility
 (alter-var-root #'prompt/system-prompt
-  (constantly (prompt/generate-system-prompt [default-registry])))
+  (constantly (prompt/generate-system-prompt all-namespaces)))
