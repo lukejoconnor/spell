@@ -27,6 +27,7 @@
 (def strings
   "String manipulation and regex functions."
   {:docs {:subs "Substring. (subs s start) or (subs s start end)"
+          :index-of "Index of substr in s, or nil if not found"
           :starts-with? "True if s starts with prefix"
           :includes? "True if s contains substr"
           :trim "Remove leading/trailing whitespace"
@@ -40,6 +41,9 @@
    :subs (fn
            ([s start] (subs s start))
            ([s start end] (subs s start end)))
+   :index-of (fn [s substr]
+               (let [idx (.indexOf ^String (str s) ^String (str substr))]
+                 (when (>= idx 0) idx)))
    :starts-with? (fn [s prefix] (.startsWith ^String (str s) (str prefix)))
    :includes? (fn [s substr] (.contains ^String (str s) (str substr)))
    :trim (fn [s] (str/trim (str s)))
@@ -156,7 +160,7 @@
 
 (def patterns
   "Reusable orchestration patterns."
-  {:docs {:call-now "Tool use with continuation. Evaluates tool, binds result in completion, extends to child LLM. Requires completion binding (from quine preamble). Usage: (patterns/call-now (tools/bash \"ls\") 'files)"}
+  {:docs {:call-now "Continuation pattern: evaluates expr, appends (def name result) to the completion, spawns child LLM that continues with the binding. Returns what the child returns. The binding exists only for the CHILD—code after call-now in your program cannot access it. Use call-now as your last expression and let the child continue. For simple tool calls where you need the result inline, just call the tool directly: (def files (tools/bash \"ls\")) (:out files)."}
    ;; call-now as a Spell function (dynamic scoping resolves 'completion' from caller's env)
    :call-now {:spell/fn true
               :params ['result 'name]

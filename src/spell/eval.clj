@@ -1,5 +1,12 @@
 (ns spell.eval
-  "Spell evaluator: spell-eval, expand, free variable analysis, builtins."
+  "Spell evaluator: spell-eval, expand, free variable analysis, builtins.
+
+   The evaluator now uses memo-based tracking for error recovery:
+   - spell-eval takes (expr, env, memo, idx) and returns a result map
+   - On success: {:ok value :env env' :memo memo' :idx idx'}
+   - On error: {:err msg :env env :memo memo :idx idx :expr failing-expr}
+   - The memo vector records evaluated expressions and their values
+   - (memo N) special form retrieves cached values by index"
   (:require [spell.parse :as parse]
             [clojure.string :as str]
             [clojure.set :as set]))
@@ -52,6 +59,44 @@
        "Error: " (ex-message error)))
 
 ;; =============================================================================
+;; Result helpers (for memo-based error recovery)
+;; =============================================================================
+
+(defn ok
+  "Create a success result map."
+  [value env memo idx]
+  {:ok value :env env :memo memo :idx idx})
+
+(defn err
+  "Create an error result map."
+  [msg env memo idx expr]
+  {:err msg :env env :memo memo :idx idx :expr expr})
+
+(defn ok?
+  "Returns true if result is a success."
+  [result]
+  (contains? result :ok))
+
+(defn err?
+  "Returns true if result is an error."
+  [result]
+  (contains? result :err))
+
+(defn result-value
+  "Extract the value from a success result, or nil for error."
+  [result]
+  (:ok result))
+
+(defn- record-memo
+  "Record an expression and its value in the memo, incrementing idx."
+  [result expr]
+  (if (ok? result)
+    (-> result
+        (update :memo conj {:expr expr :value (:ok result)})
+        (update :idx inc))
+    result))
+
+;; =============================================================================
 ;; Builtins
 ;; =============================================================================
 
@@ -76,6 +121,7 @@
    Extended functions are in stdlib registries (strings, seqs, fns)."
   {;; Math
    '+ +, '- -, '* *, '/ /, 'inc inc, 'dec dec,
+   'int int, 'quot quot, 'mod mod, 'max max, 'min min,
    ;; Comparison
    '< <, '> >, '<= <=, '>= >=, '= =, 'not= not=,
    ;; Logic
@@ -135,7 +181,7 @@
 
 (def special-forms
   "Special forms that are not free variables."
-  #{'quote 'def 'do 'if 'let 'fn 'defn 'cond 'and 'or 'uneval 'expand 'future 'quine '-> '->>})
+  #{'quote 'def 'do 'if 'let 'fn 'defn 'cond 'and 'or 'uneval 'expand 'future 'quine '-> '->> 'memo})
 
 (defn- thread-first
   "Transform (-> x (f a) (g b)) into (g (f x a) b)."
@@ -268,173 +314,301 @@
 ;; =============================================================================
 
 (defn- eval-seq
-  "Evaluate a sequence of expressions, returning [last-value final-env]."
-  [exprs env]
-  (reduce (fn [[_ e] x] (spell-eval x e)) [nil env] exprs))
+  "Evaluate a sequence of expressions, threading env/memo/idx.
+   Returns result map with last value."
+  [exprs env memo idx]
+  (if (empty? exprs)
+    (ok nil env memo idx)
+    (loop [remaining exprs
+           result (ok nil env memo idx)]
+      (if (empty? remaining)
+        result
+        (if (err? result)
+          result
+          (recur (rest remaining)
+                 (spell-eval (first remaining) (:env result) (:memo result) (:idx result))))))))
 
 (defn spell-eval
-  "Evaluate expr in env. Returns [value updated-env]."
-  [expr env]
-  (cond
-    ;; Self-evaluating: nil, strings, numbers, booleans, keywords
-    (or (nil? expr) (string? expr) (number? expr) (boolean? expr) (keyword? expr))
-    [expr env]
+  "Evaluate expr in env with memo tracking. Returns result map:
+   - Success: {:ok value :env env' :memo memo' :idx idx'}
+   - Error: {:err msg :env env :memo memo :idx idx :expr failing-expr}
 
-    ;; Symbol: qualified (a/b/c) -> recursive namespace lookup; else env/*builtins*
-    (symbol? expr)
-    (let [;; Use str to get full symbol including namespace (name only gives local part)
-          sym-str (str expr)
-          ;; Only treat as qualified if there's a / with content on both sides
-          ;; This excludes "/" (division) and symbols that start or end with /
-          parts (when (str/includes? sym-str "/")
-                  (let [p (str/split sym-str #"/")]
-                    (when (and (> (count p) 1)
-                               (seq (first p))
-                               (seq (second p)))
-                      p)))]
-      (if parts
-        ;; Qualified symbol: strings/trim or nested/path/item
-        (let [root-sym (symbol (first parts))
-              [root-val _] (spell-eval root-sym env)
-              result (reduce #(get %1 (keyword %2)) root-val (rest parts))]
-          (if (nil? result)
-            (throw (ex-info "Namespace lookup failed" {:symbol expr :parts parts}))
-            [result env]))
-        ;; Unqualified: lookup in env, fallback to *builtins*
-        (if-let [entry (or (find env expr) (find (or *builtins* core-builtins) expr))]
-          [(val entry) env]
-          (throw (ex-info "Unbound symbol" {:symbol expr})))))
+   The memo vector records evaluated expressions and values for replay.
+   If idx points to an existing memo entry, return cached value (skip re-evaluation)."
+  ([expr env]
+   ;; Backwards-compatible 2-arg form: convert result to [value env] pair
+   (let [result (spell-eval expr env [] 0)]
+     (if (ok? result)
+       [(:ok result) (:env result)]
+       (throw (ex-info (:err result) {:result result})))))
+  ([expr env memo idx]
+   ;; Check memo first - if we have a cached value at this index, return it
+   (if-let [cached (get memo idx)]
+     (ok (:value cached) env memo (inc idx))
+     ;; Normal evaluation
+     (let [result
+           (cond
+             ;; Self-evaluating: nil, strings, numbers, booleans, keywords
+             (or (nil? expr) (string? expr) (number? expr) (boolean? expr) (keyword? expr))
+             (ok expr env memo idx)
 
-    ;; Vector: evaluate each element, threading env
-    (vector? expr)
-    (reduce (fn [[acc e] x] (let [[v e'] (spell-eval x e)] [(conj acc v) e']))
-            [[] env] expr)
+             ;; Symbol: qualified (a/b/c) -> recursive namespace lookup; else env/*builtins*
+             (symbol? expr)
+             (let [sym-str (str expr)
+                   parts (when (str/includes? sym-str "/")
+                           (let [p (str/split sym-str #"/")]
+                             (when (and (> (count p) 1)
+                                        (seq (first p))
+                                        (seq (second p)))
+                               p)))]
+               (if parts
+                 ;; Qualified symbol: strings/trim or nested/path/item
+                 (let [root-sym (symbol (first parts))
+                       root-result (spell-eval root-sym env memo idx)]
+                   (if (err? root-result)
+                     root-result
+                     (let [root-val (:ok root-result)
+                           result (reduce #(get %1 (keyword %2)) root-val (rest parts))]
+                       (if (nil? result)
+                         (err (str "Namespace lookup failed: " expr) env memo idx expr)
+                         (ok result (:env root-result) (:memo root-result) (:idx root-result))))))
+                 ;; Unqualified: lookup in env, fallback to *builtins*
+                 (if-let [entry (or (find env expr) (find (or *builtins* core-builtins) expr))]
+                   (ok (val entry) env memo idx)
+                   (err (str "Unbound symbol: " expr) env memo idx expr))))
 
-    ;; Map: spell-fn maps are self-evaluating; otherwise evaluate values
-    (map? expr)
-    (if (spell-fn? expr)
-      [expr env]
-      (reduce (fn [[acc e] [k v]] (let [[v' e'] (spell-eval v e)] [(assoc acc k v') e']))
-              [{} env] expr))
+             ;; Vector: evaluate each element, threading state
+             (vector? expr)
+             (loop [remaining expr
+                    acc []
+                    e env
+                    m memo
+                    i idx]
+               (if (empty? remaining)
+                 (ok acc e m i)
+                 (let [result (spell-eval (first remaining) e m i)]
+                   (if (err? result)
+                     result
+                     (recur (rest remaining)
+                            (conj acc (:ok result))
+                            (:env result)
+                            (:memo result)
+                            (:idx result))))))
 
-    ;; List: special forms or function application
-    (seq? expr)
-    (case (first expr)
-      nil   [nil env]
-      quote [(second expr) env]
-      def   (let [sym (second expr)
-                  val-expr (nth expr 2)
-                  ;; Bind sym -> val-expr (the raw source form) in *quote-env* during evaluation
-                  [v e'] (binding [*quote-env* (assoc *quote-env* sym val-expr)]
-                           (spell-eval val-expr env))]
-              [v (assoc e' sym v)])
-      do    (eval-seq (rest expr) env)
-      if    (let [[test-v e'] (spell-eval (second expr) env)]
-              (spell-eval (nth expr (if test-v 2 3) nil) e'))
+             ;; Map: spell-fn maps are self-evaluating; otherwise evaluate values
+             (map? expr)
+             (if (spell-fn? expr)
+               (ok expr env memo idx)
+               (loop [remaining (seq expr)
+                      acc {}
+                      e env
+                      m memo
+                      i idx]
+                 (if (empty? remaining)
+                   (ok acc e m i)
+                   (let [[k v] (first remaining)
+                         result (spell-eval v e m i)]
+                     (if (err? result)
+                       result
+                       (recur (rest remaining)
+                              (assoc acc k (:ok result))
+                              (:env result)
+                              (:memo result)
+                              (:idx result)))))))
 
-      ;; let: (let [bindings...] body...) - local bindings
-      let   (let [bindings (partition 2 (second expr))
-                  body (drop 2 expr)
-                  local-env (reduce (fn [le [sym val-expr]]
-                                      (let [[v _] (spell-eval val-expr le)]
-                                        (assoc le sym v)))
-                                    env bindings)
-                  [result _] (eval-seq body local-env)]
-              [result env])  ; let bindings don't escape
+             ;; List: special forms or function application
+             (seq? expr)
+             (case (first expr)
+               nil   (ok nil env memo idx)
+               quote (ok (second expr) env memo idx)
 
-      ;; fn: (fn [params...] body...) - dynamic scoping, returns source form
-      fn    [{:spell/fn true :params (second expr) :body (drop 2 expr)}
-             env]
+               def   (let [sym (second expr)
+                           val-expr (nth expr 2)
+                           val-result (binding [*quote-env* (assoc *quote-env* sym val-expr)]
+                                        (spell-eval val-expr env memo idx))]
+                       (if (err? val-result)
+                         val-result
+                         (ok (:ok val-result)
+                             (assoc (:env val-result) sym (:ok val-result))
+                             (:memo val-result)
+                             (:idx val-result))))
 
-      ;; defn: (defn name [params...] body...)
-      defn  (let [name (second expr)
-                  params (nth expr 2)
-                  body (drop 3 expr)
-                  [f _] (spell-eval (list* 'fn params body) env)]
-              [f (assoc env name f)])
+               do    (eval-seq (rest expr) env memo idx)
 
-      ;; cond: (cond test1 expr1 test2 expr2 ... :else default)
-      cond  (loop [clauses (partition 2 (rest expr)), e env]
-              (if (empty? clauses)
-                [nil e]
-                (let [[test-expr result-expr] (first clauses)]
-                  (if (= test-expr :else)
-                    (spell-eval result-expr e)
-                    (let [[test-v e'] (spell-eval test-expr e)]
-                      (if test-v
-                        (spell-eval result-expr e')
-                        (recur (rest clauses) e')))))))
+               if    (let [test-result (spell-eval (second expr) env memo idx)]
+                       (if (err? test-result)
+                         test-result
+                         (spell-eval (nth expr (if (:ok test-result) 2 3) nil)
+                                     (:env test-result)
+                                     (:memo test-result)
+                                     (:idx test-result))))
 
-      ;; and: short-circuit, returns last truthy or first falsy
-      and   (loop [exprs (rest expr), e env, last-v true]
-              (if (empty? exprs)
-                [last-v e]
-                (let [[v e'] (spell-eval (first exprs) e)]
-                  (if v
-                    (recur (rest exprs) e' v)
-                    [v e']))))
+               ;; let: (let [bindings...] body...) - local bindings
+               let   (let [bindings (partition 2 (second expr))
+                           body (drop 2 expr)]
+                       (loop [remaining bindings
+                              local-env env
+                              m memo
+                              i idx]
+                         (if (empty? remaining)
+                           (let [body-result (eval-seq body local-env m i)]
+                             (if (err? body-result)
+                               body-result
+                               ;; Let bindings don't escape
+                               (ok (:ok body-result) env (:memo body-result) (:idx body-result))))
+                           (let [[sym val-expr] (first remaining)
+                                 val-result (spell-eval val-expr local-env m i)]
+                             (if (err? val-result)
+                               val-result
+                               (recur (rest remaining)
+                                      (assoc local-env sym (:ok val-result))
+                                      (:memo val-result)
+                                      (:idx val-result)))))))
 
-      ;; or: short-circuit, returns first truthy or last falsy
-      or    (loop [exprs (rest expr), e env, last-v nil]
-              (if (empty? exprs)
-                [last-v e]
-                (let [[v e'] (spell-eval (first exprs) e)]
-                  (if v
-                    [v e']
-                    (recur (rest exprs) e' v)))))
+               ;; fn: (fn [params...] body...) - dynamic scoping, returns source form
+               fn    (ok {:spell/fn true :params (second expr) :body (drop 2 expr)} env memo idx)
 
-      ;; uneval: (uneval 'sym) - get the quoted source of a binding during its evaluation
-      ;; Enables self-referential programs (quines) by looking up in *quote-env*
-      uneval (let [[sym-v _] (spell-eval (second expr) env)]
-               (when-not (symbol? sym-v)
-                 (throw (ex-info "uneval: argument must evaluate to a symbol"
-                                {:got sym-v :type (type sym-v)})))
-               (if-let [quoted (get *quote-env* sym-v)]
-                 [quoted env]
-                 (throw (ex-info "uneval: symbol not found in quote environment"
-                                {:symbol sym-v
-                                 :available (keys *quote-env*)}))))
+               ;; defn: (defn name [params...] body...)
+               defn  (let [name (second expr)
+                           params (nth expr 2)
+                           body (drop 3 expr)
+                           fn-result (spell-eval (list* 'fn params body) env memo idx)]
+                       (if (err? fn-result)
+                         fn-result
+                         (ok (:ok fn-result)
+                             (assoc (:env fn-result) name (:ok fn-result))
+                             (:memo fn-result)
+                             (:idx fn-result))))
 
-      ;; expand: (expand expr) - single-pass walk mirroring spell-eval
-      ;; Substitutes free variables from env, returns data (not evaluated)
-      expand (let [[quoted-expr e'] (spell-eval (second expr) env)]
-               [(expand-expr quoted-expr e') e'])
+               ;; cond: (cond test1 expr1 test2 expr2 ... :else default)
+               cond  (loop [clauses (partition 2 (rest expr))
+                            e env
+                            m memo
+                            i idx]
+                       (if (empty? clauses)
+                         (ok nil e m i)
+                         (let [[test-expr result-expr] (first clauses)]
+                           (if (= test-expr :else)
+                             (spell-eval result-expr e m i)
+                             (let [test-result (spell-eval test-expr e m i)]
+                               (if (err? test-result)
+                                 test-result
+                                 (if (:ok test-result)
+                                   (spell-eval result-expr (:env test-result) (:memo test-result) (:idx test-result))
+                                   (recur (rest clauses) (:env test-result) (:memo test-result) (:idx test-result)))))))))
 
-      ;; quine: (quine name body) — bind name to the source form (= expr), eval body
-      ;; Enables self-referential programs: name evaluates to '(quine name body)
-      quine (let [name-sym (second expr)
-                  body (nth expr 2)
-                  env' (assoc env name-sym expr)]
-              (spell-eval body env'))
+               ;; and: short-circuit, returns last truthy or first falsy
+               and   (loop [exprs (rest expr)
+                            e env
+                            m memo
+                            i idx
+                            last-v true]
+                       (if (empty? exprs)
+                         (ok last-v e m i)
+                         (let [result (spell-eval (first exprs) e m i)]
+                           (if (err? result)
+                             result
+                             (if (:ok result)
+                               (recur (rest exprs) (:env result) (:memo result) (:idx result) (:ok result))
+                               (ok (:ok result) (:env result) (:memo result) (:idx result)))))))
 
-      ;; future: (future expr) - evaluate expr in a new thread, return future handle
-      ;; Captures env at creation time (immutable map, safe to share).
-      ;; Conveys dynamic bindings via bound-fn. Env updates inside future don't leak.
-      future (let [body (second expr)
-                   captured-env env
-                   f (bound-fn [] (first (spell-eval body captured-env)))]
-               [{:spell/future true :ref (clojure.core/future (f))} env])
+               ;; or: short-circuit, returns first truthy or last falsy
+               or    (loop [exprs (rest expr)
+                            e env
+                            m memo
+                            i idx
+                            last-v nil]
+                       (if (empty? exprs)
+                         (ok last-v e m i)
+                         (let [result (spell-eval (first exprs) e m i)]
+                           (if (err? result)
+                             result
+                             (if (:ok result)
+                               (ok (:ok result) (:env result) (:memo result) (:idx result))
+                               (recur (rest exprs) (:env result) (:memo result) (:idx result) (:ok result)))))))
 
-      ;; ->: (-> x (f a) (g b)) - thread-first, inserts x as first arg
-      -> (spell-eval (thread-first (second expr) (drop 2 expr)) env)
+               ;; uneval: (uneval 'sym) - get the quoted source of a binding during its evaluation
+               uneval (let [sym-result (spell-eval (second expr) env memo idx)]
+                        (if (err? sym-result)
+                          sym-result
+                          (let [sym-v (:ok sym-result)]
+                            (if-not (symbol? sym-v)
+                              (err (str "uneval: argument must evaluate to a symbol, got " (type sym-v))
+                                   (:env sym-result) (:memo sym-result) (:idx sym-result) expr)
+                              (if-let [quoted (get *quote-env* sym-v)]
+                                (ok quoted (:env sym-result) (:memo sym-result) (:idx sym-result))
+                                (err (str "uneval: symbol not found in quote environment: " sym-v)
+                                     (:env sym-result) (:memo sym-result) (:idx sym-result) expr))))))
 
-      ;; ->>: (->> x (f a) (g b)) - thread-last, inserts x as last arg
-      ->> (spell-eval (thread-last (second expr) (drop 2 expr)) env)
+               ;; expand: (expand expr) - single-pass walk mirroring spell-eval
+               expand (let [quoted-result (spell-eval (second expr) env memo idx)]
+                        (if (err? quoted-result)
+                          quoted-result
+                          (ok (expand-expr (:ok quoted-result) (:env quoted-result))
+                              (:env quoted-result) (:memo quoted-result) (:idx quoted-result))))
 
-      ;; Function application: evaluate all, apply first to rest
-      (let [[vals e'] (reduce (fn [[acc e] x] (let [[v e'] (spell-eval x e)] [(conj acc v) e']))
-                              [[] env] expr)
-            f (first vals)
-            args (rest vals)]
-        (if (spell-fn? f)
-          (let [local-env (into e' (map vector (:params f) args))
-                [result _] (eval-seq (:body f) local-env)]
-            [result e'])
-          [(binding [*spell-env* e'] (apply f args)) e'])))
+               ;; quine: (quine name body) — bind name to the source form (= expr), eval body
+               quine (let [name-sym (second expr)
+                           body (nth expr 2)
+                           env' (assoc env name-sym expr)]
+                       (spell-eval body env' memo idx))
 
-    :else (throw (ex-info "Unknown expression type" {:expr expr}))))
+               ;; memo: (memo N) - retrieve cached value at index N
+               memo (let [n (second expr)]
+                      (if-let [entry (get memo n)]
+                        (ok (:value entry) env memo idx)
+                        (err (str "No memo entry at index " n) env memo idx expr)))
+
+               ;; future: (future expr) - evaluate expr in a new thread, return future handle
+               future (let [body (second expr)
+                            captured-env env
+                            ;; Use 2-arg form for backwards compatibility in thread
+                            f (bound-fn [] (first (spell-eval body captured-env)))]
+                        (ok {:spell/future true :ref (clojure.core/future (f))} env memo idx))
+
+               ;; ->: (-> x (f a) (g b)) - thread-first
+               -> (spell-eval (thread-first (second expr) (drop 2 expr)) env memo idx)
+
+               ;; ->>: (->> x (f a) (g b)) - thread-last
+               ->> (spell-eval (thread-last (second expr) (drop 2 expr)) env memo idx)
+
+               ;; Function application: evaluate all, apply first to rest
+               (loop [remaining expr
+                      vals []
+                      e env
+                      m memo
+                      i idx]
+                 (if (empty? remaining)
+                   (let [f (first vals)
+                         args (rest vals)]
+                     (if (spell-fn? f)
+                       (let [local-env (into e (map vector (:params f) args))
+                             body-result (eval-seq (:body f) local-env m i)]
+                         (if (err? body-result)
+                           body-result
+                           (ok (:ok body-result) e (:memo body-result) (:idx body-result))))
+                       ;; Call Clojure function - wrap in try/catch for error handling
+                       (try
+                         (ok (binding [*spell-env* e] (apply f args)) e m i)
+                         (catch Exception ex
+                           (err (str "Function call failed: " (ex-message ex)) e m i expr)))))
+                   (let [result (spell-eval (first remaining) e m i)]
+                     (if (err? result)
+                       result
+                       (recur (rest remaining)
+                              (conj vals (:ok result))
+                              (:env result)
+                              (:memo result)
+                              (:idx result)))))))
+
+             :else (err (str "Unknown expression type: " (type expr)) env memo idx expr))]
+       ;; Record to memo after successful evaluation
+       (record-memo result expr)))))
 
 (defn run-spell
   "Run a spell program, returning just the value."
   [program]
-  (first (spell-eval program {})))
+  (let [result (spell-eval program {} [] 0)]
+    (if (ok? result)
+      (:ok result)
+      (throw (ex-info (:err result) {:result result})))))
