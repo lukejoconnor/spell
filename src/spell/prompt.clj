@@ -266,7 +266,8 @@ Example — Finding a person's location when they may have moved multiple times:
 Key insights:
 - Pass SNIPPETS, not the full document. Large docs should stay on disk.
 - Include the file path so child can search further if snippets are insufficient.
-- Exploration (tool calls) happens at parent level; child only does final reasoning.
+- If snippets contain unresolved references (\"there\", \"it\", \"that place\"), search for what they refer to. Don't return ambiguous answers.
+- Exploration (tool calls) happens at parent level; child only does final reasoning — unless it needs more info, then it explores further.
 - For very large documents, consider parallel exploration with futures.")
 
 ;; =============================================================================
