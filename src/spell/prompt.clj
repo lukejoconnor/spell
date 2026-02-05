@@ -254,13 +254,20 @@ Example — Finding a person's location when they may have moved multiple times:
          (strings/subs doc (max 0 (- pos 50)) (min (count doc) (+ pos 80))))
        positions))
 
-; Pass ALL findings to child for decision
+; Pass findings to child for decision — snippets only, NOT the full doc
 (patterns/call-now
-  {:name \"Mary\" :occurrences (count positions) :snippets snippets}
+  {:name \"Mary\"
+   :occurrences (count positions)
+   :snippets snippets
+   :context-file context-file}  ; file path for further search if needed
   'exploration)
-; Child sees exploration binding with all occurrences and decides final answer
+; Child sees exploration binding and decides final answer
 
-Key insight: The exploration happens at the current level. Only the DECISION delegates to the child. This keeps exploration cheap (tool calls) and reserves LLM reasoning for the final judgment.")
+Key insights:
+- Pass SNIPPETS, not the full document. Large docs should stay on disk.
+- Include the file path so child can search further if snippets are insufficient.
+- Exploration (tool calls) happens at parent level; child only does final reasoning.
+- For very large documents, consider parallel exploration with futures.")
 
 ;; =============================================================================
 ;; Generated sections
