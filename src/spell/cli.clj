@@ -6,7 +6,8 @@
             [spell.core :as spell]
             [spell.eval :as eval]
             [spell.parse :as parse]
-            [spell.provider :as provider])
+            [spell.provider :as provider]
+            [spell.trace :as trace])
   (:gen-class))
 
 (def model-aliases
@@ -15,7 +16,7 @@
    "opus"   "claude-opus-4-5-20251101"})
 
 (def provider-prefixes
-  #{"ollama" "chatgpt" "openai"})
+  #{"ollama" "chatgpt" "openai" "anthropic"})
 
 (defn parse-model-spec
   "Parse 'provider:model' into {:provider str :model str}.
@@ -53,12 +54,16 @@
          sort)))
 
 (defn load-example
-  "Load a .spl example file by name. Returns prompt string or nil."
+  "Load a .spl example file by name. Returns {:prompt str :setup str? :cleanup str?} or nil."
   [name]
   (when-let [dir (find-examples-dir)]
-    (let [f (io/file dir (str name ".spl"))]
-      (when (.exists f)
-        (str/trim (slurp f))))))
+    (let [spl-file (io/file dir (str name ".spl"))
+          setup-file (io/file dir (str name ".setup.sh"))
+          cleanup-file (io/file dir (str name ".cleanup.sh"))]
+      (when (.exists spl-file)
+        {:prompt (str/trim (slurp spl-file))
+         :setup (when (.exists setup-file) (str/trim (slurp setup-file)))
+         :cleanup (when (.exists cleanup-file) (str/trim (slurp cleanup-file)))}))))
 
 (defn load-file-prompt
   "Load a .spl file from a path. Returns prompt string or nil."
@@ -70,23 +75,24 @@
 (defn- wrap-prompt
   "Auto-wrap natural-language prompts into a code prefix.
    If prompt already starts with '(', pass through unchanged.
-   Otherwise, wrap as (do (def prompt \"...\") so the LLM continues with code."
+   Otherwise, delegate to llm's built-in wrapping (which adds the quine preamble)."
   [s]
-  (if (str/starts-with? (str/triml s) "(")
-    s
-    (str "(do (def prompt \"" (parse/escape-string s) "\") ")))
+  s)
 
 (def cli-options
   [["-t" "--test" "Use dummy LLM provider (returns 'hello world')"]
    ["-e" "--example NAME" "Run a named example from examples/"]
-   ["-m" "--model MODEL" "Model spec: haiku, sonnet (default), opus, ollama:<model>, chatgpt:<model>"]
+   ["-m" "--model MODEL" "Model spec: haiku, sonnet, opus, ollama:<model>, openai:<model> (default: openai:gpt-5.2)"]
    ["-d" "--depth DEPTH" "Max recursion depth (default: 8, 0 = unlimited)"
     :parse-fn #(Integer/parseInt %)
     :validate [#(>= % 0) "Must be non-negative"]]
    ["-b" "--budget DOLLARS" "Max spend in dollars (halts if exceeded)"
     :parse-fn #(Double/parseDouble %)
     :validate [pos? "Must be positive"]]
+   ["-T" "--trace" "Record execution trace to traces/"]
    ["-v" "--verbose" "Show raw LLM response"]
+   ["-S" "--setup CMD" "Shell command to run before spell execution"]
+   ["-C" "--cleanup CMD" "Shell command to run after spell execution"]
    ["-h" "--help" "Show this help"]])
 
 (defn spl-file? [arg]
@@ -108,7 +114,7 @@
           "  spell -t 'Test prompt'"
           "  spell -m haiku 'Add 1 and 2'"
           "  spell -m ollama:llama3.2 'Return 42'"
-          "  spell -m chatgpt:gpt-4o 'Return 42'"
+          "  spell -m openai:gpt-4o 'Return 42'"
           "  spell examples/hello-world.spl"
           "  spell -e hello-world"
           "  spell -e twenty-questions -m opus -d 40"]
@@ -131,8 +137,11 @@
       {:exit-message (error-msg errors) :ok? false}
 
       (:example options)
-      (if-let [prompt (load-example (:example options))]
-        {:prompt prompt :options options}
+      (if-let [{:keys [prompt setup cleanup]} (load-example (:example options))]
+        {:prompt prompt
+         :options (cond-> options
+                    (and setup (not (:setup options))) (assoc :setup setup)
+                    (and cleanup (not (:cleanup options))) (assoc :cleanup cleanup))}
         {:exit-message (str "Unknown example: " (:example options)
                             (when-let [examples (seq (list-examples))]
                               (str "\nAvailable: " (str/join ", " examples))))
@@ -155,7 +164,7 @@
     (provider/dummy-provider {:response "\"hello world\""})
     (let [{:keys [provider model]} (if model
                                      (parse-model-spec model)
-                                     {:provider nil :model nil})
+                                     {:provider "openai" :model "gpt-5.2"})
           resolved-model (when model (resolve-model model))]
       (case provider
         "ollama"
@@ -166,28 +175,45 @@
         (provider/openai-provider (cond-> {}
                                    resolved-model (assoc :model resolved-model)))
 
-        ;; default: anthropic
+        ;; anthropic (explicit or default)
+        ("anthropic" nil)
         (provider/anthropic-provider (cond-> {}
                                       resolved-model (assoc :model resolved-model)))))))
 
-(defn run-prompt [prompt {:keys [depth verbose budget] :as opts}]
+(defn- trace-dir-name []
+  (let [fmt (java.text.SimpleDateFormat. "yyyy-MM-dd'T'HH-mm-ss")]
+    (str "traces/" (.format fmt (java.util.Date.)))))
+
+(defn run-prompt [prompt {:keys [depth verbose budget trace] :as opts}]
   (let [max-depth (cond
                     (nil? depth) 8      ; default
                     (zero? depth) nil   ; 0 means unlimited
                     :else depth)
         provider (make-provider opts)
-        usage-atom (atom {:by-model {}})]
+        usage-atom (atom {:by-model {}})
+        trace-atom (when trace (trace/new-trace))]
     (provider/with-provider provider
       (binding [eval/*verbose* verbose
                 eval/*max-llm-depth* max-depth
                 provider/*usage* usage-atom
-                provider/*budget* budget]
-        (try
-          {:result (spell/llm (wrap-prompt prompt)) :usage usage-atom}
-          (catch Exception e
-            {:error (.getMessage e)
-             :error-data (ex-data e)
-             :usage usage-atom}))))))
+                provider/*budget* budget
+                trace/*trace* trace-atom]
+        (let [result (try
+                       {:result (spell/llm (wrap-prompt prompt)) :usage usage-atom}
+                       (catch Exception e
+                         {:error (.getMessage e)
+                          :error-data (ex-data e)
+                          :usage usage-atom}))]
+          (if trace-atom
+            (let [dir (trace/write-trace! @trace-atom (trace-dir-name))]
+              (assoc result :trace-dir dir))
+            result))))))
+
+(defn- format-cache-stats [stats]
+  (let [cache-write (:cache_creation_input_tokens stats 0)
+        cache-read (:cache_read_input_tokens stats 0)]
+    (when (pos? (+ cache-write cache-read))
+      (format " [cache: %,d write, %,d read]" cache-write cache-read))))
 
 (defn- print-usage [usage-atom]
   (let [{:keys [by-model total]} (provider/usage-summary usage-atom)]
@@ -196,17 +222,26 @@
       (println "=== Token Usage ===")
       (when (> (count by-model) 1)
         (doseq [[model stats] (sort-by key by-model)]
-          (println (format "  %s: %,d in / %,d out (%d calls)%s"
+          (println (format "  %s: %,d in / %,d out (%d calls)%s%s"
                      model
-                     (:input_tokens stats)
-                     (:output_tokens stats)
-                     (:calls stats)
-                     (if-let [c (:cost stats)] (format " $%.4f" c) "")))))
-      (println (format "  Total: %,d in / %,d out (%d calls)%s"
-                 (:input_tokens total)
-                 (:output_tokens total)
-                 (:calls total)
-                 (if-let [c (:cost total)] (format " $%.4f" c) ""))))))
+                     (:input_tokens stats 0)
+                     (:output_tokens stats 0)
+                     (:calls stats 0)
+                     (if-let [c (:cost stats)] (format " $%.4f" c) "")
+                     (or (format-cache-stats stats) "")))))
+      (println (format "  Total: %,d in / %,d out (%d calls)%s%s"
+                 (:input_tokens total 0)
+                 (:output_tokens total 0)
+                 (:calls total 0)
+                 (if-let [c (:cost total)] (format " $%.4f" c) "")
+                 (or (format-cache-stats total) ""))))))
+
+(defn- run-shell [cmd]
+  (when cmd
+    (let [pb (ProcessBuilder. ["bash" "-c" cmd])
+          proc (.start pb)]
+      (.waitFor proc)
+      (.exitValue proc))))
 
 (defn -main [& args]
   (let [{:keys [prompt options exit-message ok?]} (validate-args args)]
@@ -214,18 +249,24 @@
       (do
         (println exit-message)
         (System/exit (if ok? 0 1)))
-      (let [{:keys [result error error-data usage]} (run-prompt prompt options)]
-        (when (and (:verbose options) usage)
-          (print-usage usage))
-        (if error
-          (do
-            (when (and (= :budget-exceeded (:type error-data))
-                       (not (:verbose options))
-                       usage)
-              (print-usage usage))
+      (do
+        (run-shell (:setup options))
+        (let [{:keys [result error error-data usage trace-dir]} (run-prompt prompt options)]
+          (run-shell (:cleanup options))
+          (when trace-dir
             (binding [*out* *err*]
-              (println "Error:" error))
-            (System/exit 1))
-          (do
-            (println result)
-            (System/exit 0)))))))
+              (println (str "Trace: " trace-dir))))
+          (when (and (:verbose options) usage)
+            (print-usage usage))
+          (if error
+            (do
+              (when (and (= :budget-exceeded (:type error-data))
+                         (not (:verbose options))
+                         usage)
+                (print-usage usage))
+              (binding [*out* *err*]
+                (println "Error:" error))
+              (System/exit 1))
+            (do
+              (println result)
+              (System/exit 0))))))))
