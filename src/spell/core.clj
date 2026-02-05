@@ -20,6 +20,8 @@
 (def ok? eval/ok?)
 (def err? eval/err?)
 (def result-value eval/result-value)
+;; Recovery state
+(def ^:dynamic *in-recovery* eval/*in-recovery*)
 
 ;; Re-export from spell.hooks
 (def prepend-hooks-to-llm hooks/prepend-hooks-to-llm)
@@ -31,6 +33,7 @@
 ;; Re-export from spell.llm
 (def make-llm llm-engine/make-llm)
 (def make-leaf-llm llm-engine/make-leaf-llm)
+(def make-form-llm llm-engine/make-form-llm)
 (def format-error-for-recovery llm-engine/format-error-for-recovery)
 
 ;; =============================================================================
@@ -53,19 +56,21 @@
   (make-leaf-llm {}))
 
 (def tools
-  "Tools namespace with shell, file I/O, and leaf-llm."
+  "Tools namespace with shell, file I/O, and LLM variants."
   {:docs {:bash "Execute shell command. Returns {:exit N :out \"...\" :err \"...\"}."
           :read-file "Read file contents. Returns {:ok content} or {:error msg}."
           :write-file "Write content to file. Returns {:ok path} or {:error msg}."
           :str-replace "Replace unique string in file. Returns {:ok path} or {:error msg}."
           :read-name "Read name from name.txt."
-          :leaf-llm "Plain text LLM — no code execution."}
+          :leaf-llm "Plain text LLM — no code execution."
+          :make-form-llm "Create validated LLM. Options: :validate (fn), :format-doc (string), :max-retries (int, default 3), :system, :model. Returns fn that retries on validation failure."}
    :bash tools/run-bash
    :read-file tools/read-file
    :write-file tools/write-file
    :str-replace tools/str-replace
    :read-name tools/read-name
-   :leaf-llm leaf-llm})
+   :leaf-llm leaf-llm
+   :make-form-llm make-form-llm})
 
 ;; =============================================================================
 ;; All namespaces (for system prompt generation)

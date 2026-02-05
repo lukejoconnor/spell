@@ -21,25 +21,44 @@
   ([ns key] (get-in ns [:docs key])))
 
 ;; ---------------------------------------------------------------------------
+;; Helper for Spell function invocation
+;; ---------------------------------------------------------------------------
+
+(defn- invoke-fn
+  "Invoke f with args. Handles both spell-fns and Clojure fns.
+   Uses *spell-env* for spell-fn body evaluation."
+  [f args]
+  (if (eval/spell-fn? f)
+    (let [local-env (into eval/*spell-env* (map vector (:params f) args))]
+      (first (eval/spell-eval (cons 'do (:body f)) local-env)))
+    (apply f args)))
+
+;; ---------------------------------------------------------------------------
 ;; Error Recovery
 ;; ---------------------------------------------------------------------------
 
+(def ^:private recovery-system-prompt
+  "You are fixing a Spell program error. Return ONLY the fixed Spell s-expression.
+No explanation, no markdown code blocks, just the raw s-expression.
+Use (memo N) to reference cached values from prior evaluation - this avoids
+re-executing side effects like bash commands or file writes.")
+
 (defn format-error-for-recovery
   "Format an error result for the recovery LLM.
-   Shows the failing expression, error message, and all cached values with indices."
-  [{:keys [err expr memo]}]
-  (str "Error evaluating:\n"
+   Shows the full program, failing expression, error message, and memo."
+  [{:keys [err expr memo program]}]
+  (str "The following Spell program failed:\n\n"
+       (pr-str program)
+       "\n\nError at expression:\n"
        (pr-str expr)
-       "\n\nError: " err
-       "\n\nMemo (cached values from prior evaluation):\n"
+       "\n\nError message: " err
+       "\n\nMemo (cached values - use (memo N) to reference):\n"
        (if (empty? memo)
          "(empty - no prior values cached)"
          (with-out-str
            (doseq [[i entry] (map-indexed vector memo)]
              (println (str i ": " (pr-str (:expr entry))
-                           " => " (pr-str (:value entry)))))))
-       "\n\nReturn a fixed expression. Use (memo N) to reference cached values "
-       "(this avoids re-executing side effects like bash commands or file writes)."))
+                           " => " (pr-str (:value entry)))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; LLM Engine
@@ -48,7 +67,7 @@
 (defn- -llm
   "Core llm: call LLM, concat prefix+response, parse, apply hooks, eval.
    Uses memo-based evaluation for potential error recovery."
-  [{:keys [call-fn builtins recover-fn]} prompt hooks]
+  [{:keys [call-fn builtins recover-fn recovery-call-fn]} prompt hooks]
   (when (and eval/*max-llm-depth* (>= eval/*llm-depth* eval/*max-llm-depth*))
     (throw (ex-info "LLM recursion limit exceeded"
                     {:depth eval/*llm-depth* :limit eval/*max-llm-depth*})))
@@ -81,19 +100,23 @@
                             trace/*trace-node-id* node-id]
                     (eval/spell-eval program' {} [] 0))
 
-        ;; Handle error recovery if configured
+        ;; Handle error recovery if configured (and not already recovering)
         final-result
-        (if (and (eval/err? result) recover-fn)
+        (if (and (eval/err? result) recover-fn (not eval/*in-recovery*))
           (let [_        (when eval/*verbose*
                            (println (str indent "=== Error Recovery ==="))
                            (println (str indent "Error: " (:err result)))
                            (println (str indent "Memo entries: " (count (:memo result)))))
-                fix-expr (recover-fn result)
+                ;; Add program to result for recovery context
+                result-with-program (assoc result :program program')
+                fix-expr (recover-fn result-with-program recovery-call-fn)
                 _        (when eval/*verbose*
                            (println (str indent "Recovery expression: " (pr-str fix-expr))))
                 ;; Run fix-expr with memo available for (memo N) lookups.
                 ;; Start idx at end of memo so we don't auto-match (fix-expr has different structure).
+                ;; Bind *in-recovery* to prevent recursive recovery attempts.
                 retry    (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
+                                   eval/*in-recovery*    true
                                    trace/*trace-node-id* node-id]
                            (eval/spell-eval fix-expr (:env result) (:memo result) (count (:memo result))))]
             (when (and eval/*verbose* (eval/err? retry))
@@ -116,6 +139,13 @@
                 :memo     (:memo final-result)}))]
     (if err (throw err) value)))
 
+(defn- default-recover-fn
+  "Default recovery function: calls recovery LLM, parses response as s-expression."
+  [result recovery-call-fn]
+  (let [prompt (format-error-for-recovery result)
+        response (recovery-call-fn prompt)]
+    (first (parse/read-all response))))
+
 (defn make-llm
   "Factory: create an llm function with namespaces.
 
@@ -124,10 +154,10 @@
                    Namespaces are bound under their symbol in the builtins.
    - :model      - optional model name override (nil uses provider default)
    - :llm-var    - optional var ref to bind as 'llm for self-recursion (e.g., #'llm)
-   - :recover    - optional recovery function (result-map -> fixed-expr) for error recovery.
-                   If provided, on evaluation error the function is called with the error
-                   result (containing :err, :expr, :env, :memo). It should return a fixed
-                   expression that uses (memo N) to reference cached values.
+   - :recover    - error recovery setting (default: true = enabled).
+                   - true: use default LLM-based recovery
+                   - false: disable recovery (errors propagate immediately)
+                   - fn: custom recovery function (result-map, call-fn) -> fixed-expr
 
    Returns a function with the same signature as llm:
    (f prompt) or (f prompt hooks).
@@ -135,7 +165,7 @@
    The returned function is automatically available as 'llm-self in Spell code,
    providing self-recursion without needing to wire up var refs."
   [{:keys [namespaces model llm-var recover]
-    :or {namespaces {} model nil}}]
+    :or {namespaces {} model nil recover true}}]
   (let [self-ref (atom nil)
         self-fn (fn llm-self
                   ([prompt] (@self-ref prompt))
@@ -158,7 +188,20 @@
                    (provider/llm-call prompt-str
                      (cond-> {:system sys-prompt :prefix prompt-str}
                        model (assoc :model model))))
-        config   {:call-fn call-fn :builtins variant-builtins :recover-fn recover}
+        ;; Recovery call fn: text in, text out, no prefix semantics
+        recovery-call-fn (fn [prompt-str]
+                           (provider/llm-call prompt-str
+                             (cond-> {:system recovery-system-prompt}
+                               model (assoc :model model))))
+        ;; Resolve recovery setting
+        recover-fn (cond
+                     (false? recover) nil
+                     (fn? recover) recover
+                     :else default-recover-fn)
+        config   {:call-fn call-fn
+                  :builtins variant-builtins
+                  :recover-fn recover-fn
+                  :recovery-call-fn recovery-call-fn}
         wrap-nl  (fn [p]
                    (let [s (if (or (seq? p) (list? p)) (pr-str p) (str p))]
                      (if (.startsWith (.trim ^String s) "(")
@@ -179,6 +222,67 @@
 ;; ---------------------------------------------------------------------------
 ;; Leaf LLM
 ;; ---------------------------------------------------------------------------
+
+(defn make-form-llm
+  "Factory: create a validated text LLM function.
+   Retries if output fails validation.
+
+   Options:
+   - :system      - system prompt string (default: generic assistant)
+   - :model       - optional model name override
+   - :validate    - validation function (string -> truthy/falsy), can be Spell fn or Clojure fn
+   - :format-doc  - description of expected format (shown on retry)
+   - :max-retries - max retry attempts (default: 3)
+
+   Returns (fn [prompt] response-string).
+   Throws if validation fails after max retries.
+
+   For Spell functions, the source is shown in retry messages automatically."
+  [{:keys [system model validate format-doc max-retries]
+    :or {system "You are a helpful assistant."
+         max-retries 3}}]
+  (let [;; Format validator source for retry message (Spell fns show source)
+        validate-src (when (eval/spell-fn? validate)
+                       (pr-str (list* 'fn (:params validate) (:body validate))))]
+    (fn [prompt]
+      (let [prompt-str (str prompt)
+            indent     (apply str (repeat eval/*llm-depth* "  "))]
+        (loop [attempt 1
+               last-response nil]
+          (let [retry-suffix (when last-response
+                               (str "\n\n[Your previous response:\n" last-response
+                                    "\n\nThis did not match the expected format."
+                                    (when format-doc (str " Expected: " format-doc))
+                                    (when validate-src (str " Validator: " validate-src))
+                                    " Please try again.]"))
+                current-prompt (str prompt-str retry-suffix)
+                node-id  (when trace/*trace*
+                           (trace/begin-node! trace/*trace-node-id*
+                                              eval/*llm-depth* :form current-prompt))
+                _        (when eval/*verbose*
+                           (println (str indent "=== Form LLM Call (depth " eval/*llm-depth*
+                                          ", attempt " attempt ") ==="))
+                           (println (str indent "Prompt: " (pr-str current-prompt))))
+                response (provider/llm-call current-prompt
+                           (cond-> {:system system}
+                             model (assoc :model model)))
+                _        (when eval/*verbose*
+                           (println (str indent "Response: " response)))]
+            (if (invoke-fn validate [response])
+              (do
+                (when node-id
+                  (trace/complete-node! node-id
+                    {:response response :raw-text response :value response}))
+                response)
+              (do
+                (when node-id
+                  (trace/complete-node! node-id
+                    {:response response :raw-text response
+                     :error (ex-info "Validation failed" {:attempt attempt})}))
+                (if (>= attempt max-retries)
+                  (throw (ex-info "Form LLM validation failed after max retries"
+                                  {:attempts attempt :last-response response}))
+                  (recur (inc attempt) response))))))))))
 
 (defn make-leaf-llm
   "Factory: create a plain text-in/text-out LLM function.
