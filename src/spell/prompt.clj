@@ -23,6 +23,8 @@ The value of the last expression in the do block is your answer. If that value i
 
 The prefix is already part of the program. Your response is the remainder.
 
+You can compose tool calls and LLM calls however you see fit: multiple rounds of search, pruning stale context from your completion, spawning a checker to critique intermediate results, or any other approach that gets to a correct answer.
+
 NAMESPACES
 
 Functions are organized into namespaces. Access them with qualified symbols:
