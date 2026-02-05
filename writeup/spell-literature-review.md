@@ -7,11 +7,12 @@ This review surveys existing work related to Spell, a domain-specific language f
 **Closest prior work:**
 - Kimi K2.5 PARL - Jan 2026 - trainable orchestrator learns task decomposition via RL; orchestration in weights
 - Cursor Agent Swarm - Jan 2026 - human-designed Planner/Worker/Judge hierarchy; orchestration in harness code
+- Claude Code Tasks - Jan 2026 - model orchestrates DAG of subtasks via fixed tool API; hub-and-spoke topology
 - Recursive Language Models (RLM) - Dec 2024 - treats prompts as variables, LLM writes code to call itself
 - MemGPT - Oct 2023 - self-directed memory management via function calls
 - 3-Lisp - 1982 - reflective lambdas execute one meta-level above caller
 
-**Key gap identified:** PARL demonstrates that model-designed orchestration can achieve state-of-the-art results, but the orchestration policy is opaque (learned in weights). Cursor demonstrates that orchestration topology is critical, but relies on human design. No existing system represents model-designed orchestration as inspectable, composable source code.
+**Key gap identified:** PARL demonstrates that model-designed orchestration can achieve state-of-the-art results, but the orchestration policy is opaque (learned in weights). Cursor demonstrates that orchestration topology is critical, but relies on human design. Claude Code shows the middle ground—model agency within a fixed orchestration API—but the topology itself (hub-and-spoke DAG) is not model-specified. No existing system represents model-designed orchestration as inspectable, composable source code.
 
 ---
 
@@ -28,6 +29,10 @@ The closest existing system to Spell's core thesis: model-designed orchestration
 - **PARL reward function:** Rt = λaux(e) · r_parallel + (1 − λaux(e)) · (I[success] · Q(τ)). Early training rewards parallelism; late training rewards task quality. Prevents "serial collapse" and "fake parallelism" pathologies
 - **Critical Steps metric:** Latency-aware evaluation measuring the longest dependency chain, not just concurrency
 - **Results:** 3-4.5x speedup on coding tasks; 76.8% on SWE-bench Verified (state-of-the-art at release); open weights
+
+**Control flow details:** The architecture is strictly two-tier with no recursive spawning—subagents are leaf nodes that cannot create further agents. Communication is hub-and-spoke: all results flow back through the orchestrator, with no peer-to-peer routing between subagents. The critical steps formula CriticalSteps = Σ(Smain(t) + max_i(Ssub,i(t))) models the orchestrator as a serial bottleneck between parallel fan-out phases, suggesting multi-round orchestration (fan out → collect → fan out again). Subagent step limits are configurable per task type (e.g., 15 main / 100 sub for BrowseComp, 100/100 for WideSearch).
+
+The spawning mechanism itself is undisclosed—whether the orchestrator uses tool calls, special tokens, or infrastructure-level routing is unknown. The swarm capability is a server-side feature of kimi.com, not reproducible from the open weights alone; replicating it requires both the PARL training methodology and the orchestration infrastructure.
 
 **Relevance to Spell:** PARL validates Spell's core bet—that models can design their own orchestration and outperform fixed topologies. The key difference is the representation of the orchestration policy:
 
@@ -188,6 +193,32 @@ The Pregel engine adds parallel node execution, checkpoint-based resumability, a
 Despite architectural differences (simple loop vs. graph engine, sequential vs. parallel, mutable vs. immutable state), the LLM's role is structurally identical in both systems: it receives the current message history, produces one response, and external code decides what happens next. The LLM never plans multiple steps, never sees the graph topology, and never specifies its own control flow. It is a passive, one-step-at-a-time participant in a developer-authored harness.
 
 **Distinction from Spell:** This invariant is precisely what Spell breaks. In these frameworks, the developer writes the execution topology and the LLM fills in content. In Spell, the LLM writes the execution topology itself—deciding what recursive calls to make, what context to pass, and how to branch—using the same natural language medium it already operates in.
+
+### 1.10 Claude Code Task System
+
+**Source:** Anthropic, Jan 2026 - claude.com/claude-code
+
+Claude Code (Anthropic's CLI agent) recently added a session-scoped task management system with dependency tracking and parallel subagent execution. The system consists of four tools: `TaskCreate` (create tasks with descriptions), `TaskUpdate` (set status, assign owners, declare dependencies), `TaskList` (query available work), and `TaskGet` (fetch full task details). Dependencies are expressed as `blockedBy`/`blocks` edges forming a DAG; when a task completes, its dependents are automatically unblocked.
+
+The main Claude instance orchestrates execution by inspecting the task graph, identifying unblocked work, and spawning background subagents (up to ~10 concurrent) to execute independent tasks in parallel. Subagent results always return to the main thread—there is no peer-to-peer communication between subagents, and subagents cannot spawn further subagents.
+
+**Key architectural properties:**
+- **Manual orchestration:** There is no automatic dispatcher. The main Claude instance performs a manual topological walk of the dependency graph—creating tasks, checking what's unblocked, spawning subagents, collecting results, repeating
+- **Hub-and-spoke topology:** Same as PARL: all results flow through the orchestrator. The main thread is a serial bottleneck between parallel fan-out phases
+- **Session-scoped:** Tasks exist only for the duration of a session; no persistence across sessions
+- **Fixed orchestration API:** The model orchestrates through a predefined set of tool calls (`TaskCreate`, `TaskUpdate`, etc.), not through arbitrary code
+
+**Relevance to Spell:** Claude Code's task system illustrates the harness-based approach to orchestration. The model has some agency over *what* tasks to create and *when* to fan out, but the orchestration topology itself (hub-and-spoke with DAG-ordered execution) is fixed by the tool API. The model cannot express peer-to-peer communication, recursive spawning, context surgery, or novel coordination patterns—these are architectural constraints, not choices the model makes.
+
+The contrast with Spell is instructive: Claude Code gives the model a fixed menu of orchestration primitives; Spell gives the model a programming language to compose its own. A Spell program could express Claude Code's fan-out-and-collect pattern as one special case, but also patterns Claude Code's API cannot represent (e.g., a subagent that conditionally spawns further subagents, or results from one branch fed directly into another without returning to the orchestrator).
+
+| Aspect | Claude Code Tasks | Spell |
+|--------|-------------------|-------|
+| Orchestration is... | Manual walk of fixed DAG API | Arbitrary code written by LLM |
+| Topology | Hub-and-spoke (fixed) | Arbitrary (LLM-specified) |
+| Recursive spawning | No | Yes (`llm` calls `llm`) |
+| Peer-to-peer | No | Yes (pass results as arguments) |
+| Context control | None (subagents start fresh) | Full (expansion, hooks, prefix semantics) |
 
 ---
 
@@ -482,15 +513,16 @@ A novel observation: natural language is naturally "homoiconic" for LLMs.
 
 ### 8.1 Comparison Matrix
 
-| Property | PARL | Cursor | RLM | MemGPT | ToT | ReAct | DSPy | LMQL | Spell |
-|----------|------|--------|-----|--------|-----|-------|------|------|-------|
-| Model-designed orchestration | **Yes** (weights) | No (human) | Partial | No | No | No | No | No | **Yes** (code) |
-| Inspectable orchestration | No | Yes (harness) | Via Python | No | No | No | No | No | **Yes** |
-| Arbitrary control flow | Learned | Fixed | Via Python | No | No | No | No | Via Python | **Yes** |
-| Recursive self-calls | Spawns agents | No | Yes | No | No | Loop only | No | Nested queries | **Yes** |
-| Natural language medium | No | No | No (Python) | No | No | Yes | No | Hybrid | **Yes** |
-| Context surgery | No | No | No | Memory ops | Backtrack | No | No | No | **Yes** |
-| Meta-level hooks | No | No | No | No | No | No | No | No | **Yes** |
+| Property | PARL | Cursor | CC Tasks | RLM | MemGPT | ToT | ReAct | DSPy | LMQL | Spell |
+|----------|------|--------|----------|-----|--------|-----|-------|------|------|-------|
+| Model-designed orchestration | **Yes** (weights) | No (human) | Partial (fixed API) | Partial | No | No | No | No | No | **Yes** (code) |
+| Inspectable orchestration | No | Yes (harness) | Yes (task list) | Via Python | No | No | No | No | No | **Yes** |
+| Arbitrary control flow | Learned | Fixed | Fixed (DAG) | Via Python | No | No | No | No | Via Python | **Yes** |
+| Recursive self-calls | Spawns agents | No | No | Yes | No | No | Loop only | No | Nested queries | **Yes** |
+| Peer-to-peer communication | No | No | No | No | No | No | No | No | No | **Yes** |
+| Natural language medium | No | No | Partial | No (Python) | No | No | Yes | No | Hybrid | **Yes** |
+| Context surgery | No | No | No | No | Memory ops | Backtrack | No | No | No | **Yes** |
+| Meta-level hooks | No | No | No | No | No | No | No | No | No | **Yes** |
 | Trainable via RL | **Yes** | No | No | No | No | No | **Yes** (prompts) | No | Possible |
 
 ### 8.2 Unique Contributions
@@ -509,11 +541,18 @@ A novel observation: natural language is naturally "homoiconic" for LLMs.
 
 7. **RL action space for self-orchestration:** Spell provides a small, formal language that could serve as the action space for RL-driven improvement in self-orchestration—analogous to how structured function-calling schemas enabled RL to make tool use reliable.
 
-### 8.3 Gap in Literature
+### 8.3 The Hub-and-Spoke Invariant
 
-PARL proves model-designed orchestration can outperform fixed topologies. Cursor proves orchestration topology is a first-class concern requiring iteration. But no existing system represents model-designed orchestration as inspectable, composable source code with formal semantics. Spell occupies this gap:
+A striking pattern emerges across PARL, Cursor, and Claude Code Tasks: all three use hub-and-spoke topology where subagent results must return to a central orchestrator. None support peer-to-peer communication between subagents. In PARL, this is reflected in the critical steps formula (orchestrator time + max subagent time per round). In Claude Code, it's an API constraint—subagents cannot talk to each other. In Cursor, it's a deliberate design choice that emerged after peer coordination failed (topology attempts 1-2).
+
+This convergence on hub-and-spoke may reflect a genuine difficulty: coordinating autonomous agents without a central authority is hard (distributed computing patterns didn't transfer, per Cursor's findings). Alternatively, it may reflect an engineering path dependency—hub-and-spoke is simplest to build and reason about. Spell does not impose this constraint. Whether models will exploit the additional expressiveness (e.g., pipelining results between subagents) or converge on hub-and-spoke voluntarily is an empirical question.
+
+### 8.4 Gap in Literature
+
+PARL proves model-designed orchestration can outperform fixed topologies. Cursor proves orchestration topology is a first-class concern requiring iteration. Claude Code Tasks shows model agency within a fixed orchestration API—the model decides *what* to parallelize, but not *how* the coordination works. But no existing system represents model-designed orchestration as inspectable, composable source code with formal semantics. Spell occupies this gap:
 - PARL: model-designed, opaque, learned
 - Cursor: human-designed, inspectable, fixed
+- Claude Code: model-directed, inspectable, fixed topology
 - Spell: model-designed, inspectable, composable
 
 ---

@@ -30,3 +30,4 @@ spell -v -m opus "Your prompt here"
 | `famous-greeting.md` | Tool use + delegation | Sonnet |
 | `twenty-questions.md` | Worker/checker loop (Ralph pattern) | Opus |
 | `explain-spell.md` | Self-reflection + multi-agent debate | Opus |
+| `fix-bug.md` | Multi-step bug fixing with delegation | Sonnet |
