@@ -1029,3 +1029,169 @@
   (testing "describe with missing key returns nil"
     (let [ns-map {:docs {:a "first"} :a identity}]
       (is (nil? (core/describe ns-map :missing))))))
+
+;; =============================================================================
+;; Memo-based evaluation tests
+;; =============================================================================
+
+(deftest spell-eval-4arg-test
+  (testing "4-arg form returns result map"
+    (let [result (spell-eval '(+ 1 2) {} [] 0)]
+      (is (map? result))
+      (is (contains? result :ok))
+      (is (= 3 (:ok result)))
+      (is (vector? (:memo result)))
+      (is (number? (:idx result)))))
+
+  (testing "memo records evaluated expressions"
+    (let [result (spell-eval '(do (def x 1) (def y 2) (+ x y)) {} [] 0)]
+      (is (eval/ok? result))
+      (is (= 3 (:ok result)))
+      ;; Memo should have entries for evaluated expressions
+      (is (seq (:memo result)))))
+
+  (testing "ok? and err? predicates work"
+    (let [ok-result (spell-eval '(+ 1 2) {} [] 0)
+          err-result (spell-eval 'undefined-symbol {} [] 0)]
+      (is (eval/ok? ok-result))
+      (is (not (eval/err? ok-result)))
+      (is (eval/err? err-result))
+      (is (not (eval/ok? err-result)))))
+
+  (testing "error result contains context"
+    (let [result (spell-eval 'unbound-var {} [] 0)]
+      (is (eval/err? result))
+      (is (string? (:err result)))
+      (is (= 'unbound-var (:expr result)))
+      (is (map? (:env result)))
+      (is (vector? (:memo result))))))
+
+(deftest memo-lookup-test
+  (testing "memo special form retrieves cached value"
+    ;; Pre-populate memo with a cached value
+    (let [memo [{:expr '(+ 1 2) :value 3}]
+          result (spell-eval '(memo 0) {} memo 1)]
+      (is (eval/ok? result))
+      (is (= 3 (:ok result)))))
+
+  (testing "memo lookup on missing index returns error"
+    (let [result (spell-eval '(memo 5) {} [] 0)]
+      (is (eval/err? result))
+      (is (clojure.string/includes? (:err result) "No memo entry"))))
+
+  (testing "memo enables skip of re-evaluation"
+    ;; If idx points to an existing memo entry, return cached value
+    (let [memo [{:expr '(some-side-effect) :value "cached-result"}]
+          result (spell-eval '(some-side-effect) {} memo 0)]
+      (is (eval/ok? result))
+      (is (= "cached-result" (:ok result))))))
+
+(deftest error-in-middle-of-do-test
+  (testing "error in middle of do block preserves partial memo"
+    (let [result (spell-eval '(do (def x 1) unbound (def y 2)) {} [] 0)]
+      (is (eval/err? result))
+      ;; Should have memo entries from before the error
+      (is (seq (:memo result)))
+      ;; env should have x defined
+      (is (= 1 (get (:env result) 'x))))))
+
+(deftest memo-replay-test
+  (testing "replay with memo skips side effects"
+    (let [;; Simulate a program that did work before failing
+          ;; First run: (do (def x (+ 1 2)) (def y (undefined)))
+          ;; This would fail at undefined, but memo has x's computation
+          first-result (spell-eval '(do (def x (+ 1 2)) undefined) {} [] 0)
+          _ (is (eval/err? first-result))
+          ;; Now replay with the memo, but fix the program
+          ;; The (+ 1 2) computation should come from memo
+          fixed-program '(do (def x (memo 0)) x)  ; Use cached value
+          retry (spell-eval fixed-program {} (:memo first-result) 0)]
+      ;; The memo should have the + 1 2 computation
+      (when (seq (:memo first-result))
+        (is (eval/ok? retry)))))
+
+  (testing "2-arg backwards compatible form still works"
+    (let [[val env] (spell-eval '(do (def x 5) x) {})]
+      (is (= 5 val))
+      (is (= 5 (env 'x))))))
+
+(deftest full-recovery-flow-test
+  (testing "end-to-end recovery: side effects before error aren't re-executed, new ones are"
+    ;; Use atoms to track how many times each side-effect function is called
+    (let [side-effect-1-count (atom 0)
+          side-effect-2-count (atom 0)
+          ;; Side effect functions that increment counters and return values
+          side-effect-1 (fn []
+                          (swap! side-effect-1-count inc)
+                          100)
+          side-effect-2 (fn []
+                          (swap! side-effect-2-count inc)
+                          200)
+          ;; Builtins with our side-effect functions
+          test-builtins (merge eval/core-builtins
+                               {'side-effect-1 side-effect-1
+                                'side-effect-2 side-effect-2})
+
+          ;; Phase 1: Run program that succeeds partially, then fails
+          ;; (do (def x (side-effect-1))    ; succeeds, x=100, side-effect-1 runs
+          ;;     (def y (+ undefined 1)))   ; fails on undefined symbol
+          phase1-result (binding [eval/*builtins* test-builtins]
+                          (spell-eval '(do (def x (side-effect-1))
+                                           (def y (+ undefined 1)))
+                                      {} [] 0))]
+
+      ;; Verify phase 1 failed
+      (is (eval/err? phase1-result))
+      (is (clojure.string/includes? (:err phase1-result) "undefined"))
+
+      ;; Side-effect-1 should have run exactly once
+      (is (= 1 @side-effect-1-count) "side-effect-1 should run once in phase 1")
+      ;; Side-effect-2 never called yet
+      (is (= 0 @side-effect-2-count) "side-effect-2 should not run in phase 1")
+
+      ;; Env should have x from successful def
+      (is (= 100 (get (:env phase1-result) 'x)))
+
+      ;; Memo should have entries from successful evaluation
+      (is (seq (:memo phase1-result)) "memo should have entries")
+
+      ;; Phase 2: Recovery - fix the program using (memo N) to skip side-effect-1
+      ;; Find which memo index has the side-effect-1 result (value 100)
+      (let [memo (:memo phase1-result)
+            ;; The fixed program: use memo to get x's value, then compute y with side-effect-2
+            ;; We need to find the memo index that has value 100
+            x-memo-idx (first (keep-indexed
+                                (fn [i entry] (when (= 100 (:value entry)) i))
+                                memo))
+            _ (is (some? x-memo-idx) "should find memo entry with value 100")
+
+            ;; Fixed program: skip side-effect-1 via memo, use side-effect-2 for y
+            fixed-program (list 'do
+                                (list 'def 'x (list 'memo x-memo-idx))
+                                '(def y (side-effect-2))
+                                '(+ x y))
+
+            ;; Run recovery with the memo from phase 1
+            ;; Start idx at end of memo so we don't auto-match (fixed program is different structure)
+            ;; The (memo N) lookups will still work since they use explicit indices
+            phase2-result (binding [eval/*builtins* test-builtins]
+                            (spell-eval fixed-program
+                                        (:env phase1-result)
+                                        memo
+                                        (count memo)))]
+
+        ;; Verify phase 2 succeeded
+        (is (eval/ok? phase2-result) (str "phase 2 should succeed: " (:err phase2-result)))
+
+        ;; Final value should be x + y = 100 + 200 = 300
+        (is (= 300 (:ok phase2-result)))
+
+        ;; CRITICAL: side-effect-1 should NOT have run again (still 1)
+        (is (= 1 @side-effect-1-count) "side-effect-1 should NOT re-run in phase 2")
+
+        ;; side-effect-2 should have run exactly once in phase 2
+        (is (= 1 @side-effect-2-count) "side-effect-2 should run once in phase 2")
+
+        ;; Final env should have both x and y
+        (is (= 100 (get (:env phase2-result) 'x)))
+        (is (= 200 (get (:env phase2-result) 'y)))))))

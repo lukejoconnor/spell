@@ -3,6 +3,7 @@
             [clojure.data.json :as json]
             [spell.cli :as cli]
             [spell.core :as spell]
+            [spell.llm :as llm]
             [spell.provider :as provider]
             [spell.tools :as tools]
             [spell.prompt :as prompt]
@@ -111,7 +112,8 @@
         (provider/track-usage! "claude-sonnet-4-20250514"
                           {:input_tokens 100 :output_tokens 50})
         (is (= {:by-model {"claude-sonnet-4-20250514"
-                           {:input_tokens 100 :output_tokens 50 :calls 1}}}
+                           {:input_tokens 100 :output_tokens 50 :calls 1
+                            :cache_creation_input_tokens 0 :cache_read_input_tokens 0}}}
                @usage-atom))))))
 
 (deftest track-usage-accumulates-test
@@ -482,3 +484,63 @@
         (provider/track-usage! "unknown-model-xyz"
                           {:input_tokens 99999999 :output_tokens 99999999})
         (is (= 1 (get-in @usage-atom [:by-model "unknown-model-xyz" :calls])))))))
+
+;; =============================================================================
+;; Error recovery tests
+;; =============================================================================
+
+(deftest make-llm-with-recovery-test
+  (testing "recovery function is called on error"
+    (let [recovery-called (atom false)
+          recovery-fn (fn [result]
+                        (reset! recovery-called true)
+                        ;; Return a fixed expression
+                        '(def return 42))
+          test-llm (spell/make-llm {:namespaces {}
+                                    :recover recovery-fn})]
+      (provider/with-provider
+        ;; Response has an undefined symbol that will cause an error
+        (provider/dummy-provider {:response "undefined-symbol)"})
+        (let [result (test-llm "(do ")]
+          (is @recovery-called)
+          (is (= 42 result))))))
+
+  (testing "recovery can use memo references"
+    (let [test-llm (spell/make-llm
+                     {:namespaces {}
+                      :recover (fn [result]
+                                 ;; The memo should have the def x = 5 value
+                                 ;; Return expression that uses it
+                                 '(do (def return (memo 0))))})]
+      (provider/with-provider
+        ;; First part succeeds (def x 5), then fails on undefined
+        (provider/dummy-provider {:response "(def x 5) undefined)"})
+        ;; Recovery uses (memo 0) to get the cached value
+        (let [result (test-llm "(do ")]
+          (is (= 5 result))))))
+
+  (testing "no recovery when not configured"
+    (let [test-llm (spell/make-llm {:namespaces {}})]  ; no :recover
+      (provider/with-provider
+        (provider/dummy-provider {:response "undefined-symbol)"})
+        (is (thrown? Exception (test-llm "(do ")))))))
+
+(deftest format-error-for-recovery-test
+  (testing "formats error with memo context"
+    (let [result {:err "Unbound symbol: foo"
+                  :expr 'foo
+                  :env {'x 1}
+                  :memo [{:expr '(def x 1) :value 1}
+                         {:expr '(+ 2 3) :value 5}]
+                  :idx 2}
+          formatted (llm/format-error-for-recovery result)]
+      (is (str/includes? formatted "Unbound symbol: foo"))
+      (is (str/includes? formatted "foo"))
+      (is (str/includes? formatted "(def x 1)"))
+      (is (str/includes? formatted "=> 1"))
+      (is (str/includes? formatted "(memo N)"))))
+
+  (testing "handles empty memo"
+    (let [result {:err "Error" :expr 'x :env {} :memo [] :idx 0}
+          formatted (llm/format-error-for-recovery result)]
+      (is (str/includes? formatted "empty")))))

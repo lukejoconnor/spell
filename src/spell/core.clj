@@ -16,6 +16,10 @@
 (def spell-eval eval/spell-eval)
 (def run-spell eval/run-spell)
 (def spell-error? eval/spell-error?)
+;; Result map helpers for memo-based error recovery
+(def ok? eval/ok?)
+(def err? eval/err?)
+(def result-value eval/result-value)
 
 ;; Re-export from spell.hooks
 (def prepend-hooks-to-llm hooks/prepend-hooks-to-llm)
@@ -27,6 +31,7 @@
 ;; Re-export from spell.llm
 (def make-llm llm-engine/make-llm)
 (def make-leaf-llm llm-engine/make-leaf-llm)
+(def format-error-for-recovery llm-engine/format-error-for-recovery)
 
 ;; =============================================================================
 ;; Describe builtin
