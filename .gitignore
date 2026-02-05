@@ -12,3 +12,7 @@ target/
 # Local development
 bin/
 dev/
+traces/
+
+# Benchmarking (separate repo)
+benchmarking/
