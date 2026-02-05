@@ -201,7 +201,66 @@ Output:
 
 Task: Greet the person in name.txt
 Output:
-(cat \"Hello, \" (:ok (tools/read-file \"name.txt\")) \"!\")")
+(cat \"Hello, \" (:ok (tools/read-file \"name.txt\")) \"!\")
+
+CALL-NOW PATTERN
+
+patterns/call-now is a continuation pattern. It evaluates an expression, binds the result in the completion, then spawns a child LLM that continues with access to the binding.
+
+The binding exists only for the CHILD. Code after call-now in your program cannot access it:
+
+  ; WRONG - files is not bound at this level, only in the child
+  (patterns/call-now (tools/bash \"ls\") 'files)
+  (strings/split (:out files) \"\\n\")  ; Error: files unbound
+
+  ; RIGHT - use call-now as your last expression, let child continue
+  (patterns/call-now (tools/bash \"ls\") 'files)
+  ; Child continues from here with files bound, does the split
+
+  ; ALSO RIGHT - for simple inline use, just call the tool directly
+  (def files (tools/bash \"ls\"))
+  (strings/split (:out files) \"\\n\")
+
+Use call-now when you want the child to see both your reasoning context AND the tool result. Use direct tool calls when you just need the result inline.
+
+CONTEXT EXPLORATION
+
+When searching large contexts (documents, codebases, logs), find ALL relevant information before deciding. Don't stop at the first match — there may be multiple occurrences, and you need the complete picture.
+
+Pattern: Explore → Aggregate → Decide
+
+1. EXPLORE: Use tools to find all potentially relevant context
+2. AGGREGATE: Collect findings into a data structure
+3. DECIDE: Pass findings to a child that makes the final decision
+
+Example — Finding a person's location when they may have moved multiple times:
+
+(def doc (:ok (tools/read-file context-file)))
+
+; Find ALL occurrences of the name
+(defn find-all-positions [text substr]
+  (defn helper [start acc]
+    (let [pos (strings/index-of (strings/subs text start) substr)]
+      (if pos
+        (helper (+ start pos 1) (conj acc (+ start pos)))
+        acc)))
+  (helper 0 []))
+
+(def positions (find-all-positions doc \"Mary\"))
+
+; Extract context around each occurrence
+(def snippets
+  (map (fn [pos]
+         (strings/subs doc (max 0 (- pos 50)) (min (count doc) (+ pos 80))))
+       positions))
+
+; Pass ALL findings to child for decision
+(patterns/call-now
+  {:name \"Mary\" :occurrences (count positions) :snippets snippets}
+  'exploration)
+; Child sees exploration binding with all occurrences and decides final answer
+
+Key insight: The exploration happens at the current level. Only the DECISION delegates to the child. This keeps exploration cheap (tool calls) and reserves LLM reasoning for the final judgment.")
 
 ;; =============================================================================
 ;; Generated sections
@@ -211,11 +270,11 @@ Output:
   "Generate the BUILTINS section (core language only, no tools/agents)."
   []
   (str "BUILTINS\n\n"
-       "Math: + - * / inc dec\n"
+       "Math: + - * / inc dec int quot mod (/ returns ratios; use quot for integer division)\n"
        "Compare: < > = <= >= not=\n"
        "Strings: str cat pr-str\n"
        "Type: string? number? list? seq? vector? map? fn?\n"
-       "Collections: list vector first rest last cons conj get assoc nth keys vals into concat count apply take drop\n"
+       "Collections: list vector first rest last cons conj get assoc nth keys vals into concat count reverse apply take drop\n"
        "Higher-order: map filter reduce\n"
        "Logic: if cond and or not nil? empty?\n"
        "Binding: def let do quine uneval expand spell-eval\n"

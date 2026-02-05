@@ -135,7 +135,7 @@
    'fn? (fn [v] (or (fn? v) (spell-fn? v))),
    ;; Collections (core only - extended in seqs registry)
    'list list, 'vector vector, 'first first, 'rest rest, 'last last,
-   'cons cons, 'conj conj, 'get get, 'assoc assoc, 'count count,
+   'cons cons, 'conj conj, 'get get, 'assoc assoc, 'count count, 'reverse reverse,
    'nth (fn
           ([coll idx] (nth coll idx))
           ([coll idx not-found] (nth coll idx not-found))),
