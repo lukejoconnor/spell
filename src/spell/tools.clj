@@ -171,6 +171,7 @@ Tip: include surrounding context to ensure uniqueness:
   "All file manipulation tools."
   [read-file-tool write-file-tool str-replace-tool])
 
+;; Legacy: kept for backwards compatibility with tests
 (def default-tools
-  "Default tool set for the standard llm function."
+  "Default tool set (legacy, use registries instead)."
   [read-name-tool bash-tool read-file-tool write-file-tool str-replace-tool])
