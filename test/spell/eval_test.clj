@@ -1195,3 +1195,89 @@
         ;; Final env should have both x and y
         (is (= 100 (get (:env phase2-result) 'x)))
         (is (= 200 (get (:env phase2-result) 'y)))))))
+
+;; =============================================================================
+;; Loop/recur tests
+;; =============================================================================
+
+(deftest loop-recur-basic
+  (testing "basic loop with recur"
+    (is (= 10 (run-spell '(loop [x 0] (if (< x 10) (recur (+ x 1)) x))))))
+
+  (testing "loop with multiple bindings"
+    ;; sum 0+1+2+3+4 = 10
+    (is (= 10 (run-spell '(loop [x 0 sum 0]
+                            (if (< x 5)
+                              (recur (+ x 1) (+ sum x))
+                              sum))))))
+
+  (testing "loop without recur just evaluates body"
+    (is (= 42 (run-spell '(loop [x 42] x)))))
+
+  (testing "loop with computed initial values"
+    (is (= 6 (run-spell '(loop [x (+ 1 2)] (* x 2))))))
+
+  (testing "loop bindings don't escape"
+    (let [[val env] (spell-eval '(loop [x 10] x) {})]
+      (is (= 10 val))
+      (is (= {} env))))
+
+  (testing "accumulator pattern"
+    ;; 5+4+3+2+1 = 15
+    (is (= [0 15] (run-spell '(loop [n 5 acc 0]
+                                (if (> n 0)
+                                  (recur (- n 1) (+ acc n))
+                                  [n acc]))))))
+
+  (testing "factorial via loop/recur"
+    (is (= 120 (run-spell '(loop [n 5 acc 1]
+                             (if (= n 0)
+                               acc
+                               (recur (- n 1) (* acc n))))))))
+
+  (testing "countdown to zero"
+    (is (= 0 (run-spell '(loop [n 100]
+                           (if (> n 0)
+                             (recur (- n 1))
+                             n)))))))
+
+(deftest loop-recur-env-access
+  (testing "loop body can access outer env"
+    (is (= 15 (run-spell '(do (def y 5)
+                               (loop [x 0]
+                                 (if (< x 10)
+                                   (recur (+ x 1))
+                                   (+ x y))))))))
+
+  (testing "loop sees defs from same do block"
+    ;; Use accumulator pattern - recur must be in tail position
+    ;; 2*(5+4+3+2+1) = 2*15 = 30
+    (is (= 30 (run-spell '(do (defn double [x] (* x 2))
+                               (loop [n 5 acc 0]
+                                 (if (= n 0)
+                                   acc
+                                   (recur (- n 1) (+ acc (double n)))))))))))
+
+(deftest loop-recur-expand
+  (testing "expand handles loop form"
+    (let [[val _] (spell-eval '(do (def start 5)
+                                    (expand '(loop [x start] x))) {})]
+      (is (= '(loop [x 5] x) val))))
+
+  (testing "expand handles recur form"
+    (let [[val _] (spell-eval '(do (def delta 1)
+                                    (expand '(recur (+ x delta)))) {})]
+      (is (= '(recur (+ x 1)) val)))))
+
+(deftest loop-recur-nested
+  (testing "nested loops"
+    ;; Inner loop counts 0..i-1, so returns i
+    ;; Outer sums: 0 + 1 + 2 + 3 + 4 = 10
+    (is (= 10 (run-spell '(loop [i 0 sum 0]
+                            (if (< i 5)
+                              (recur (+ i 1)
+                                     (+ sum (loop [j 0 inner 0]
+                                              (if (< j i)
+                                                (recur (+ j 1) (+ inner 1))
+                                                inner))))
+                              sum)))))))

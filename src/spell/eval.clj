@@ -181,7 +181,7 @@
 
 (def special-forms
   "Special forms that are not free variables."
-  #{'quote 'def 'do 'if 'let 'fn 'defn 'cond 'and 'or 'uneval 'expand 'future 'quine '-> '->> 'memo})
+  #{'quote 'def 'do 'if 'let 'fn 'defn 'cond 'and 'or 'uneval 'expand 'future 'quine '-> '->> 'memo 'loop 'recur})
 
 (defn- thread-first
   "Transform (-> x (f a) (g b)) into (g (f x a) b)."
@@ -292,6 +292,17 @@
         quine (let [name-sym (second expr)
                     [body-expanded _] (-expand-expr (nth expr 2) outer-env (conj inner name-sym))]
                 [(list 'quine name-sym body-expanded) (conj inner name-sym)])
+
+        loop (let [pairs (partition 2 (second expr))
+                   [expanded-bindings final-inner]
+                   (reduce (fn [[acc i] [sym val-expr]]
+                             [(conj acc sym (first (-expand-expr val-expr outer-env i)))
+                              (conj i sym)])
+                           [[] inner] pairs)
+                   expanded-body (map #(first (-expand-expr % outer-env final-inner)) (drop 2 expr))]
+               [(list* 'loop (vec expanded-bindings) expanded-body) inner])
+
+        recur [(list* 'recur (map expand1 (rest expr))) inner]
 
         ;; Threading macros: transform then expand
         -> (-expand-expr (thread-first (second expr) (drop 2 expr)) outer-env inner)
@@ -558,6 +569,59 @@
                       (if-let [entry (get memo n)]
                         (ok (:value entry) env memo idx)
                         (err (str "No memo entry at index " n) env memo idx expr)))
+
+               ;; loop: (loop [bindings...] body...) - establishes a recursion point
+               loop (let [bindings (partition 2 (second expr))
+                          body (drop 2 expr)
+                          binding-syms (mapv first bindings)
+                          init-exprs (mapv second bindings)]
+                      ;; Evaluate initial values
+                      (loop [remaining init-exprs
+                             init-vals []
+                             e env
+                             m memo
+                             i idx]
+                        (if (empty? remaining)
+                          ;; All initial values evaluated, now run the loop body
+                          (loop [current-vals init-vals
+                                 loop-m m
+                                 loop-i i]
+                            (let [local-env (into e (map vector binding-syms current-vals))
+                                  body-result (eval-seq body local-env loop-m loop-i)]
+                              (if (err? body-result)
+                                body-result
+                                (if (and (map? (:ok body-result)) (:spell/recur (:ok body-result)))
+                                  (recur (:vals (:ok body-result))
+                                         (:memo body-result)
+                                         (:idx body-result))
+                                  ;; Normal return - restore outer env
+                                  (ok (:ok body-result) e (:memo body-result) (:idx body-result))))))
+                          ;; Still evaluating initial values
+                          (let [result (spell-eval (first remaining) e m i)]
+                            (if (err? result)
+                              result
+                              (recur (rest remaining)
+                                     (conj init-vals (:ok result))
+                                     (:env result)
+                                     (:memo result)
+                                     (:idx result)))))))
+
+               ;; recur: (recur exprs...) - jump back to loop with new values
+               recur (loop [remaining (rest expr)
+                            vals []
+                            e env
+                            m memo
+                            i idx]
+                       (if (empty? remaining)
+                         (ok {:spell/recur true :vals vals} e m i)
+                         (let [result (spell-eval (first remaining) e m i)]
+                           (if (err? result)
+                             result
+                             (recur (rest remaining)
+                                    (conj vals (:ok result))
+                                    (:env result)
+                                    (:memo result)
+                                    (:idx result))))))
 
                ;; future: (future expr) - evaluate expr in a new thread, return future handle
                future (let [body (second expr)

@@ -171,6 +171,17 @@ Futures can await other futures (DAG dependencies):
   (llm (cat \"synthesize: \" ra \" \" rb)))))
 (await c)
 
+LOOP/RECUR
+
+(loop [bindings...] body) establishes a recursion point. (recur vals...) jumps back with new values.
+
+(loop [n 5 acc 1]
+  (if (= n 0)
+    acc
+    (recur (- n 1) (* acc n))))  ; => 120
+
+recur must be in tail position — the last expression evaluated before the loop returns. Loop bindings don't escape to the outer environment.
+
 EXAMPLES
 
 Task: Return 42
@@ -288,6 +299,7 @@ Key insights:
        "Higher-order: map filter reduce\n"
        "Logic: if cond and or not nil? empty?\n"
        "Binding: def let do quine uneval expand spell-eval\n"
+       "Control: loop recur\n"
        "Concurrency: future await\n"
        "Strip: strip-parens reopen\n"
        "Namespace: describe\n"
