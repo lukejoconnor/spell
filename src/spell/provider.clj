@@ -29,7 +29,8 @@
 
 (def ^:dynamic *usage*
   "When bound to an atom, accumulates token usage from API calls.
-   Atom value is a map: {:by-model {\"model\" {:input_tokens N :output_tokens N :calls N}}}"
+   Atom value is a map: {:by-model {\"model\" {:input_tokens N :output_tokens N :calls N
+                                               :cache_creation_input_tokens N :cache_read_input_tokens N}}}"
   nil)
 
 (def ^:dynamic *budget*
@@ -53,13 +54,17 @@
 
 (defn current-cost
   "Compute total cost in dollars from accumulated usage data.
-   Returns nil if no models have known pricing."
+   Returns nil if no models have known pricing.
+   Accounts for cache pricing: cache writes 1.25x, cache reads 0.1x normal input."
   [usage-atom]
   (let [by-model (:by-model @usage-atom)
         costs (keep (fn [[model stats]]
                       (when-let [[in-cost out-cost] (lookup-cost model)]
-                        (+ (* (:input_tokens stats) (/ in-cost 1000000.0))
-                           (* (:output_tokens stats) (/ out-cost 1000000.0)))))
+                        (let [base-input (* (:input_tokens stats 0) (/ in-cost 1000000.0))
+                              cache-write (* (:cache_creation_input_tokens stats 0) (/ in-cost 1000000.0) 1.25)
+                              cache-read (* (:cache_read_input_tokens stats 0) (/ in-cost 1000000.0) 0.1)
+                              output (* (:output_tokens stats 0) (/ out-cost 1000000.0))]
+                          (+ base-input cache-write cache-read output))))
                     by-model)]
     (when (seq costs)
       (reduce + 0.0 costs))))
@@ -73,6 +78,10 @@
            (fn [existing]
              {:input_tokens (+ (:input_tokens existing 0) (:input_tokens usage 0))
               :output_tokens (+ (:output_tokens existing 0) (:output_tokens usage 0))
+              :cache_creation_input_tokens (+ (:cache_creation_input_tokens existing 0)
+                                              (:cache_creation_input_tokens usage 0))
+              :cache_read_input_tokens (+ (:cache_read_input_tokens existing 0)
+                                          (:cache_read_input_tokens usage 0))
               :calls (inc (:calls existing 0))}))
     (when *budget*
       (when-let [cost (current-cost *usage*)]
@@ -82,21 +91,28 @@
 
 (defn usage-summary
   "Compute a summary from accumulated usage data.
-   Returns {:by-model {model {:input_tokens N :output_tokens N :calls N :cost F}}
-            :total {:input_tokens N :output_tokens N :calls N :cost F}}"
+   Returns {:by-model {model {:input_tokens N :output_tokens N :calls N :cost F
+                              :cache_creation_input_tokens N :cache_read_input_tokens N}}
+            :total {:input_tokens N :output_tokens N :calls N :cost F
+                    :cache_creation_input_tokens N :cache_read_input_tokens N}}"
   [usage-atom]
   (let [by-model (:by-model @usage-atom)
         with-costs (into {}
                      (map (fn [[model stats]]
                             (let [[in-cost out-cost] (lookup-cost model)
                                   cost (when (and in-cost out-cost)
-                                         (+ (* (:input_tokens stats) (/ in-cost 1000000.0))
-                                            (* (:output_tokens stats) (/ out-cost 1000000.0))))]
+                                         (let [base-input (* (:input_tokens stats 0) (/ in-cost 1000000.0))
+                                               cache-write (* (:cache_creation_input_tokens stats 0) (/ in-cost 1000000.0) 1.25)
+                                               cache-read (* (:cache_read_input_tokens stats 0) (/ in-cost 1000000.0) 0.1)
+                                               output (* (:output_tokens stats 0) (/ out-cost 1000000.0))]
+                                           (+ base-input cache-write cache-read output)))]
                               [model (cond-> stats cost (assoc :cost cost))]))
                           by-model))
-        total {:input_tokens (reduce + 0 (map :input_tokens (vals by-model)))
-               :output_tokens (reduce + 0 (map :output_tokens (vals by-model)))
-               :calls (reduce + 0 (map :calls (vals by-model)))
+        total {:input_tokens (reduce + 0 (map #(:input_tokens % 0) (vals by-model)))
+               :output_tokens (reduce + 0 (map #(:output_tokens % 0) (vals by-model)))
+               :cache_creation_input_tokens (reduce + 0 (map #(:cache_creation_input_tokens % 0) (vals by-model)))
+               :cache_read_input_tokens (reduce + 0 (map #(:cache_read_input_tokens % 0) (vals by-model)))
+               :calls (reduce + 0 (map #(:calls % 0) (vals by-model)))
                :cost (let [costs (keep :cost (vals with-costs))]
                        (when (seq costs) (reduce + 0.0 costs)))}]
     {:by-model with-costs :total total}))
@@ -112,10 +128,16 @@
 (defn- anthropic-request [api-key model prompt system-prompt prefix]
   (let [messages (cond-> [{:role "user" :content prompt}]
                    prefix (conj {:role "assistant" :content (str/trimr prefix)}))
+        ;; Use cache_control for system prompt to enable prompt caching
+        ;; First request pays +25% write cost, subsequent requests get -90% read discount
+        cached-system (when system-prompt
+                        [{:type "text"
+                          :text system-prompt
+                          :cache_control {:type "ephemeral"}}])
         body (cond-> {:model model
                       :max_tokens 4096
                       :messages messages}
-               system-prompt (assoc :system system-prompt))
+               cached-system (assoc :system cached-system))
         request (-> (HttpRequest/newBuilder)
                     (.uri (URI/create "https://api.anthropic.com/v1/messages"))
                     (.header "Content-Type" "application/json")
@@ -129,11 +151,16 @@
   (let [parsed (json/read-str response-body :key-fn keyword)]
     (if-let [error (:error parsed)]
       (throw (ex-info "Anthropic API error" {:error error}))
-      {:text (->> (:content parsed)
-                  (filter #(= (:type %) "text"))
-                  (map :text)
-                  (clojure.string/join "\n"))
-       :usage (:usage parsed)})))
+      (let [usage (:usage parsed)]
+        {:text (->> (:content parsed)
+                    (filter #(= (:type %) "text"))
+                    (map :text)
+                    (clojure.string/join "\n"))
+         ;; Include cache usage fields if present
+         :usage {:input_tokens (:input_tokens usage 0)
+                 :output_tokens (:output_tokens usage 0)
+                 :cache_creation_input_tokens (:cache_creation_input_tokens usage 0)
+                 :cache_read_input_tokens (:cache_read_input_tokens usage 0)}}))))
 
 (defrecord AnthropicProvider [api-key model http-client]
   LLMProvider
