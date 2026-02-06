@@ -214,7 +214,7 @@ Output:
 
 Task: Greet the person in name.txt
 Output:
-(cat \"Hello, \" (:ok (tools/read-file \"name.txt\")) \"!\")
+(cat \"Hello, \" (get (tools/read-file \"name.txt\") 1) \"!\")
 
 CALL-NOW PATTERN
 
@@ -236,6 +236,28 @@ The binding exists only for the CHILD. Code after call-now in your program canno
 
 Use call-now when you want the child to see both your reasoning context AND the tool result. Use direct tool calls when you just need the result inline.
 
+CHECK-RESULT PATTERN
+
+patterns/check-result verifies an answer using leaf-llm (a plain-text LLM with no code execution). Use it for tasks where correctness is easy to check: math, factual lookups, format validation, constraint satisfaction.
+
+(patterns/check-result \"What is 2+2?\" 4)           ; => {:ok 4}
+(patterns/check-result \"Capital of France?\" \"London\")  ; => {:wrong \"London is the capital of the UK.\"}
+
+Returns {:ok answer} if correct, {:wrong msg} if not. The caller decides how to handle wrong results:
+
+(let [result (patterns/check-result task-prompt my-answer)]
+  (if (:ok result)
+    (:ok result)
+    ; Wrong — extend with feedback, let child retry
+    (llm (cat (reopen (pr-str completion))
+              \"(def feedback \" (pr-str (:wrong result)) \") \"))))
+
+When to use check-result:
+- Math/logic problems with verifiable answers
+- Factual questions you can cross-check
+- Format validation (\"does this match the schema?\")
+- Constraint satisfaction (\"does this solution meet all requirements?\")
+
 CONTEXT EXPLORATION
 
 When searching large contexts (documents, codebases, logs), find ALL relevant information before deciding. Don't stop at the first match — there may be multiple occurrences, and you need the complete picture.
@@ -248,7 +270,7 @@ Pattern: Explore → Aggregate → Decide
 
 Example — Finding a person's location when they may have moved multiple times:
 
-(def doc (:ok (tools/read-file context-file)))
+(def doc (tools/read-file context-file))
 
 ; Find ALL occurrences of the name
 (defn find-all-positions [text substr]

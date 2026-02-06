@@ -65,23 +65,46 @@
 ;; =============================================================================
 
 (defn read-file
-  "Read the contents of a file and return as a string.
-   Returns {:ok content} on success, {:error message} on failure."
-  [path]
-  (try
-    {:ok (slurp path)}
-    (catch java.io.FileNotFoundException _
-      {:error (str "File not found: " path)})
-    (catch Exception e
-      {:error (str "Error reading file: " (.getMessage e))})))
+  "Read a file and return a sorted map of {line-number content-string ...}.
+   Line numbers are 1-indexed. Optionally takes start and end line numbers
+   (1-indexed, inclusive) to read a range. Returns {:error message} on failure."
+  ([path]
+   (try
+     (let [content (slurp path)]
+       (if (empty? content)
+         (sorted-map)
+         (let [lines (clojure.string/split-lines content)]
+           (into (sorted-map)
+                 (map-indexed (fn [i line] [(inc i) line]) lines)))))
+     (catch java.io.FileNotFoundException _
+       {:error (str "File not found: " path)})
+     (catch Exception e
+       {:error (str "Error reading file: " (.getMessage e))})))
+  ([path start end]
+   (try
+     (let [content (slurp path)]
+       (if (empty? content)
+         (sorted-map)
+         (let [lines (clojure.string/split-lines content)
+               n (count lines)
+               start (max 1 (min start n))
+               end (max start (min end n))]
+           (into (sorted-map)
+                 (map (fn [i] [(inc i) (nth lines i)])
+                      (range (dec start) end))))))
+     (catch java.io.FileNotFoundException _
+       {:error (str "File not found: " path)})
+     (catch Exception e
+       {:error (str "Error reading file: " (.getMessage e))}))))
 
 (def read-file-tool
   "Tool metadata for read-file."
   {:name 'read-file
    :fn   read-file
-   :doc  "Read a file's contents. Takes a path string, returns {:ok content} or {:error message}.
-(read-file \"src/main.clj\")  ; => {:ok \"(ns main)...\"}
-(:ok (read-file \"config.edn\"))  ; => file contents as string"})
+   :doc  "Read a file with line numbers. Returns a sorted map of {line-number \"content\" ...}, or {:error msg}.
+(read-file \"src/main.clj\")       ; => {1 \"(ns main)\" 2 \"  (:require ...)\" ...}
+(read-file \"src/main.clj\" 10 15) ; => {10 \"(defn foo\" 11 \"  [x]\" ...} — lines 10-15 only
+(get (read-file \"f.txt\") 1)      ; => first line as string"})
 
 ;; =============================================================================
 ;; write-file
@@ -164,14 +187,61 @@ Tip: include surrounding context to ensure uniqueness:
   Use: (str-replace f \"(def x\" \"(def y\")  ; more specific"})
 
 ;; =============================================================================
+;; replace-lines
+;; =============================================================================
+
+(defn replace-lines
+  "Replace lines start through end (1-indexed, inclusive) with new content.
+   If new-content is empty string, deletes the lines.
+   Returns {:ok path} on success, {:error message} on failure."
+  [path start end new-content]
+  (try
+    (let [content (slurp path)
+          lines (clojure.string/split-lines content)
+          n (count lines)
+          trailing-newline? (and (pos? (count content))
+                                (= \newline (last content)))]
+      (cond
+        (or (< start 1) (> start n))
+        {:error (str "Start line " start " out of range (file has " n " lines)")}
+
+        (or (< end start) (> end n))
+        {:error (str "End line " end " out of range (start=" start ", file has " n " lines)")}
+
+        :else
+        (let [before (subvec (vec lines) 0 (dec start))
+              after (subvec (vec lines) end)
+              new-lines (if (empty? new-content)
+                          []
+                          (clojure.string/split-lines new-content))
+              result (str (clojure.string/join "\n" (concat before new-lines after))
+                          (when trailing-newline? "\n"))]
+          (spit path result)
+          {:ok path})))
+    (catch java.io.FileNotFoundException _
+      {:error (str "File not found: " path)})
+    (catch Exception e
+      {:error (str "Error: " (.getMessage e))})))
+
+(def replace-lines-tool
+  "Tool metadata for replace-lines."
+  {:name 'replace-lines
+   :fn   replace-lines
+   :doc  "Replace a range of lines in a file. Takes path, start line, end line (1-indexed, inclusive), and new content string.
+Use with read-file: read to see line numbers, then replace the target range.
+Returns {:ok path} on success, {:error message} on failure.
+(replace-lines \"main.py\" 5 7 \"    x = fixed_value\\n    return x\")  ; replace lines 5-7
+(replace-lines \"main.py\" 3 3 \"\")  ; delete line 3"})
+
+;; =============================================================================
 ;; All tools
 ;; =============================================================================
 
 (def file-tools
   "All file manipulation tools."
-  [read-file-tool write-file-tool str-replace-tool])
+  [read-file-tool write-file-tool str-replace-tool replace-lines-tool])
 
 ;; Legacy: kept for backwards compatibility with tests
 (def default-tools
   "Default tool set (legacy, use registries instead)."
-  [read-name-tool bash-tool read-file-tool write-file-tool str-replace-tool])
+  [read-name-tool bash-tool read-file-tool write-file-tool str-replace-tool replace-lines-tool])

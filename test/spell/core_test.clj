@@ -116,8 +116,8 @@
 
 (deftest default-tools-test
   (testing "default-tools contains read-name, bash, and file tools"
-    (is (= 5 (count default-tools)))
-    (is (= #{'read-name 'bash 'read-file 'write-file 'str-replace}
+    (is (= 6 (count default-tools)))
+    (is (= #{'read-name 'bash 'read-file 'write-file 'str-replace 'replace-lines}
            (set (map :name default-tools)))))
 
   (testing "tool definitions have required keys"

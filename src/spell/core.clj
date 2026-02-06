@@ -58,9 +58,10 @@
 (def tools
   "Tools namespace with shell, file I/O, and LLM variants."
   {:docs {:bash "Execute shell command. Returns {:exit N :out \"...\" :err \"...\"}."
-          :read-file "Read file contents. Returns {:ok content} or {:error msg}."
+          :read-file "Read file with line numbers. Returns {line-num \"content\" ...} or {:error msg}. Optional start/end args for range."
           :write-file "Write content to file. Returns {:ok path} or {:error msg}."
           :str-replace "Replace unique string in file. Returns {:ok path} or {:error msg}."
+          :replace-lines "Replace line range in file. Takes path, start, end, new-content. Returns {:ok path} or {:error msg}."
           :read-name "Read name from name.txt."
           :leaf-llm "Plain text LLM — no code execution."
           :make-form-llm "Create validated LLM. Options: :validate (fn), :format-doc (string), :max-retries (int, default 3), :system, :model. Returns fn that retries on validation failure."}
@@ -68,6 +69,7 @@
    :read-file tools/read-file
    :write-file tools/write-file
    :str-replace tools/str-replace
+   :replace-lines tools/replace-lines
    :read-name tools/read-name
    :leaf-llm leaf-llm
    :make-form-llm make-form-llm})
@@ -112,7 +114,8 @@
                       'bash tools/run-bash
                       'read-file tools/read-file
                       'write-file tools/write-file
-                      'str-replace tools/str-replace})))
+                      'str-replace tools/str-replace
+                      'replace-lines tools/replace-lines})))
 
 ;; Set the default system prompt for backwards compatibility
 (alter-var-root #'prompt/system-prompt

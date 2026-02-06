@@ -26,19 +26,20 @@
   (let [path (str test-dir "/read-test.txt")
         content "Hello, Spell!"]
     (spit path content)
-    (is (= {:ok content} (tools/read-file path)))))
+    (is (= (sorted-map 1 "Hello, Spell!") (tools/read-file path)))))
 
 (deftest read-file-multiline
   (let [path (str test-dir "/multiline.txt")
         content "Line 1\nLine 2\nLine 3"]
     (spit path content)
-    (is (= {:ok content} (tools/read-file path)))))
+    (is (= (sorted-map 1 "Line 1" 2 "Line 2" 3 "Line 3")
+           (tools/read-file path)))))
 
 (deftest read-file-unicode
   (let [path (str test-dir "/unicode.txt")
         content "Hello 世界 🌍"]
     (spit path content)
-    (is (= {:ok content} (tools/read-file path)))))
+    (is (= (sorted-map 1 "Hello 世界 🌍") (tools/read-file path)))))
 
 (deftest read-file-not-found
   (let [result (tools/read-file (str test-dir "/nonexistent.txt"))]
@@ -48,7 +49,28 @@
 (deftest read-file-empty
   (let [path (str test-dir "/empty.txt")]
     (spit path "")
-    (is (= {:ok ""} (tools/read-file path)))))
+    (is (= (sorted-map) (tools/read-file path)))))
+
+(deftest read-file-line-range
+  (let [path (str test-dir "/range.txt")
+        content "line1\nline2\nline3\nline4\nline5"]
+    (spit path content)
+    (testing "middle range"
+      (is (= (sorted-map 2 "line2" 3 "line3")
+             (tools/read-file path 2 3))))
+    (testing "single line"
+      (is (= (sorted-map 4 "line4")
+             (tools/read-file path 4 4))))
+    (testing "full range"
+      (is (= (sorted-map 1 "line1" 2 "line2" 3 "line3" 4 "line4" 5 "line5")
+             (tools/read-file path 1 5))))
+    (testing "clamped to bounds"
+      (is (= (sorted-map 4 "line4" 5 "line5")
+             (tools/read-file path 4 100))))))
+
+(deftest read-file-range-not-found
+  (let [result (tools/read-file (str test-dir "/missing.txt") 1 5)]
+    (is (contains? result :error))))
 
 ;; =============================================================================
 ;; write-file tests
@@ -140,6 +162,60 @@
     (is (= "replaced!" (slurp path)))))
 
 ;; =============================================================================
+;; replace-lines tests
+;; =============================================================================
+
+(deftest replace-lines-single
+  (let [path (str test-dir "/rl-single.txt")]
+    (spit path "aaa\nbbb\nccc\n")
+    (is (= {:ok path} (tools/replace-lines path 2 2 "BBB")))
+    (is (= "aaa\nBBB\nccc\n" (slurp path)))))
+
+(deftest replace-lines-range
+  (let [path (str test-dir "/rl-range.txt")]
+    (spit path "line1\nline2\nline3\nline4\nline5\n")
+    (is (= {:ok path} (tools/replace-lines path 2 4 "new2\nnew3")))
+    (is (= "line1\nnew2\nnew3\nline5\n" (slurp path)))))
+
+(deftest replace-lines-delete
+  (let [path (str test-dir "/rl-delete.txt")]
+    (spit path "keep\nremove\nkeep\n")
+    (is (= {:ok path} (tools/replace-lines path 2 2 "")))
+    (is (= "keep\nkeep\n" (slurp path)))))
+
+(deftest replace-lines-first-line
+  (let [path (str test-dir "/rl-first.txt")]
+    (spit path "old\nrest\n")
+    (is (= {:ok path} (tools/replace-lines path 1 1 "new")))
+    (is (= "new\nrest\n" (slurp path)))))
+
+(deftest replace-lines-last-line
+  (let [path (str test-dir "/rl-last.txt")]
+    (spit path "rest\nold\n")
+    (is (= {:ok path} (tools/replace-lines path 2 2 "new")))
+    (is (= "rest\nnew\n" (slurp path)))))
+
+(deftest replace-lines-out-of-range
+  (let [path (str test-dir "/rl-bounds.txt")]
+    (spit path "one\ntwo\n")
+    (testing "start out of range"
+      (is (contains? (tools/replace-lines path 0 1 "x") :error))
+      (is (contains? (tools/replace-lines path 5 5 "x") :error)))
+    (testing "end out of range"
+      (is (contains? (tools/replace-lines path 1 5 "x") :error)))))
+
+(deftest replace-lines-file-not-found
+  (let [result (tools/replace-lines (str test-dir "/missing.txt") 1 1 "x")]
+    (is (contains? result :error))
+    (is (re-find #"not found" (:error result)))))
+
+(deftest replace-lines-preserves-no-trailing-newline
+  (let [path (str test-dir "/rl-no-nl.txt")]
+    (spit path "aaa\nbbb\nccc")
+    (is (= {:ok path} (tools/replace-lines path 2 2 "BBB")))
+    (is (= "aaa\nBBB\nccc" (slurp path)))))
+
+;; =============================================================================
 ;; Tool metadata tests
 ;; =============================================================================
 
@@ -152,4 +228,4 @@
       (is (not (empty? (:doc tool)))))))
 
 (deftest file-tools-count
-  (is (= 3 (count tools/file-tools))))
+  (is (= 4 (count tools/file-tools))))
