@@ -27,11 +27,6 @@
   "Maximum allowed LLM recursion depth. Set to nil to disable limit."
   8)
 
-(def ^:dynamic *quote-env*
-  "Maps symbols to their quoted definition expressions during evaluation.
-   Used by uneval to retrieve the source code of a binding while it's being evaluated."
-  {})
-
 (def ^:dynamic *spell-env*
   "Current spell-eval environment during function application.
    Allows Clojure builtins (like apply) to access the current env for spell-fn support."
@@ -39,11 +34,6 @@
 
 (def ^:dynamic *in-recovery*
   "When true, we're inside error recovery. Prevents recursive recovery attempts."
-  false)
-
-(defn spell-error?
-  "Deprecated. Returns false. Use try/catch instead."
-  [_v]
   false)
 
 (defn spell-future?
@@ -101,7 +91,7 @@
   [v]
   (and (map? v) (:spell/fn v)))
 
-(defn- invoke-fn
+(defn invoke-fn
   "Invoke f with args. Handles both spell-fns and Clojure fns.
    Uses *spell-env* for spell-fn body evaluation."
   [f args]
@@ -129,7 +119,8 @@
    'fn? (fn [v] (or (fn? v) (spell-fn? v))),
    ;; Collections (core only - extended in seqs registry)
    'list list, 'vector vector, 'set set, 'first first, 'second second, 'rest rest, 'last last,
-   'cons cons, 'conj conj, 'get get, 'assoc assoc, 'count count, 'reverse reverse,
+   'cons cons, 'conj conj, 'get get, 'assoc assoc, 'count count,
+   'reverse (fn [coll] (vec (reverse coll))),
    'nth (fn
           ([coll idx] (nth coll idx))
           ([coll idx not-found] (nth coll idx not-found))),
@@ -165,8 +156,6 @@
    ;; Strip / Reopen
    'strip-parens parse/strip-trailing-parens,
    'reopen (fn [s] (parse/strip-trailing-parens 3 s)),
-   ;; Error handling
-   'spell-error? spell-error?,
    ;; Eval — auto-expands free vars from caller's env, then evaluates in fresh env
    'spell-eval (fn [expr] (first (spell-eval (expand-expr expr *spell-env*) {}))),
    ;; Concurrency
@@ -200,7 +189,7 @@
 
 (def special-forms
   "Special forms that are not free variables."
-  #{'quote 'def 'do 'if 'let 'fn 'defn 'cond 'and 'or 'uneval 'expand 'future 'plet 'quine '-> '->> 'memo 'loop 'recur 'for 'try 'throw})
+  #{'quote 'def 'do 'if 'let 'fn 'defn 'cond 'and 'or 'expand 'future 'plet 'quine '-> '->> 'memo 'loop 'recur 'for 'try 'throw})
 
 (defn- thread-first
   "Transform (-> x (f a) (g b)) into (g (f x a) b)."
@@ -350,12 +339,6 @@
                           (let [[pred-expanded _] (-expand-expr (second remaining) outer-env bound)]
                             (recur (drop 2 remaining)
                                    (conj acc :when pred-expanded)
-                                   bound))
-                          ;; :while pred
-                          (= item :while)
-                          (let [[pred-expanded _] (-expand-expr (second remaining) outer-env bound)]
-                            (recur (drop 2 remaining)
-                                   (conj acc :while pred-expanded)
                                    bound))
                           ;; :let [bindings...]
                           (= item :let)
@@ -532,9 +515,7 @@
                quote (ok (second expr) env memo idx)
 
                def   (let [sym (second expr)
-                           val-expr (nth expr 2)
-                           val-result (binding [*quote-env* (assoc *quote-env* sym val-expr)]
-                                        (spell-eval val-expr env memo idx))]
+                           val-result (spell-eval (nth expr 2) env memo idx)]
                        (if (err? val-result)
                          val-result
                          (ok (:ok val-result)
@@ -636,19 +617,6 @@
                                (ok (:ok result) (:env result) (:memo result) (:idx result))
                                (recur (rest exprs) (:env result) (:memo result) (:idx result) (:ok result)))))))
 
-               ;; uneval: (uneval 'sym) - get the quoted source of a binding during its evaluation
-               uneval (let [sym-result (spell-eval (second expr) env memo idx)]
-                        (if (err? sym-result)
-                          sym-result
-                          (let [sym-v (:ok sym-result)]
-                            (if-not (symbol? sym-v)
-                              (err (str "uneval: argument must evaluate to a symbol, got " (type sym-v))
-                                   (:env sym-result) (:memo sym-result) (:idx sym-result) expr)
-                              (if-let [quoted (get *quote-env* sym-v)]
-                                (ok quoted (:env sym-result) (:memo sym-result) (:idx sym-result))
-                                (err (str "uneval: symbol not found in quote environment: " sym-v)
-                                     (:env sym-result) (:memo sym-result) (:idx sym-result) expr))))))
-
                ;; expand: (expand expr) - single-pass walk mirroring spell-eval
                expand (let [quoted-result (spell-eval (second expr) env memo idx)]
                         (if (err? quoted-result)
@@ -734,8 +702,6 @@
                                      (cond
                                        (= item :when)
                                        (recur (drop 2 rem) (conj parsed {:type :when :pred (second rem)}))
-                                       (= item :while)
-                                       (recur (drop 2 rem) (conj parsed {:type :while :pred (second rem)}))
                                        (= item :let)
                                        (recur (drop 2 rem) (conj parsed {:type :let :bindings (partition 2 (second rem))}))
                                        :else
@@ -778,14 +744,6 @@
                                              (if (:ok pred-result)
                                                (eval-for rest-segs local-env (:memo pred-result) (:idx pred-result))
                                                (ok [] local-env (:memo pred-result) (:idx pred-result)))))
-                                         :while
-                                         (let [pred-result (spell-eval (:pred seg) local-env m i)]
-                                           (if (err? pred-result)
-                                             pred-result
-                                             (if (:ok pred-result)
-                                               (eval-for rest-segs local-env (:memo pred-result) (:idx pred-result))
-                                               ;; Return special marker to stop iteration
-                                               (ok {:spell/while-stop true} local-env (:memo pred-result) (:idx pred-result)))))
                                          :let
                                          (loop [let-bindings (:bindings seg)
                                                 let-env local-env

@@ -690,67 +690,6 @@
                                (def y 42) y))))))
 
 ;; =============================================================================
-;; uneval tests
-;; =============================================================================
-
-(deftest uneval-form
-  (testing "basic uneval returns raw source expression"
-    ;; (def x (uneval 'x)) should bind x to its own source expression
-    (let [[val _] (spell-eval '(def x (uneval 'x)) {})]
-      (is (= '(uneval 'x) val))))
-
-  (testing "uneval enables self-referential code"
-    ;; uneval returns the raw source expression (no quote wrapper)
-    (let [[val _] (spell-eval '(def my-code (vector (uneval 'my-code))) {})]
-      ;; my-code is a vector containing its own source expression
-      (is (= ['(vector (uneval 'my-code))] val))))
-
-  (testing "uneval inside larger expression"
-    ;; (def x (do (def inner 1) (uneval 'x)))
-    ;; should return the source of the entire val-expr
-    (let [[val _] (spell-eval '(def x (do (def inner 1) (uneval 'x))) {})]
-      (is (= '(do (def inner 1) (uneval 'x)) val))))
-
-  (testing "uneval requires symbol argument"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo
-                          #"argument must evaluate to a symbol"
-                          (spell-eval '(def x (uneval 42)) {})))
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo
-                          #"argument must evaluate to a symbol"
-                          (spell-eval '(def x (uneval "str")) {}))))
-
-  (testing "uneval on undefined symbol throws"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo
-                          #"symbol not found in quote environment"
-                          (spell-eval '(do (uneval 'undefined)) {}))))
-
-  (testing "uneval only sees current binding's quote-env"
-    ;; After (def a ...) completes, its quote is no longer available
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo
-                          #"symbol not found in quote environment"
-                          (spell-eval '(do (def a 1) (def b (uneval 'a))) {}))))
-
-  (testing "uneval with computed symbol"
-    ;; (uneval (first '[x])) should work - argument evaluates to symbol 'x
-    (let [[val _] (spell-eval '(def x (uneval (first '[x]))) {})]
-      (is (= '(uneval (first '[x])) val))))
-
-  (testing "nested def does not pollute outer quote-env"
-    ;; Inner def's quote-env shouldn't leak to outer
-    (let [[val _] (spell-eval '(def outer (do (def inner 1) (uneval 'outer))) {})]
-      ;; Should get source of outer's expression, not inner's
-      (is (= '(do (def inner 1) (uneval 'outer)) val))))
-
-  (testing "uneval + pr-str reconstructs source faithfully"
-    ;; Key property: (cat "(def x " (pr-str (uneval 'x)) ")") reproduces the source
-    ;; The reconstructed string should start with (def x (cat ..., not (def x (quote (cat ...
-    (let [[val _] (spell-eval '(def x (cat "(def x " (pr-str (uneval 'x)) ")")) {})]
-      (is (string? val))
-      (is (.startsWith ^String val "(def x (cat"))
-      ;; No extra (quote ...) wrapper around the val-expr
-      (is (not (.startsWith ^String val "(def x (quote "))))))
-
-;; =============================================================================
 ;; Expand tests
 ;; =============================================================================
 
@@ -786,10 +725,6 @@
   (testing "partial expansion - only defined vars substituted"
     (let [[val _] (spell-eval '(do (def x 10) (expand '(+ x y))) {})]
       (is (= '(+ 10 y) val))))
-
-  (testing "uneval form passes through unchanged"
-    (let [[val _] (spell-eval '(do (def expr (expand '(uneval 'expr)))) {})]
-      (is (= '(uneval 'expr) val))))
 
   (testing "expanded result is evaluable"
     (let [[expanded _] (spell-eval '(do (def x 42) (expand '(+ x 1))) {})]
@@ -827,12 +762,6 @@
                                         (expand thunk)) {})]
       (is (= '(+ 10 1) expanded))
       (is (= 11 (run-spell expanded)))))
-
-  (testing "expand preserves uneval self-reference"
-    ;; (def expr (expand '(uneval 'expr))) should bind expr to '(uneval 'expr)
-    ;; because uneval forms have no free variables
-    (let [[val _] (spell-eval '(def expr (expand '(uneval 'expr))) {})]
-      (is (= '(uneval 'expr) val))))
 
   (testing "defn-bound vars expanded as source form"
     ;; defn creates a spell-fn map, which expand reconstructs as (fn ...) source

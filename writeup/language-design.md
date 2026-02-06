@@ -100,11 +100,7 @@ Spell defines a special form, `quine`, which solves this directly:
 
 `(quine name body)` binds `name` to the entire `(quine name body)` expression as data (a list), then evaluates `body`. Because the binding contains the complete source form---including the body that references it---self-reference is achieved without circularity. The name is available inside `body`, so the program has access to its own source code as structured data that can be traversed, printed, or passed to a child LLM.
 
-Spell also provides a lower-level primitive, `uneval`, which returns the source expression of a `def` binding while it is being evaluated:
-```clojure
-(def q (vector (uneval 'q)))  ; q => [(vector (uneval 'q))]
-```
-This works by hooking `def`: before the bound expression is evaluated, its source is stored in a map keyed by the bound symbol. Then, `uneval` looks up the symbol in this map. Unlike `quine`, which binds the entire enclosing form, `uneval` returns only the right-hand side of a `def`.
+Spell previously provided a lower-level primitive, `uneval`, which returned the source expression of a `def` binding during evaluation. This has been removed since `quine` covers its use cases more cleanly.
 
 ## Completions and extensions
 
@@ -135,10 +131,10 @@ The ReAct loop can be implemented in Spell using extensions:
 '(llm (cat (reopen (pr-str completion)) (format (tool-call))))
 ```
 
-This line calls a tool, formats its result into Spell code (for example, `(def tool-call-result "...")`), concatenates this to the current completion, and extends. For ergonomics, this is packaged into the built-in function `call-now`.
+This line calls a tool, formats its result into Spell code (for example, `(def tool-call-result "...")`), concatenates this to the current completion, and extends. For ergonomics, this is packaged into `patterns/call-now`, a Spell function in the patterns namespace.
 
 ```clojure
-'(call-now '(tool-call))
+(patterns/call-now (tool-call) 'result-name)
 ```
 
 
@@ -156,6 +152,82 @@ Define a quoted expression `q` of a program or subprogram `P` to be *closed in `
 
 With `expand`, the LLM only needs to reason about the environment of its own program; any expression that evaluates in its own program will evaluate in its child's program after passing through `expand`. LLMs do not even need to call `expand` themselves, as the `llm` function does this automatically. 
 
+## Error recovery
+
+LLM-written completions may throw exceptions, potentially crashing a long-running response. Spell provides a recovery mechanism which localizes the error and makes a new LLM call attempting to fix it. The main challenge is that Spell programs can have side effects (in particular, LLM calls), making re-evaluation dangerous. To address this, the `spell-eval` function memoizes the value of every expression it evaluates. When it encounters an error, it propagates an exception with the message (which includes which expression raised the exception), the environment at time of exception, and the memo at time of exception. An LLM attempts to fix the error by writing zero or more new expressions replacing the one that raised. Then, execution is resumed by running `spell-eval` on the patched program with the environment and memo from the partially completed program. When `spell-eval` encounteres a memoized expression, it substitutes the value from the memo instead of evaluating and possibly causing an undesired effect. This approach is analogous to a debugger that pauses when an exception is raised, allows the incorrect expression to be edited, and continues program execution. It interacts in the expected way with `quine` (the quine quotes the corrected expression).
+
+
+## Error handling
+
+Spell provides structured error handling via `try`/`catch`/`throw`:
+
+```clojure
+(try
+  (/ 1 0)
+  (catch e "division failed"))  ; => "division failed"
+
+(try
+  (throw {:code 404})
+  (catch e (:code e)))  ; => 404
+```
+
+`(try body... (catch e handler...))` evaluates body forms. If an error occurs, `e` is bound to the error value and the handler runs. `(throw value)` raises a catchable error. Bindings from before the error are visible in the catch handler:
+
+```clojure
+(try (def x 10) (/ 1 0) (catch e x))  ; => 10
+```
+
+## Iteration
+
+Spell provides two forms for iteration. `loop`/`recur` enables tail-recursive iteration:
+
+```clojure
+(loop [n 5 acc 1]
+  (if (= n 0)
+    acc
+    (recur (- n 1) (* acc n))))  ; => 120
+```
+
+`for` provides list comprehension with `:when` (filtering) and `:let` (local bindings):
+
+```clojure
+(for [x [1 2 3 4] :when (> x 1) :let [sq (* x x)]] sq)  ; => [4 9 16]
+(for [x [1 2] y [:a :b]] [x y])  ; => [[1 :a] [1 :b] [2 :a] [2 :b]]
+```
+
+## Concurrency
+
+`(future expr)` evaluates `expr` in a new thread, capturing the current environment, and returns a future handle. `(await handle)` blocks until the future completes.
+
+```clojure
+(def a (future (llm "summarize document A")))
+(def b (future (llm "summarize document B")))
+(list (await a) (await b))
+```
+
+Futures are isolated: environment updates inside a future do not leak to the parent. Dynamic bindings (`*builtins*`, `*usage*`, etc.) are conveyed via `bound-fn`.
+
+`(plet [name1 expr1 name2 expr2 ...] body)` evaluates all expressions as parallel futures, awaits all results, binds them, then evaluates body:
+
+```clojure
+(plet [a (llm "research A")
+       b (llm "research B")]
+  (llm (cat "synthesize: " a " " b)))
+```
+
+`(pmap f coll)` applies `f` to each element in parallel. `(await-all futures)` awaits a collection of futures.
+
+## Namespaces
+
+Functions are organized into namespaces — simple maps with a `:docs` key and function entries. Qualified symbols resolve directly without imports:
+
+```clojure
+(tools/bash "ls -la")
+(strings/trim "  hello  ")
+(math/sqrt 16)
+```
+
+`(describe ns)` returns all documentation; `(describe ns :key)` returns documentation for a specific item. `make-llm` accepts a `:namespaces` map that determines which namespaces are available to a given LLM variant.
 
 ## LLM hooks
 

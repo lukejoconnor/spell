@@ -22,9 +22,6 @@ Expansion and dynamic scoping work together: `expand` substitutes function value
 ### Quine (Self-Referential Code)
 `(quine name body)` binds `name` to the entire `(quine name body)` form as data, then evaluates `body`. The name binding is available inside `body`, giving the program access to its own source code. Used in the default NL prefix to provide the `completion` binding — the program's own source as data.
 
-### Uneval (Legacy Self-Reference)
-`(uneval 'sym)` returns the raw source expression of `sym`'s definition while it's being evaluated. Solves the circular reference problem where a binding needs access to its own code. Returns the expression directly (no `(quote ...)` wrapper), so `(pr-str (uneval 'x))` faithfully reconstructs the source. Largely superseded by `quine`.
-
 ### Prompt-as-Prefix Semantics
 The `llm` function uses the prompt string as both the user message and the assistant prefix. The LLM's response is concatenated with the prefix, then the full string is parsed and evaluated. This means the prompt IS the beginning of the program — the LLM continues writing code from where the prompt left off.
 
@@ -87,10 +84,11 @@ Programs return the value of their last expression (standard Lisp semantics). No
 | `src/spell/llm.clj` | LLM engine (`-llm` core loop, `make-llm` factory) |
 | `src/spell/parse.clj` | S-expression parser (read-all for multi-form input) |
 | `src/spell/hooks.clj` | Hooks system (apply-hooks, prepend-hooks-to-llm, recurse) |
-| `src/spell/stdlib.clj` | Standard library namespaces (strings, seqs, fns) |
+| `src/spell/stdlib.clj` | Standard library namespaces (strings, seqs, fns, math, patterns) |
 | `src/spell/tools.clj` | Tool implementations (bash, read-name, read-file, write-file, str-replace) |
 | `src/spell/cli.clj` | CLI with `-t`, `-m`, `-a`, `-v`, `-d`, `-b` flags; accepts `.spl` files and `.agent.edn` agents |
-| `test/spell/*_test.clj` | 6 test files (core, eval, hooks, llm, parse, tools) |
+| `src/spell/trace.clj` | Trace recording system for debugging LLM call trees |
+| `test/spell/*_test.clj` | 7 test files (core, eval, hooks, llm, parse, tools, trace) |
 | `dev/benchmark.clj` | Orchestration benchmark harness |
 | `spl-lib/patterns.spl` | Reusable Spell patterns (call-now, check-result) |
 | `src/spell/agent.clj` | Agent definition loader (.agent.edn files) |
@@ -102,12 +100,12 @@ Programs return the value of their last expression (standard Lisp semantics). No
 
 Core interpreter and tooling complete:
 - `spell-eval` with environment threading
-- Special forms: `def`, `do`, `if`, `let`, `fn`, `defn`, `cond`, `and`, `or`, `quote`, `uneval`, `expand`, `future`, `plet`, `quine`, `->`, `->>`
+- Special forms: `def`, `do`, `if`, `let`, `fn`, `defn`, `cond`, `and`, `or`, `quote`, `expand`, `future`, `plet`, `quine`, `->`, `->>`, `memo`, `loop`, `recur`, `for`, `try`, `throw`
 - Core builtins: arithmetic, comparison, logic, list ops (`map`, `reduce`, `filter`, etc.), string ops (`cat`, `pr-str`), `spell-eval`, `llm-self`, `describe`
 - `llm` with prompt-as-prefix semantics and hooks support
 - `make-llm` factory with namespace-based configuration
 - Namespace system: qualified symbol access (`tools/bash`, `strings/trim`) with recursive lookup
-- Standard library namespaces: `tools`, `strings`, `seqs`, `fns`
+- Standard library namespaces: `tools`, `strings`, `seqs`, `fns`, `math`, `patterns`
 - `llm-self` for automatic self-recursion (atom-based forward ref, available in all `make-llm` variants)
 - `future`/`await`/`await-all`/`pmap` for concurrent evaluation with env capture and dynamic binding conveyance
 - `plet` for parallel let (fan-out and use results)
@@ -122,10 +120,12 @@ Core interpreter and tooling complete:
 - Orchestration benchmark harness (`dev/benchmark.clj`) with pilot results in `docs/`
 
 **Next priorities** (see `notebook/TODO.md`):
-- SWE-bench harness (#14)
-- Expand orchestration benchmark with forcing prompts (#32)
 - MCP support (#30)
 - Globals mechanism for large data sharing (#29)
+- Inter-agent communication (#49)
+- Orchestration visualizations (#33)
+- API-level error handling with retries (#64)
+- Aider Polyglot / Exercism benchmark (#66)
 
 **Key insight:** The `llm` function uses prompt-as-prefix semantics — the prompt string is sent as both the user message and the assistant prefix, so the response continues the prompt as code. Natural-language prompts are wrapped in a `(quine completion (spell-eval (do ...)))` preamble, giving the program access to its own source as data via the `completion` binding. The `spell-eval` builtin auto-expands free variables from the caller's env before evaluating in a fresh env `{}`. For behavior propagation across generations, use recursive hooks.
 

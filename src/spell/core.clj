@@ -15,14 +15,10 @@
 ;; Re-export from spell.eval
 (def spell-eval eval/spell-eval)
 (def run-spell eval/run-spell)
-(def spell-error? eval/spell-error?)
 ;; Result map helpers for memo-based error recovery
 (def ok? eval/ok?)
 (def err? eval/err?)
 (def result-value eval/result-value)
-;; Recovery state
-(def ^:dynamic *in-recovery* eval/*in-recovery*)
-
 ;; Re-export from spell.hooks
 (def prepend-hooks-to-llm hooks/prepend-hooks-to-llm)
 (def recurse hooks/recurse)
@@ -36,16 +32,8 @@
 (def make-form-llm llm-engine/make-form-llm)
 (def format-error-for-recovery llm-engine/format-error-for-recovery)
 
-;; =============================================================================
-;; Describe builtin
-;; =============================================================================
-
-(defn describe
-  "Get documentation from a namespace.
-   (describe ns) — all docs
-   (describe ns :key) — doc for specific item"
-  ([ns] (:docs ns))
-  ([ns key] (get-in ns [:docs key])))
+;; Re-export from spell.llm
+(def describe llm-engine/describe)
 
 ;; =============================================================================
 ;; tools namespace
@@ -117,6 +105,3 @@
                       'str-replace tools/str-replace
                       'replace-lines tools/replace-lines})))
 
-;; Set the default system prompt for backwards compatibility
-(alter-var-root #'prompt/system-prompt
-  (constantly (prompt/generate-system-prompt all-namespaces)))

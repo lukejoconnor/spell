@@ -3,9 +3,9 @@
   (:require [clojure.tools.cli :refer [parse-opts]]
             [clojure.string :as str]
             [clojure.java.io :as io]
-            [spell.core :as spell]
+            [spell.agent :as agent]
             [spell.eval :as eval]
-            [spell.parse :as parse]
+            [spell.llm :as llm]
             [spell.provider :as provider]
             [spell.trace :as trace])
   (:gen-class))
@@ -72,22 +72,19 @@
     (when (.exists f)
       (str/trim (slurp f)))))
 
-(defn- wrap-prompt
-  "Auto-wrap natural-language prompts into a code prefix.
-   If prompt already starts with '(', pass through unchanged.
-   Otherwise, delegate to llm's built-in wrapping (which adds the quine preamble)."
-  [s]
-  s)
-
 (def cli-options
   [["-t" "--test" "Use dummy LLM provider (returns 'hello world')"]
    ["-e" "--example NAME" "Run a named example from examples/"]
+   ["-a" "--agent FILE" "Use agent definition from .agent.edn file"]
    ["-m" "--model MODEL" "Model spec: haiku, sonnet, opus, ollama:<model>, openai:<model> (default: openai:gpt-5.2)"]
    ["-d" "--depth DEPTH" "Max recursion depth (default: 8, 0 = unlimited)"
     :parse-fn #(Integer/parseInt %)
     :validate [#(>= % 0) "Must be non-negative"]]
    ["-b" "--budget DOLLARS" "Max spend in dollars (halts if exceeded)"
     :parse-fn #(Double/parseDouble %)
+    :validate [pos? "Must be positive"]]
+   ["-M" "--max-tokens TOKENS" "Max tokens per LLM response (default: 4096)"
+    :parse-fn #(Integer/parseInt %)
     :validate [pos? "Must be positive"]]
    ["-T" "--trace" "Record execution trace to traces/"]
    ["-v" "--verbose" "Show raw LLM response"]
@@ -104,6 +101,7 @@
           ""
           "Usage: spell [options] <prompt>"
           "       spell [options] <file.spl>"
+          "       spell -a <agent.edn> <prompt>"
           "       spell -e <example>"
           ""
           "Options:"
@@ -117,7 +115,8 @@
           "  spell -m openai:gpt-4o 'Return 42'"
           "  spell examples/hello-world.spl"
           "  spell -e hello-world"
-          "  spell -e twenty-questions -m opus -d 40"]
+          "  spell -e twenty-questions -m opus -d 40"
+          "  spell -a agents/coder.agent.edn 'Fix the bug'"]
          (when-let [examples (seq (list-examples))]
            [""
             "Available examples:"
@@ -159,39 +158,76 @@
       :else
       {:exit-message (usage summary) :ok? false})))
 
-(defn- make-provider [{:keys [test model]}]
+(defn- make-provider [{:keys [test model max-tokens]}]
   (if test
     (provider/dummy-provider {:response "\"hello world\""})
     (let [{:keys [provider model]} (if model
                                      (parse-model-spec model)
                                      {:provider "openai" :model "gpt-5.2"})
-          resolved-model (when model (resolve-model model))]
+          resolved-model (when model (resolve-model model))
+          base-opts (cond-> {}
+                      resolved-model (assoc :model resolved-model)
+                      max-tokens (assoc :max-tokens max-tokens))]
       (case provider
         "ollama"
-        (provider/ollama-provider (cond-> {}
-                                   resolved-model (assoc :model resolved-model)))
+        (provider/ollama-provider base-opts)
 
         ("chatgpt" "openai")
-        (provider/openai-provider (cond-> {}
-                                   resolved-model (assoc :model resolved-model)))
+        (provider/openai-provider base-opts)
 
         ;; anthropic (explicit or default)
         ("anthropic" nil)
-        (provider/anthropic-provider (cond-> {}
-                                      resolved-model (assoc :model resolved-model)))))))
+        (provider/anthropic-provider base-opts)))))
 
 (defn- trace-dir-name []
   (let [fmt (java.text.SimpleDateFormat. "yyyy-MM-dd'T'HH-mm-ss")]
     (str "traces/" (.format fmt (java.util.Date.)))))
 
-(defn run-prompt [prompt {:keys [depth verbose budget trace] :as opts}]
+(defn- make-agent-llm
+  "Create an llm function from an agent config.
+
+   Supports :eval and :format options:
+   - :eval true (default): Spell evaluation with namespaces
+   - :eval false: plain text LLM (no Spell parsing/eval)
+   - :format: optional format spec for output validation"
+  [agent-config]
+  (let [{:keys [system model budget recover resolve-namespaces-fn hooks eval format max-retries]} agent-config
+        ;; :eval defaults to true if not specified
+        eval? (if (nil? eval) true eval)
+        ;; Resolve namespaces with make-llm available for sub-agents
+        namespaces (when (and eval? resolve-namespaces-fn)
+                     (resolve-namespaces-fn llm/make-llm))
+        ;; Create base LLM function based on :eval setting
+        base-llm (if eval?
+                   ;; Spell evaluation mode
+                   (let [config (cond-> {}
+                                  namespaces (assoc :namespaces namespaces)
+                                  model (assoc :model model)
+                                  (some? recover) (assoc :recover recover))]
+                     (llm/make-llm config))
+                   ;; Leaf mode (no eval)
+                   (llm/make-leaf-llm (cond-> {}
+                                        system (assoc :system system)
+                                        model (assoc :model model))))]
+    ;; Wrap with format validation if specified
+    (if format
+      (llm/wrap-with-format base-llm {:format format
+                                       :eval? eval?
+                                       :max-retries (or max-retries 3)})
+      base-llm)))
+
+(defn run-prompt [prompt {:keys [depth verbose budget trace agent] :as opts}]
   (let [max-depth (cond
                     (nil? depth) 8      ; default
                     (zero? depth) nil   ; 0 means unlimited
                     :else depth)
         provider (make-provider opts)
         usage-atom (atom {:by-model {}})
-        trace-atom (when trace (trace/new-trace))]
+        trace-atom (when trace (trace/new-trace))
+        ;; Load agent if specified, otherwise use default agent
+        llm-fn (make-agent-llm (if agent
+                                 (agent/load-agent-config agent)
+                                 (agent/default-agent-config)))]
     (provider/with-provider provider
       (binding [eval/*verbose* verbose
                 eval/*max-llm-depth* max-depth
@@ -199,7 +235,7 @@
                 provider/*budget* budget
                 trace/*trace* trace-atom]
         (let [result (try
-                       {:result (spell/llm (wrap-prompt prompt)) :usage usage-atom}
+                       {:result (llm-fn prompt) :usage usage-atom}
                        (catch Exception e
                          {:error (.getMessage e)
                           :error-data (ex-data e)

@@ -88,15 +88,6 @@ Each child runs in its own context. The child's reasoning — any (def thought .
 
 llm-self is always available and calls the same llm variant you are running in. Use (llm-self prompt) for self-recursion without needing to know your function's name.
 
-UNEVAL (SELF-REFERENTIAL CODE)
-
-(uneval 'symbol) returns the quoted source expression of the binding while it's being evaluated. This enables a program to reference its own code.
-
-(def my-code (vector (uneval 'my-code)))
-; my-code => [(vector (uneval 'my-code))]
-
-The quote environment is per-binding and cleaned up after evaluation completes.
-
 EXPAND (PORTABLE EXPRESSIONS)
 
 (expand expr) substitutes free variables in expr with their current values, returning the result as data (not evaluated).
@@ -109,9 +100,6 @@ Functions expand to their source form:
 (do (defn f [x] (* x x)) (expand '(f 3)))  ; => '((fn [x] (* x x)) 3)
 
 Internal bindings are preserved: (expand '(do (def y 10) (+ y 1))) leaves y as-is because it's defined within the expression.
-
-expand and uneval: (uneval 'sym) forms have no free variables (the argument is quoted data), so they pass through expand unchanged.
-(def expr (expand '(uneval 'expr)))  ; => expr bound to '(uneval 'expr)
 
 SPELL-EVAL (DYNAMIC EVALUATION)
 
@@ -192,6 +180,16 @@ LOOP/RECUR
 
 recur must be in tail position — the last expression evaluated before the loop returns. Loop bindings don't escape to the outer environment.
 
+FOR (LIST COMPREHENSION)
+
+(for [x coll :when pred :let [y expr]] body) generates a vector by iterating.
+
+(for [x [1 2 3 4] :when (> x 1)] (* x x))  ; => [4 9 16]
+(for [x [1 2] y [:a :b]] [x y])  ; => [[1 :a] [1 :b] [2 :a] [2 :b]]
+(for [x (range 5) :let [sq (* x x)]] sq)  ; => [0 1 4 9 16]
+
+Supports :when (filter), :let (local bindings), and multiple iteration bindings (nested loops).
+
 ERROR HANDLING
 
 (try body... (catch e handler...)) evaluates body forms. If an error occurs, e is bound to the error and handler runs. Returns the handler's value on error, or the last body value on success.
@@ -259,6 +257,16 @@ The binding exists only for the CHILD. Code after call-now in your program canno
   (strings/split (:out files) \"\\n\")
 
 Use call-now when you want the child to see both your reasoning context AND the tool result. Use direct tool calls when you just need the result inline.
+
+Common mistake — reading a result and wanting to continue:
+
+  ; WRONG - returns file-content as the answer, program ends
+  (def file-content (tools/read-file \"main.py\" 40 60))
+  file-content
+
+  ; RIGHT - use call-now so a child sees your context + the file and continues
+  (patterns/call-now (tools/read-file \"main.py\" 40 60) 'code)
+  ; Child continues with code bound, can analyze and apply fix
 
 CHECK-RESULT PATTERN
 
@@ -358,18 +366,19 @@ Use seqs/map-slice to extract a range from a file map — useful for passing a s
 ;; =============================================================================
 
 (defn- builtins-section
-  "Generate the BUILTINS section (core language only, no tools/agents)."
+  "Generate the BUILTINS section (core language only, no tools/agents).
+   Keep in sync with core-builtins in eval.clj."
   []
   (str "BUILTINS\n\n"
-       "Math: + - * / inc dec int quot mod (/ returns ratios; use quot for integer division)\n"
+       "Math: + - * / inc dec int quot mod max min (/ returns ratios; use quot for integer division)\n"
        "Compare: < > = <= >= not=\n"
        "Strings: str cat pr-str\n"
-       "Type: string? number? list? seq? vector? map? fn?\n"
-       "Collections: list vector first second rest last cons conj get assoc nth keys vals key val into concat count reverse apply take drop bigint\n"
-       "Higher-order: map filter reduce\n"
+       "Type: string? number? list? seq? vector? set? map? fn?\n"
+       "Collections: list vector set first second rest last cons conj get assoc nth keys vals key val into concat count reverse apply take drop take-last bigint\n"
+       "Higher-order: map map-indexed filter reduce keep some range\n"
        "Logic: if cond and or not nil? empty?\n"
-       "Binding: def let do quine uneval expand spell-eval\n"
-       "Control: loop recur\n"
+       "Binding: def let do quine expand spell-eval\n"
+       "Control: loop recur for memo\n"
        "Concurrency: future await await-all plet pmap\n"
        "Strip: strip-parens reopen\n"
        "Namespace: describe\n"
@@ -409,7 +418,3 @@ Use seqs/map-slice to extract a range from a file map — useful for passing a s
        "\n"
        postamble))
 
-;; Default system prompt
-(def system-prompt
-  "System prompt for Spell LLM calls. Instructs model to output valid Spell code."
-  nil)  ;; set by spell.core after tool definitions exist
