@@ -5,6 +5,7 @@
 This review surveys existing work related to Spell, a domain-specific language for LLM self-orchestration. The core innovation of Spell—enabling LLMs to write programs that control their own recursive execution—occupies a distinctive position in the literature. While related concepts exist across multiple research traditions, no prior work combines all of Spell's key properties: natural language as orchestration medium, arbitrary control flow (not fixed patterns), and the LLM as both author and subject of execution programs.
 
 **Closest prior work:**
+- Claude Code Agent Teams - Feb 2026 - peer-to-peer communication with 4 predefined patterns (Leader/Swarm/Pipeline/Council); pattern menu approach
 - Kimi K2.5 PARL - Jan 2026 - trainable orchestrator learns task decomposition via RL; orchestration in weights
 - Cursor Agent Swarm - Jan 2026 - human-designed Planner/Worker/Judge hierarchy; orchestration in harness code
 - Claude Code Tasks - Jan 2026 - model orchestrates DAG of subtasks via fixed tool API; hub-and-spoke topology
@@ -12,7 +13,7 @@ This review surveys existing work related to Spell, a domain-specific language f
 - MemGPT - Oct 2023 - self-directed memory management via function calls
 - 3-Lisp - 1982 - reflective lambdas execute one meta-level above caller
 
-**Key gap identified:** PARL demonstrates that model-designed orchestration can achieve state-of-the-art results, but the orchestration policy is opaque (learned in weights). Cursor demonstrates that orchestration topology is critical, but relies on human design. Claude Code shows the middle ground—model agency within a fixed orchestration API—but the topology itself (hub-and-spoke DAG) is not model-specified. No existing system represents model-designed orchestration as inspectable, composable source code.
+**Key gap identified:** PARL demonstrates that model-designed orchestration can achieve state-of-the-art results, but the orchestration policy is opaque (learned in weights). Cursor demonstrates that orchestration topology is critical, but relies on human design. Claude Code Agent Teams represents the current frontier—peer-to-peer communication and multiple coordination patterns—but offers a *menu* of predefined patterns rather than model-authored topologies. No existing system represents model-designed orchestration as inspectable, composable source code.
 
 ---
 
@@ -194,31 +195,63 @@ Despite architectural differences (simple loop vs. graph engine, sequential vs. 
 
 **Distinction from Spell:** This invariant is precisely what Spell breaks. In these frameworks, the developer writes the execution topology and the LLM fills in content. In Spell, the LLM writes the execution topology itself—deciding what recursive calls to make, what context to pass, and how to branch—using the same natural language medium it already operates in.
 
-### 1.10 Claude Code Task System
+### 1.10 Claude Code Task System and Agent Teams
 
-**Source:** Anthropic, Jan 2026 - claude.com/claude-code
+**Source:** Anthropic, Jan-Feb 2026 - claude.com/claude-code
 
-Claude Code (Anthropic's CLI agent) recently added a session-scoped task management system with dependency tracking and parallel subagent execution. The system consists of four tools: `TaskCreate` (create tasks with descriptions), `TaskUpdate` (set status, assign owners, declare dependencies), `TaskList` (query available work), and `TaskGet` (fetch full task details). Dependencies are expressed as `blockedBy`/`blocks` edges forming a DAG; when a task completes, its dependents are automatically unblocked.
+Claude Code has evolved through two distinct orchestration systems, representing different points on the autonomy spectrum.
+
+#### Task System (Jan 2026)
+
+The original orchestration mechanism: a session-scoped task management system with dependency tracking and parallel subagent execution. The system consists of four tools: `TaskCreate` (create tasks with descriptions), `TaskUpdate` (set status, assign owners, declare dependencies), `TaskList` (query available work), and `TaskGet` (fetch full task details). Dependencies are expressed as `blockedBy`/`blocks` edges forming a DAG; when a task completes, its dependents are automatically unblocked.
 
 The main Claude instance orchestrates execution by inspecting the task graph, identifying unblocked work, and spawning background subagents (up to ~10 concurrent) to execute independent tasks in parallel. Subagent results always return to the main thread—there is no peer-to-peer communication between subagents, and subagents cannot spawn further subagents.
 
 **Key architectural properties:**
 - **Manual orchestration:** There is no automatic dispatcher. The main Claude instance performs a manual topological walk of the dependency graph—creating tasks, checking what's unblocked, spawning subagents, collecting results, repeating
-- **Hub-and-spoke topology:** Same as PARL: all results flow through the orchestrator. The main thread is a serial bottleneck between parallel fan-out phases
+- **Hub-and-spoke topology:** All results flow through the orchestrator. The main thread is a serial bottleneck between parallel fan-out phases
 - **Session-scoped:** Tasks exist only for the duration of a session; no persistence across sessions
 - **Fixed orchestration API:** The model orchestrates through a predefined set of tool calls (`TaskCreate`, `TaskUpdate`, etc.), not through arbitrary code
 
-**Relevance to Spell:** Claude Code's task system illustrates the harness-based approach to orchestration. The model has some agency over *what* tasks to create and *when* to fan out, but the orchestration topology itself (hub-and-spoke with DAG-ordered execution) is fixed by the tool API. The model cannot express peer-to-peer communication, recursive spawning, context surgery, or novel coordination patterns—these are architectural constraints, not choices the model makes.
+#### Agent Teams (Feb 2026)
 
-The contrast with Spell is instructive: Claude Code gives the model a fixed menu of orchestration primitives; Spell gives the model a programming language to compose its own. A Spell program could express Claude Code's fan-out-and-collect pattern as one special case, but also patterns Claude Code's API cannot represent (e.g., a subagent that conditionally spawns further subagents, or results from one branch fed directly into another without returning to the orchestrator).
+Announced with Opus 4.6, Agent Teams represents a significant architectural departure: multiple Claude Code instances running as independent sessions with their own context windows, coordinating through a shared communication layer.
 
-| Aspect | Claude Code Tasks | Spell |
-|--------|-------------------|-------|
-| Orchestration is... | Manual walk of fixed DAG API | Arbitrary code written by LLM |
-| Topology | Hub-and-spoke (fixed) | Arbitrary (LLM-specified) |
-| Recursive spawning | No | Yes (`llm` calls `llm`) |
-| Peer-to-peer | No | Yes (pass results as arguments) |
-| Context control | None (subagents start fresh) | Full (expansion, hooks, prefix semantics) |
+**Architecture:** The TeammateTool system contains 13 operations organized into functional categories:
+- **Team lifecycle:** `spawnTeam`, `discoverTeams`, `cleanup`, `requestJoin`, `approveJoin`, `rejectJoin`
+- **Coordination:** `write` (direct peer messaging), `broadcast` (message all teammates), `approvePlan`, `rejectPlan`
+- **Graceful shutdown:** `requestShutdown`, `approveShutdown`, `rejectShutdown`
+
+**Key innovation—peer-to-peer communication:** Unlike the Task system (and PARL, and Cursor's working topology), Agent Teams supports direct communication between agents via `write` and `broadcast` operations. A lead session still coordinates work, but team members can exchange information without routing through the coordinator.
+
+**Coordination patterns:** The architecture supports multiple models:
+1. **Leader model:** Hierarchical task direction with central event loop
+2. **Swarm approach:** Parallel processing of similar work
+3. **Pipeline architecture:** Sequential multi-stage workflows
+4. **Council pattern:** Multi-perspective decision-making with oversight roles
+
+**File-based coordination:** Uses a directory structure under `~/.claude/teams/{team-name}/` with `config.json` and per-session message directories.
+
+**Current status:** Research preview, enabled via `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`. Known limitations include no session resumption and no nested teams. Each agent instance is billed separately, making it cost-appropriate only for complex tasks requiring multiple perspectives.
+
+#### Relevance to Spell
+
+Claude Code's evolution from Tasks to Teams illustrates the industry's recognition that orchestration topology matters—but the response has been to provide *more* predefined patterns, not to enable model-authored patterns.
+
+The Task system gives the model agency over *what* to parallelize within a fixed hub-and-spoke topology. Agent Teams expands the menu to four coordination patterns (Leader, Swarm, Pipeline, Council), and introduces peer-to-peer communication. But the patterns themselves are still predefined. The model selects a pattern; it does not author novel topologies.
+
+The contrast with Spell remains instructive:
+
+| Aspect | Claude Code Tasks | Agent Teams | Spell |
+|--------|-------------------|-------------|-------|
+| Orchestration is... | Manual walk of fixed DAG API | Selection from 4 predefined patterns | Arbitrary code written by LLM |
+| Topology | Hub-and-spoke (fixed) | Leader/Swarm/Pipeline/Council (fixed menu) | Arbitrary (LLM-specified) |
+| Peer-to-peer | No | Yes (`write`, `broadcast`) | Yes (pass results as arguments) |
+| Recursive spawning | No | No (no nested teams) | Yes (`llm` calls `llm`) |
+| Context control | None (subagents start fresh) | Shared task list | Full (expansion, hooks, prefix semantics) |
+| Novel patterns | Cannot express | Cannot express | First-class capability |
+
+Agent Teams is the most significant step toward agent autonomy in production systems—peer-to-peer communication breaks the hub-and-spoke constraint that PARL, Cursor, and the Task system all share. But the coordination patterns are still a fixed menu. A Spell program could express all four Agent Teams patterns, and also patterns the menu cannot represent (e.g., dynamic topology changes mid-execution, or a pipeline stage that conditionally branches into a council).
 
 ---
 
@@ -513,17 +546,17 @@ A novel observation: natural language is naturally "homoiconic" for LLMs.
 
 ### 8.1 Comparison Matrix
 
-| Property | PARL | Cursor | CC Tasks | RLM | MemGPT | ToT | ReAct | DSPy | LMQL | Spell |
-|----------|------|--------|----------|-----|--------|-----|-------|------|------|-------|
-| Model-designed orchestration | **Yes** (weights) | No (human) | Partial (fixed API) | Partial | No | No | No | No | No | **Yes** (code) |
-| Inspectable orchestration | No | Yes (harness) | Yes (task list) | Via Python | No | No | No | No | No | **Yes** |
-| Arbitrary control flow | Learned | Fixed | Fixed (DAG) | Via Python | No | No | No | No | Via Python | **Yes** |
-| Recursive self-calls | Spawns agents | No | No | Yes | No | No | Loop only | No | Nested queries | **Yes** |
-| Peer-to-peer communication | No | No | No | No | No | No | No | No | No | **Yes** |
-| Natural language medium | No | No | Partial | No (Python) | No | No | Yes | No | Hybrid | **Yes** |
-| Context surgery | No | No | No | No | Memory ops | Backtrack | No | No | No | **Yes** |
-| Meta-level hooks | No | No | No | No | No | No | No | No | No | **Yes** |
-| Trainable via RL | **Yes** | No | No | No | No | No | **Yes** (prompts) | No | Possible |
+| Property | PARL | Cursor | CC Tasks | CC Teams | RLM | MemGPT | ToT | ReAct | DSPy | LMQL | Spell |
+|----------|------|--------|----------|----------|-----|--------|-----|-------|------|------|-------|
+| Model-designed orchestration | **Yes** (weights) | No (human) | Partial (fixed API) | Partial (pattern menu) | Partial | No | No | No | No | No | **Yes** (code) |
+| Inspectable orchestration | No | Yes (harness) | Yes (task list) | Yes (shared tasks) | Via Python | No | No | No | No | No | **Yes** |
+| Arbitrary control flow | Learned | Fixed | Fixed (DAG) | Fixed (4 patterns) | Via Python | No | No | No | No | Via Python | **Yes** |
+| Recursive self-calls | Spawns agents | No | No | No (no nesting) | Yes | No | No | Loop only | No | Nested queries | **Yes** |
+| Peer-to-peer communication | No | No | No | **Yes** | No | No | No | No | No | No | **Yes** |
+| Natural language medium | No | No | Partial | Partial | No (Python) | No | No | Yes | No | Hybrid | **Yes** |
+| Context surgery | No | No | No | No | No | Memory ops | Backtrack | No | No | No | **Yes** |
+| Meta-level hooks | No | No | No | No | No | No | No | No | No | No | **Yes** |
+| Trainable via RL | **Yes** | No | No | No | No | No | No | **Yes** (prompts) | No | Possible |
 
 ### 8.2 Unique Contributions
 
@@ -541,19 +574,36 @@ A novel observation: natural language is naturally "homoiconic" for LLMs.
 
 7. **RL action space for self-orchestration:** Spell provides a small, formal language that could serve as the action space for RL-driven improvement in self-orchestration—analogous to how structured function-calling schemas enabled RL to make tool use reliable.
 
-### 8.3 The Hub-and-Spoke Invariant
+### 8.3 The Hub-and-Spoke Invariant (and Its Recent Erosion)
 
-A striking pattern emerges across PARL, Cursor, and Claude Code Tasks: all three use hub-and-spoke topology where subagent results must return to a central orchestrator. None support peer-to-peer communication between subagents. In PARL, this is reflected in the critical steps formula (orchestrator time + max subagent time per round). In Claude Code, it's an API constraint—subagents cannot talk to each other. In Cursor, it's a deliberate design choice that emerged after peer coordination failed (topology attempts 1-2).
+A striking pattern emerged across early multi-agent systems (PARL, Cursor, Claude Code Tasks): all used hub-and-spoke topology where subagent results must return to a central orchestrator, with no peer-to-peer communication between subagents. In PARL, this is reflected in the critical steps formula (orchestrator time + max subagent time per round). In Cursor, it's a deliberate design choice that emerged after peer coordination failed (topology attempts 1-2).
 
-This convergence on hub-and-spoke may reflect a genuine difficulty: coordinating autonomous agents without a central authority is hard (distributed computing patterns didn't transfer, per Cursor's findings). Alternatively, it may reflect an engineering path dependency—hub-and-spoke is simplest to build and reason about. Spell does not impose this constraint. Whether models will exploit the additional expressiveness (e.g., pipelining results between subagents) or converge on hub-and-spoke voluntarily is an empirical question.
+This convergence on hub-and-spoke may reflect a genuine difficulty: coordinating autonomous agents without a central authority is hard (distributed computing patterns didn't transfer, per Cursor's findings). Alternatively, it may reflect an engineering path dependency—hub-and-spoke is simplest to build and reason about.
+
+**Agent Teams breaks this pattern.** Claude Code's Agent Teams (Feb 2026) introduces `write` and `broadcast` operations for direct peer-to-peer communication. While a lead session still coordinates, team members can exchange information directly without routing through the coordinator. This is the first production system to offer peer-to-peer communication as a first-class capability.
+
+However, the pattern erosion is partial. Agent Teams still cannot express:
+- **Nested teams:** No recursive spawning (a team cannot spawn sub-teams)
+- **Dynamic topology:** The coordination pattern (Leader/Swarm/Pipeline/Council) is selected at team creation, not modified during execution
+- **Arbitrary routing:** Communication is either point-to-point (`write`) or broadcast—no selective multicast or conditional routing
+
+Spell does not impose these constraints. Whether models will exploit the additional expressiveness (e.g., dynamic topology changes, conditional routing, recursive team spawning) or whether the Agent Teams menu proves sufficient is an empirical question. The evolution from Tasks (hub-and-spoke only) to Teams (peer-to-peer within predefined patterns) suggests industry recognition that topology flexibility matters—but the response has been to expand the menu of patterns rather than enable model-authored patterns.
 
 ### 8.4 Gap in Literature
 
-PARL proves model-designed orchestration can outperform fixed topologies. Cursor proves orchestration topology is a first-class concern requiring iteration. Claude Code Tasks shows model agency within a fixed orchestration API—the model decides *what* to parallelize, but not *how* the coordination works. But no existing system represents model-designed orchestration as inspectable, composable source code with formal semantics. Spell occupies this gap:
-- PARL: model-designed, opaque, learned
-- Cursor: human-designed, inspectable, fixed
-- Claude Code: model-directed, inspectable, fixed topology
-- Spell: model-designed, inspectable, composable
+PARL proves model-designed orchestration can outperform fixed topologies. Cursor proves orchestration topology is a first-class concern requiring iteration. Claude Code's evolution from Tasks to Agent Teams shows the industry recognizing these insights—Agent Teams adds peer-to-peer communication and multiple coordination patterns, expanding model agency over orchestration.
+
+But Agent Teams still represents the "pattern menu" approach: the model selects from predefined topologies (Leader, Swarm, Pipeline, Council), it does not author novel topologies. The patterns are inspectable and well-defined, but they are a closed set. No existing system represents model-designed orchestration as inspectable, composable source code with formal semantics. Spell occupies this gap:
+
+| System | Orchestration is... | Topology | Novel patterns |
+|--------|---------------------|----------|----------------|
+| PARL | Model-designed (opaque, in weights) | Learned | In principle (not inspectable) |
+| Cursor | Human-designed (in harness code) | Fixed | Requires code changes |
+| Claude Code Tasks | Model-directed (fixed API) | Hub-and-spoke | Cannot express |
+| Claude Code Teams | Model-selected (pattern menu) | 4 predefined patterns | Cannot express |
+| Spell | Model-authored (in source code) | Arbitrary | First-class capability |
+
+Agent Teams represents the frontier of production multi-agent systems—it offers more orchestration flexibility than any other deployed tool. But the gap Spell addresses is the difference between *selecting* patterns and *authoring* them. A Spell program can express all four Agent Teams patterns as special cases, and also express patterns the menu cannot: dynamic topology changes, conditional routing, recursive team spawning, context surgery between agents, or entirely novel coordination strategies.
 
 ---
 
@@ -630,8 +680,10 @@ The literature uses various terms. Suggested mappings:
 
 ## 11. Conclusion
 
-Spell occupies a distinctive position in the landscape of LLM orchestration. PARL (Kimi K2.5) validates the core premise—model-designed orchestration can outperform fixed topologies—but represents the orchestration policy in weights. Cursor's agent swarm demonstrates that orchestration topology is a first-class engineering concern requiring iteration. Spell proposes a third path: orchestration as inspectable, composable source code written by the model itself.
+Spell occupies a distinctive position in the landscape of LLM orchestration. PARL (Kimi K2.5) validates the core premise—model-designed orchestration can outperform fixed topologies—but represents the orchestration policy in weights. Cursor's agent swarm demonstrates that orchestration topology is a first-class engineering concern requiring iteration. Claude Code's evolution from Tasks to Agent Teams shows the industry responding to these insights by expanding the menu of predefined patterns—adding peer-to-peer communication and four coordination models (Leader, Swarm, Pipeline, Council). Agent Teams represents the current frontier of production multi-agent systems.
 
-The contribution is the representation choice: orchestration as code rather than weights (PARL) or harness configuration (Cursor/LangGraph). This provides transparency, debuggability, and composability—properties that become increasingly important as orchestration strategies grow more sophisticated. The formal Lisp grounding connects to decades of work on meta-circular evaluation, reflective programming (3-Lisp), and program semantics.
+Spell proposes a different path: orchestration as inspectable, composable source code written by the model itself. The distinction is between *selecting* patterns and *authoring* them. Agent Teams gives models choice among predefined topologies; Spell gives models a programming language to express arbitrary topologies, including all Agent Teams patterns as special cases.
+
+The contribution is the representation choice: orchestration as code rather than weights (PARL), harness configuration (Cursor/LangGraph), or pattern menu (Agent Teams). This provides transparency, debuggability, and composability—properties that become increasingly important as orchestration strategies grow more sophisticated. The formal Lisp grounding connects to decades of work on meta-circular evaluation, reflective programming (3-Lisp), and program semantics.
 
 The natural next step is RL training over Spell programs, combining PARL's demonstrated ability to learn orchestration with Spell's transparent, composable representation. The language provides a constrained, formal action space—analogous to how structured function-calling schemas enabled RL to make tool use reliable.
