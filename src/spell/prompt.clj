@@ -171,6 +171,16 @@ Futures can await other futures (DAG dependencies):
   (llm (cat \"synthesize: \" ra \" \" rb)))))
 (await c)
 
+(plet [name1 expr1 name2 expr2 ...] body) evaluates all exprs as parallel futures, awaits all results, binds them to names, then evaluates body. Parallel let:
+(plet [a (llm \"research A\")
+       b (llm \"research B\")]
+  (llm (cat \"synthesize: \" a \" \" b)))
+
+(await-all [f1 f2 f3]) takes a collection of futures, returns a vector of their resolved values.
+
+(pmap f coll) applies f to each element of coll in parallel, returns a vector of results. Like map but concurrent:
+(pmap (fn [item] (llm (cat \"analyze: \" item))) items)
+
 LOOP/RECUR
 
 (loop [bindings...] body) establishes a recursion point. (recur vals...) jumps back with new values.
@@ -181,6 +191,20 @@ LOOP/RECUR
     (recur (- n 1) (* acc n))))  ; => 120
 
 recur must be in tail position — the last expression evaluated before the loop returns. Loop bindings don't escape to the outer environment.
+
+ERROR HANDLING
+
+(try body... (catch e handler...)) evaluates body forms. If an error occurs, e is bound to the error and handler runs. Returns the handler's value on error, or the last body value on success.
+
+(throw value) raises a catchable error.
+
+(try (/ 1 0) (catch e \"division failed\"))  ; => \"division failed\"
+(try (throw {:code 404}) (catch e (:code e)))  ; => 404
+
+For thrown values, e is the value directly. For evaluation errors, e is {:message \"...\" :expr <failing-expr>}.
+
+Defs from before the error are visible in the catch handler:
+(try (def x 10) (/ 1 0) (catch e x))  ; => 10
 
 EXAMPLES
 
@@ -303,7 +327,31 @@ Key insights:
 - Include the file path so child can search further if snippets are insufficient.
 - If snippets contain unresolved references (\"there\", \"it\", \"that place\"), search for what they refer to. Don't return ambiguous answers.
 - Exploration (tool calls) happens at parent level; child only does final reasoning — unless it needs more info, then it explores further.
-- For very large documents, consider parallel exploration with futures.")
+- For very large documents, consider parallel exploration with futures.
+
+FILE EDITING
+
+tools/read-file returns a sorted map of {line-number \"content\" ...}. Use line ranges to read specific sections:
+
+(def f (tools/read-file \"main.py\"))          ; {1 \"import os\" 2 \"\" 3 \"def foo():\" ...}
+(def section (tools/read-file \"main.py\" 40 60))  ; {40 \"def bar():\" 41 \"    x = 1\" ...}
+
+Edit by line range with tools/replace-lines (1-indexed, inclusive):
+
+(tools/replace-lines \"main.py\" 42 44 \"    x = fixed_value\\n    return x\")
+(tools/replace-lines \"main.py\" 10 10 \"\")  ; delete line 10
+
+Typical workflow: grep to find location, read-file to see exact lines, replace-lines to fix:
+
+(def grep-result (tools/bash \"grep -n 'bug_pattern' src/main.py\"))
+(def code (tools/read-file \"src/main.py\" 40 50))
+(tools/replace-lines \"src/main.py\" 42 44 \"    corrected_code()\")
+
+Use seqs/map-slice to extract a range from a file map — useful for passing a subset to a child:
+
+(def f (tools/read-file \"big_file.py\"))
+(def relevant (seqs/map-slice f 100 150))
+(llm (cat \"Fix the bug in this code:\\n\" (pr-str relevant)))")
 
 ;; =============================================================================
 ;; Generated sections
@@ -317,15 +365,15 @@ Key insights:
        "Compare: < > = <= >= not=\n"
        "Strings: str cat pr-str\n"
        "Type: string? number? list? seq? vector? map? fn?\n"
-       "Collections: list vector first rest last cons conj get assoc nth keys vals into concat count reverse apply take drop\n"
+       "Collections: list vector first second rest last cons conj get assoc nth keys vals key val into concat count reverse apply take drop bigint\n"
        "Higher-order: map filter reduce\n"
        "Logic: if cond and or not nil? empty?\n"
        "Binding: def let do quine uneval expand spell-eval\n"
        "Control: loop recur\n"
-       "Concurrency: future await\n"
+       "Concurrency: future await await-all plet pmap\n"
        "Strip: strip-parens reopen\n"
        "Namespace: describe\n"
-       "Error: spell-error?\n"))
+       "Error: try catch throw\n"))
 
 (defn- namespaces-section
   "Generate the NAMESPACES section from namespace metadata."

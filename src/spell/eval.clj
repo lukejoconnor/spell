@@ -41,26 +41,16 @@
   "When true, we're inside error recovery. Prevents recursive recovery attempts."
   false)
 
-(def ^:private error-prefix
-  "Prefix for error strings from failed llm calls."
-  "[SPELL-ERROR] ")
-
 (defn spell-error?
-  "Returns true if value is an error string from a failed llm call."
-  [v]
-  (and (string? v) (.startsWith ^String v error-prefix)))
+  "Deprecated. Returns false. Use try/catch instead."
+  [_v]
+  false)
 
 (defn spell-future?
   "Returns true if v is a Spell future handle."
   [v]
   (and (map? v) (:spell/future v)))
 
-(defn format-llm-error
-  "Format an error message for a failed llm call."
-  [response error]
-  (str error-prefix
-       "Response: " response "\n"
-       "Error: " (ex-message error)))
 
 ;; =============================================================================
 ;; Result helpers (for memo-based error recovery)
@@ -138,12 +128,13 @@
    'map? (fn [v] (and (map? v) (not (spell-fn? v)) (not (spell-future? v)))),
    'fn? (fn [v] (or (fn? v) (spell-fn? v))),
    ;; Collections (core only - extended in seqs registry)
-   'list list, 'vector vector, 'set set, 'first first, 'rest rest, 'last last,
+   'list list, 'vector vector, 'set set, 'first first, 'second second, 'rest rest, 'last last,
    'cons cons, 'conj conj, 'get get, 'assoc assoc, 'count count, 'reverse reverse,
    'nth (fn
           ([coll idx] (nth coll idx))
           ([coll idx not-found] (nth coll idx not-found))),
-   'keys keys, 'vals vals,
+   'keys keys, 'vals vals, 'key key, 'val val,
+   'bigint bigint,
    'into (fn [to from] (into to from)),
    'concat concat,
    'apply (fn [f & args]
@@ -182,7 +173,21 @@
    'await (fn [future-val]
             (when-not (spell-future? future-val)
               (throw (ex-info "await: argument must be a future" {:got future-val})))
-            (deref (:ref future-val)))})
+            (deref (:ref future-val))),
+   'await-all (fn [futures]
+                (when-not (sequential? futures)
+                  (throw (ex-info "await-all: argument must be a collection" {:got futures})))
+                (mapv (fn [f]
+                        (when-not (spell-future? f)
+                          (throw (ex-info "await-all: all elements must be futures" {:got f})))
+                        (deref (:ref f)))
+                      futures)),
+   'pmap (fn [f coll]
+           (let [futures (mapv (fn [item]
+                                 {:spell/future true
+                                  :ref (clojure.core/future ((bound-fn [] (invoke-fn f [item]))))})
+                               coll)]
+             (mapv #(deref (:ref %)) futures)))})
 
 (def ^:dynamic *builtins*
   "Active builtins map. Rebound by each llm variant during evaluation.
@@ -195,7 +200,7 @@
 
 (def special-forms
   "Special forms that are not free variables."
-  #{'quote 'def 'do 'if 'let 'fn 'defn 'cond 'and 'or 'uneval 'expand 'future 'quine '-> '->> 'memo 'loop 'recur 'for})
+  #{'quote 'def 'do 'if 'let 'fn 'defn 'cond 'and 'or 'uneval 'expand 'future 'plet 'quine '-> '->> 'memo 'loop 'recur 'for 'try 'throw})
 
 (defn- thread-first
   "Transform (-> x (f a) (g b)) into (g (f x a) b)."
@@ -304,6 +309,15 @@
 
         future [(list 'future (expand1 (second expr))) inner]
 
+        plet (let [pairs (partition 2 (second expr))
+                   [expanded-bindings final-inner]
+                   (reduce (fn [[acc i] [sym val-expr]]
+                             [(conj acc sym (first (-expand-expr val-expr outer-env i)))
+                              (conj i sym)])
+                           [[] inner] pairs)
+                   expanded-body (map #(first (-expand-expr % outer-env final-inner)) (drop 2 expr))]
+               [(list* 'plet (vec expanded-bindings) expanded-body) inner])
+
         quine (let [name-sym (second expr)
                     [body-expanded _] (-expand-expr (nth expr 2) outer-env (conj inner name-sym))]
                 [(list 'quine name-sym body-expanded) (conj inner name-sym)])
@@ -363,6 +377,29 @@
                                    (conj acc sym coll-expanded)
                                    (conj bound sym)))))))]
               [(list 'for (vec expanded-bindings) (first (-expand-expr body outer-env final-inner))) inner])
+
+        throw [(list 'throw (expand1 (second expr))) inner]
+
+        try (let [forms (rest expr)
+                  catch-form (when (and (seq forms) (seq? (last forms))
+                                        (= 'catch (first (last forms))))
+                               (last forms))
+                  body-forms (if catch-form (butlast forms) forms)
+                  [expanded-body final-inner]
+                  (reduce (fn [[acc i] sub-expr]
+                            (let [[expanded new-i] (-expand-expr sub-expr outer-env i)]
+                              [(conj acc expanded) new-i]))
+                          [[] inner] body-forms)
+                  expanded-catch (when catch-form
+                                   (let [catch-sym (second catch-form)
+                                         catch-inner (conj final-inner catch-sym)
+                                         expanded-catch-body (map #(first (-expand-expr % outer-env catch-inner))
+                                                                  (drop 2 catch-form))]
+                                     (list* 'catch catch-sym expanded-catch-body)))]
+              [(if expanded-catch
+                 (list* 'try (concat expanded-body [expanded-catch]))
+                 (list* 'try expanded-body))
+               inner])
 
         ;; Threading macros: transform then expand
         -> (-expand-expr (thread-first (second expr) (drop 2 expr)) outer-env inner)
@@ -770,12 +807,81 @@
                                ;; Return env unchanged (for bindings don't escape)
                                (ok (:ok result) env (:memo result) (:idx result))))))))
 
+               ;; try: (try body... (catch e handler...))
+               try (let [forms (rest expr)
+                         catch-form (when (and (seq forms) (seq? (last forms))
+                                               (= 'catch (first (last forms))))
+                                      (last forms))
+                         body-forms (if catch-form (butlast forms) forms)
+                         body-result (eval-seq body-forms env memo idx)]
+                     (if (and (err? body-result) catch-form)
+                       (let [catch-sym (second catch-form)
+                             catch-body (drop 2 catch-form)
+                             error-val (if (contains? body-result :thrown)
+                                         (:thrown body-result)
+                                         {:message (:err body-result) :expr (:expr body-result)})
+                             catch-env (assoc (:env body-result) catch-sym error-val)
+                             catch-result (eval-seq catch-body catch-env
+                                                    (:memo body-result) (:idx body-result))]
+                         (if (err? catch-result)
+                           catch-result
+                           (ok (:ok catch-result)
+                               (dissoc (:env catch-result) catch-sym)
+                               (:memo catch-result) (:idx catch-result))))
+                       body-result))
+
+               ;; throw: (throw value) - raise a catchable error
+               throw (let [val-result (spell-eval (second expr) env memo idx)]
+                       (if (err? val-result)
+                         val-result
+                         {:err (if (string? (:ok val-result))
+                                 (:ok val-result)
+                                 (pr-str (:ok val-result)))
+                          :thrown (:ok val-result)
+                          :env (:env val-result)
+                          :memo (:memo val-result)
+                          :idx (:idx val-result)
+                          :expr expr}))
+
                ;; future: (future expr) - evaluate expr in a new thread, return future handle
                future (let [body (second expr)
                             captured-env env
                             ;; Use 2-arg form for backwards compatibility in thread
                             f (bound-fn [] (first (spell-eval body captured-env)))]
                         (ok {:spell/future true :ref (clojure.core/future (f))} env memo idx))
+
+               ;; plet: (plet [name1 expr1 name2 expr2 ...] body...) - parallel let
+               ;; Evaluates all exprs as implicit futures, awaits all, binds results, runs body
+               plet (let [bindings (partition 2 (second expr))
+                          body (drop 2 expr)]
+                      ;; Evaluate all binding exprs sequentially to collect memo/idx,
+                      ;; then wrap each result in a future
+                      (let [eval-results
+                            (loop [remaining bindings
+                                   acc []
+                                   m memo
+                                   i idx]
+                              (if (empty? remaining)
+                                {:futures acc :memo m :idx i}
+                                (let [[sym val-expr] (first remaining)
+                                      captured-env env
+                                      f (bound-fn [] (first (spell-eval val-expr captured-env)))
+                                      fut {:spell/future true
+                                           :ref (clojure.core/future (f))}]
+                                  (recur (rest remaining)
+                                         (conj acc [sym fut])
+                                         m i))))]
+                        ;; Await all futures and bind results
+                        (let [local-env (reduce (fn [e [sym fut]]
+                                                  (assoc e sym (deref (:ref fut))))
+                                                env
+                                                (:futures eval-results))
+                              body-result (eval-seq body local-env
+                                                    (:memo eval-results) (:idx eval-results))]
+                          (if (err? body-result)
+                            body-result
+                            ;; Join bindings don't escape (like let)
+                            (ok (:ok body-result) env (:memo body-result) (:idx body-result))))))
 
                ;; ->: (-> x (f a) (g b)) - thread-first
                -> (spell-eval (thread-first (second expr) (drop 2 expr)) env memo idx)
@@ -802,7 +908,10 @@
                        (try
                          (ok (binding [*spell-env* e] (apply f args)) e m i)
                          (catch Exception ex
-                           (err (str "Function call failed: " (ex-message ex)) e m i expr)))))
+                           (let [thrown (get (ex-data ex) :spell/thrown)]
+                             (if thrown
+                               {:err (ex-message ex) :thrown thrown :env e :memo m :idx i :expr expr}
+                               (err (str "Function call failed: " (ex-message ex)) e m i expr)))))))
                    (let [result (spell-eval (first remaining) e m i)]
                      (if (err? result)
                        result

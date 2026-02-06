@@ -23,11 +23,18 @@
          (extract-ns-fns stdlib/seqs)
          (extract-ns-fns stdlib/fns)))
 
+(def test-env-with-namespaces
+  "Environment with stdlib namespaces for qualified access testing."
+  {'strings stdlib/strings
+   'seqs stdlib/seqs
+   'fns stdlib/fns
+   'math stdlib/math})
+
 (defn run-spell-full
   "Run spell with full builtins (including stdlib) for testing."
   [program]
   (binding [eval/*builtins* test-builtins]
-    (first (spell-eval program {}))))
+    (first (spell-eval program test-env-with-namespaces))))
 
 ;; =============================================================================
 ;; Oracle-based tests: spell-eval should match eval
@@ -989,6 +996,85 @@
       (is (= '(future (+ 10 1)) val)))))
 
 ;; =============================================================================
+;; await-all, pmap, plet tests
+;; =============================================================================
+
+(deftest await-all-basic
+  (testing "await-all resolves multiple futures"
+    (is (= [1 2 3] (run-spell '(await-all [(future 1) (future 2) (future 3)])))))
+
+  (testing "await-all on empty collection"
+    (is (= [] (run-spell '(await-all [])))))
+
+  (testing "await-all on non-collection throws"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"await-all: argument must be a collection"
+          (run-spell '(await-all 42)))))
+
+  (testing "await-all with non-future element throws"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"await-all: all elements must be futures"
+          (run-spell '(await-all [42]))))))
+
+(deftest pmap-basic
+  (testing "pmap applies function in parallel"
+    (is (= [2 4 6] (run-spell '(pmap (fn [x] (* x 2)) [1 2 3])))))
+
+  (testing "pmap on empty collection"
+    (is (= [] (run-spell '(pmap (fn [x] x) [])))))
+
+  (testing "pmap with spell-fn"
+    (is (= [1 4 9] (run-spell '(do (defn sq [x] (* x x))
+                                    (pmap sq [1 2 3])))))))
+
+(deftest pmap-concurrency
+  (testing "pmap runs items concurrently"
+    (let [sleep-fn (fn [ms] (Thread/sleep (long ms)) ms)
+          builtins (merge eval/core-builtins {'sleep sleep-fn})
+          start (System/currentTimeMillis)
+          result (binding [eval/*builtins* builtins]
+                   (first (spell-eval
+                            '(pmap (fn [ms] (sleep ms)) [100 100 100])
+                            {})))
+          elapsed (- (System/currentTimeMillis) start)]
+      (is (= [100 100 100] result))
+      ;; 3 x 100ms sequential would be 300ms; concurrent should be ~100ms
+      (is (< elapsed 250) (str "Expected concurrent execution, took " elapsed "ms")))))
+
+(deftest plet-basic
+  (testing "plet binds parallel results and evaluates body"
+    (is (= 3 (run-spell '(plet [a (+ 1 0) b (+ 2 0)] (+ a b))))))
+
+  (testing "plet provides resolved values in body"
+    (is (= [10 20] (run-spell '(plet [a (* 5 2) b (* 10 2)]
+                                 (list a b))))))
+
+  (testing "plet bindings don't escape"
+    (let [[val env] (spell-eval '(do (plet [x 42] x)) {})]
+      (is (= 42 val))
+      (is (nil? (get env 'x))))))
+
+(deftest plet-concurrency
+  (testing "plet runs bindings concurrently"
+    (let [sleep-fn (fn [ms] (Thread/sleep (long ms)) ms)
+          builtins (merge eval/core-builtins {'sleep sleep-fn})
+          start (System/currentTimeMillis)
+          result (binding [eval/*builtins* builtins]
+                   (first (spell-eval
+                            '(plet [a (sleep 100)
+                                    b (sleep 100)
+                                    c (sleep 100)]
+                               (list a b c))
+                            {})))
+          elapsed (- (System/currentTimeMillis) start)]
+      (is (= '(100 100 100) result))
+      ;; 3 x 100ms sequential would be 300ms; concurrent should be ~100ms
+      (is (< elapsed 250) (str "Expected concurrent execution, took " elapsed "ms")))))
+
+(deftest plet-expand
+  (testing "expand handles plet form"
+    (let [[val _] (spell-eval '(do (def x 10) (expand '(plet [a (+ x 1) b (+ x 2)] (list a b)))) {})]
+      (is (= '(plet [a (+ 10 1) b (+ 10 2)] (list a b)) val)))))
+
+;; =============================================================================
 ;; Qualified symbol tests
 ;; =============================================================================
 
@@ -1281,3 +1367,415 @@
                                                 (recur (+ j 1) (+ inner 1))
                                                 inner))))
                               sum)))))))
+
+;; =============================================================================
+;; Regex Pattern tests (#53)
+;; =============================================================================
+
+(deftest regex-pattern-self-evaluating
+  (testing "regex pattern is self-evaluating"
+    (is (instance? java.util.regex.Pattern (run-spell #"\d+"))))
+
+  (testing "regex pattern in vector"
+    (let [result (run-spell [#"\d+" #"[a-z]+"])]
+      (is (= 2 (count result)))
+      (is (instance? java.util.regex.Pattern (first result)))))
+
+  (testing "regex pattern in map value"
+    (let [result (run-spell {:pattern #"\d+"})]
+      (is (instance? java.util.regex.Pattern (:pattern result)))))
+
+  (testing "regex pattern with def"
+    (let [[val env] (spell-eval '(def pat #"\d+") {})]
+      (is (instance? java.util.regex.Pattern val))
+      (is (instance? java.util.regex.Pattern (env 'pat)))))
+
+  (testing "regex pattern in let binding"
+    (is (instance? java.util.regex.Pattern
+          (run-spell '(let [p #"\d+"] p)))))
+
+  (testing "expand preserves regex patterns"
+    (let [[val _] (spell-eval '(expand '#"\d+") {})]
+      (is (instance? java.util.regex.Pattern val)))))
+
+;; =============================================================================
+;; Core keep and take-last tests (#55)
+;; =============================================================================
+
+(deftest core-keep-builtin
+  (testing "keep filters nil results"
+    (is (= [4 6] (run-spell '(keep (fn [x] (if (> x 1) (* x 2) nil)) [0 1 2 3])))))
+
+  (testing "keep with spell-fn"
+    (is (= [4 9] (run-spell '(do (defn sq-if-pos [x] (if (> x 0) (* x x) nil))
+                                  (keep sq-if-pos [-1 0 2 3]))))))
+
+  (testing "keep empty result"
+    (is (= [] (run-spell '(keep (fn [x] nil) [1 2 3])))))
+
+  (testing "keep all non-nil"
+    (is (= [2 4 6] (run-spell '(keep (fn [x] (* x 2)) [1 2 3])))))
+
+  (testing "keep returns vector"
+    (is (vector? (run-spell '(keep (fn [x] x) [1 2 3]))))))
+
+(deftest core-take-last-builtin
+  (testing "take-last basic"
+    (is (= [4 5] (run-spell '(take-last 2 [1 2 3 4 5])))))
+
+  (testing "take-last more than length"
+    (is (= [1 2 3] (run-spell '(take-last 10 [1 2 3])))))
+
+  (testing "take-last zero"
+    (is (= [] (run-spell '(take-last 0 [1 2 3])))))
+
+  (testing "take-last one"
+    (is (= [3] (run-spell '(take-last 1 [1 2 3])))))
+
+  (testing "take-last returns vector"
+    (is (vector? (run-spell '(take-last 2 [1 2 3])))))
+
+  (testing "take-last on empty"
+    (is (= [] (run-spell '(take-last 5 []))))))
+
+;; =============================================================================
+;; Math namespace tests (#62)
+;; =============================================================================
+
+(deftest math-namespace
+  (testing "sqrt"
+    (is (= 2.0 (run-spell-full '(math/sqrt 4))))
+    (is (= 3.0 (run-spell-full '(math/sqrt 9)))))
+
+  (testing "pow"
+    (is (= 8.0 (run-spell-full '(math/pow 2 3))))
+    (is (= 1.0 (run-spell-full '(math/pow 5 0)))))
+
+  (testing "abs"
+    (is (= 5.0 (run-spell-full '(math/abs -5))))
+    (is (= 3.0 (run-spell-full '(math/abs 3)))))
+
+  (testing "floor and ceil"
+    (is (= 3 (run-spell-full '(math/floor 3.7))))
+    (is (= 4 (run-spell-full '(math/ceil 3.2)))))
+
+  (testing "round"
+    (is (= 4 (run-spell-full '(math/round 3.7))))
+    (is (= 3 (run-spell-full '(math/round 3.2)))))
+
+  (testing "trig functions"
+    (is (< (Math/abs (- 0.0 (run-spell-full '(math/sin 0)))) 0.0001))
+    (is (< (Math/abs (- 1.0 (run-spell-full '(math/cos 0)))) 0.0001)))
+
+  (testing "log and exp"
+    (is (< (Math/abs (- 1.0 (run-spell-full '(math/log math/E)))) 0.0001))
+    (is (< (Math/abs (- 2.0 (run-spell-full '(math/log10 100)))) 0.0001))
+    (is (< (Math/abs (- Math/E (run-spell-full '(math/exp 1)))) 0.0001)))
+
+  (testing "constants"
+    (is (< (Math/abs (- Math/PI (run-spell-full 'math/PI))) 0.0001))
+    (is (< (Math/abs (- Math/E (run-spell-full 'math/E))) 0.0001)))
+
+  (testing "cbrt"
+    (is (= 3.0 (run-spell-full '(math/cbrt 27)))))
+
+  (testing "sign"
+    (is (= 1.0 (run-spell-full '(math/sign 42))))
+    (is (= -1.0 (run-spell-full '(math/sign -5))))
+    (is (= 0.0 (run-spell-full '(math/sign 0)))))
+
+  (testing "trunc"
+    (is (= 3 (run-spell-full '(math/trunc 3.9))))
+    (is (= -3 (run-spell-full '(math/trunc -3.9)))))
+
+  (testing "log2"
+    (is (< (Math/abs (- 3.0 (run-spell-full '(math/log2 8)))) 0.0001)))
+
+  (testing "inverse trig"
+    (is (< (Math/abs (- (/ Math/PI 2) (run-spell-full '(math/asin 1)))) 0.0001))
+    (is (< (Math/abs (- 0.0 (run-spell-full '(math/acos 1)))) 0.0001))
+    (is (< (Math/abs (- (/ Math/PI 4) (run-spell-full '(math/atan 1)))) 0.0001)))
+
+  (testing "atan2"
+    (is (< (Math/abs (- (/ Math/PI 2) (run-spell-full '(math/atan2 1 0)))) 0.0001)))
+
+  (testing "hyperbolic"
+    (is (< (Math/abs (- 0.0 (run-spell-full '(math/sinh 0)))) 0.0001))
+    (is (< (Math/abs (- 1.0 (run-spell-full '(math/cosh 0)))) 0.0001))
+    (is (< (Math/abs (- 0.0 (run-spell-full '(math/tanh 0)))) 0.0001)))
+
+  (testing "angle conversion"
+    (is (< (Math/abs (- 180.0 (run-spell-full '(math/degrees math/PI)))) 0.0001))
+    (is (< (Math/abs (- Math/PI (run-spell-full '(math/radians 180)))) 0.0001)))
+
+  (testing "factorial"
+    (is (= 1 (run-spell-full '(math/factorial 0))))
+    (is (= 1 (run-spell-full '(math/factorial 1))))
+    (is (= 120 (run-spell-full '(math/factorial 5))))
+    (is (= 3628800 (run-spell-full '(math/factorial 10)))))
+
+  (testing "gcd"
+    (is (= 6 (run-spell-full '(math/gcd 12 18))))
+    (is (= 1 (run-spell-full '(math/gcd 7 13))))
+    (is (= 5 (run-spell-full '(math/gcd 0 5)))))
+
+  (testing "lcm"
+    (is (= 36 (run-spell-full '(math/lcm 12 18))))
+    (is (= 91 (run-spell-full '(math/lcm 7 13))))
+    (is (= 0 (run-spell-full '(math/lcm 0 5)))))
+
+  (testing "hypot"
+    (is (= 5.0 (run-spell-full '(math/hypot 3 4)))))
+
+  (testing "infinity constants"
+    (is (Double/isInfinite (run-spell-full 'math/INF)))
+    (is (Double/isInfinite (run-spell-full 'math/NEG-INF)))
+    (is (Double/isNaN (run-spell-full 'math/NaN)))))
+
+;; =============================================================================
+;; Core some builtin (#60)
+;; =============================================================================
+
+(deftest core-some-builtin
+  (testing "some finds first truthy result"
+    (is (= 3 (run-spell '(some (fn [x] (if (> x 2) x nil)) [1 2 3 4])))))
+
+  (testing "some returns nil when no match"
+    (is (nil? (run-spell '(some (fn [x] (if (> x 10) x nil)) [1 2 3])))))
+
+  (testing "some with spell fn"
+    (is (= 4 (run-spell '(do (defn find-big [x] (if (> x 3) x nil))
+                              (some find-big [1 2 3 4 5]))))))
+
+  (testing "some on empty"
+    (is (nil? (run-spell '(some (fn [x] x) [])))))
+
+  (testing "some returns first truthy, not true"
+    (is (= "found" (run-spell '(some (fn [x] (if (= x 3) "found" nil)) [1 2 3 4]))))))
+
+;; =============================================================================
+;; Core range builtin (#62)
+;; =============================================================================
+
+(deftest core-range-builtin
+  (testing "range with end only"
+    (is (= [0 1 2 3 4] (run-spell '(range 5)))))
+
+  (testing "range with start and end"
+    (is (= [2 3 4] (run-spell '(range 2 5)))))
+
+  (testing "range with step"
+    (is (= [0 2 4 6 8] (run-spell '(range 0 10 2)))))
+
+  (testing "range empty"
+    (is (= [] (run-spell '(range 0)))))
+
+  (testing "range returns vector"
+    (is (vector? (run-spell '(range 5)))))
+
+  (testing "range negative step"
+    (is (= [5 4 3 2 1] (run-spell '(range 5 0 -1))))))
+
+;; =============================================================================
+;; Set constructor (#62)
+;; =============================================================================
+
+(deftest set-builtin
+  (testing "set from vector"
+    (is (= #{1 2 3} (run-spell '(set [1 2 3 2 1])))))
+
+  (testing "set from list"
+    (is (= #{:a :b} (run-spell '(set '(:a :b :a))))))
+
+  (testing "set? predicate"
+    (is (true? (run-spell '(set? (set [1 2 3])))))
+    (is (false? (run-spell '(set? [1 2 3])))))
+
+  (testing "empty set"
+    (is (= #{} (run-spell '(set [])))))
+
+  (testing "set membership with contains?"
+    ;; Note: sets act as functions for membership test
+    (is (= 2 (run-spell '((set [1 2 3]) 2))))
+    (is (nil? (run-spell '((set [1 2 3]) 5))))))
+
+;; =============================================================================
+;; For list comprehension (#62)
+;; =============================================================================
+
+(deftest for-comprehension
+  (testing "basic for"
+    (is (= [1 4 9] (run-spell '(for [x [1 2 3]] (* x x))))))
+
+  (testing "for with :when"
+    (is (= [4 9 16] (run-spell '(for [x [1 2 3 4] :when (> x 1)] (* x x))))))
+
+  (testing "for with :let"
+    (is (= [2 4 6] (run-spell '(for [x [1 2 3] :let [y (* x 2)]] y)))))
+
+  (testing "for with :when and :let"
+    (is (= [8 12 16] (run-spell '(for [x [1 2 3 4] :when (> x 1) :let [y (* x 4)]] y)))))
+
+  (testing "for with multiple bindings (nested)"
+    (is (= [[1 :a] [1 :b] [2 :a] [2 :b]]
+           (run-spell '(for [x [1 2] y [:a :b]] [x y])))))
+
+  (testing "for with range"
+    (is (= [0 1 4 9 16] (run-spell '(for [x (range 5)] (* x x))))))
+
+  (testing "for returns vector"
+    (is (vector? (run-spell '(for [x [1 2 3]] x)))))
+
+  (testing "for empty result"
+    (is (= [] (run-spell '(for [x [1 2 3] :when (> x 10)] x)))))
+
+  (testing "for with spell-fn in body"
+    (is (= [1 4 9] (run-spell '(do (defn sq [n] (* n n))
+                                    (for [x [1 2 3]] (sq x)))))))
+
+  (testing "for bindings don't escape"
+    (let [[val env] (spell-eval '(for [x [1 2 3]] x) {})]
+      (is (= [1 2 3] val))
+      (is (= {} env)))))
+
+;; =============================================================================
+;; Map-indexed builtin (#62)
+;; =============================================================================
+
+(deftest map-indexed-builtin
+  (testing "map-indexed basic"
+    (is (= [[0 :a] [1 :b] [2 :c]]
+           (run-spell '(map-indexed (fn [i x] [i x]) [:a :b :c])))))
+
+  (testing "map-indexed with spell-fn"
+    (is (= [0 2 6]
+           (run-spell '(do (defn mult-idx [i x] (* i x))
+                            (map-indexed mult-idx [1 2 3]))))))
+
+  (testing "map-indexed empty"
+    (is (= [] (run-spell '(map-indexed (fn [i x] [i x]) [])))))
+
+  (testing "map-indexed returns vector"
+    (is (vector? (run-spell '(map-indexed (fn [i x] x) [1 2 3]))))))
+
+;; =============================================================================
+;; Try/catch/throw tests (#37)
+;; =============================================================================
+
+(deftest try-catch-basic
+  (testing "try without error returns body value"
+    (is (= 42 (run-spell '(try 42)))))
+
+  (testing "try with multiple body forms returns last"
+    (is (= 3 (run-spell '(try 1 2 3)))))
+
+  (testing "try catches evaluation errors"
+    (is (= "caught" (run-spell '(try unbound-var (catch e "caught"))))))
+
+  (testing "try catches division by zero"
+    (is (= "div-error" (run-spell '(try (/ 1 0) (catch e "div-error"))))))
+
+  (testing "catch binding has error info for eval errors"
+    (is (= "Unbound symbol: xyz"
+           (run-spell '(try xyz (catch e (:message e)))))))
+
+  (testing "catch binding has failing expr for eval errors"
+    (is (= 'xyz (run-spell '(try xyz (catch e (:expr e)))))))
+
+  (testing "no error means catch is skipped"
+    (is (= 42 (run-spell '(try 42 (catch e "should not reach")))))))
+
+(deftest throw-basic
+  (testing "throw raises catchable error"
+    (is (= "oops" (run-spell '(try (throw "oops") (catch e e))))))
+
+  (testing "throw with map value"
+    (is (= {:code 404} (run-spell '(try (throw {:code 404}) (catch e e))))))
+
+  (testing "throw with number"
+    (is (= 42 (run-spell '(try (throw 42) (catch e e))))))
+
+  (testing "uncaught throw propagates as error"
+    (is (thrown? Exception (run-spell '(throw "uncaught"))))))
+
+(deftest try-catch-env-threading
+  (testing "defs before error visible in catch"
+    (is (= 10 (run-spell '(try (def x 10) unbound (catch e x))))))
+
+  (testing "defs in try escape on success"
+    (let [[val env] (spell-eval '(do (try (def x 42)) x) {})]
+      (is (= 42 val))
+      (is (= 42 (env 'x)))))
+
+  (testing "catch binding does not escape"
+    (let [[val env] (spell-eval '(try (throw "err") (catch e (def result "ok"))) {})]
+      (is (= "ok" val))
+      (is (contains? env 'result))
+      (is (not (contains? env 'e))))))
+
+(deftest try-catch-nested
+  (testing "nested try/catch"
+    (is (= "inner" (run-spell '(try
+                                 (try (throw "inner-err") (catch e "inner"))
+                                 (catch e "outer"))))))
+
+  (testing "inner throw caught by inner try, outer succeeds"
+    (is (= "recovered" (run-spell '(try
+                                     (try (throw "fail") (catch e "recovered"))
+                                     (catch e "should not reach"))))))
+
+  (testing "inner throw not caught propagates to outer"
+    (is (= "outer-caught" (run-spell '(try
+                                        (do (try (+ 1 2)) (throw "propagate"))
+                                        (catch e "outer-caught")))))))
+
+(deftest try-catch-with-throw-in-body
+  (testing "throw after successful defs"
+    (is (= 10 (run-spell '(try
+                             (def x 10)
+                             (throw "stop")
+                             (catch e x))))))
+
+  (testing "throw with computed value"
+    (is (= 42 (run-spell '(try (throw (+ 40 2)) (catch e e)))))))
+
+(deftest try-catch-expand
+  (testing "expand handles try form"
+    (let [[val _] (spell-eval '(do (def x 42) (expand '(try (+ x 1) (catch e x)))) {})]
+      (is (= '(try (+ 42 1) (catch e 42)) val))))
+
+  (testing "expand handles throw form"
+    (let [[val _] (spell-eval '(do (def msg "err") (expand '(throw msg))) {})]
+      (is (= '(throw "err") val))))
+
+  (testing "expand: catch binding shadows outer"
+    (let [[val _] (spell-eval '(do (def e 99) (expand '(try x (catch e e)))) {})]
+      (is (= '(try x (catch e e)) val)))))
+
+;; =============================================================================
+;; second, key, val, bigint builtins (#65)
+;; =============================================================================
+
+(deftest second-builtin
+  (testing "second of vector"
+    (is (= 2 (run-spell '(second [1 2 3])))))
+  (testing "second of list"
+    (is (= :b (run-spell '(second '(:a :b :c))))))
+  (testing "second of two-element"
+    (is (= 2 (run-spell '(second [1 2])))))
+  (testing "second of one-element"
+    (is (nil? (run-spell '(second [1]))))))
+
+(deftest key-val-builtin
+  (testing "key of map entry"
+    (is (= :a (run-spell '(key (first {:a 1 :b 2}))))))
+  (testing "val of map entry"
+    (is (= 1 (run-spell '(val (first {:a 1})))))))
+
+(deftest bigint-builtin
+  (testing "bigint from integer"
+    (is (= 42N (run-spell '(bigint 42)))))
+  (testing "bigint from string"
+    (is (= 99999999999999999999N (run-spell '(bigint "99999999999999999999")))))
+  (testing "bigint arithmetic"
+    (is (= 200N (run-spell '(+ (bigint 100) (bigint 100)))))))

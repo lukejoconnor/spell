@@ -89,10 +89,12 @@ Programs return the value of their last expression (standard Lisp semantics). No
 | `src/spell/hooks.clj` | Hooks system (apply-hooks, prepend-hooks-to-llm, recurse) |
 | `src/spell/stdlib.clj` | Standard library namespaces (strings, seqs, fns) |
 | `src/spell/tools.clj` | Tool implementations (bash, read-name, read-file, write-file, str-replace) |
-| `src/spell/cli.clj` | CLI with `-t`, `-m provider:model`, `-v`, `-d`, `-b` flags; accepts `.spl` files; auto-wraps NL prompts |
+| `src/spell/cli.clj` | CLI with `-t`, `-m`, `-a`, `-v`, `-d`, `-b` flags; accepts `.spl` files and `.agent.edn` agents |
 | `test/spell/*_test.clj` | 6 test files (core, eval, hooks, llm, parse, tools) |
 | `dev/benchmark.clj` | Orchestration benchmark harness |
-| `spl-lib/patterns.spl` | Reusable Spell patterns (try-bash, safe-llm, retry-llm) for `:prelude` |
+| `spl-lib/patterns.spl` | Reusable Spell patterns (call-now, check-result) |
+| `src/spell/agent.clj` | Agent definition loader (.agent.edn files) |
+| `agents/*.agent.edn` | Agent definition files |
 | `docs/orchestration-benchmark.md` | Benchmark results writeup |
 | `deps.edn` | Clojure project config |
 
@@ -100,16 +102,17 @@ Programs return the value of their last expression (standard Lisp semantics). No
 
 Core interpreter and tooling complete:
 - `spell-eval` with environment threading
-- Special forms: `def`, `do`, `if`, `let`, `fn`, `defn`, `cond`, `and`, `or`, `quote`, `uneval`, `expand`, `future`, `quine`, `->`, `->>`
+- Special forms: `def`, `do`, `if`, `let`, `fn`, `defn`, `cond`, `and`, `or`, `quote`, `uneval`, `expand`, `future`, `plet`, `quine`, `->`, `->>`
 - Core builtins: arithmetic, comparison, logic, list ops (`map`, `reduce`, `filter`, etc.), string ops (`cat`, `pr-str`), `spell-eval`, `llm-self`, `describe`
 - `llm` with prompt-as-prefix semantics and hooks support
 - `make-llm` factory with namespace-based configuration
 - Namespace system: qualified symbol access (`tools/bash`, `strings/trim`) with recursive lookup
 - Standard library namespaces: `tools`, `strings`, `seqs`, `fns`
 - `llm-self` for automatic self-recursion (atom-based forward ref, available in all `make-llm` variants)
-- `future`/`await` for concurrent evaluation with env capture and dynamic binding conveyance
+- `future`/`await`/`await-all`/`pmap` for concurrent evaluation with env capture and dynamic binding conveyance
+- `plet` for parallel let (fan-out and use results)
 - Hooks system: `apply-hooks`, `prepend-hooks-to-llm`, `recurse`
-- Tools: `bash`, `read-name`, `read-file`, `write-file`, `str-replace` (in `tools` namespace)
+- Tools: `bash`, `read-name`, `read-file`, `write-file`, `str-replace`, `replace-lines` (in `tools` namespace)
 - Three LLM providers: Anthropic, OpenAI, Ollama — unified `-m provider:model` CLI syntax
 - CLI with `-t` (test), `-m provider:model`, `-v` (verbose), `-d` (depth limit), `-b` (budget) flags; accepts `.spl` files
 - CLI auto-wraps natural-language prompts into code prefixes
@@ -139,6 +142,8 @@ Core interpreter and tooling complete:
 **Avoid premature abstraction.** Don't add flexibility for hypothetical future needs. Add it when there's a concrete use case.
 
 **Keep the codebase small.** Every line of code is a liability. Delete aggressively.
+
+**Use `uv` for Python.** When running Python scripts (benchmarking, etc.), use `uv run` instead of `python3` directly. This handles virtual environments and dependencies automatically.
 
 ## System Prompt Best Practices
 
