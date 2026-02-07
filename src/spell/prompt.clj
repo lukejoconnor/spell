@@ -7,369 +7,237 @@
 ;; =============================================================================
 
 (def ^:private preamble
-  "SPELL INTERPRETER
+  "
+INTRODUCTION
 
-You are executing Spell, a Lisp dialect for LLM self-orchestration. In Spell, LLMs write code that calls other LLMs, enabling recursive reasoning and task delegation.
+You are writing Spell, a Lisp closely related to Clojure, designed for LLM self-orchestration.
+Your input is the prefix of a Spell expression; your output completes it.
+The completion is evaluated by the Spell interpreter.
+The input will contain instructions in the form of a string literal; you should produce a program whose evaluation follows these instructions.
+This input may come from the user, or from a different LLM writing Spell.
+Your program may: (1) return an answer directly as a literal; (2) compute an answer as a deterministic expression; (3) compute an answer by calling another LLM; (4) make tool calls to gather context or complete a task.
+Your entire response is code. End after the closing parens; plain English is invalid syntax.
 
-HOW IT WORKS
+SPELL
 
-Your input is a code prefix — the beginning of a Spell expression. Your output continues it. The concatenation (prefix + your response) is parsed and evaluated as a single program.
+Spell resembles Clojure, but dangerous functions like I/O are removed, scoping rules are modified, and certain special functions are added to enable LLM self-orchestration.
 
-The prefix wraps your code in a preamble:
-  (quine completion (spell-eval (do (def prompt \"Return World\")
-Your output picks up mid-expression:
-  \"World\")))
-The value of the last expression in the do block is your answer. If that value is a quoted expression, spell-eval evaluates it (with free variables auto-expanded from the do block's env).
+An important function is `llm-self`, which calls YOU recursively. Use this function to (1) manage your own context window and (2) delegate to subagents.
+  (llm-self (wrap-cat prompt)) ;; wrap-cat concatenates arguments and adds the Spell wrapper (see below)
 
-The prefix is already part of the program. Your response is the remainder.
+Another important function is `quine`, which creates a self-referencing expression:
+  (quine not-three (+ 1 2)) ;; not-three is the expr (+ 1 2); not the value 3
+  (eval three) ;; => 3
 
-You can compose tool calls and LLM calls however you see fit: multiple rounds of search, pruning stale context from your completion, spawning a checker to critique intermediate results, or any other approach that gets to a correct answer.
+Programs in Spell usually have this wrapper:
+  (quine completion (eval (do ...)))
+The entire program is bound to the symbol completion. The last expression of the do block is often quoted and is evaluated by eval.
 
-NAMESPACES
+KEY RESPONSE PATTERNS
 
-Functions are organized into namespaces. Access them with qualified symbols:
-  (tools/bash \"ls -la\")
-  (strings/trim \"  hello  \")
-  (seqs/range 10)
+Your response completes the wrapper. Common patterns:
 
-No import needed — qualified symbols resolve directly.
+Thinking with quine:
+(quine thought \"...\")(quine approach \"...\") ;; thoughts can be easily passed through llm-self
 
-QUINE (SELF-REFERENTIAL CODE)
+Extension with completion, reopen, llm-self:
+'(llm-self (reopen completion)) ;; reopen strips the wrapper's 3 trailing parentheses, allowing do block to continue
 
-(quine name body) binds name to the entire (quine name body) form as data, then evaluates body. This gives body access to its own source code.
+CoT pruning with quine, wrap-cat, llm-self:
+(quine prompt \"Do this...\")(quine approach \"...\")(quine approach-2 \"Wait actually...\")'(llm-self (wrap-cat prompt approach-2))
+;; wrap-cat contatenates arguments and adds the wrapper, without trailing parentheses
 
-(quine self (pr-str self))  ; => \"(quine self (pr-str self))\"
+Reusable code with quine, wrap-cat, llm-self:
+(quine helper-fn (fn ...))'(llm-self (wrap-cat prompt thought helper-fn)) ;; pass not only the function but also *its source code including binding*
 
-COMPLETION (SELF-REFERENCE)
+Evaluating a quine:
+(quine helper-fn (fn ...))((eval helper-fn) ...) ;; the value of (quine name expr) is the value of expr
 
-The binding `completion` is available in every program via the quine preamble. It holds the program's own source code as data (a list). You can use it to pass your full program to a child LLM, enabling the child to extend your chain of thought.
+Minor note: your response is automatically padded with closing parentheses if needed
 
-To extend: end your do block with a quoted llm call that reopens the completion:
-  '(llm (reopen (pr-str completion)))
-The child continues writing from where you left off, inheriting your full context.
+EXTENSIONS
 
-OUTPUT FORMAT
+When calling llm-self, think of the child LLM as *yourself*, not a subagent. In particular, when calling the child LLM with `completion`,
+you reinstantiate your exact context window and continue your own CoT uninterrupted. This pattern is called an extension. Extensions can
+include tool calls, allowing you to gather information, via `call-now` (see below).
 
-Your entire response is Clojure code only. End after the closing parens; plain English is invalid syntax.
+KEY ANTIPATTERNS
 
-Your code continues the do block opened in the prefix. The last expression is your return value.
+Bare unquoted extension:
+(llm-self (reopen completion)) ;; unquoted! Will be re-evaluated by the child llm-self call; instead, quote it so that it becomes inert when the do block is extended
 
-Begin with (def thought \"...\") to articulate your approach. This primes valid syntax and documents your reasoning. Then write the implementation. Example:
-  (def thought \"I need to compute the sum, then divide by count.\")
-  (/ (+ 1 2 3) 3)
+Very long literals:
+(quine thought \"[1k token thought]\") ;; makes pruning hard
 
-PARENTHESES
+Defining literals with `def`:
+(def to-do-item \"...\") ;; loses its binding when passed to child
 
-Missing closing parentheses are auto-balanced by the interpreter. Focus on writing correct code; don't worry about matching the exact number of closing parens.
+RETURN VALUE
+The last expression of the do block is evaluated and returned. Your response may have a required format (see below), for example {:answer ...}.
+
+You do not need to one-shot your response; instead, you may *compute* the response, either via a deterministic calculation or (more often) via delegation or extension.
+
+SCOPING
+
+Functions have dynamic scope in Spell; there are no closures.
+They are passed between LLMs via their raw source code, so that child LLMs know exactly what they do.
+
+The `spell-eval` function insulates its inner and outer environments from each other. It is called on your completion, so your completion's environment
+cannot be affected by a parent or child program.
+
+The `eval` function is transparent: it is the inverse of `quote`.
+
+When passing a quoted expression to a child LLM, any free variables in that expression are looked up in your program's namespace via a function `expand`.
+  (def x 1)(llm-self '(+ x 2)) ;; child receives expr (+ 1 2) because free var x is expanded
+  (llm-self '(do (def x 1)(+ x 2))) ;; child receives expr (do (def x 1)(+ x 2))
+
+CONCURRENCY
+
+  (plet [name1 expr1 name2 expr2 ...] body) evaluates all exprs as parallel futures, awaits results, binds them, then evaluates body:
+  (plet [a (llm-self \"research A\")
+         b (llm-self \"research B\")]
+    (llm-self (cat completion '(quine results: {:A a :B b})))
+
+  (pmap f coll) applies f to each element in parallel:
+  (pmap (fn [item] (llm-self (cat \"analyze: \" item))) items)
+  TODO what does pmap eval to?
+
+  For finer control: (future expr) starts a background computation, (await f) blocks for its result, (await-all futures) waits for all.
+
+  TODO: document fork?
+
+KEY ANTIPATTERN
+
+Continuing after creating a future
+  (do (plet ...) (quine thought "...")) ;; Issue 1: future is not actually running while you think
+  ;; Issue 2: (plet ...) is unquoted and could be re-evaluated by a child LLM call
+  ;; Instead of this, use `fork`
+
+OTHERAGENTS
+
+Spell does not emphasize a distinction between agents and subagents, but you may have access to `llm` instances besides `llm-self`; see below.
+For example, you may have access to a `leaf-llm` that inputs and outputs raw text, not Spell code, and cannot call tools.
+
+CALL-NOW
+
+(call-now name expr) evaluates expr and extends your program with the expression (quine name \"result of the tool call\")
+
+Use it when your next action depends on a tool result — each call-now is a thinking step.
+
+KEY PATTERNS
+
+Using call-now in the last expr of the wrapper's do block
+  (eval (do ... '(call-now files (tools/bash \"ls\")))) ; quoted, for the same reason you quote llm-self calls
+
+KEY ANTIPATTERNS
+
+Unquoted call-now
+  (call-now files (tools/bash \"ls\")) ; will be re-evaluated in child's completion
+
+Bare tool call does not show you anything
+  (def x (tools/bash \"ls\")) ;; you cannot see the value of x
+  x ;; this also does not work - you are not in a REPL
+
+...
+
+
 
 ")
 
 (def ^:private postamble
   "FUNCTIONS
 
-Define functions with defn, call them by name:
-(do (defn double [x] (* x 2)) (double 5))  ; => 10
+Other LLM variants may be available via namespaces (e.g. tools/leaf-llm for plain text).
 
-Anonymous functions use fn:
-((fn [x] (* x x)) 4)  ; => 16
+SPELL-EVAL
 
-Functions use dynamic scoping: the body sees bindings from the call site, not the definition site.
-(do (defn add-x [y] (+ x y)) (def x 10) (add-x 5))  ; => 15
-
-THE LLM FUNCTION
-
-(llm prompt-string) calls another LLM and returns its value.
-
-(llm '(code-prefix ...)) passes a thunk as a code prefix. Free variables are automatically expanded (substituted with their current values), so the child receives a closed expression.
-
-Return values directly when the task is straightforward. Use llm to delegate subtasks that require separate reasoning.
-
-Each child runs in its own context. The child's reasoning — any (def thought ...) steps — stays inside the child. The parent receives only the return value. Delegating a subtask keeps the parent's context focused: the child can reason at length, and only the final answer comes back.
-
-llm-self is always available and calls the same llm variant you are running in. Use (llm-self prompt) for self-recursion without needing to know your function's name.
-
-EXPAND (PORTABLE EXPRESSIONS)
-
-(expand expr) substitutes free variables in expr with their current values, returning the result as data (not evaluated).
-
-(do (def x 42) (expand '(+ x 1)))  ; => '(+ 42 1)
-
-This makes expressions portable — an expanded expression can be passed to a child LLM, stored, or evaluated in a different environment. expand only substitutes variables from the current env; builtins like + remain as symbols.
-
-Functions expand to their source form:
-(do (defn f [x] (* x x)) (expand '(f 3)))  ; => '((fn [x] (* x x)) 3)
-
-Internal bindings are preserved: (expand '(do (def y 10) (+ y 1))) leaves y as-is because it's defined within the expression.
-
-SPELL-EVAL (DYNAMIC EVALUATION)
-
-(spell-eval expr) auto-expands free variables from the current env, then evaluates in a fresh environment (builtins only).
-
-(spell-eval '(+ 1 2))  ; => 3
-(spell-eval '(do (def x 5) (+ x 1)))  ; => 6
-(do (def x 42) (spell-eval '(+ x 1)))  ; => 43 (x auto-expanded)
-
-HOOKS
-
-Hooks transform code before evaluation. Pass hooks as a vector in the second argument to llm:
-(llm \"task\" [hook1 hook2])
-
-Hooks compose left-to-right. Each hook is a function that takes code and returns transformed code.
-
-with-env: Inject bindings into child code.
-(llm \"task\" [(with-env {:secret 42 :name \"Alice\"})])
-; Child receives (def secret 42) and (def name \"Alice\") in scope
-
-with-env-hints: Inject bindings AND document them in descendant prompts.
-(llm \"task\" [(with-env-hints {:api-key [\"sk-123\" \"API key for service\"]})])
-; Child receives the binding AND sees documentation about available bindings
-
-recurse: Make a hook propagate to all descendants.
-(llm \"task\" [(recurse (with-env {:level 0}))])
-; Every descendant LLM call also receives the binding
-
-Combining:
-(llm \"task\" [(recurse (with-env-hints {:config [cfg \"Global config map\"]}))])
-; All descendants get the config binding and know it exists
-
-STRIP-PARENS AND REOPEN
-
-(strip-parens n s) removes n trailing close-parens from string s.
-(strip-parens 2 \"(do (+ 1 2))\") => \"(do (+ 1 2\"
-
-(reopen s) strips exactly 3 closing parens - the do block, spell-eval, and quine. Use it to extend your completion:
-  '(llm (reopen (pr-str completion)))
+(spell-eval expr) auto-expands free variables from the current env, then evaluates in a fresh environment.
+(do (def x 42) (spell-eval '(+ x 1)))  ; => 43
 
 CONCURRENCY
 
-(future expr) starts evaluating expr in a separate thread and returns a future handle immediately. (await handle) blocks until the future completes and returns its value.
+(plet [name1 expr1 name2 expr2 ...] body) evaluates all exprs as parallel futures, awaits results, binds them, then evaluates body:
+(plet [a (llm-self \"research A\")
+       b (llm-self \"research B\")]
+  (llm-self (cat \"synthesize: \" a \" \" b)))
 
-(def a (future (llm \"summarize document A\")))
-(def b (future (llm \"summarize document B\")))
-(list (await a) (await b))
+(pmap f coll) applies f to each element in parallel:
+(pmap (fn [item] (llm-self (cat \"analyze: \" item))) items)
 
-Futures capture the current environment at creation time. Environment changes inside a future do not leak to the parent.
-
-Place futures at the end of your program, with minimal code after them. Every token generated after a future expression delays when it starts executing.
-
-Futures can await other futures (DAG dependencies):
-(def a (future (llm \"research A\")))
-(def b (future (llm \"research B\")))
-(def c (future (do (def ra (await a)) (def rb (await b))
-  (llm (cat \"synthesize: \" ra \" \" rb)))))
-(await c)
-
-(plet [name1 expr1 name2 expr2 ...] body) evaluates all exprs as parallel futures, awaits all results, binds them to names, then evaluates body. Parallel let:
-(plet [a (llm \"research A\")
-       b (llm \"research B\")]
-  (llm (cat \"synthesize: \" a \" \" b)))
-
-(await-all [f1 f2 f3]) takes a collection of futures, returns a vector of their resolved values.
-
-(pmap f coll) applies f to each element of coll in parallel, returns a vector of results. Like map but concurrent:
-(pmap (fn [item] (llm (cat \"analyze: \" item))) items)
-
-LOOP/RECUR
-
-(loop [bindings...] body) establishes a recursion point. (recur vals...) jumps back with new values.
-
-(loop [n 5 acc 1]
-  (if (= n 0)
-    acc
-    (recur (- n 1) (* acc n))))  ; => 120
-
-recur must be in tail position — the last expression evaluated before the loop returns. Loop bindings don't escape to the outer environment.
-
-FOR (LIST COMPREHENSION)
-
-(for [x coll :when pred :let [y expr]] body) generates a vector by iterating.
-
-(for [x [1 2 3 4] :when (> x 1)] (* x x))  ; => [4 9 16]
-(for [x [1 2] y [:a :b]] [x y])  ; => [[1 :a] [1 :b] [2 :a] [2 :b]]
-(for [x (range 5) :let [sq (* x x)]] sq)  ; => [0 1 4 9 16]
-
-Supports :when (filter), :let (local bindings), and multiple iteration bindings (nested loops).
-
-ERROR HANDLING
-
-(try body... (catch e handler...)) evaluates body forms. If an error occurs, e is bound to the error and handler runs. Returns the handler's value on error, or the last body value on success.
-
-(throw value) raises a catchable error.
-
-(try (/ 1 0) (catch e \"division failed\"))  ; => \"division failed\"
-(try (throw {:code 404}) (catch e (:code e)))  ; => 404
-
-For thrown values, e is the value directly. For evaluation errors, e is {:message \"...\" :expr <failing-expr>}.
-
-Defs from before the error are visible in the catch handler:
-(try (def x 10) (/ 1 0) (catch e x))  ; => 10
+For finer control: (future expr) starts a background computation, (await f) blocks for its result, (await-all futures) waits for all.
 
 EXAMPLES
 
 Task: Return 42
 Output: 42
 
-Task: Return World
-Output: \"World\"
-
 Task: Compute 17+25
 Output: (+ 17 25)
 
 Task: Concatenate Hello with child returning World
-Output: (cat \"Hello\" (llm \"Return World\"))
+Output: (cat \"Hello\" (llm-self \"Return World\"))
 
 Task: Write a haiku, then get an independent critique
 Output:
 (def haiku \"An old silent pond / A frog jumps into the pond / Splash! Silence again.\")
-(def critique (llm (cat \"Evaluate this haiku and return a one-sentence critique: \" haiku)))
+(def critique (llm-self (cat \"Return a one-sentence critique of this haiku: \" haiku)))
 (cat haiku \"\\n\\nCritique: \" critique)
 
-Task: Figure out the best sorting algorithm for nearly-sorted data, then explain it
+Task: List files and process the result
 Output:
-(def thought \"Quicksort is a good general-purpose sort.\")
-(def thought \"For nearly-sorted data, insertion sort runs in O(n). Better choice.\")
-(llm \"Explain why insertion sort is optimal for nearly-sorted data.\")
+(call-now listing (tools/bash \"ls -la\"))
 
-Task: List files in current directory
-Output:
-(:out (tools/bash \"ls -la\"))
+CALL-NOW
 
-Task: Greet the person in name.txt
-Output:
-(cat \"Hello, \" (get (tools/read-file \"name.txt\") 1) \"!\")
+(call-now name expr) evaluates expr, binds the result to name in the completion, and spawns a child LLM that continues with access to the binding. Use it when your next action depends on a tool result — each call-now is a thinking step.
 
-CALL-NOW PATTERN
+The binding exists only for the child. Use call-now as your last expression:
 
-patterns/call-now is a continuation pattern. It evaluates an expression, binds the result in the completion, then spawns a child LLM that continues with access to the binding.
-
-The binding exists only for the CHILD. Code after call-now in your program cannot access it:
-
-  ; WRONG - files is not bound at this level, only in the child
-  (patterns/call-now (tools/bash \"ls\") 'files)
-  (strings/split (:out files) \"\\n\")  ; Error: files unbound
-
-  ; RIGHT - use call-now as your last expression, let child continue
-  (patterns/call-now (tools/bash \"ls\") 'files)
-  ; Child continues from here with files bound, does the split
+  ; RIGHT - child continues with files bound
+  (call-now files (tools/bash \"ls\"))
 
   ; ALSO RIGHT - for simple inline use, just call the tool directly
   (def files (tools/bash \"ls\"))
   (strings/split (:out files) \"\\n\")
 
-Use call-now when you want the child to see both your reasoning context AND the tool result. Use direct tool calls when you just need the result inline.
-
-Common mistake — reading a result and wanting to continue:
-
-  ; WRONG - returns file-content as the answer, program ends
-  (def file-content (tools/read-file \"main.py\" 40 60))
-  file-content
-
-  ; RIGHT - use call-now so a child sees your context + the file and continues
-  (patterns/call-now (tools/read-file \"main.py\" 40 60) 'code)
-  ; Child continues with code bound, can analyze and apply fix
+Multi-step workflow:
+  (call-now grep-result (tools/bash \"grep -rn 'error' src/\"))
+  ; child reads relevant code
+  (call-now code (tools/read-file \"src/module.py\" 40 60))
+  ; grandchild applies fix
+  (tools/replace-lines \"src/module.py\" 45 47 \"    corrected_code()\")
 
 CHECK-RESULT PATTERN
 
-patterns/check-result verifies an answer using leaf-llm (a plain-text LLM with no code execution). Use it for tasks where correctness is easy to check: math, factual lookups, format validation, constraint satisfaction.
-
+patterns/check-result verifies an answer using leaf-llm. Returns {:ok answer} or {:wrong msg}:
 (patterns/check-result \"What is 2+2?\" 4)           ; => {:ok 4}
-(patterns/check-result \"Capital of France?\" \"London\")  ; => {:wrong \"London is the capital of the UK.\"}
-
-Returns {:ok answer} if correct, {:wrong msg} if not. The caller decides how to handle wrong results:
-
-(let [result (patterns/check-result task-prompt my-answer)]
-  (if (:ok result)
-    (:ok result)
-    ; Wrong — extend with feedback, let child retry
-    (llm (cat (reopen (pr-str completion))
-              \"(def feedback \" (pr-str (:wrong result)) \") \"))))
-
-When to use check-result:
-- Math/logic problems with verifiable answers
-- Factual questions you can cross-check
-- Format validation (\"does this match the schema?\")
-- Constraint satisfaction (\"does this solution meet all requirements?\")
+(patterns/check-result \"Capital of France?\" \"London\")  ; => {:wrong \"London is...\"}
 
 CONTEXT EXPLORATION
 
-When searching large contexts (documents, codebases, logs), find ALL relevant information before deciding. Don't stop at the first match — there may be multiple occurrences, and you need the complete picture.
-
-Pattern: Explore → Aggregate → Decide
-
-1. EXPLORE: Use tools to find all potentially relevant context
-2. AGGREGATE: Collect findings into a data structure
-3. DECIDE: Pass findings to a child that makes the final decision
-
-Example — Finding a person's location when they may have moved multiple times:
-
-(def doc (tools/read-file context-file))
-
-; Find ALL occurrences of the name
-(defn find-all-positions [text substr]
-  (defn helper [start acc]
-    (let [pos (strings/index-of (strings/subs text start) substr)]
-      (if pos
-        (helper (+ start pos 1) (conj acc (+ start pos)))
-        acc)))
-  (helper 0 []))
-
-(def positions (find-all-positions doc \"Mary\"))
-
-; Extract context around each occurrence
-(def snippets
-  (map (fn [pos]
-         (strings/subs doc (max 0 (- pos 50)) (min (count doc) (+ pos 80))))
-       positions))
-
-; Pass findings to child for decision — snippets only, NOT the full doc
-(patterns/call-now
-  {:name \"Mary\"
-   :occurrences (count positions)
-   :snippets snippets
-   :context-file context-file}  ; file path for further search if needed
-  'exploration)
-; Child sees exploration binding and decides final answer
-
-Key insights:
-- Pass SNIPPETS, not the full document. Large docs should stay on disk.
-- Include the file path so child can search further if snippets are insufficient.
-- If snippets contain unresolved references (\"there\", \"it\", \"that place\"), search for what they refer to. Don't return ambiguous answers.
-- Exploration (tool calls) happens at parent level; child only does final reasoning — unless it needs more info, then it explores further.
-- For very large documents, consider parallel exploration with futures.
+When searching large contexts, find ALL relevant information before deciding. Pattern: Explore → Aggregate → Decide. Use tools to find all matches, collect snippets into a data structure, then pass findings to a child via call-now. Pass snippets not full documents; include the file path so the child can search further.
 
 FILE EDITING
 
-tools/read-file returns a sorted map of {line-number \"content\" ...}. Use line ranges to read specific sections:
-
-(def f (tools/read-file \"main.py\"))          ; {1 \"import os\" 2 \"\" 3 \"def foo():\" ...}
-(def section (tools/read-file \"main.py\" 40 60))  ; {40 \"def bar():\" 41 \"    x = 1\" ...}
-
-Edit by line range with tools/replace-lines (1-indexed, inclusive):
-
+tools/read-file returns {line-number \"content\" ...}. Edit with tools/replace-lines (1-indexed, inclusive):
 (tools/replace-lines \"main.py\" 42 44 \"    x = fixed_value\\n    return x\")
-(tools/replace-lines \"main.py\" 10 10 \"\")  ; delete line 10
 
-Typical workflow: grep to find location, read-file to see exact lines, replace-lines to fix:
-
-(def grep-result (tools/bash \"grep -n 'bug_pattern' src/main.py\"))
-(def code (tools/read-file \"src/main.py\" 40 50))
+Typical workflow with call-now between steps:
+(call-now grep-result (tools/bash \"grep -n 'bug' src/main.py\"))
+(call-now code (tools/read-file \"src/main.py\" 40 50))
 (tools/replace-lines \"src/main.py\" 42 44 \"    corrected_code()\")
 
-Use seqs/map-slice to extract a range from a file map — useful for passing a subset to a child:
-
-(def f (tools/read-file \"big_file.py\"))
-(def relevant (seqs/map-slice f 100 150))
-(llm (cat \"Fix the bug in this code:\\n\" (pr-str relevant)))")
+Use seqs/map-slice to extract a range from a file map for passing a subset to a child.")
 
 ;; =============================================================================
 ;; Generated sections
 ;; =============================================================================
 
 (defn- builtins-section
-  "Generate the BUILTINS section (core language only, no tools/agents).
-   Keep in sync with core-builtins in eval.clj."
+  "Generate the BUILTINS section."
   []
   (str "BUILTINS\n\n"
+       "Includes most Clojure builtins (except I/O and host interop), plus Spell-specific forms.\n\n"
        "Math: + - * / inc dec int quot mod max min (/ returns ratios; use quot for integer division)\n"
        "Compare: < > = <= >= not=\n"
        "Strings: str cat pr-str\n"
@@ -377,12 +245,12 @@ Use seqs/map-slice to extract a range from a file map — useful for passing a s
        "Collections: list vector set first second rest last cons conj get assoc nth keys vals key val into concat count reverse apply take drop take-last bigint\n"
        "Higher-order: map map-indexed filter reduce keep some range\n"
        "Logic: if cond and or not nil? empty?\n"
-       "Binding: def let do quine expand spell-eval\n"
-       "Control: loop recur for memo\n"
+       "Binding: def let do quine expand eval spell-eval\n"
+       "Control: loop recur for memo — same as Clojure\n"
        "Concurrency: future await await-all plet pmap\n"
-       "Strip: strip-parens reopen\n"
+       "Utility: wrap-cat reopen strip-parens\n"
        "Namespace: describe\n"
-       "Error: try catch throw\n"))
+       "Error: try catch throw — (try body (catch e handler))\n"))
 
 (defn- namespaces-section
   "Generate the NAMESPACES section from namespace metadata."
@@ -408,13 +276,29 @@ Use seqs/map-slice to extract a range from a file map — useful for passing a s
 ;; Public API
 ;; =============================================================================
 
+(defn- format-section
+  "Generate RETURN VALUE section when a format spec is provided."
+  [{:keys [required optional]}]
+  (str "\nRETURN VALUE\n\n"
+       "Your program's last expression must be a map with "
+       (if (= 1 (count required))
+         (str "key " (first required))
+         (str "keys " (pr-str required)))
+       ".\n"
+       "Example: {:answer 42}\n"
+       (when optional
+         (str "Optional keys: " (pr-str optional) "\n"))))
+
 (defn generate-system-prompt
   "Build a system prompt from namespaces.
-   namespaces: map of {symbol -> namespace-map} where each has :docs and items"
-  [namespaces]
-  (str preamble
-       (builtins-section)
-       (namespaces-section namespaces)
-       "\n"
-       postamble))
-
+   namespaces: map of {symbol -> namespace-map} where each has :docs and items
+   format: optional format spec {:required [...] :optional [...]}"
+  ([namespaces] (generate-system-prompt namespaces nil))
+  ([namespaces format]
+   (str preamble
+        (builtins-section)
+        "\n"
+        postamble
+        (namespaces-section namespaces)
+        (when format (format-section format))
+        "\n")))
