@@ -105,11 +105,14 @@
    Extended functions are in stdlib registries (strings, seqs, fns)."
   {;; Math
    '+ +, '- -, '* *, '/ /, 'inc inc, 'dec dec,
-   'int int, 'quot quot, 'mod mod, 'max max, 'min min,
+   'int int, 'quot quot, 'mod mod, 'max max, 'min min, 'rem rem,
+   'abs abs,
+   ;; Numeric predicates
+   'even? even?, 'odd? odd?, 'pos? pos?, 'neg? neg?, 'zero? zero?,
    ;; Comparison
-   '< <, '> >, '<= <=, '>= >=, '= =, 'not= not=,
+   '< <, '> >, '<= <=, '>= >=, '= =, 'not= not=, 'compare compare,
    ;; Logic
-   'not not, 'nil? nil?, 'empty? empty?,
+   'not not, 'nil? nil?, 'empty? empty?, 'some? some?, 'true? true?, 'false? false?,
    ;; Strings (core only - extended in strings registry)
    'str str, 'pr-str pr-str,
    'cat (fn [& args] (apply str args)),
@@ -117,6 +120,11 @@
    'string? string?, 'number? number?, 'list? list?, 'seq? seq?, 'vector? vector?, 'set? set?,
    'map? (fn [v] (and (map? v) (not (spell-fn? v)) (not (spell-future? v)))),
    'fn? (fn [v] (or (fn? v) (spell-fn? v))),
+   'keyword? keyword?, 'symbol? symbol?,
+   ;; Type constructors
+   'name name, 'symbol symbol, 'keyword keyword,
+   ;; Identity/utility
+   'identity identity,
    ;; Collections (core only - extended in seqs registry)
    'list list, 'vector vector, 'set set, 'first first, 'second second, 'rest rest, 'last last,
    'cons cons, 'conj conj, 'get get, 'assoc assoc, 'count count,
@@ -128,6 +136,23 @@
    'bigint bigint,
    'into (fn [to from] (into to from)),
    'concat concat,
+   ;; Collection access/mutation
+   'peek peek, 'pop pop, 'butlast butlast,
+   'subvec (fn
+             ([v start] (subvec v start))
+             ([v start end] (subvec v start end))),
+   'vec vec, 'not-empty not-empty,
+   ;; Map operations
+   'merge (fn [& maps] (apply merge maps)),
+   'update (fn
+             ([m k f] (update m k #(invoke-fn f [%])))
+             ([m k f & args] (update m k #(invoke-fn f (into [%] args))))),
+   'update-in (fn
+                ([m ks f] (update-in m ks #(invoke-fn f [%])))
+                ([m ks f & args] (update-in m ks #(invoke-fn f (into [%] args))))),
+   'get-in get-in, 'assoc-in assoc-in, 'dissoc dissoc,
+   ;; Set operations
+   'contains? contains?, 'disj disj,
    'apply (fn [f & args]
             (let [all-args (concat (butlast args) (last args))]
               (if (spell-fn? f)
@@ -156,6 +181,11 @@
    ;; Strip / Reopen
    'strip-parens parse/strip-trailing-parens,
    'reopen (fn [s] (parse/strip-trailing-parens 3 s)),
+   ;; wrap-cat: combine quine-bound forms into an open preamble prefix
+   'wrap-cat (fn [& forms]
+               (str "(quine completion (eval (do "
+                    (str/join " " (map pr-str forms))
+                    " ")),
    ;; Eval — auto-expands free vars from caller's env, then evaluates in fresh env
    'spell-eval (fn [expr] (first (spell-eval (expand-expr expr *spell-env*) {}))),
    ;; Concurrency
@@ -176,7 +206,96 @@
                                  {:spell/future true
                                   :ref (clojure.core/future ((bound-fn [] (invoke-fn f [item]))))})
                                coll)]
-             (mapv #(deref (:ref %)) futures)))})
+             (mapv #(deref (:ref %)) futures))),
+   ;; Extended sequence operations (from seqs/)
+   'every? (fn [pred coll] (every? #(invoke-fn pred [%]) coll)),
+   'remove (fn [pred coll] (filterv #(not (invoke-fn pred [%])) coll)),
+   'mapcat (fn [f coll] (vec (mapcat #(invoke-fn f [%]) coll))),
+   'take-while (fn [pred coll] (vec (take-while #(invoke-fn pred [%]) coll))),
+   'drop-while (fn [pred coll] (vec (drop-while #(invoke-fn pred [%]) coll))),
+   'not-any? (fn [pred coll] (not-any? #(invoke-fn pred [%]) coll)),
+   'group-by (fn [f coll]
+               (reduce (fn [m x]
+                         (let [k (invoke-fn f [x])]
+                           (clojure.core/update m k (fnil conj []) x)))
+                       {} coll)),
+   'sort-by (fn [keyfn coll] (vec (sort-by #(invoke-fn keyfn [%]) coll))),
+   'sort (fn [coll] (vec (sort coll))),
+   'repeat (fn [n x] (vec (repeat n x))),
+   'repeatedly (fn [n f] (vec (repeatedly n #(invoke-fn f [])))),
+   'distinct (fn [coll] (vec (distinct coll))),
+   'flatten (fn [coll] (vec (flatten coll))),
+   'frequencies frequencies,
+   'partition (fn
+                ([n coll] (vec (clojure.core/map vec (partition n coll))))
+                ([n step coll] (vec (clojure.core/map vec (partition n step coll))))),
+   'partition-all (fn
+                    ([n coll] (vec (clojure.core/map vec (partition-all n coll))))
+                    ([n step coll] (vec (clojure.core/map vec (partition-all n step coll))))),
+   'interleave (fn [& colls] (vec (apply interleave colls))),
+   'interpose (fn [sep coll] (vec (interpose sep coll))),
+   'zipmap zipmap,
+   'split-at (fn [n coll] [(vec (take n coll)) (vec (drop n coll))]),
+   'merge-with (fn [f & maps]
+                 (reduce (fn [acc m]
+                           (reduce-kv (fn [a k v]
+                                        (if (contains? a k)
+                                          (assoc a k (invoke-fn f [(get a k) v]))
+                                          (assoc a k v)))
+                                      acc m))
+                         {} maps)),
+   'select-keys select-keys,
+   'reduce-kv (fn [f init m]
+                (reduce-kv (fn [acc k v] (invoke-fn f [acc k v])) init m)),
+   'sorted-map (fn [& keyvals] (apply sorted-map keyvals)),
+   'sorted-set (fn [& vals] (apply sorted-set vals)),
+   'sorted-map-by (fn [comp & keyvals]
+                    (apply sorted-map-by #(invoke-fn comp [%1 %2]) keyvals)),
+   'sorted-set-by (fn [comp & vals]
+                    (apply sorted-set-by #(invoke-fn comp [%1 %2]) vals)),
+   'coll? coll?,
+   'sequential? sequential?,
+   'int? int?,
+   'find-first (fn [pred coll] (some #(when (invoke-fn pred [%]) %) coll)),
+   ;; Function combinators (from fns/)
+   'comp (fn [& fns]
+           (fn [x]
+             (reduce (fn [v f] (invoke-fn f [v])) x (reverse fns)))),
+   'partial (fn [f & args]
+              (fn [& more]
+                (invoke-fn f (concat args more)))),
+   'juxt (fn [& fns]
+           (fn [& args]
+             (mapv #(invoke-fn % args) fns))),
+   'complement (fn [f]
+                 (fn [& args]
+                   (not (invoke-fn f args)))),
+   'constantly (fn [x] (fn [& _] x)),
+   'every-pred (fn [& preds]
+                 (fn [& args]
+                   (every? #(invoke-fn % args) preds))),
+   'some-fn (fn [& preds]
+              (fn [& args]
+                (some #(invoke-fn % args) preds))),
+   'fnil (fn [f & defaults]
+           (fn [& args]
+             (let [fixed-args (mapv (fn [arg default]
+                                      (if (nil? arg) default arg))
+                                    args
+                                    (concat defaults (repeat nil)))]
+               (invoke-fn f fixed-args)))),
+   ;; Bitwise operations (with bit- prefix like Clojure)
+   'bit-and bit-and,
+   'bit-or bit-or,
+   'bit-xor bit-xor,
+   'bit-not bit-not,
+   'bit-shift-left bit-shift-left,
+   'bit-shift-right bit-shift-right,
+   'unsigned-bit-shift-right unsigned-bit-shift-right,
+   'bit-set bit-set,
+   'bit-clear bit-clear,
+   'bit-flip bit-flip,
+   'bit-test bit-test})
 
 (def ^:dynamic *builtins*
   "Active builtins map. Rebound by each llm variant during evaluation.
@@ -189,7 +308,7 @@
 
 (def special-forms
   "Special forms that are not free variables."
-  #{'quote 'def 'do 'if 'let 'fn 'defn 'cond 'and 'or 'expand 'future 'plet 'quine '-> '->> 'memo 'loop 'recur 'for 'try 'throw})
+  #{'quote 'def 'do 'if 'let 'fn 'defn 'cond 'and 'or 'expand 'eval 'future 'plet 'quine 'call-now '-> '->> 'memo 'loop 'recur 'for 'try 'throw})
 
 (defn- thread-first
   "Transform (-> x (f a) (g b)) into (g (f x a) b)."
@@ -439,9 +558,9 @@
      ;; Normal evaluation
      (let [result
            (cond
-             ;; Self-evaluating: nil, strings, numbers, booleans, keywords, regex patterns
+             ;; Self-evaluating: nil, strings, numbers, booleans, keywords, regex patterns, sets
              (or (nil? expr) (string? expr) (number? expr) (boolean? expr) (keyword? expr)
-                 (instance? java.util.regex.Pattern expr))
+                 (instance? java.util.regex.Pattern expr) (set? expr))
              (ok expr env memo idx)
 
              ;; Symbol: qualified (a/b/c) -> recursive namespace lookup; else env/*builtins*
@@ -623,6 +742,50 @@
                           quoted-result
                           (ok (expand-expr (:ok quoted-result) (:env quoted-result))
                               (:env quoted-result) (:memo quoted-result) (:idx quoted-result))))
+
+               ;; eval: (eval expr) - expand and evaluate using current env (like Clojure's eval)
+               eval (let [quoted-result (spell-eval (second expr) env memo idx)]
+                      (if (err? quoted-result)
+                        quoted-result
+                        (let [expanded (expand-expr (:ok quoted-result) (:env quoted-result))]
+                          (spell-eval expanded (:env quoted-result) (:memo quoted-result) (:idx quoted-result)))))
+
+               ;; call-now: (call-now name expr) - evaluate expr, bind to name, continue in child LLM
+               ;; Like def but spawns child LLM that continues with the binding in scope
+               call-now
+               (let [name-sym (second expr)
+                     val-expr (nth expr 2)]
+                 ;; Evaluate the value expression
+                 (let [val-result (spell-eval val-expr env memo idx)]
+                   (if (err? val-result)
+                     val-result
+                     (let [result-val (:ok val-result)
+                           e (:env val-result)
+                           m (:memo val-result)
+                           i (:idx val-result)
+                           ;; Get completion from env (bound by quine preamble)
+                           completion (get e 'completion)
+                           ;; Check if binding already exists (idempotency guard)
+                           def-str (str "(def " name-sym " ")
+                           already-bound? (and completion
+                                               (.contains (pr-str completion) def-str))]
+                       (if already-bound?
+                         ;; Already bound, just return the result
+                         (ok result-val e m i)
+                         ;; Not bound - call llm-self with extended completion
+                         (let [;; Build the continuation prompt
+                               reopen-fn (get *builtins* 'reopen)
+                               completion-str (pr-str completion)
+                               reopened (reopen-fn completion-str)
+                               continuation (str reopened "(def " name-sym " " (pr-str result-val) ") ")
+                               ;; Get llm-self and call it
+                               llm-self-fn (get *builtins* 'llm-self)]
+                           (if llm-self-fn
+                             (try
+                               (ok (llm-self-fn continuation) e m i)
+                               (catch Exception ex
+                                 (err (str "call-now failed: " (.getMessage ex)) e m i expr)))
+                             (err "call-now requires llm-self (only available inside llm calls)" e m i expr))))))))
 
                ;; quine: (quine name body) — bind name to the source form (= expr), eval body
                quine (let [name-sym (second expr)

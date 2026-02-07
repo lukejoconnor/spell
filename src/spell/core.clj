@@ -81,15 +81,15 @@
 
 ;; Set root binding for eval/*builtins* — used by direct spell-eval/run-spell calls
 ;; (tests, REPL) that don't go through an llm function.
+;; Note: seqs, fns, and bit- ops are in core-builtins (matching Clojure).
 (alter-var-root #'eval/*builtins*
   (constantly (merge eval/core-builtins
                      {'llm #'llm
                       'leaf-llm leaf-llm
-                      ;; Namespaces
+                      ;; Namespaces (strings, math, patterns - matching Clojure structure)
                       'tools tools
                       'strings stdlib/strings
-                      'seqs stdlib/seqs
-                      'fns stdlib/fns
+                      'math stdlib/math
                       'patterns stdlib/patterns
                       'describe describe
                       'prepend-hooks-to-llm #'prepend-hooks-to-llm

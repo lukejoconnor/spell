@@ -17,18 +17,16 @@
       [(symbol (name k)) v])))
 
 (def test-builtins
-  "Full builtins including all stdlib functions for testing."
+  "Full builtins including all stdlib functions for testing.
+   Note: seqs, fns, and bit- ops are now in core-builtins."
   (merge eval/core-builtins
-         (extract-ns-fns stdlib/strings)
-         (extract-ns-fns stdlib/seqs)
-         (extract-ns-fns stdlib/fns)))
+         (extract-ns-fns stdlib/strings)))
 
 (def test-env-with-namespaces
   "Environment with stdlib namespaces for qualified access testing."
   {'strings stdlib/strings
-   'seqs stdlib/seqs
-   'fns stdlib/fns
-   'math stdlib/math})
+   'math stdlib/math
+   'patterns stdlib/patterns})
 
 (defn run-spell-full
   "Run spell with full builtins (including stdlib) for testing."
@@ -198,9 +196,6 @@
     (slurp "foo.txt")
     (spit "foo.txt" "data")
     (println "hello")
-
-    ;; eval (non-whitelisted)
-    (eval '(+ 1 2))
 
     ;; reflection/interop
     (.toString 42)
@@ -1708,3 +1703,129 @@
     (is (= 99999999999999999999N (run-spell '(bigint "99999999999999999999")))))
   (testing "bigint arithmetic"
     (is (= 200N (run-spell '(+ (bigint 100) (bigint 100)))))))
+
+;; =============================================================================
+;; New core builtins tests (Clojure audit additions)
+;; =============================================================================
+
+(deftest numeric-predicates-test
+  (testing "even?"
+    (is (true? (run-spell '(even? 4))))
+    (is (false? (run-spell '(even? 3)))))
+  (testing "odd?"
+    (is (true? (run-spell '(odd? 3))))
+    (is (false? (run-spell '(odd? 4)))))
+  (testing "pos?"
+    (is (true? (run-spell '(pos? 5))))
+    (is (false? (run-spell '(pos? -5))))
+    (is (false? (run-spell '(pos? 0)))))
+  (testing "neg?"
+    (is (true? (run-spell '(neg? -5))))
+    (is (false? (run-spell '(neg? 5))))
+    (is (false? (run-spell '(neg? 0)))))
+  (testing "zero?"
+    (is (true? (run-spell '(zero? 0))))
+    (is (false? (run-spell '(zero? 1))))))
+
+(deftest rem-builtin
+  (testing "rem basic"
+    (is (= 1 (run-spell '(rem 10 3)))))
+  (testing "rem negative"
+    (is (= -1 (run-spell '(rem -10 3))))))
+
+(deftest abs-builtin
+  (testing "abs positive"
+    (is (= 5 (run-spell '(abs 5)))))
+  (testing "abs negative"
+    (is (= 5 (run-spell '(abs -5))))))
+
+(deftest compare-builtin
+  (testing "compare equal"
+    (is (= 0 (run-spell '(compare 5 5)))))
+  (testing "compare less"
+    (is (neg? (run-spell '(compare 3 5)))))
+  (testing "compare greater"
+    (is (pos? (run-spell '(compare 5 3))))))
+
+(deftest logic-predicates-test
+  (testing "some? true"
+    (is (true? (run-spell '(some? 0))))
+    (is (true? (run-spell '(some? false)))))
+  (testing "some? false"
+    (is (false? (run-spell '(some? nil)))))
+  (testing "true?"
+    (is (true? (run-spell '(true? true))))
+    (is (false? (run-spell '(true? 1)))))
+  (testing "false?"
+    (is (true? (run-spell '(false? false))))
+    (is (false? (run-spell '(false? nil))))))
+
+(deftest type-predicates-extended
+  (testing "keyword?"
+    (is (true? (run-spell '(keyword? :foo))))
+    (is (false? (run-spell '(keyword? "foo")))))
+  (testing "symbol?"
+    (is (true? (run-spell '(symbol? 'foo))))
+    (is (false? (run-spell '(symbol? :foo))))))
+
+(deftest type-constructors-test
+  (testing "name from keyword"
+    (is (= "foo" (run-spell '(name :foo)))))
+  (testing "name from symbol"
+    (is (= "bar" (run-spell '(name 'bar)))))
+  (testing "symbol from string"
+    (is (symbol? (run-spell '(symbol "foo")))))
+  (testing "keyword from string"
+    (is (= :foo (run-spell '(keyword "foo"))))))
+
+(deftest identity-builtin
+  (testing "identity returns argument"
+    (is (= 42 (run-spell '(identity 42))))
+    (is (= [1 2 3] (run-spell '(identity [1 2 3]))))))
+
+(deftest collection-access-test
+  (testing "peek on vector"
+    (is (= 3 (run-spell '(peek [1 2 3])))))
+  (testing "pop on vector"
+    (is (= [1 2] (run-spell '(pop [1 2 3])))))
+  (testing "butlast"
+    (is (= '(1 2) (run-spell '(butlast [1 2 3])))))
+  (testing "subvec 2-arg"
+    (is (= [3 4 5] (run-spell '(subvec [1 2 3 4 5] 2)))))
+  (testing "subvec 3-arg"
+    (is (= [2 3] (run-spell '(subvec [1 2 3 4 5] 1 3)))))
+  (testing "vec"
+    (is (= [1 2 3] (run-spell '(vec '(1 2 3))))))
+  (testing "not-empty on non-empty"
+    (is (= [1 2 3] (run-spell '(not-empty [1 2 3])))))
+  (testing "not-empty on empty"
+    (is (nil? (run-spell '(not-empty []))))))
+
+(deftest map-operations-test
+  (testing "merge"
+    (is (= {:a 1 :b 2 :c 3} (run-spell '(merge {:a 1} {:b 2} {:c 3})))))
+  (testing "merge with override"
+    (is (= {:a 2} (run-spell '(merge {:a 1} {:a 2})))))
+  (testing "update with builtin"
+    (is (= {:a 2} (run-spell '(update {:a 1} :a inc)))))
+  (testing "update with spell-fn"
+    (is (= {:a 10} (run-spell '(do (defn dbl [x] (* x 2))
+                                    (update {:a 5} :a dbl))))))
+  (testing "update-in"
+    (is (= {:a {:b 2}} (run-spell '(update-in {:a {:b 1}} [:a :b] inc)))))
+  (testing "get-in"
+    (is (= 42 (run-spell '(get-in {:a {:b {:c 42}}} [:a :b :c])))))
+  (testing "assoc-in"
+    (is (= {:a {:b 42}} (run-spell '(assoc-in {} [:a :b] 42)))))
+  (testing "dissoc"
+    (is (= {:a 1} (run-spell '(dissoc {:a 1 :b 2} :b))))))
+
+(deftest set-operations-test
+  (testing "contains? on set"
+    (is (true? (run-spell '(contains? #{1 2 3} 2))))
+    (is (false? (run-spell '(contains? #{1 2 3} 5)))))
+  (testing "contains? on map"
+    (is (true? (run-spell '(contains? {:a 1} :a))))
+    (is (false? (run-spell '(contains? {:a 1} :b)))))
+  (testing "disj"
+    (is (= #{1 3} (run-spell '(disj #{1 2 3} 2))))))
