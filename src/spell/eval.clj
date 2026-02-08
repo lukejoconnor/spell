@@ -32,10 +32,6 @@
    Allows Clojure builtins (like apply) to access the current env for spell-fn support."
   {})
 
-(def ^:dynamic *in-recovery*
-  "When true, we're inside error recovery. Prevents recursive recovery attempts."
-  false)
-
 (defn spell-future?
   "Returns true if v is a Spell future handle."
   [v]
@@ -308,7 +304,7 @@
 
 (def special-forms
   "Special forms that are not free variables."
-  #{'quote 'def 'do 'if 'let 'fn 'defn 'cond 'and 'or 'expand 'eval 'future 'plet 'quine 'call-now '-> '->> 'memo 'loop 'recur 'for 'try 'throw})
+  #{'quote 'def 'do 'if 'let 'fn 'fn* 'defn 'cond 'and 'or 'expand 'eval 'future 'plet 'quine 'call-now '-> '->> 'memo 'loop 'recur 'for 'try 'throw})
 
 (defn- thread-first
   "Transform (-> x (f a) (g b)) into (g (f x a) b)."
@@ -405,9 +401,9 @@
                   expanded-body (map #(first (-expand-expr % outer-env final-inner)) (drop 2 expr))]
               [(list* 'let (vec expanded-bindings) expanded-body) inner])
 
-        fn (let [params (set (second expr))
-                 body-inner (into inner params)]
-             [(list* 'fn (second expr) (map #(first (-expand-expr % outer-env body-inner)) (drop 2 expr))) inner])
+        (fn fn*) (let [params (set (second expr))
+                       body-inner (into inner params)]
+                   [(list* 'fn (second expr) (map #(first (-expand-expr % outer-env body-inner)) (drop 2 expr))) inner])
 
         defn (let [name-sym (second expr)
                    params (set (nth expr 2))
@@ -674,8 +670,10 @@
                                       (:memo val-result)
                                       (:idx val-result)))))))
 
-               ;; fn: (fn [params...] body...) - dynamic scoping, returns source form
-               fn    (ok {:spell/fn true :params (second expr) :body (drop 2 expr)} env memo idx)
+               ;; fn/fn*: (fn [params...] body...) - dynamic scoping, returns source form
+               ;; fn* is Clojure's internal form produced by #() reader macro
+               (fn fn*)
+                     (ok {:spell/fn true :params (second expr) :body (drop 2 expr)} env memo idx)
 
                ;; defn: (defn name [params...] body...)
                defn  (let [name (second expr)
@@ -766,9 +764,9 @@
                            ;; Get completion from env (bound by quine preamble)
                            completion (get e 'completion)
                            ;; Check if binding already exists (idempotency guard)
-                           def-str (str "(def " name-sym " ")
+                           quine-str (str "(quine " name-sym " ")
                            already-bound? (and completion
-                                               (.contains (pr-str completion) def-str))]
+                                               (.contains (pr-str completion) quine-str))]
                        (if already-bound?
                          ;; Already bound, just return the result
                          (ok result-val e m i)
@@ -777,7 +775,7 @@
                                reopen-fn (get *builtins* 'reopen)
                                completion-str (pr-str completion)
                                reopened (reopen-fn completion-str)
-                               continuation (str reopened "(def " name-sym " " (pr-str result-val) ") ")
+                               continuation (str reopened "(quine " name-sym " " (pr-str result-val) ") ")
                                ;; Get llm-self and call it
                                llm-self-fn (get *builtins* 'llm-self)]
                            (if llm-self-fn
@@ -1020,11 +1018,21 @@
                    (let [f (first vals)
                          args (rest vals)]
                      (if (spell-fn? f)
-                       (let [local-env (into e (map vector (:params f) args))
-                             body-result (eval-seq (:body f) local-env m i)]
-                         (if (err? body-result)
-                           body-result
-                           (ok (:ok body-result) e (:memo body-result) (:idx body-result))))
+                       ;; Spell fn: loop to support fn-level recur
+                       (loop [current-args args
+                              fn-m m
+                              fn-i i]
+                         (let [local-env (into e (map vector (:params f) current-args))
+                               body-result (eval-seq (:body f) local-env fn-m fn-i)]
+                           (if (err? body-result)
+                             body-result
+                             (if (and (map? (:ok body-result)) (:spell/recur (:ok body-result)))
+                               ;; recur: rebind params, re-enter function body
+                               (recur (:vals (:ok body-result))
+                                      (:memo body-result)
+                                      (:idx body-result))
+                               ;; normal return
+                               (ok (:ok body-result) e (:memo body-result) (:idx body-result))))))
                        ;; Call Clojure function - wrap in try/catch for error handling
                        (try
                          (ok (binding [*spell-env* e] (apply f args)) e m i)

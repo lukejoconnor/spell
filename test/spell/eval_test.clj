@@ -1293,6 +1293,91 @@
                               sum)))))))
 
 ;; =============================================================================
+;; Fn-level recur tests (#72)
+;; =============================================================================
+
+(deftest fn-recur-basic
+  (testing "recur in fn rebinds params and re-enters"
+    (is (= 0 (run-spell '((fn [n]
+                            (if (> n 0)
+                              (recur (- n 1))
+                              n))
+                          10)))))
+
+  (testing "fn recur with accumulator"
+    ;; 5+4+3+2+1 = 15
+    (is (= 15 (run-spell '((fn [n acc]
+                             (if (> n 0)
+                               (recur (- n 1) (+ acc n))
+                               acc))
+                           5 0)))))
+
+  (testing "factorial via fn recur"
+    (is (= 120 (run-spell '((fn [n acc]
+                              (if (= n 0)
+                                acc
+                                (recur (- n 1) (* acc n))))
+                            5 1))))))
+
+(deftest defn-recur-basic
+  (testing "recur in defn"
+    (is (= 0 (run-spell '(do (defn countdown [n]
+                               (if (> n 0)
+                                 (recur (- n 1))
+                                 n))
+                              (countdown 100))))))
+
+  (testing "defn recur with accumulator"
+    (is (= 55 (run-spell '(do (defn sum-to [n acc]
+                                (if (> n 0)
+                                  (recur (- n 1) (+ acc n))
+                                  acc))
+                               (sum-to 10 0)))))))
+
+(deftest fn-recur-with-loop
+  (testing "loop inside fn - recur goes to loop"
+    ;; The inner recur should go to loop, not fn
+    (is (= 10 (run-spell '((fn [n]
+                             (loop [i 0]
+                               (if (< i n)
+                                 (recur (+ i 1))
+                                 i)))
+                           10)))))
+
+  (testing "fn recur outside loop"
+    ;; Each call: increment counter, loop sums 0..n-1
+    ;; fn recurs until count reaches 3
+    ;; loop result at count=3: 0+1+2 = 3
+    (is (= 3 (run-spell '((fn [count]
+                            (if (< count 3)
+                              (recur (+ count 1))
+                              (loop [i 0 sum 0]
+                                (if (< i count)
+                                  (recur (+ i 1) (+ sum i))
+                                  sum))))
+                          0))))))
+
+(deftest nested-fn-recur
+  (testing "nested fns - inner recur goes to inner fn"
+    ;; outer-fn calls inner-fn which recurs to itself
+    (is (= 0 (run-spell '((fn [x]
+                            ((fn [y]
+                               (if (> y 0)
+                                 (recur (- y 1))
+                                 y))
+                             x))
+                          5)))))
+
+  (testing "outer fn recur not captured by inner fn"
+    ;; inner fn returns immediately, outer fn recurs
+    (is (= 0 (run-spell '((fn [n]
+                            (if (> n 0)
+                              (let [inner-result ((fn [x] x) n)]
+                                (recur (- inner-result 1)))
+                              n))
+                          5))))))
+
+;; =============================================================================
 ;; Regex Pattern tests (#53)
 ;; =============================================================================
 
