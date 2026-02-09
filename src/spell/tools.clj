@@ -154,24 +154,32 @@ Returns {:ok path} on success, {:error message} on failure.
 
    This is the pattern used by SWE-agent and Aider for reliable file editing."
   [path old-str new-str]
-  (try
-    (let [content (slurp path)
-          occurrences (count-occurrences content old-str)]
-      (cond
-        (zero? occurrences)
-        {:error (str "String not found in file: " (pr-str old-str))}
+  (cond
+    (nil? old-str)
+    {:error "old-str cannot be nil"}
 
-        (> occurrences 1)
-        {:error (str "String appears " occurrences " times (must be unique): " (pr-str old-str))}
+    (nil? new-str)
+    {:error "new-str cannot be nil"}
 
-        :else
-        (let [new-content (clojure.string/replace-first content old-str new-str)]
-          (spit path new-content)
-          {:ok path})))
-    (catch java.io.FileNotFoundException _
-      {:error (str "File not found: " path)})
-    (catch Exception e
-      {:error (str "Error: " (.getMessage e))})))
+    :else
+    (try
+      (let [content (slurp path)
+            occurrences (count-occurrences content old-str)]
+        (cond
+          (zero? occurrences)
+          {:error (str "String not found in file: " (pr-str old-str))}
+
+          (> occurrences 1)
+          {:error (str "String appears " occurrences " times (must be unique): " (pr-str old-str))}
+
+          :else
+          (let [new-content (clojure.string/replace-first content old-str new-str)]
+            (spit path new-content)
+            {:ok path})))
+      (catch java.io.FileNotFoundException _
+        {:error (str "File not found: " path)})
+      (catch Exception e
+        {:error (str "Error: " (.getMessage e))}))))
 
 (def str-replace-tool
   "Tool metadata for str-replace."

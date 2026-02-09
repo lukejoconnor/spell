@@ -5,7 +5,7 @@
             [spell.core :as spell]
             [spell.llm :as llm]
             [spell.provider :as provider]
-            [spell.tools :as tools]
+            [spell.io :as spell-io]
             [spell.prompt :as prompt]
             [clojure.java.io :as io]
             [clojure.string :as str]))
@@ -47,20 +47,20 @@
         (is (= "from llm" result))))))
 
 ;; =============================================================================
-;; Greeting task tests (read-name tool)
+;; File I/O task tests
 ;; =============================================================================
 
-(deftest greeting-task-dummy-test
-  (testing "greeting task with dummy provider - expected completion"
-    (spit "name.txt" "Alice")
+(deftest file-io-task-dummy-test
+  (testing "file I/O task with dummy provider"
+    (spit "test-greeting.txt" "Alice")
     (try
       (provider/with-provider
         (provider/dummy-provider
-          {:response "(def thought \"use read-name tool\") (cat \"Hello, \" (tools/read-name) \"!\"))"})
+          {:response "(def thought \"read file\") (cat \"Hello, \" (:ok (io/slurp \"test-greeting.txt\")) \"!\"))"})
         (let [result (spell/llm "(do ")]
           (is (= "Hello, Alice!" result))))
       (finally
-        (io/delete-file "name.txt")))))
+        (io/delete-file "test-greeting.txt")))))
 
 ;; =============================================================================
 ;; Hook tests
@@ -301,16 +301,16 @@
 
   (testing "default prompt contains expected sections"
     (let [p (prompt/generate-system-prompt spell/all-namespaces)]
-      (is (str/includes? p "SPELL INTERPRETER"))
+      (is (str/includes? p "INTRODUCTION"))
       (is (str/includes? p "BUILTINS"))
       (is (str/includes? p "NAMESPACES"))
       (is (str/includes? p "read-file"))
-      (is (str/includes? p "bash"))
-      (is (str/includes? p "EXAMPLES"))))
+      (is (str/includes? p "sh"))
+      (is (str/includes? p "CALL-NOW"))))
 
   (testing "qualified symbol usage instructions included"
     (let [p (prompt/generate-system-prompt spell/all-namespaces)]
-      (is (str/includes? p "tools/bash")))))
+      (is (str/includes? p "io/sh")))))
 
 
 ;; =============================================================================
