@@ -10,6 +10,8 @@
             [spell.provider :as provider]
             [spell.trace :as trace]))
 
+(declare make-leaf-llm)
+
 ;; ---------------------------------------------------------------------------
 ;; Describe builtin (defined here to avoid circular deps with core)
 ;; ---------------------------------------------------------------------------
@@ -48,6 +50,64 @@ re-executing side effects like bash commands or file writes.")
              (println (str i ": " (pr-str (:expr entry))
                            " => " (pr-str (:value entry)))))))))
 
+(defn- find-in-namespaces
+  "Search all namespaces for a keyword matching sym.
+   Returns a list of qualified symbols, e.g. (seqs/distinct)."
+  [sym namespaces]
+  (let [kw (keyword sym)]
+    (for [[ns-sym ns-map] namespaces
+          :when (map? ns-map)
+          :when (contains? ns-map kw)]
+      (symbol (str ns-sym "/" sym)))))
+
+(defn- substitute-symbol
+  "Recursively replace occurrences of old-sym with new-sym in expr."
+  [expr old-sym new-sym]
+  (cond
+    (= expr old-sym) new-sym
+    (seq? expr) (apply list (map #(substitute-symbol % old-sym new-sym) expr))
+    (vector? expr) (mapv #(substitute-symbol % old-sym new-sym) expr)
+    (map? expr) (into {} (map (fn [[k v]] [(substitute-symbol k old-sym new-sym)
+                                            (substitute-symbol v old-sym new-sym)]) expr))
+    :else expr))
+
+(defn- make-namespace-recover-fn
+  "Create a recovery fn that fixes unbound/misqualified symbols by searching namespaces.
+   Returns nil if no unique match found (letting the next strategy try)."
+  [namespaces]
+  (fn [result _recovery-call-fn]
+    (let [{:keys [err expr program]} result]
+      (when-let [fix
+                 (cond
+                   ;; Case 1: "Unbound symbol: X" — bare symbol, search all namespaces
+                   (clojure.string/starts-with? err "Unbound symbol: ")
+                   (let [sym (symbol (subs err (count "Unbound symbol: ")))
+                         matches (find-in-namespaces sym namespaces)]
+                     (when (= 1 (count matches))
+                       (let [qualified (first matches)]
+                         (when eval/*verbose*
+                           (println (str "  Namespace recovery: " sym " -> " qualified)))
+                         (substitute-symbol program sym qualified))))
+
+                   ;; Case 2: "Namespace lookup failed: ns/item" — wrong namespace
+                   (clojure.string/starts-with? err "Namespace lookup failed: ")
+                   (let [qualified-str (subs err (count "Namespace lookup failed: "))
+                         parts (clojure.string/split qualified-str #"/")
+                         item-sym (symbol (last parts))
+                         bad-qualified (symbol qualified-str)
+                         matches (find-in-namespaces item-sym namespaces)]
+                     (when (= 1 (count matches))
+                       (let [correct (first matches)]
+                         (when eval/*verbose*
+                           (println (str "  Namespace recovery: " bad-qualified " -> " correct)))
+                         (substitute-symbol program bad-qualified correct)))))]
+        ;; Return the fixed program, but strip the outer (do ...) if recovery
+        ;; re-evaluates from scratch — we need the remaining expressions from
+        ;; where the error occurred onward. Actually, the recovery mechanism
+        ;; evaluates fix-expr with the memo, so returning the full fixed program
+        ;; is correct — memo'd expressions will re-use cached values.
+        fix))))
+
 ;; ---------------------------------------------------------------------------
 ;; LLM Engine
 ;; ---------------------------------------------------------------------------
@@ -55,7 +115,7 @@ re-executing side effects like bash commands or file writes.")
 (defn- -llm
   "Core llm: call LLM, concat prefix+response, parse, apply hooks, eval.
    Uses memo-based evaluation for potential error recovery."
-  [{:keys [call-fn builtins recover-fn recovery-call-fn]} prompt hooks]
+  [{:keys [call-fn builtins recover-fns recovery-call-fn]} prompt hooks]
   (when (and eval/*max-llm-depth* (>= eval/*llm-depth* eval/*max-llm-depth*))
     (throw (ex-info "LLM recursion limit exceeded"
                     {:depth eval/*llm-depth* :limit eval/*max-llm-depth*})))
@@ -90,26 +150,27 @@ re-executing side effects like bash commands or file writes.")
 
         ;; Handle error recovery if configured (and not already recovering)
         final-result
-        (if (and (eval/err? result) recover-fn (not eval/*in-recovery*))
+        (if (and (eval/err? result) recover-fns)
           (let [_        (when eval/*verbose*
                            (println (str indent "=== Error Recovery ==="))
                            (println (str indent "Error: " (:err result)))
                            (println (str indent "Memo entries: " (count (:memo result)))))
                 ;; Add program to result for recovery context
                 result-with-program (assoc result :program program')
-                fix-expr (recover-fn result-with-program recovery-call-fn)
-                _        (when eval/*verbose*
-                           (println (str indent "Recovery expression: " (pr-str fix-expr))))
-                ;; Run fix-expr with memo available for (memo N) lookups.
-                ;; Start idx at end of memo so we don't auto-match (fix-expr has different structure).
-                ;; Bind *in-recovery* to prevent recursive recovery attempts.
-                retry    (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
-                                   eval/*in-recovery*    true
-                                   trace/*trace-node-id* node-id]
-                           (eval/spell-eval fix-expr (:env result) (:memo result) (count (:memo result))))]
-            (when (and eval/*verbose* (eval/err? retry))
-              (println (str indent "Recovery failed: " (:err retry))))
-            retry)
+                ;; Try each recovery strategy until one returns non-nil
+                fix-expr (some #(% result-with-program recovery-call-fn) recover-fns)]
+            (if fix-expr
+              (let [_        (when eval/*verbose*
+                               (println (str indent "Recovery expression: " (pr-str fix-expr))))
+                    ;; Run fix-expr with memo available for (memo N) lookups.
+                    ;; Start idx at end of memo so we don't auto-match.
+                    retry    (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
+                                       trace/*trace-node-id* node-id]
+                               (eval/spell-eval fix-expr (:env result) (:memo result) (count (:memo result))))]
+                (when (and eval/*verbose* (eval/err? retry))
+                  (println (str indent "Recovery failed: " (:err retry))))
+                retry)
+              result))
           result)
 
         value (when (eval/ok? final-result) (:ok final-result))
@@ -152,7 +213,7 @@ re-executing side effects like bash commands or file writes.")
 
    The returned function is automatically available as 'llm-self in Spell code,
    providing self-recursion without needing to wire up var refs."
-  [{:keys [namespaces model llm-var recover]
+  [{:keys [namespaces model llm-var recover format]
     :or {namespaces {} model nil recover true}}]
   (let [self-ref (atom nil)
         self-fn (fn llm-self
@@ -168,10 +229,11 @@ re-executing side effects like bash commands or file writes.")
         variant-builtins (merge eval/core-builtins
                                 hook-builtins
                                 {'llm-self self-fn
+                                 'leaf-llm (make-leaf-llm {})
                                  'describe describe}
                                 ns-builtins
                                 (when llm-var {'llm llm-var}))
-        sys-prompt (prompt/generate-system-prompt namespaces)
+        sys-prompt (prompt/generate-system-prompt namespaces format)
         call-fn  (fn [prompt-str]
                    (provider/llm-call prompt-str
                      (cond-> {:system sys-prompt :prefix prompt-str}
@@ -181,21 +243,22 @@ re-executing side effects like bash commands or file writes.")
                            (provider/llm-call prompt-str
                              (cond-> {:system recovery-system-prompt}
                                model (assoc :model model))))
-        ;; Resolve recovery setting
-        recover-fn (cond
-                     (false? recover) nil
-                     (fn? recover) recover
-                     :else default-recover-fn)
+        ;; Resolve recovery setting into a chain of strategies
+        ns-recover (make-namespace-recover-fn namespaces)
+        recover-fns (cond
+                      (false? recover) nil
+                      (fn? recover) [ns-recover recover]
+                      :else [ns-recover default-recover-fn])
         config   {:call-fn call-fn
                   :builtins variant-builtins
-                  :recover-fn recover-fn
+                  :recover-fns recover-fns
                   :recovery-call-fn recovery-call-fn}
         wrap-nl  (fn [p]
                    (let [s (if (or (seq? p) (list? p)) (pr-str p) (str p))]
                      (if (.startsWith (.trim ^String s) "(")
                        p
-                       (str "(quine completion (spell-eval (do "
-                            "(def prompt \"" (parse/escape-string s) "\") "))))
+                       (str "(quine completion (eval (do "
+                            "(quine prompt \"" (parse/escape-string s) "\") "))))
         the-llm  (fn the-llm
                    ([prompt] (the-llm prompt []))
                    ([prompt hooks]
