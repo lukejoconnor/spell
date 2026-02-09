@@ -76,7 +76,7 @@
   [["-t" "--test" "Use dummy LLM provider (returns 'hello world')"]
    ["-e" "--example NAME" "Run a named example from examples/"]
    ["-a" "--agent FILE" "Use agent definition from .agent.edn file"]
-   ["-m" "--model MODEL" "Model spec: haiku, sonnet, opus, ollama:<model>, openai:<model> (default: openai:gpt-5.2)"]
+   ["-m" "--model MODEL" "Model spec: haiku, sonnet, opus, ollama:<model>, openai:<model>, user (default: openai:gpt-4.1)"]
    ["-d" "--depth DEPTH" "Max recursion depth (default: 8, 0 = unlimited)"
     :parse-fn #(Integer/parseInt %)
     :validate [#(>= % 0) "Must be non-negative"]]
@@ -159,11 +159,17 @@
       {:exit-message (usage summary) :ok? false})))
 
 (defn- make-provider [{:keys [test model max-tokens]}]
-  (if test
+  (cond
+    test
     (provider/dummy-provider {:response "\"hello world\""})
+
+    (= model "user")
+    (provider/user-provider)
+
+    :else
     (let [{:keys [provider model]} (if model
                                      (parse-model-spec model)
-                                     {:provider "openai" :model "gpt-5.2"})
+                                     {:provider "openai" :model "gpt-4.1"})
           resolved-model (when model (resolve-model model))
           base-opts (cond-> {}
                       resolved-model (assoc :model resolved-model)
@@ -203,7 +209,8 @@
                    (let [config (cond-> {}
                                   namespaces (assoc :namespaces namespaces)
                                   model (assoc :model model)
-                                  (some? recover) (assoc :recover recover))]
+                                  (some? recover) (assoc :recover recover)
+                                  format (assoc :format format))]
                      (llm/make-llm config))
                    ;; Leaf mode (no eval)
                    (llm/make-leaf-llm (cond-> {}
