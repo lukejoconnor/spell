@@ -1,134 +1,67 @@
 (ns spell.stdlib
   "Standard library namespaces for Spell.
 
-   These provide extended functions beyond core builtins, organized by domain:
-   - strings: String manipulation and regex
-   - seqs: Sequence operations beyond core map/filter/reduce
-   - fns: Function combinators"
-  (:require [spell.eval :as eval]
-            [clojure.string :as str]))
+   Most Clojure core functions are in core-builtins (eval.clj).
+   Namespaces here match Clojure's namespace structure:
+   - strings: matches clojure.string
+   - math: matches Java's Math (since Clojure uses Math/ interop)
+   - patterns: Spell-specific orchestration patterns"
+  (:require [clojure.string :as str]))
 
 ;; =============================================================================
-;; strings namespace
+;; strings namespace (matches clojure.string)
 ;; =============================================================================
 
 (def strings
-  "String manipulation and regex functions."
+  "String manipulation and regex functions (like clojure.string)."
   {:docs {:subs "Substring. (subs s start) or (subs s start end)"
           :index-of "Index of substr in s, or nil if not found"
+          :last-index-of "Last index of substr in s, or nil if not found"
           :starts-with? "True if s starts with prefix"
+          :ends-with? "True if s ends with suffix"
           :includes? "True if s contains substr"
+          :blank? "True if s is nil, empty, or only whitespace"
           :trim "Remove leading/trailing whitespace"
           :replace "Replace all occurrences: (replace s match replacement)"
           :split "Split string by regex pattern"
+          :split-lines "Split string on line breaks"
           :join "Join collection with separator"
           :lower-case "Convert to lowercase"
           :upper-case "Convert to uppercase"
+          :capitalize "Capitalize first character"
           :re-find "Find first regex match in string"
-          :re-matches "True if entire string matches regex"}
+          :re-matches "True if entire string matches regex"
+          :re-seq "Return lazy seq of all regex matches"}
    :subs (fn
            ([s start] (subs s start))
            ([s start end] (subs s start end)))
    :index-of (fn [s substr]
                (let [idx (.indexOf ^String (str s) ^String (str substr))]
                  (when (>= idx 0) idx)))
+   :last-index-of (fn [s substr]
+                    (let [idx (.lastIndexOf ^String (str s) ^String (str substr))]
+                      (when (>= idx 0) idx)))
    :starts-with? (fn [s prefix] (.startsWith ^String (str s) (str prefix)))
+   :ends-with? (fn [s suffix] (.endsWith ^String (str s) (str suffix)))
    :includes? (fn [s substr] (.contains ^String (str s) (str substr)))
+   :blank? str/blank?
    :trim (fn [s] (str/trim (str s)))
    :replace (fn [s match replacement]
               (str/replace (str s) (str match) (str replacement)))
    :split (fn [s pattern] (str/split (str s) (re-pattern pattern)))
+   :split-lines (fn [s] (str/split-lines (str s)))
    :join (fn
            ([coll] (str/join coll))
            ([sep coll] (str/join sep coll)))
    :lower-case (fn [s] (str/lower-case (str s)))
    :upper-case (fn [s] (str/upper-case (str s)))
+   :capitalize (fn [s] (str/capitalize (str s)))
    :re-find (fn [pattern s] (re-find (re-pattern pattern) s))
-   :re-matches (fn [pattern s] (re-matches (re-pattern pattern) s))})
+   :re-matches (fn [pattern s] (re-matches (re-pattern pattern) s))
+   :re-seq (fn [pattern s] (vec (re-seq (re-pattern pattern) s)))})
 
 ;; =============================================================================
-;; seqs namespace
-;; =============================================================================
-
-(def seqs
-  "Extended sequence operations."
-  {:docs {:every? "True if (pred x) is truthy for all x in coll"
-          :remove "Keep elements where (pred x) is falsy"
-          :mapcat "Map then concat (flatmap)"
-          :take-while "Take while predicate is true"
-          :drop-while "Drop while predicate is true"
-          :find-first "First element where (pred x) is truthy"
-          :not-any? "True if (pred x) is falsy for all x"
-          :group-by "Group elements by (f x)"
-          :sort-by "Sort by (keyfn x)"
-          :sort "Sort collection"
-          :repeat "Repeat value n times"
-          :distinct "Remove duplicates"
-          :flatten "Flatten nested collections"
-          :frequencies "Count occurrences of each element"
-          :partition "Partition into groups of n"
-          :partition-all "Partition, including partial final group"
-          :interleave "Interleave multiple collections"
-          :interpose "Insert separator between elements"
-          :zipmap "Create map from keys and values"
-          :split-at "Split at index into [before after]"
-          :map-slice "Slice a sorted map by key range (inclusive). (map-slice m 10 20) => submap with keys 10-20"}
-   :every? (fn [pred coll] (every? #(eval/invoke-fn pred [%]) coll))
-   :remove (fn [pred coll] (filterv #(not (eval/invoke-fn pred [%])) coll))
-   :mapcat (fn [f coll] (vec (mapcat #(eval/invoke-fn f [%]) coll)))
-   :take-while (fn [pred coll] (vec (take-while #(eval/invoke-fn pred [%]) coll)))
-   :drop-while (fn [pred coll] (vec (drop-while #(eval/invoke-fn pred [%]) coll)))
-   :find-first (fn [pred coll] (some #(when (eval/invoke-fn pred [%]) %) coll))
-   :not-any? (fn [pred coll] (not-any? #(eval/invoke-fn pred [%]) coll))
-   :group-by (fn [f coll]
-               (reduce
-                 (fn [m x]
-                   (let [k (eval/invoke-fn f [x])]
-                     (update m k (fnil conj []) x)))
-                 {} coll))
-   :sort-by (fn [keyfn coll] (vec (sort-by #(eval/invoke-fn keyfn [%]) coll)))
-   :sort (fn [coll] (vec (sort coll)))
-   :repeat (fn [n x] (vec (repeat n x)))
-   :distinct (fn [coll] (vec (distinct coll)))
-   :flatten (fn [coll] (vec (flatten coll)))
-   :frequencies frequencies
-   :partition (fn
-                ([n coll] (vec (map vec (partition n coll))))
-                ([n step coll] (vec (map vec (partition n step coll)))))
-   :partition-all (fn
-                    ([n coll] (vec (map vec (partition-all n coll))))
-                    ([n step coll] (vec (map vec (partition-all n step coll)))))
-   :interleave (fn [& colls] (vec (apply interleave colls)))
-   :interpose (fn [sep coll] (vec (interpose sep coll)))
-   :zipmap zipmap
-   :split-at (fn [n coll] [(vec (take n coll)) (vec (drop n coll))])
-   :map-slice (fn [m start end] (into (sorted-map) (subseq m >= start <= end)))})
-
-;; =============================================================================
-;; fns namespace
-;; =============================================================================
-
-(def fns
-  "Function combinators."
-  {:docs {:comp "Compose functions right-to-left: ((comp f g) x) = (f (g x))"
-          :partial "Partial application: ((partial f a) b) = (f a b)"
-          :juxt "Apply multiple fns, return vector: ((juxt f g) x) = [(f x) (g x)]"
-          :complement "Negate predicate: ((complement f) x) = (not (f x))"}
-   :comp (fn [& fns]
-           (fn [x]
-             (reduce (fn [v f] (eval/invoke-fn f [v])) x (reverse fns))))
-   :partial (fn [f & args]
-              (fn [& more]
-                (eval/invoke-fn f (concat args more))))
-   :juxt (fn [& fns]
-           (fn [& args]
-             (mapv #(eval/invoke-fn % args) fns)))
-   :complement (fn [f]
-                 (fn [& args]
-                   (not (eval/invoke-fn f args))))})
-
-;; =============================================================================
-;; math namespace
+;; math namespace (matches Java's Math/)
 ;; =============================================================================
 
 (defn- factorial
@@ -156,54 +89,16 @@
     (Math/abs (* (quot a (gcd a b)) b))))
 
 (def math
-  "Mathematical functions."
-  {:docs {;; Basic
-          :sqrt "Square root"
-          :cbrt "Cube root"
-          :pow "Raise x to power y"
-          :exp "e^x"
-          :expm1 "e^x - 1 (accurate for small x)"
-          :abs "Absolute value"
-          :sign "Sign of x: -1, 0, or 1"
-          ;; Rounding
-          :floor "Round down to nearest integer"
-          :ceil "Round up to nearest integer"
-          :round "Round to nearest integer"
-          :trunc "Truncate toward zero"
-          ;; Logarithms
-          :log "Natural logarithm (base e)"
-          :log10 "Base-10 logarithm"
-          :log2 "Base-2 logarithm"
-          :log1p "log(1 + x) (accurate for small x)"
-          ;; Trigonometric (radians)
-          :sin "Sine"
-          :cos "Cosine"
-          :tan "Tangent"
-          :asin "Arcsine"
-          :acos "Arccosine"
-          :atan "Arctangent"
-          :atan2 "Arctangent of y/x with correct quadrant"
-          ;; Hyperbolic
-          :sinh "Hyperbolic sine"
-          :cosh "Hyperbolic cosine"
-          :tanh "Hyperbolic tangent"
-          ;; Angle conversion
-          :degrees "Radians to degrees"
-          :radians "Degrees to radians"
-          ;; Number theory
-          :factorial "n! (factorial)"
+  "Mathematical functions (like Java's Math/)."
+  {:docs {:_ "Wraps java.lang.Math — sqrt pow log sin cos tan abs floor ceil round etc. all work as expected. Non-obvious extras:"
+          :factorial "n! (bigint-safe)"
           :gcd "Greatest common divisor"
           :lcm "Least common multiple"
-          ;; Misc
-          :hypot "sqrt(x^2 + y^2) without overflow"
-          :rand "Random float in [0, 1)"
-          :rand-int "Random integer in [0, n)"
-          ;; Constants
-          :PI "Pi (3.14159...)"
-          :E "Euler's number (2.71828...)"
-          :INF "Positive infinity"
-          :NEG-INF "Negative infinity"
-          :NaN "Not a number"}
+          :log2 "Base-2 logarithm"
+          :+' "+' -' *' inc' dec': auto-promoting arithmetic for big numbers"
+          :float "float double long bigdec rationalize: type coercion"
+          :PI "PI E INF NEG-INF NaN: constants"
+          :rand "Random float in [0, 1); rand-int for integers"}
    ;; Basic
    :sqrt (fn [x] (Math/sqrt x))
    :cbrt (fn [x] (Math/cbrt x))
@@ -245,6 +140,21 @@
    :hypot (fn [x y] (Math/hypot x y))
    :rand rand
    :rand-int (fn [n] (rand-int n))
+   ;; Type predicates
+   :NaN? (fn [x] (Double/isNaN (double x)))
+   :infinite? (fn [x] (Double/isInfinite (double x)))
+   ;; Auto-promoting arithmetic
+   :+' +'
+   :-' -'
+   :*' *'
+   :inc' inc'
+   :dec' dec'
+   ;; Type coercion
+   :float float
+   :double double
+   :long long
+   :bigdec bigdec
+   :rationalize rationalize
    ;; Constants
    :PI Math/PI
    :E Math/E
@@ -253,22 +163,15 @@
    :NaN Double/NaN})
 
 ;; =============================================================================
-;; patterns namespace
+;; patterns namespace (Spell-specific)
 ;; =============================================================================
 
 (def patterns
-  "Reusable orchestration patterns."
-  {:docs {:call-now "Continuation pattern: evaluates expr, appends (def name result) to the completion, spawns child LLM that continues with the binding. Returns what the child returns. The binding exists only for the CHILD—code after call-now in your program cannot access it. Use call-now as your last expression and let the child continue. For simple tool calls where you need the result inline, just call the tool directly: (def files (tools/bash \"ls\")) (:out files)."
-          :check-result "Verify an answer using leaf-llm. Returns {:ok answer} if correct, {:wrong msg} if not. Caller decides how to handle wrong results (retry, extend, etc.).
+  "Reusable orchestration patterns (Spell-specific)."
+  {:docs {:check-result "Verify an answer using leaf-llm. Returns {:ok answer} if correct, {:wrong msg} if not. Caller decides how to handle wrong results (retry, extend, etc.).
 (check-result \"What is 2+2?\" 4)  ; => {:ok 4}
 (check-result \"Capital of France?\" \"London\")  ; => {:wrong \"London is the capital of the UK, not France.\"}"}
-   ;; call-now as a Spell function (dynamic scoping resolves 'completion' from caller's env)
-   :call-now {:spell/fn true
-              :params ['result 'name]
-              :body '((if (strings/includes? completion (cat "(def " (str name) " "))
-                        result
-                        (llm (cat (reopen completion) "(def " (str name) " " (pr-str result) ") "))))}
-   ;; check-result: verify answer with leaf-llm, return {:ok answer} or {:wrong msg}
+   ;; check-result: verify answer with leaf-llm (core builtin), return {:ok answer} or {:wrong msg}
    :check-result {:spell/fn true
                   :params ['prompt 'answer]
                   :body '((let [verification-prompt (cat "Verify this answer.\n\n"
@@ -291,9 +194,8 @@
 ;; =============================================================================
 
 (def all-namespaces
-  "All standard library namespaces."
+  "All standard library namespaces.
+   Note: seqs, fns, and bit- operations are in core-builtins (matching Clojure)."
   {'strings strings
-   'seqs seqs
-   'fns fns
    'math math
    'patterns patterns})
