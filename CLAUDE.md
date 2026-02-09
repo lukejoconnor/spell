@@ -88,7 +88,7 @@ Programs return the value of their last expression (standard Lisp semantics). No
 | `src/spell/tools.clj` | Tool implementations (bash, read-name, read-file, write-file, str-replace) |
 | `src/spell/cli.clj` | CLI with `-t`, `-m`, `-a`, `-v`, `-d`, `-b` flags; accepts `.spl` files and `.agent.edn` agents |
 | `src/spell/trace.clj` | Trace recording system for debugging LLM call trees |
-| `test/spell/*_test.clj` | 7 test files (core, eval, hooks, llm, parse, tools, trace) |
+| `test/spell/*_test.clj` | 8 test files (core, eval, hooks, llm, parse, stdlib, tools, trace) |
 | `dev/benchmark.clj` | Orchestration benchmark harness |
 | `spl-lib/patterns.spl` | Reusable Spell patterns (call-now, check-result) |
 | `src/spell/agent.clj` | Agent definition loader (.agent.edn files) |

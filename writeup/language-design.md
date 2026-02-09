@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes Spell (Self-Prompting Execution Language for LLMs), a domain-specific language embedded in Clojure for LLM self-orchestration and own-context manipulation. In contrast to standard agent architectures where an external harness calls the LLM in a loop, Spell gives the LLM the ability to call itself recursively. The user prompts the LLM once, and then the harness evaluates its outputs recursively. Using Spell, the LLM can express patterns for context pruning, subagent communication, and deterministic behavior; it can compose these patterns in arbitrary ways.
+This document describes Spell (Self-Prompting Execution Language for LLMs), a domain-specific language embedded in Clojure for LLM self-orchestration and own-context engineering. Unlike an agentic harness which calls the LLM according to a human-designed pattern, Spell lets the LLM call itself recursively. It can pass context to itself in a ReAct-like pattern, it can implement human-inspired patterns like worker-checker, it can embed self-calls within control flow patterns like loops and conditionals, and it can compose these patterns in arbitrary ways. The LLM controls the context of its child LLMs programmatically, allowing it prune, rerank, summarize, and augment its own context window. Spell also allows multiple agents to run asynchronously and communicate either directly or via global state. 
 
 Compared with Clojure, Spell adds a key primitive, `llm`. `llm` accepts a prompt, generates Spell code, and evaluates it. Spell also has its own rules related to scope and environments, motivated by the fact that the LLM cannot observe variables defined outside of its local context window. It also removes built-ins with side effects (particularly I/O), so the agent is sandboxed by default. 
 
@@ -108,7 +108,7 @@ Completions---programs generated and evaluated by `llm`---always have a specific
 
 ```clojure
 (quine completion
-  (spell-eval
+  (eval
     (do
       ...
       ; last expression in the do-block is the return value
