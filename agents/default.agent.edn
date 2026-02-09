@@ -1,0 +1,14 @@
+;; Default agent with standard library (no I/O)
+;; Other agents can extend this with :base default.agent.edn
+;; This is used by the CLI when no -a flag is specified
+;;
+;; Note: seqs, fns, and bit- ops are in core-builtins (matching Clojure)
+;; io/ is opt-in — use with-io.agent.edn for file/process access
+
+{:name default
+ :doc "Default agent with standard library (no I/O)"
+
+ :namespaces
+ {strings  stdlib/strings
+  math     stdlib/math
+  patterns stdlib/patterns}}

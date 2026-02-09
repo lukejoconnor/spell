@@ -1,0 +1,9 @@
+;; Default agent + I/O capabilities
+;; Extends default with io/ namespace for file and process operations
+
+{:base spell:default
+ :name with-io
+ :doc "Default agent with I/O (file operations, shell access)"
+
+ :namespaces
+ {io stdlib/io}}

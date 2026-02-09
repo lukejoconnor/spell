@@ -1,0 +1,7 @@
+;; Leaf agent - plain text in/out, no Spell evaluation
+;; Usage: spell -a agents/leaf.agent.edn "What is 2+2?"
+
+{:name leaf
+ :doc "Plain text assistant with no code execution"
+ :eval false
+ :system "You are a helpful assistant. Respond concisely."}
