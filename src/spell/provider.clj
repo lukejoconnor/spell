@@ -41,8 +41,22 @@
   "Cost per million tokens: {model-prefix [input-cost output-cost]}"
   {"claude-3-5-haiku"  [0.80 4.00]
    "claude-sonnet-4"   [3.00 15.00]
-   "claude-opus-4"     [15.00 75.00]
+   "claude-opus-4-5"   [15.00 75.00]
+   ;; OpenAI models
+   "gpt-4o-mini"       [0.15 0.60]
    "gpt-4o"            [2.50 10.00]
+   "gpt-4.1-nano"      [0.10 0.40]
+   "gpt-4.1-mini"      [0.40 1.60]
+   "gpt-4.1"           [2.00 8.00]
+   "o3-mini"           [1.10 4.40]
+   "o4-mini"           [1.10 4.40]
+   "o3"                [2.00 8.00]
+   "gpt-5-mini"        [0.25 2.00]
+   "gpt-5-codex"       [1.25 10.00]
+   "gpt-5.1-codex"     [1.25 10.00]
+   "gpt-5"             [1.25 10.00]
+   "gpt-5.1"           [1.25 10.00]
+   "gpt-5.2-codex"     [1.75 14.00]
    "gpt-5.2"           [1.75 14.00]})
 
 (defn- lookup-cost
@@ -125,7 +139,7 @@
   (-> (HttpClient/newBuilder)
       (.build)))
 
-(defn- anthropic-request [api-key model prompt system-prompt prefix]
+(defn- anthropic-request [api-key model prompt system-prompt prefix max-tokens]
   (let [messages (cond-> [{:role "user" :content prompt}]
                    prefix (conj {:role "assistant" :content (str/trimr prefix)}))
         ;; Use cache_control for system prompt to enable prompt caching
@@ -135,7 +149,7 @@
                           :text system-prompt
                           :cache_control {:type "ephemeral"}}])
         body (cond-> {:model model
-                      :max_tokens 4096
+                      :max_tokens (or max-tokens 4096)
                       :messages messages}
                cached-system (assoc :system cached-system))
         request (-> (HttpRequest/newBuilder)
@@ -162,12 +176,12 @@
                  :cache_creation_input_tokens (:cache_creation_input_tokens usage 0)
                  :cache_read_input_tokens (:cache_read_input_tokens usage 0)}}))))
 
-(defrecord AnthropicProvider [api-key model http-client]
+(defrecord AnthropicProvider [api-key model max-tokens http-client]
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt opts]
     (let [effective-model (or (:model opts) model)
-          request (anthropic-request api-key effective-model prompt (:system opts) (:prefix opts))
+          request (anthropic-request api-key effective-model prompt (:system opts) (:prefix opts) max-tokens)
           response (.send http-client request (HttpResponse$BodyHandlers/ofString))
           status (.statusCode response)]
       (if (<= 200 status 299)
@@ -182,15 +196,16 @@
 
    Options:
    - :api-key - API key (default: ANTHROPIC_API_KEY env var)
-   - :model - Model name (default: claude-sonnet-4-20250514)"
+   - :model - Model name (default: claude-sonnet-4-20250514)
+   - :max-tokens - Max tokens per response (default: 4096)"
   ([] (anthropic-provider {}))
-  ([{:keys [api-key model]
+  ([{:keys [api-key model max-tokens]
      :or {model "claude-sonnet-4-20250514"}}]
    (let [key (or api-key (System/getenv "ANTHROPIC_API_KEY"))]
      (when-not key
        (throw (ex-info "No API key provided. Set ANTHROPIC_API_KEY or pass :api-key"
                        {:env "ANTHROPIC_API_KEY"})))
-     (->AnthropicProvider key model (make-http-client)))))
+     (->AnthropicProvider key model max-tokens (make-http-client)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Ollama Provider
@@ -254,14 +269,39 @@
 ;; OpenAI Provider
 ;; ---------------------------------------------------------------------------
 
-(defn- openai-request [api-key base-url model prompt system-prompt prefix]
+(defn- responses-model?
+  "Does this model require the OpenAI Responses API instead of Chat Completions?"
+  [model]
+  (some #(str/includes? model %) ["codex"]))
+
+(defn- openai-responses-request [api-key base-url model prompt system-prompt max-tokens]
+  (let [body (cond-> {:model model
+                      :input prompt}
+               system-prompt (assoc :instructions system-prompt)
+               max-tokens (assoc :max_output_tokens max-tokens))
+        request (-> (HttpRequest/newBuilder)
+                    (.uri (URI/create (str base-url "/responses")))
+                    (.header "Content-Type" "application/json")
+                    (.header "Authorization" (str "Bearer " api-key))
+                    (.POST (HttpRequest$BodyPublishers/ofString (json/write-str body)))
+                    (.build))]
+    request))
+
+(defn- parse-openai-responses-response [response-body]
+  (let [parsed (json/read-str response-body :key-fn keyword)]
+    (if-let [error (:error parsed)]
+      (throw (ex-info "OpenAI Responses API error" {:error error}))
+      {:text (:output_text parsed "")
+       :usage {:input_tokens (get-in parsed [:usage :input_tokens] 0)
+               :output_tokens (get-in parsed [:usage :output_tokens] 0)}})))
+
+(defn- openai-request [api-key base-url model prompt system-prompt _prefix max-tokens]
   (let [messages (cond-> []
                    system-prompt (conj {:role "system" :content system-prompt})
-                   true (conj {:role "user" :content prompt})
-                   prefix (conj {:role "assistant" :content prefix}))
+                   true (conj {:role "user" :content prompt}))
         body {:model model
               :messages messages
-              :max_completion_tokens 4096}
+              :max_completion_tokens (or max-tokens 4096)}
         request (-> (HttpRequest/newBuilder)
                     (.uri (URI/create (str base-url "/chat/completions")))
                     (.header "Content-Type" "application/json")
@@ -278,16 +318,21 @@
        :usage {:input_tokens (:prompt_tokens (:usage parsed) 0)
                :output_tokens (:completion_tokens (:usage parsed) 0)}})))
 
-(defrecord OpenAIProvider [api-key base-url model http-client]
+(defrecord OpenAIProvider [api-key base-url model max-tokens http-client]
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt opts]
     (let [effective-model (or (:model opts) model)
-          request (openai-request api-key base-url effective-model prompt (:system opts) (:prefix opts))
+          responses? (responses-model? effective-model)
+          request (if responses?
+                    (openai-responses-request api-key base-url effective-model prompt (:system opts) max-tokens)
+                    (openai-request api-key base-url effective-model prompt (:system opts) (:prefix opts) max-tokens))
           response (.send http-client request (HttpResponse$BodyHandlers/ofString))
           status (.statusCode response)]
       (if (<= 200 status 299)
-        (let [{:keys [text usage]} (parse-openai-response (.body response))]
+        (let [{:keys [text usage]} (if responses?
+                                     (parse-openai-responses-response (.body response))
+                                     (parse-openai-response (.body response)))]
           (track-usage! effective-model usage)
           text)
         (throw (ex-info "OpenAI API request failed"
@@ -297,11 +342,12 @@
   "Create an OpenAI provider.
 
    Options:
-   - :api-key  - API key (default: OPENAI_API_KEY env var)
-   - :base-url - API base URL (default: https://api.openai.com/v1)
-   - :model    - Model name (default: gpt-4o)"
+   - :api-key    - API key (default: OPENAI_API_KEY env var)
+   - :base-url   - API base URL (default: https://api.openai.com/v1)
+   - :model      - Model name (default: gpt-4o)
+   - :max-tokens - Max tokens per response (default: 4096)"
   ([] (openai-provider {}))
-  ([{:keys [api-key base-url model]
+  ([{:keys [api-key base-url model max-tokens]
      :or {model "gpt-4o"
           base-url "https://api.openai.com/v1"}}]
    (let [key (or api-key (System/getenv "OPENAI_API_KEY"))
@@ -309,7 +355,7 @@
      (when-not key
        (throw (ex-info "No API key provided. Set OPENAI_API_KEY or pass :api-key"
                        {:env "OPENAI_API_KEY"})))
-     (->OpenAIProvider key url model (make-http-client)))))
+     (->OpenAIProvider key url model max-tokens (make-http-client)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Dummy Provider (for testing)
@@ -333,6 +379,46 @@
   ([{:keys [response response-fn]
      :or {response "Hello, world!"}}]
    (->DummyProvider (or response-fn (constantly response)))))
+
+;; ---------------------------------------------------------------------------
+;; User Provider (interactive simulation)
+;; ---------------------------------------------------------------------------
+
+(defrecord UserProvider []
+  LLMProvider
+  (call-llm [this prompt] (call-llm this prompt {}))
+  (call-llm [_ prompt opts]
+    (let [system (:system opts)
+          prefix (:prefix opts)]
+      ;; Display context on stderr (keeps stdout clean for program output)
+      (binding [*out* *err*]
+        (print "\033[2J\033[H")
+        (flush)
+        (when system
+          (println "=== SYSTEM PROMPT ===")
+          (println system)
+          (println))
+        (println (str "=== " (if prefix "PROMPT (prefix)" "PROMPT") " ==="))
+        (println prompt)
+        (println)
+        (println "=== YOUR COMPLETION (Ctrl-D to submit) ===")
+        (flush))
+      ;; Read completion from stdin
+      (let [sb (StringBuilder.)]
+        (loop []
+          (let [line (read-line)]
+            (if (nil? line)
+              (str/trimr (.toString sb))
+              (do (.append sb line)
+                  (.append sb "\n")
+                  (recur)))))))))
+
+(defn user-provider
+  "Create an interactive user provider for simulation/debugging.
+   Displays the full LLM context (system prompt, user message, prefix)
+   and reads completions from stdin. Use with -m user."
+  []
+  (->UserProvider))
 
 ;; ---------------------------------------------------------------------------
 ;; Dynamic provider binding
