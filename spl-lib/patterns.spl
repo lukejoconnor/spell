@@ -9,12 +9,12 @@
 ;; Evaluates a tool, binds the result in the completion, and extends to a
 ;; child LLM that can see the result and continue reasoning.
 ;;
-;; (patterns/call-now (tools/bash "ls") 'files)
-;; (patterns/call-now (:out (tools/bash "wc -l data.csv")) 'line-count)
+;; (patterns/call-now (io/sh "ls") 'files)
+;; (patterns/call-now (:out (io/sh "wc -l data.csv")) 'line-count)
 ;;
 ;; How it works:
 ;; 1. The tool argument is evaluated (bash, read-file, etc.)
-;; 2. The result is formatted as (def name <value>) and appended to completion
+;; 2. The result is formatted as (quine name <value>) and appended to completion
 ;; 3. A child LLM receives the extended prefix and continues
 ;;
 ;; Idempotent in extensions: when the child re-evaluates call-now, it detects
@@ -24,10 +24,46 @@
 ;; Requires: completion binding (from quine preamble in NL prompts)
 ;;
 ;; For side-effecting tools, pre-compute:
-;;   (def r (tools/bash "rm ...")) (patterns/call-now r 'result)
+;;   (def r (io/sh "rm ...")) (patterns/call-now r 'result)
 ;; This way the side effect only runs once (before call-now).
 
 (defn call-now [result name]
-  (if (strings/includes? completion (cat "(def " (str name) " "))
+  (if (strings/includes? completion (cat "(quine " (str name) " "))
     result
-    (llm (cat (reopen completion) "(def " (str name) " " (pr-str result) ") "))))
+    (llm-self (cat (reopen completion) "(quine " (str name) " " (pr-str result) ") "))))
+
+;; ---------------------------------------------------------------------------
+;; check-result — verify answer with LLM-as-judge
+;; ---------------------------------------------------------------------------
+;; Uses leaf-llm to verify whether an answer is correct. Returns a tagged map
+;; that the caller can dispatch on to decide what to do next.
+;;
+;; (patterns/check-result "What is 2+2?" 4)        ; => {:ok 4}
+;; (patterns/check-result "Capital of France?" "London")  ; => {:wrong "London is..."}
+;;
+;; Returns:
+;;   {:ok answer}   - answer is correct, caller should use it
+;;   {:wrong msg}   - answer is wrong, msg explains why; caller decides how to fix
+;;
+;; Typical usage pattern:
+;;   (let [result (patterns/check-result prompt my-answer)]
+;;     (if (:ok result)
+;;       (:ok result)
+;;       (llm (cat (reopen completion)
+;;                 "(def feedback " (pr-str (:wrong result)) ") "))))
+
+(defn check-result [prompt answer]
+  (let [verification-prompt (cat "Verify this answer.\n\n"
+                                 "Task: " prompt "\n\n"
+                                 "Answer: " (pr-str answer) "\n\n"
+                                 "Respond with exactly one line:\n"
+                                 "- \"OK\" if correct\n"
+                                 "- \"WRONG: <reason>\" if incorrect")
+        response (leaf-llm verification-prompt)
+        trimmed (strings/trim response)]
+    (if (strings/starts-with? trimmed "OK")
+      {:ok answer}
+      {:wrong (strings/trim
+               (if (strings/starts-with? trimmed "WRONG:")
+                 (strings/subs trimmed 6)
+                 trimmed))})))
