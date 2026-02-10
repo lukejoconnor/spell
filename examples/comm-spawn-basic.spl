@@ -1,0 +1,1 @@
+Use spawn to start a child agent: (spawn llm-self "Return 42"). Return the string "parent done" immediately without waiting for the child.

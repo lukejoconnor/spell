@@ -76,7 +76,7 @@
   [["-t" "--test" "Use dummy LLM provider (returns 'hello world')"]
    ["-e" "--example NAME" "Run a named example from examples/"]
    ["-a" "--agent FILE" "Use agent definition from .agent.edn file"]
-   ["-m" "--model MODEL" "Model spec: haiku, sonnet, opus, ollama:<model>, openai:<model>, user (default: openai:gpt-4.1)"]
+   ["-m" "--model MODEL" "Model spec: haiku, sonnet, opus, ollama:<model>, openai:<model>, user (default: openai:gpt-5.2)"]
    ["-d" "--depth DEPTH" "Max recursion depth (default: 8, 0 = unlimited)"
     :parse-fn #(Integer/parseInt %)
     :validate [#(>= % 0) "Must be non-negative"]]
@@ -169,7 +169,7 @@
     :else
     (let [{:keys [provider model]} (if model
                                      (parse-model-spec model)
-                                     {:provider "openai" :model "gpt-4.1"})
+                                     {:provider "openai" :model "gpt-5.2"})
           resolved-model (when model (resolve-model model))
           base-opts (cond-> {}
                       resolved-model (assoc :model resolved-model)

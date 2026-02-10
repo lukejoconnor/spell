@@ -104,26 +104,28 @@ Spell previously provided a lower-level primitive, `uneval`, which returned the 
 
 ## Completions and extensions
 
-Completions---programs generated and evaluated by `llm`---always have a specific prefix. This prefix uses `quine` to bind the program's own source to the symbol `completion`:
+Completions---programs generated and evaluated by `llm`---always have the *completion wrapper* as their prefix. The completion wrapper uses `quine` to bind the program's own source to the symbol `completion`:
 
 ```clojure
 (quine completion
   (eval
     (do
       ...
-      ; last expression in the do-block is the return value
+      ; trailing expression — the last expression in the do block
     )
   )
 )
 ```
 
-The `quine` form binds `completion` to the entire expression as structured data (a list). Because `completion` is data rather than a string, it can be traversed and manipulated using standard list operations. To pass the completion to a child LLM as a string prefix, the LLM ends its `do` block with the quoted expression:
+The `quine` form binds `completion` to the entire expression as structured data (a list). Because `completion` is data rather than a string, it can be traversed and manipulated using standard list operations.
+
+The last expression in the completion wrapper's `do` block is the *trailing expression*. Because of double evaluation (the outer `eval` evaluates the return value of `do`), the trailing expression is special: it is the only expression whose return value gets evaluated a second time. To pass the completion to a child LLM as a string prefix, the LLM uses the *trailing expression pattern*---quoting the trailing expression:
 ```clojure
 '(llm (reopen (pr-str completion)))
 ```
-where `pr-str` serializes the data to a string and `reopen` strips exactly 3 closing parentheses (one for the `do` block, one for `spell-eval`, one for `quine`) so that the `do` block can be continued by the child LLM. Because this expression ends the `do` block, it is passed to `spell-eval` and evaluated. When a completion ends with this trailing `llm` call (or with a trailing tool call; see below), this is called *extending* the completion. The completion produced by the child `llm` call is an *extension*.
+where `pr-str` serializes the data to a string and `reopen` strips exactly 3 closing parentheses (one for the `do` block, one for `spell-eval`, one for `quine`) so that the `do` block can be continued by the child LLM. Because this quoted expression is the trailing expression, it is passed to the outer `eval` and evaluated. When a completion ends with a trailing `llm` call (or with a trailing tool call; see below), this is called *extending* the completion. The completion produced by the child `llm` call is an *extension*.
 
-It is important that this `llm` call is quoted so that it becomes inert in extensions. If not for this, then the trailing `llm` call would be called again every time the completion is extended, creating a mess.
+The trailing expression pattern---quoting the trailing expression---is important because it makes the expression inert in extensions. When a new expression is appended, the previously-quoted expression is no longer trailing; the quote makes it return data (discarded as an intermediate value). Without quoting, the `llm` call would be re-evaluated every time the completion is extended.
 
 The ReAct loop can be implemented in Spell using extensions:
 
@@ -194,6 +196,31 @@ Spell provides two forms for iteration. `loop`/`recur` enables tail-recursive it
 (for [x [1 2 3 4] :when (> x 1) :let [sq (* x x)]] sq)  ; => [4 9 16]
 (for [x [1 2] y [:a :b]] [x y])  ; => [[1 :a] [1 :b] [2 :a] [2 :b]]
 ```
+
+## Inter-agent communication
+
+Inter-agent communication in Spell involves one core mechanism, the *inbox function*: LLM A writes an inbox function and sends it to LLM B; this function is applied to the completion of LLM B. This single mechanism enables various communication patterns.
+
+When `llm` is called, it produces a globally mutable reference, the *inbox*, to its inbox function. Initially, the inbox function is `spell-eval`. At any later time, another LLM can send a *message function* to the inbox, modifying the inbox function via the atomic operation `swap!`. The typical pattern is composition: a message function with a message `f` inputs an inbox function `inbxfn` and returns `(comp inbxfn f)`. The function `f` is typically a macro which inputs a completion and adds an expression. The added expression often looks like: 
+```clojure
+(quine msg (do {:sender-handle :Alice :message-body "Hello Bob!"} '(llm-self (reopen completion))))
+```
+This message replaces Bob's trailing expression (extending his completion). Instead of doing what he was about to do, Bob is given this extra context and re-prompted via `llm-self`. Suppose his trailing expression before the message was received had been:
+```clojure
+(quine old-trailing '(call-now tool-result tool-call))
+```
+His response after seeing Alice's message could be:
+```clojure
+(quine reply '(send-msg :Alice "Hello Alice!")) '(do (eval reply) (eval tool-call))
+```
+This expression bundles his reply to Alice with his previous tool-call (?)
+
+
+Within `llm`, all of the logic except actually calling the LLM is packaged into a helper function, `box`, which awaits the LLM completion as a promise, then looks up the inbox function, then applies it and returns the result. The reason for this separation is so that an inbox can be left open while an agent is not working. When an agent returns, its handle is not made unavailable; instead, `box` is called with the agent's completion and handle. This handle how corresponds to an empty inbox. When the inbox is empty, `box` simply polls for a message to wake. When awoken, it is able to call `llm`, do additional work, or respond to the query. An agent can also enter the polling state without returning; for example, it may do this when it wishes to wait for a response to its own message. 
+
+The design of this system prevents deadlocking if two agents attempt to message each other and poll for a response: whichever agent finishes first sends its message, and the other agent receives this message before its own message actually sends. Even if both agents send messages simultaneously message and poll, their messages wake each other up.
+
+
 
 ## Concurrency
 

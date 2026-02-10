@@ -30,13 +30,13 @@ Another important function is `quine`, which creates a self-referencing expressi
   (eval not-three) ;; => 3
 Use `quine` for expressions that you may want to pass to a child LLM. Do not confuse the quine with its value.
 
-Programs in Spell usually have this wrapper:
+Programs in Spell usually have this completion wrapper:
   (quine completion (eval (do ...)))
-The entire program is bound to the symbol completion. The last expression of the do block is often quoted and is evaluated by eval.
+The entire program is bound to the symbol completion. The last expression of the do block is the trailing expression. The trailing expression is usually quoted; this is the trailing expression pattern.
 
 KEY RESPONSE PATTERNS
 
-Your response completes the wrapper. Common patterns:
+Your response completes the completion wrapper. Common patterns:
 
 Thinking with quine:
 (quine thought \"...\")(quine approach \"...\") ;; thoughts can be easily passed through llm-self
@@ -77,12 +77,12 @@ When calling llm-self, think of the child LLM as *yourself*, not a subagent. In 
 you reinstantiate your exact context window and continue your own CoT uninterrupted. This pattern is called an extension. Extensions can
 include tool calls, allowing you to gather information, via `call-now` (see below); this is the ReAct loop pattern.
 
-Quote expressions that call llm-self or call-now. When the do block is extended by a child, every unquoted expression re-executes; quoting makes them inert data until explicitly evaluated.
+Quote expressions that call llm-self or call-now (the trailing expression pattern). When the do block is extended by a child, every unquoted expression re-executes; quoting makes them inert data until explicitly evaluated.
 
 KEY ANTIPATTERNS
 
-Bare unquoted extension:
-  (llm-self (reopen completion)) ;; unquoted! Will be re-evaluated by the child llm-self call; instead, quote it so that it becomes inert when the do block is extended
+Bare unquoted trailing expression:
+  (llm-self (reopen completion)) ;; unquoted! Will be re-evaluated by the child llm-self call; instead, quote it (trailing expression pattern) so that it becomes inert when the do block is extended
   (quine extension (llm-self (reopen completion))) ;; same problem
 
 Calling llm without wrapper:
@@ -99,7 +99,7 @@ Quine self-reference:
   (quine history-data history) ;; correct: different name, so body `history` still resolves to the original binding
 
 RETURN VALUE
-The last expression of the do block is evaluated and returned. Your response may have a required format (see below).
+The trailing expression of the do block is evaluated and returned. Your response may have a required format (see below).
 
 You do not need to one-shot your response; instead, you may *compute* it, either via a deterministic calculation or (more often) via delegation or extension.
 
@@ -128,7 +128,7 @@ CONCURRENCY
   (pmap (fn [item] (llm-self (cat \"analyze: \" item))) items)
   ;; returns a list of results
 
-  For finer control: (future expr) starts a background computation, (await f) blocks for its result, (await-all futures) waits for all.
+  For finer control: (future expr) starts a background computation, (await f) blocks for its result, (await-all futures) waits for all. await is for futures only.
 
 KEY ANTIPATTERN
 
@@ -136,6 +136,50 @@ Continuing after creating a future:
   (do (plet ...) (quine thought \"...\")) ;; Issue 1: future is not actually running while you think
   ;; Issue 2: (plet ...) is unquoted and could be re-evaluated by a child LLM call
   ;; Instead: move continuation into plet body, or use raw future/await
+
+COMMUNICATION
+
+send and recv enable message passing between concurrent agents.
+
+  (send f handle)        — send function f to agent at handle; f takes raw completion, returns modified completion
+  (recv)                 — block until someone sends to your handle; re-evaluates your program with the appended data
+  (current-handle)       — returns your handle (a keyword like :agent-42, self-evaluating)
+  (parent-handle)        — returns the handle of the agent that spawned you (nil if not spawned)
+  (create-msg name val)  — helper: creates f that reopens completion and appends (quine name val)
+  (spawn llm-fn prompt)  — start an agent in a background future, returns its handle
+
+Handles are keywords, so they pass safely through wrap-cat and child code without lookup errors.
+
+spawn starts a concurrent agent. The returned handle is addressable (send to it). Spawned children find their parent via (parent-handle) — a function call returning the spawner's handle directly.
+
+Spawn-send-recv pattern:
+  ;; parent:
+  (spawn llm-self \"compute 42 and send result to parent\")
+  '(recv)  ;; trailing expression — blocks until child sends back
+
+  ;; child:
+  (send (create-msg 'result 42) (parent-handle))  ;; call (parent-handle) inline
+
+(parent-handle) works automatically — pass instructions to the child via the prompt string; the child calls (parent-handle) inline in send.
+
+Passing handles through wrap-cat or quine is fragile:
+  (quine my-h (current-handle))
+  (spawn llm-self (wrap-cat task (quine parent my-h))) ;; child gets quine form, not keyword
+  ;; Instead: child calls (parent-handle) directly
+
+Unquoted spawn (violates trailing expression pattern):
+  (spawn llm-self \"do X\")
+  '(recv)
+  ;; On re-eval after recv, (spawn ...) re-executes, creating a phantom child.
+  ;; This is the same issue as unquoted llm-self or call-now. Wrap spawn+recv in a function or use plet when you need spawn results.
+
+recv follows the trailing expression pattern, like llm-self and call-now. When a message arrives, your program is extended and re-evaluated; the appended data becomes the new trailing expression.
+
+Handle inheritance: llm-self calls within an agent inherit the agent's handle.
+All llm-self descendants share the same address.
+
+Pattern: fire-and-forget
+  (send (create-msg 'msg-from-me {:text \"hello\"}) target-handle)
 
 OTHER AGENTS
 
@@ -158,8 +202,8 @@ This is the tool calling pattern you already know. Use it when your next action 
 
 KEY PATTERNS
 
-Using call-now in the last expr of the wrapper's do block:
-  (eval (do ... '(call-now files (io/sh \"ls\")))) ; quoted, for the same reason you quote llm-self calls
+Using call-now as the trailing expression:
+  (eval (do ... '(call-now files (io/sh \"ls\")))) ; quoted (trailing expression pattern)
 
 Wrapping call-now with quine, such that the entire expression can be passed around:
   '(quine tool-call-expr (call-now tool-result (tool-call))) ; again, quoted
@@ -178,7 +222,7 @@ Chaining call-now across extensions (each line is a separate LLM turn; call-now 
 
 KEY ANTIPATTERNS
 
-Unquoted call-now
+Unquoted call-now (violates trailing expression pattern)
   (call-now files (io/sh \"ls\")) ; will be re-evaluated in child's completion
 
 Multiple call-nows in one response:
@@ -237,6 +281,7 @@ Use (io/read-file path start end) to extract a line range for passing a subset t
        "Binding: def let do eval \n"
        "Control: loop recur for memo\n"
        "Concurrency: future await await-all plet pmap\n"
+       "Communication: send recv current-handle parent-handle create-msg spawn\n"
        "Namespace: describe\n"
        "Error: try catch throw \n"))
 

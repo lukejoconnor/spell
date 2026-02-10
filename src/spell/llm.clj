@@ -3,6 +3,7 @@
 
    Core loop: call LLM, concatenate prefix+response, parse, apply hooks, eval."
   (:require [clojure.edn :as edn]
+            [spell.comm :as comm]
             [spell.eval :as eval]
             [spell.hooks :as hooks]
             [spell.parse :as parse]
@@ -112,81 +113,99 @@ re-executing side effects like bash commands or file writes.")
 ;; LLM Engine
 ;; ---------------------------------------------------------------------------
 
+(defn- make-eval-pipeline
+  "Create closure: raw-string -> value. Captures config and hooks.
+   trace-data-atom, when non-nil, receives {:program :hooked :memo} for tracing."
+  [{:keys [builtins recover-fns recovery-call-fn]} hooks trace-data-atom]
+  (fn [raw]
+    (let [balanced  (parse/balance-parens raw)
+          forms     (parse/read-all balanced)
+          program   (if (> (count (vec forms)) 1) (list* 'do forms) (first forms))
+          program'  (if (empty? hooks)
+                      program
+                      (hooks/apply-hooks hooks program))
+          indent    (apply str (repeat eval/*llm-depth* "  "))
+          _         (when (and eval/*verbose* (seq hooks))
+                      (println (str indent "Program (after hooks): " (pr-str program'))))
+          result    (binding [eval/*llm-depth*      (inc eval/*llm-depth*)]
+                      (eval/spell-eval program' {} [] 0))
+          final-result
+          (if (and (eval/err? result) recover-fns)
+            (let [_        (when eval/*verbose*
+                             (println (str indent "=== Error Recovery ==="))
+                             (println (str indent "Error: " (:err result)))
+                             (println (str indent "Memo entries: " (count (:memo result)))))
+                  result-with-program (assoc result :program program')
+                  fix-expr (some #(% result-with-program recovery-call-fn) recover-fns)]
+              (if fix-expr
+                (let [_        (when eval/*verbose*
+                                 (println (str indent "Recovery expression: " (pr-str fix-expr))))
+                      retry    (binding [eval/*llm-depth*      (inc eval/*llm-depth*)]
+                                 (eval/spell-eval fix-expr (:env result) (:memo result) (count (:memo result))))]
+                  (when (and eval/*verbose* (eval/err? retry))
+                    (println (str indent "Recovery failed: " (:err retry))))
+                  retry)
+                result))
+            result)]
+      (when trace-data-atom
+        (reset! trace-data-atom {:program program :hooked (when (seq hooks) program') :memo (:memo final-result)}))
+      (if (eval/ok? final-result)
+        (:ok final-result)
+        (throw (ex-info (:err final-result) {:result final-result}))))))
+
 (defn- -llm
   "Core llm: call LLM, concat prefix+response, parse, apply hooks, eval.
-   Uses memo-based evaluation for potential error recovery."
-  [{:keys [call-fn builtins recover-fns recovery-call-fn]} prompt hooks]
+   Handle source varies (inherited from parent, spawned, or fresh gensym)
+   but execution always goes through box."
+  [{:keys [call-fn builtins recover-fns recovery-call-fn] :as config} prompt hooks handle]
   (when (and eval/*max-llm-depth* (>= eval/*llm-depth* eval/*max-llm-depth*))
     (throw (ex-info "LLM recursion limit exceeded"
                     {:depth eval/*llm-depth* :limit eval/*max-llm-depth*})))
-  (let [indent    (apply str (repeat eval/*llm-depth* "  "))
-        is-thunk  (or (seq? prompt) (list? prompt))
+  (let [inherited? (and (nil? handle) (some? comm/*current-handle*))
+        spawned?   (some? handle)
+        fresh?     (not (or inherited? spawned?))
+        indent     (apply str (repeat eval/*llm-depth* "  "))
+        is-thunk   (or (seq? prompt) (list? prompt))
         prompt-str (if is-thunk (pr-str prompt) (str prompt))
-        node-id   (when trace/*trace*
-                    (trace/begin-node! trace/*trace-node-id*
-                                       eval/*llm-depth* :default prompt-str))
-        _         (when eval/*verbose*
-                    (println (str indent "=== LLM Call (depth " eval/*llm-depth* ") ==="))
-                    (println (str indent "Prompt: " (pr-str prompt))))
-        response  (call-fn prompt-str)
-        _         (when eval/*verbose*
-                    (println (str indent "Response: " response)))
-        raw       (str prompt-str response)
-        balanced  (parse/balance-parens raw)
-        forms     (parse/read-all balanced)
-        program   (if (> (count (vec forms)) 1)
-                    (list* 'do forms)
-                    (first forms))
-        program'  (if (empty? hooks)
-                    program
-                    (hooks/apply-hooks hooks program))
-        _         (when (and eval/*verbose* (seq hooks))
-                    (println (str indent "Program (after hooks): " (pr-str program'))))
-
-        ;; Evaluate with memo tracking using 4-arg form
-        result    (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
-                            trace/*trace-node-id* node-id]
-                    (eval/spell-eval program' {} [] 0))
-
-        ;; Handle error recovery if configured (and not already recovering)
-        final-result
-        (if (and (eval/err? result) recover-fns)
-          (let [_        (when eval/*verbose*
-                           (println (str indent "=== Error Recovery ==="))
-                           (println (str indent "Error: " (:err result)))
-                           (println (str indent "Memo entries: " (count (:memo result)))))
-                ;; Add program to result for recovery context
-                result-with-program (assoc result :program program')
-                ;; Try each recovery strategy until one returns non-nil
-                fix-expr (some #(% result-with-program recovery-call-fn) recover-fns)]
-            (if fix-expr
-              (let [_        (when eval/*verbose*
-                               (println (str indent "Recovery expression: " (pr-str fix-expr))))
-                    ;; Run fix-expr with memo available for (memo N) lookups.
-                    ;; Start idx at end of memo so we don't auto-match.
-                    retry    (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
-                                       trace/*trace-node-id* node-id]
-                               (eval/spell-eval fix-expr (:env result) (:memo result) (count (:memo result))))]
-                (when (and eval/*verbose* (eval/err? retry))
-                  (println (str indent "Recovery failed: " (:err retry))))
-                retry)
-              result))
-          result)
-
-        value (when (eval/ok? final-result) (:ok final-result))
-        err   (when (eval/err? final-result)
-                (ex-info (:err final-result) {:result final-result}))
-
-        _  (when node-id
-             (trace/complete-node! node-id
-               {:response response
-                :raw-text raw
-                :program  program
-                :hooked   (when (seq hooks) program')
-                :value    value
-                :error    err
-                :memo     (:memo final-result)}))]
-    (if err (throw err) value)))
+        handle     (cond inherited? comm/*current-handle*
+                         spawned?   handle
+                         :else      (keyword (gensym "agent-")))
+        trace-data (atom nil)
+        eval-fn    (make-eval-pipeline config hooks trace-data)
+        ;; Register only for fresh handles; always seed inbox
+        _          (when fresh? (comm/register! handle eval-fn))
+        _          (when spawned?
+                     (swap! comm/registry assoc-in [handle :eval-fn] eval-fn))
+        _          (reset! (:inbox (get @comm/registry handle)) eval-fn)
+        node-id    (when trace/*trace*
+                     (trace/begin-node! trace/*trace-node-id*
+                                        eval/*llm-depth* :default prompt-str))
+        _          (when eval/*verbose*
+                     (println (str indent "=== LLM Call (depth " eval/*llm-depth* ") ==="))
+                     (println (str indent "Prompt: " (pr-str prompt))))
+        response   (call-fn prompt-str)
+        _          (when eval/*verbose*
+                     (println (str indent "Response: " response)))
+        raw        (str prompt-str response)]
+    (try
+      (let [result (binding [eval/*builtins*        builtins
+                             trace/*trace-node-id*  node-id]
+                     (comm/box raw handle))]
+        (when fresh? (comm/orphan-box! raw handle))
+        (when node-id
+          (trace/complete-node! node-id
+            (merge {:response response :raw-text raw :value result}
+                   @trace-data)))
+        result)
+      (catch Exception e
+        (when fresh? (comm/orphan-box! raw handle))
+        (when node-id
+          (trace/complete-node! node-id
+            (merge {:response response :raw-text raw :error e}
+                   @trace-data)))
+        (throw e))
+      (finally
+        (when fresh? (comm/unregister! handle))))))
 
 (defn- default-recover-fn
   "Default recovery function: calls recovery LLM, parses response as s-expression."
@@ -218,7 +237,8 @@ re-executing side effects like bash commands or file writes.")
   (let [self-ref (atom nil)
         self-fn (fn llm-self
                   ([prompt] (@self-ref prompt))
-                  ([prompt hooks] (@self-ref prompt hooks)))
+                  ([prompt hooks] (@self-ref prompt hooks))
+                  ([prompt hooks handle] (@self-ref prompt hooks handle)))
         ;; Build namespace builtins: each namespace bound under its symbol
         ns-builtins (into {} (map (fn [[sym ns-map]] [sym ns-map]) namespaces))
         hook-builtins {'prepend-hooks-to-llm #'hooks/prepend-hooks-to-llm
@@ -226,8 +246,15 @@ re-executing side effects like bash commands or file writes.")
                        'prefix-prompt #'hooks/prefix-prompt
                        'with-env hooks/with-env
                        'with-env-hints hooks/with-env-hints}
+        comm-builtins {'send comm/send
+                       'recv comm/recv-builtin
+                       'current-handle (fn [] comm/*current-handle*)
+                       'parent-handle (fn [] comm/*parent-handle*)
+                       'create-msg comm/create-msg
+                       'spawn (fn [llm-fn prompt] (comm/spawn llm-fn prompt))}
         variant-builtins (merge eval/core-builtins
                                 hook-builtins
+                                comm-builtins
                                 {'llm-self self-fn
                                  'leaf-llm (make-leaf-llm {})
                                  'describe describe}
@@ -261,12 +288,13 @@ re-executing side effects like bash commands or file writes.")
                             "(quine prompt \"" (parse/escape-string s) "\") "))))
         the-llm  (fn the-llm
                    ([prompt] (the-llm prompt []))
-                   ([prompt hooks]
+                   ([prompt hooks] (the-llm prompt hooks nil))
+                   ([prompt hooks handle]
                     (let [prompt' (if (or (seq? prompt) (list? prompt))
                                    (eval/expand-expr prompt (or eval/*spell-env* {}))
                                    prompt)]
                       (binding [eval/*builtins* variant-builtins]
-                        (-llm config (wrap-nl prompt') hooks)))))]
+                        (-llm config (wrap-nl prompt') hooks handle)))))]
     (reset! self-ref the-llm)
     the-llm))
 

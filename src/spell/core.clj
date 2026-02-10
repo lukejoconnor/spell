@@ -2,7 +2,8 @@
   "Spell — wiring layer.
    Assembles components (eval, hooks, llm, prompt) into the default configuration.
    Re-exports key vars for public API."
-  (:require [spell.llm :as llm-engine]
+  (:require [spell.comm :as comm]
+            [spell.llm :as llm-engine]
             [spell.prompt :as prompt]
             [spell.eval :as eval]
             [spell.hooks :as hooks]
@@ -78,5 +79,11 @@
                       'recurse #'recurse
                       'prefix-prompt #'prefix-prompt
                       'with-env with-env
-                      'with-env-hints with-env-hints})))
-
+                      'with-env-hints with-env-hints
+                      ;; Communication
+                      'send comm/send
+                      'recv comm/recv-builtin
+                      'current-handle (fn [] comm/*current-handle*)
+                      'parent-handle (fn [] comm/*parent-handle*)
+                      'create-msg comm/create-msg
+                      'spawn (fn [llm-fn prompt] (comm/spawn llm-fn prompt))})))

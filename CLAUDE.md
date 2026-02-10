@@ -25,6 +25,17 @@ Expansion and dynamic scoping work together: `expand` substitutes function value
 ### Prompt-as-Prefix Semantics
 The `llm` function uses the prompt string as both the user message and the assistant prefix. The LLM's response is concatenated with the prefix, then the full string is parsed and evaluated. This means the prompt IS the beginning of the program — the LLM continues writing code from where the prompt left off.
 
+### Completion Wrapper and Trailing Expression Pattern
+The **completion wrapper** `(quine completion (eval (do ...)))` is the standard prefix for LLM-generated programs. It creates two-level evaluation: the `do` block evaluates all expressions and returns the last value; the outer `eval` (`spell-eval`) then evaluates this returned value a second time.
+
+The **trailing expression** is the last expression in the completion wrapper's `do` block. Because of double evaluation, the trailing expression is special — it is the only expression whose return value gets evaluated again by the outer `eval`.
+
+The **trailing expression pattern** is the practice of quoting the trailing expression (e.g., `'(llm-self (reopen completion))`, `'(call-now ...)`, `'(recv)`). This works because:
+
+- **Quoted trailing expressions execute via double evaluation**: `'(llm ...)` as the trailing expression returns a list from `do`. The outer `eval` evaluates this list, actually calling `llm`. Same for `'(recv)`, `'(call-now ...)`, etc.
+- **Extensions make previous trailing expressions inert**: When a new expression is appended (by a message or extension), the previously-quoted expression is no longer last. The quote makes it return data (discarded as an intermediate value). Only the new trailing expression is double-evaluated by the outer `eval`.
+- **Context window visibility**: Even discarded intermediate expressions remain in the source code. The LLM reads them in its context window (via the `completion` binding or prefix text), even without programmatic bindings. In Spell, anything in the source code is visible to the LLM regardless of environment bindings.
+
 ### Hooks
 Quoted macros (code→code transformers) applied to LLM completions before evaluation. Three types:
 1. **Undisclosed context hooks** — prepend bindings child can't read but can pass on
@@ -66,7 +77,7 @@ Use `describe` to inspect namespace contents:
 Qualified symbols work recursively: `outer/inner/item` looks up `:inner` in `outer`, then `:item` in that.
 
 ### Concurrency (Future/Await)
-`(future expr)` evaluates `expr` in a new thread, capturing the current env. `(await f)` blocks until the future completes and returns its value. Dynamic bindings (`*usage*`, `*builtins*`, etc.) are conveyed via `bound-fn`. Futures are isolated: env updates don't leak back to the parent. Enables parallel LLM calls.
+`(future expr)` evaluates `expr` in a new thread, capturing the current env. `(await f)` blocks until the future completes and returns its value — `await` is for futures only (not spawn handles). Dynamic bindings (`*usage*`, `*builtins*`, etc.) are conveyed via `bound-fn`. Futures are isolated: env updates don't leak back to the parent. Enables parallel LLM calls.
 
 ### Implicit Returns
 Programs return the value of their last expression (standard Lisp semantics). No explicit `(def return ...)` needed.
@@ -127,7 +138,7 @@ Core interpreter and tooling complete:
 - API-level error handling with retries (#64)
 - Aider Polyglot / Exercism benchmark (#66)
 
-**Key insight:** The `llm` function uses prompt-as-prefix semantics — the prompt string is sent as both the user message and the assistant prefix, so the response continues the prompt as code. Natural-language prompts are wrapped in a `(quine completion (spell-eval (do ...)))` preamble, giving the program access to its own source as data via the `completion` binding. The `spell-eval` builtin auto-expands free variables from the caller's env before evaluating in a fresh env `{}`. For behavior propagation across generations, use recursive hooks.
+**Key insight:** The `llm` function uses prompt-as-prefix semantics — the prompt string is sent as both the user message and the assistant prefix, so the response continues the prompt as code. Natural-language prompts are wrapped in the completion wrapper `(quine completion (spell-eval (do ...)))`, giving the program access to its own source as data via the `completion` binding. The `spell-eval` builtin auto-expands free variables from the caller's env before evaluating in a fresh env `{}`. For behavior propagation across generations, use recursive hooks.
 
 **Architecture:** The LLM engine is a simple loop in `-llm`: call the LLM provider, concatenate prefix + response, parse with `read-all`, apply hooks, then `spell-eval`. `make-llm` constructs the configuration (builtins with bound namespaces, system prompt, call function) and returns the `llm` function.
 

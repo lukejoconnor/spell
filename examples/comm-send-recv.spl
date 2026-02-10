@@ -1,0 +1,4 @@
+Spawn a child that sends 42 back to you.
+Parent pattern: (spawn llm-self "send 42 to parent") then '(recv) as trailing expression.
+Child pattern: (send (create-msg 'result 42) (parent-handle)) — call (parent-handle) directly in the send, do not bind it to a variable.
+Return whatever recv produces.
