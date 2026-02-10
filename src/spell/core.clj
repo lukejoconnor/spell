@@ -3,6 +3,7 @@
    Assembles components (eval, hooks, llm, prompt) into the default configuration.
    Re-exports key vars for public API."
   (:require [spell.comm :as comm]
+            [spell.globals :as globals]
             [spell.llm :as llm-engine]
             [spell.prompt :as prompt]
             [spell.eval :as eval]
@@ -51,7 +52,9 @@
   "All available namespaces: io + stdlib.
    Note: io/ is included here for the default llm (REPL/test use).
    Agent configs control which namespaces are available."
-  (merge {'io io/io-namespace} stdlib/all-namespaces))
+  (merge {'io io/io-namespace
+          'globals globals/globals-namespace}
+         stdlib/all-namespaces))
 
 ;; =============================================================================
 ;; Default llm function
@@ -71,6 +74,7 @@
                       'leaf-llm leaf-llm
                       ;; Namespaces
                       'io io/io-namespace
+                      'globals globals/globals-namespace
                       'strings stdlib/strings
                       'math stdlib/math
                       'patterns stdlib/patterns

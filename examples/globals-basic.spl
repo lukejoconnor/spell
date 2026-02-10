@@ -1,0 +1,1 @@
+Test globals: set a value with (globals/set :test-key 42), then read it back with (globals/get :test-key). Return the value you read.

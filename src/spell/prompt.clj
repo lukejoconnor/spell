@@ -181,6 +181,24 @@ All llm-self descendants share the same address.
 Pattern: fire-and-forget
   (send (create-msg 'msg-from-me {:text \"hello\"}) target-handle)
 
+GLOBALS
+
+globals/ is shared state visible to all agents. Pre-initialized with :roles (handle -> description) and :tasks (vector).
+
+  (globals/get :roles)                          — read a global
+  (globals/set :roles {})                       — write a global (returns value)
+  (globals/update :roles (fn [m] (assoc m h desc))) — atomic read-modify-write (returns new value)
+  (globals/pop :tasks)                          — atomic remove-and-return first element
+  (globals/keys)                                — list all global keys
+
+Pattern: role-based peer discovery
+  ;; orchestrator registers workers:
+  (def w1 (spawn llm-self \"research A\"))
+  (globals/update :roles (fn [m] (assoc m w1 \"researcher-a\")))
+  ;; any agent finds a peer by role:
+  (def target (first (filter (fn [kv] (= \"researcher-a\" (val kv))) (globals/get :roles))))
+  (send (create-msg 'data findings) (key target))
+
 OTHER AGENTS
 
 llm-self calls you recursively. The child writes and evaluates Spell code. Use llm-self when the child should compute, make tool calls, or recurse further.
@@ -282,6 +300,7 @@ Use (io/read-file path start end) to extract a line range for passing a subset t
        "Control: loop recur for memo\n"
        "Concurrency: future await await-all plet pmap\n"
        "Communication: send recv current-handle parent-handle create-msg spawn\n"
+       "Globals: globals/ namespace (get set update pop keys)\n"
        "Namespace: describe\n"
        "Error: try catch throw \n"))
 

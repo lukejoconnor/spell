@@ -22,6 +22,7 @@
    - {:file f}          → slurp file as string"
   (:require [clojure.edn :as edn]
             [clojure.string :as str]
+            [spell.globals :as globals]
             [spell.llm :as llm]
             [spell.stdlib :as stdlib]
             [spell.io :as io]))
@@ -35,6 +36,7 @@
    Note: io/ is opt-in (not in default agent) for safety.
    Seqs, fns, and bit- ops are in core-builtins (matching Clojure)."
   {'io io/io-namespace
+   'globals globals/globals-namespace
    'strings stdlib/strings
    'math stdlib/math
    'patterns stdlib/patterns})
@@ -47,7 +49,8 @@
    must explicitly include it: {:namespaces {io stdlib/io ...}}"
   {:name 'default
    :doc "Default agent with standard library (no I/O)"
-   :namespaces {'strings 'stdlib/strings
+   :namespaces {'globals 'stdlib/globals
+                'strings 'stdlib/strings
                 'math 'stdlib/math
                 'patterns 'stdlib/patterns}})
 

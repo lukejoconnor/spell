@@ -79,6 +79,9 @@ Qualified symbols work recursively: `outer/inner/item` looks up `:inner` in `out
 ### Concurrency (Future/Await)
 `(future expr)` evaluates `expr` in a new thread, capturing the current env. `(await f)` blocks until the future completes and returns its value — `await` is for futures only (not spawn handles). Dynamic bindings (`*usage*`, `*builtins*`, etc.) are conveyed via `bound-fn`. Futures are isolated: env updates don't leak back to the parent. Enables parallel LLM calls.
 
+### Communication (Send/Recv/Spawn)
+`send` and `recv` enable message passing between concurrent agents. `spawn` starts an agent in a background future. Handles are keywords (`:agent-42`) — self-evaluating, safe through serialization. `parent-handle` lets spawned children find their parent automatically. `globals/` provides shared state visible to all agents (pre-initialized with `:roles` and `:tasks`).
+
 ### Implicit Returns
 Programs return the value of their last expression (standard Lisp semantics). No explicit `(def return ...)` needed.
 
@@ -95,6 +98,8 @@ Programs return the value of their last expression (standard Lisp semantics). No
 | `src/spell/llm.clj` | LLM engine (`-llm` core loop, `make-llm` factory) |
 | `src/spell/parse.clj` | S-expression parser (read-all for multi-form input) |
 | `src/spell/hooks.clj` | Hooks system (apply-hooks, prepend-hooks-to-llm, recurse) |
+| `src/spell/comm.clj` | Inter-agent communication (box/send/recv, spawn, parent-handle) |
+| `src/spell/globals.clj` | Global shared state (globals/ namespace: get, set, update, pop) |
 | `src/spell/stdlib.clj` | Standard library namespaces (strings, seqs, fns, math, patterns) |
 | `src/spell/tools.clj` | Tool implementations (bash, read-name, read-file, write-file, str-replace) |
 | `src/spell/cli.clj` | CLI with `-t`, `-m`, `-a`, `-v`, `-d`, `-b` flags; accepts `.spl` files and `.agent.edn` agents |
@@ -120,6 +125,8 @@ Core interpreter and tooling complete:
 - `llm-self` for automatic self-recursion (atom-based forward ref, available in all `make-llm` variants)
 - `future`/`await`/`await-all`/`pmap` for concurrent evaluation with env capture and dynamic binding conveyance
 - `plet` for parallel let (fan-out and use results)
+- Inter-agent communication: `send`/`recv`/`spawn`, keyword handles, `parent-handle`, `create-msg`
+- Global shared state: `globals/` namespace (`get`, `set`, `update`, `pop`, `keys`) for all-to-all coordination
 - Hooks system: `apply-hooks`, `prepend-hooks-to-llm`, `recurse`
 - Tools: `bash`, `read-name`, `read-file`, `write-file`, `str-replace`, `replace-lines` (in `tools` namespace)
 - Three LLM providers: Anthropic, OpenAI, Ollama — unified `-m provider:model` CLI syntax
