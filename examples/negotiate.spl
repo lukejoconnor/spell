@@ -1,0 +1,1 @@
+Run a negotiation for a painting. Spawn a seller agent and use ask to exchange offers. Start at $100, let the seller counter. Go back and forth until you reach a deal.

@@ -127,7 +127,8 @@ re-executing side effects like bash commands or file writes.")
           indent    (apply str (repeat eval/*llm-depth* "  "))
           _         (when (and eval/*verbose* (seq hooks))
                       (println (str indent "Program (after hooks): " (pr-str program'))))
-          result    (binding [eval/*llm-depth*      (inc eval/*llm-depth*)]
+          result    (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
+                             eval/*raw-text*       balanced]
                       (eval/spell-eval program' {} [] 0))
           final-result
           (if (and (eval/err? result) recover-fns)
@@ -140,7 +141,8 @@ re-executing side effects like bash commands or file writes.")
               (if fix-expr
                 (let [_        (when eval/*verbose*
                                  (println (str indent "Recovery expression: " (pr-str fix-expr))))
-                      retry    (binding [eval/*llm-depth*      (inc eval/*llm-depth*)]
+                      retry    (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
+                                         eval/*raw-text*       nil]
                                  (eval/spell-eval fix-expr (:env result) (:memo result) (count (:memo result))))]
                   (when (and eval/*verbose* (eval/err? retry))
                     (println (str indent "Recovery failed: " (:err retry))))
@@ -155,57 +157,58 @@ re-executing side effects like bash commands or file writes.")
 
 (defn- -llm
   "Core llm: call LLM, concat prefix+response, parse, apply hooks, eval.
-   Handle source varies (inherited from parent, spawned, or fresh gensym)
-   but execution always goes through box."
+   Two cases: root (handle not yet registered) or inherited (handle exists).
+   Root owns the handle lifecycle: register, orphan-box, unregister.
+   Inherited just seeds the inbox and calls box."
   [{:keys [call-fn builtins recover-fns recovery-call-fn] :as config} prompt hooks handle]
   (when (and eval/*max-llm-depth* (>= eval/*llm-depth* eval/*max-llm-depth*))
     (throw (ex-info "LLM recursion limit exceeded"
                     {:depth eval/*llm-depth* :limit eval/*max-llm-depth*})))
-  (let [inherited? (and (nil? handle) (some? comm/*current-handle*))
-        spawned?   (some? handle)
-        fresh?     (not (or inherited? spawned?))
+  (let [handle     (or handle
+                       comm/*current-handle*
+                       (keyword (gensym "agent-")))
+        root?      (not (comm/handle? handle))
         indent     (apply str (repeat eval/*llm-depth* "  "))
         is-thunk   (or (seq? prompt) (list? prompt))
         prompt-str (if is-thunk (pr-str prompt) (str prompt))
-        handle     (cond inherited? comm/*current-handle*
-                         spawned?   handle
-                         :else      (keyword (gensym "agent-")))
         trace-data (atom nil)
         eval-fn    (make-eval-pipeline config hooks trace-data)
-        ;; Register only for fresh handles; always seed inbox
-        _          (when fresh? (comm/register! handle eval-fn))
-        _          (when spawned?
-                     (swap! comm/registry assoc-in [handle :eval-fn] eval-fn))
+        _          (when root? (comm/register! handle eval-fn))
         _          (reset! (:inbox (get @comm/registry handle)) eval-fn)
+        _          (when comm/*spawn-ready*
+                     (deliver comm/*spawn-ready* true))
         node-id    (when trace/*trace*
                      (trace/begin-node! trace/*trace-node-id*
                                         eval/*llm-depth* :default prompt-str))
         _          (when eval/*verbose*
-                     (println (str indent "=== LLM Call (depth " eval/*llm-depth* ") ==="))
-                     (println (str indent "Prompt: " (pr-str prompt))))
+                     (Thread/sleep (rand-int 500))
+                     (locking *out*
+                       (println (str indent "=== LLM Call (depth " eval/*llm-depth* ") ==="))
+                       (println (str indent "Prompt: " (pr-str prompt)))))
         response   (call-fn prompt-str)
         _          (when eval/*verbose*
-                     (println (str indent "Response: " response)))
+                     (locking *out*
+                       (println (str indent "Response: " response))))
         raw        (str prompt-str response)]
     (try
       (let [result (binding [eval/*builtins*        builtins
                              trace/*trace-node-id*  node-id]
                      (comm/box raw handle))]
-        (when fresh? (comm/orphan-box! raw handle))
+        (when root? (comm/orphan-box! raw handle))
         (when node-id
           (trace/complete-node! node-id
             (merge {:response response :raw-text raw :value result}
                    @trace-data)))
         result)
       (catch Exception e
-        (when fresh? (comm/orphan-box! raw handle))
+        (when root? (comm/orphan-box! raw handle))
         (when node-id
           (trace/complete-node! node-id
             (merge {:response response :raw-text raw :error e}
                    @trace-data)))
         (throw e))
       (finally
-        (when fresh? (comm/unregister! handle))))))
+        (when root? (comm/unregister! handle))))))
 
 (defn- default-recover-fn
   "Default recovery function: calls recovery LLM, parses response as s-expression."
@@ -247,11 +250,14 @@ re-executing side effects like bash commands or file writes.")
                        'with-env hooks/with-env
                        'with-env-hints hooks/with-env-hints}
         comm-builtins {'send comm/send
-                       'recv comm/recv-builtin
+                       'ask comm/ask-builtin
                        'current-handle (fn [] comm/*current-handle*)
                        'parent-handle (fn [] comm/*parent-handle*)
                        'create-msg comm/create-msg
-                       'spawn (fn [llm-fn prompt] (comm/spawn llm-fn prompt))}
+                       'spawn (fn
+                                ([llm-fn prompt] (comm/spawn llm-fn prompt))
+                                ([llm-fn prompt handle-name] (comm/spawn llm-fn prompt handle-name)))
+                       'spawn-recv (fn [llm-fn prompt] (comm/spawn-recv llm-fn prompt))}
         variant-builtins (merge eval/core-builtins
                                 hook-builtins
                                 comm-builtins
@@ -339,14 +345,17 @@ re-executing side effects like bash commands or file writes.")
                            (trace/begin-node! trace/*trace-node-id*
                                               eval/*llm-depth* :form current-prompt))
                 _        (when eval/*verbose*
-                           (println (str indent "=== Form LLM Call (depth " eval/*llm-depth*
-                                          ", attempt " attempt ") ==="))
-                           (println (str indent "Prompt: " (pr-str current-prompt))))
+                           (Thread/sleep (rand-int 500))
+                           (locking *out*
+                             (println (str indent "=== Form LLM Call (depth " eval/*llm-depth*
+                                            ", attempt " attempt ") ==="))
+                             (println (str indent "Prompt: " (pr-str current-prompt)))))
                 response (provider/llm-call current-prompt
                            (cond-> {:system system}
                              model (assoc :model model)))
                 _        (when eval/*verbose*
-                           (println (str indent "Response: " response)))]
+                           (locking *out*
+                             (println (str indent "Response: " response))))]
             (if (eval/invoke-fn validate [response])
               (do
                 (when node-id
@@ -382,13 +391,16 @@ re-executing side effects like bash commands or file writes.")
                                          eval/*llm-depth* :leaf prompt-str))
            indent   (apply str (repeat eval/*llm-depth* "  "))
            _        (when eval/*verbose*
-                      (println (str indent "=== Leaf LLM Call (depth " eval/*llm-depth* ") ==="))
-                      (println (str indent "Prompt: " (pr-str prompt))))
+                      (Thread/sleep (rand-int 500))
+                      (locking *out*
+                        (println (str indent "=== Leaf LLM Call (depth " eval/*llm-depth* ") ==="))
+                        (println (str indent "Prompt: " (pr-str prompt)))))
            response (provider/llm-call prompt-str
                       (cond-> {:system system}
                         model (assoc :model model)))
            _        (when eval/*verbose*
-                      (println (str indent "Response: " response)))
+                      (locking *out*
+                        (println (str indent "Response: " response))))
            _        (when node-id
                       (trace/complete-node! node-id
                         {:response response :raw-text response :value response}))]

@@ -1,4 +1,1 @@
-Test globals for role registration. Steps:
-1. Register yourself as "orchestrator": (globals/update :roles (fn [m] (assoc m (current-handle) "orchestrator")))
-2. Spawn a worker: (spawn llm-self "Register yourself as worker-a in globals: (globals/update :roles (fn [m] (assoc m (current-handle) \"worker-a\"))). Then look up the orchestrator handle from (globals/get :roles) — find the entry with value \"orchestrator\" — and send it 42: (send (create-msg 'result 42) orchestrator-handle).")
-3. '(recv) to get the result. Return it.
+Register yourself as "orchestrator" in the global roles map. Spawn a worker that registers itself as "worker" in roles, looks up the orchestrator's handle from globals, and sends it the number 42. Return what you receive.

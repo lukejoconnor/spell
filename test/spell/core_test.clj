@@ -53,7 +53,7 @@
       (try
         (is (= {:ok test-file}
                (run-spell (list 'io/write-file test-file "line1\nline2\nline3"))))
-        (is (= {1 "line1" 2 "line2" 3 "line3"}
+        (is (= "1: line1\n2: line2\n3: line3"
                (run-spell (list 'io/read-file test-file))))
         (finally
           (jio/delete-file test-file true)))))
@@ -62,7 +62,7 @@
     (let [test-file "/tmp/spell-test-range.txt"]
       (try
         (run-spell (list 'io/write-file test-file "a\nb\nc\nd\ne"))
-        (is (= {2 "b" 3 "c"}
+        (is (= "2: b\n3: c"
                (run-spell (list 'io/read-file test-file 2 3))))
         (finally
           (jio/delete-file test-file true)))))

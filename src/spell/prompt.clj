@@ -25,10 +25,10 @@ Spell resembles Clojure, but dangerous functions like I/O are removed, scoping r
 An important function is `llm-self`, which calls YOU recursively. Use this function to (1) manage your own context window and (2) delegate to subagents.
   (llm-self (wrap-cat prompt)) ;; wrap-cat concatenates arguments and adds the Spell wrapper (see below)
 
-Another important function is `quine`, which creates a self-referencing expression:
+`quine` creates a self-referencing expression for passing source code to child LLMs:
   (quine not-three (+ 1 2)) ;; not-three is the expr (+ 1 2); not the value 3
   (eval not-three) ;; => 3
-Use `quine` for expressions that you may want to pass to a child LLM. Do not confuse the quine with its value.
+Use `quine` only when a child LLM needs to see source code. For regular value bindings, use `def`.
 
 Programs in Spell usually have this completion wrapper:
   (quine completion (eval (do ...)))
@@ -38,36 +38,26 @@ KEY RESPONSE PATTERNS
 
 Your response completes the completion wrapper. Common patterns:
 
-Thinking with quine:
-(quine thought \"...\")(quine approach \"...\") ;; thoughts can be easily passed through llm-self
+Binding values with def:
+(def fix {:old \"...\" :new \"...\"})(io/str-replace path (:old fix) (:new fix))
+(def num-subagents 3)
+(def thought \"Let me analyze this...\")
+(def approach \"I'll try X\")
 
-Extension with completion, reopen, llm-self:
+Extension with reopen and llm-self:
 '(llm-self (reopen completion)) ;; reopen strips the wrapper's 3 trailing parentheses, allowing do block to continue
 
-CoT pruning with quine, wrap-cat, llm-self:
-(quine prompt \"Do this...\")(quine approach \"...\")(quine approach-2 \"Wait actually...\")'(llm-self (wrap-cat prompt approach-2))
-;; wrap-cat concatenates arguments and adds the wrapper, without trailing parentheses
+CoT pruning with wrap-cat and llm-self:
+(def thought \"...\")(def approach \"Wait actually...\")'(llm-self (wrap-cat thought approach))
+;; wrap-cat concatenates string arguments and adds the wrapper
 
-Reusable code with quine, wrap-cat, llm-self:
-(quine helper-fn (fn ...))'(llm-self (wrap-cat prompt thought helper-fn)) ;; pass not only the function but also *its source code including binding*
-
-Evaluating a quine:
-(quine helper-fn (fn ...))((eval helper-fn) ...) ;; the value of (quine name expr) is the value of expr
-
-Binding a value (not a quine):
-(def fix {:old \"...\" :new \"...\"})(io/str-replace path (:old fix) (:new fix)) ;; fix is bound to the map; (:old fix) works
-
-Quining the LLM call itself:
-(quine extension '(llm-self (reopen completion))) ;; the recursion expression itself becomes data; the inner quote guards against re-evaluation
-
-Nested quines:
-(quine todos [(quine item1 \"...\") (quine item2 \"...\")]) ;; pass each item to a worker; pass the vector to a checker
+Passing source code to a child with quine:
+(quine helper-fn (fn ...))'(llm-self (wrap-cat \"Use this:\" helper-fn))
+;; quine binds the name to the *expression*, not its value — use ONLY when a child LLM needs the source code
+;; for all other bindings, use def
 
 Calling llm-self with a string literal, which gets wrapped automatically:
 (llm-self \"...\") ;; child LLM sees: (quine completion (eval (do (quine prompt \"...\")
-
-Using `def` instead of quine:
-(def num-subagents 3) ;; the actual number 3
 
 Minor note: your response is automatically padded with closing parentheses if needed
 
@@ -86,13 +76,13 @@ Bare unquoted trailing expression:
   (quine extension (llm-self (reopen completion))) ;; same problem
 
 Calling llm without wrapper:
-  (quine to-do \"...\")'(llm-self to-do) ;; Child's response is not wrapped, making extension inconvenient
+  (def to-do \"...\")'(llm-self to-do) ;; Child's response is not wrapped, making extension inconvenient
   ;; Instead, use wrap-cat or pass a string literal, which gets wrapped automatically
 
-Using quine when you meant `def` or `let`:
-  (quine prompt \"what's 41+1?\")(quine answer (+ 41 1))(str \"41+1 equals \" answer) ;; returns \"41+1 equals (+ 41 1)\"
-  (quine is-even (mod some-number 2))(if is-even ...) ;; is-even is the expression (quine is-even (mod some-number 2)), which is always truthy
-If you want to use the value of a quine, simply call `eval` on it: (eval is-even-quine) => a boolean
+Using quine when you meant `def`:
+  (quine answer (+ 41 1))(str \"41+1 equals \" answer) ;; WRONG: returns \"41+1 equals (+ 41 1)\" because quine binds the expression, not the value
+  (def answer (+ 41 1))(str \"41+1 equals \" answer)   ;; CORRECT: returns \"41+1 equals 42\"
+  ;; Rule: use def for values, quine only for source code you want a child LLM to read
 
 Quine self-reference:
   (quine history history) ;; body `history` resolves to the quine itself, not the original binding — always self-referential
@@ -119,67 +109,70 @@ When passing a quoted expression to a child LLM, any free variables in that expr
 
 CONCURRENCY
 
-  (plet [name1 expr1 name2 expr2 ...] body) evaluates all exprs as parallel futures, awaits results, binds them, then evaluates body:
-  (plet [a (llm-self \"research A\")
-         b (llm-self \"research B\")]
-    (llm-self (wrap-cat (quine a-val a) (quine b-val b) (quine task \"synthesize\"))))
+For parallel LLM work, use spawn. Each spawned agent gets its own handle and communicates via ask/send (see COMMUNICATION below).
 
-  (pmap f coll) applies f to each element in parallel:
-  (pmap (fn [item] (llm-self (cat \"analyze: \" item))) items)
-  ;; returns a list of results
+  ;; spawn a worker and ask for its result:
+  (def worker (spawn llm-self \"compute 6 * 7 and send result to (parent-handle)\"))
+  '(ask worker \"send your result\")
 
-  For finer control: (future expr) starts a background computation, (await f) blocks for its result, (await-all futures) waits for all. await is for futures only.
+  ;; spawn named agents that can find each other:
+  (spawn llm-self \"You are researcher A. Send findings to :coordinator.\" :researcher-a)
+  (spawn llm-self \"You are researcher B. Send findings to :coordinator.\" :researcher-b)
 
-KEY ANTIPATTERN
+llm-self calls are always serial — the child inherits your handle, so your entire llm-self call tree is one logical agent. For parallel LLM work, use spawn (separate handles) rather than plet/pmap (which share your handle and will error).
 
-Continuing after creating a future:
-  (do (plet ...) (quine thought \"...\")) ;; Issue 1: future is not actually running while you think
-  ;; Issue 2: (plet ...) is unquoted and could be re-evaluated by a child LLM call
-  ;; Instead: move continuation into plet body, or use raw future/await
+plet and pmap are for deterministic parallel computation only:
+  (plet [a (+ 1 2) b (* 3 4)] (+ a b))
+  (pmap inc [1 2 3])
 
 COMMUNICATION
 
-send and recv enable message passing between concurrent agents.
+ask enables request-reply message passing between concurrent agents. Every wait wakes the target, preventing deadlocks.
 
-  (send f handle)        — send function f to agent at handle; f takes raw completion, returns modified completion
-  (recv)                 — block until someone sends to your handle; re-evaluates your program with the appended data
-  (current-handle)       — returns your handle (a keyword like :agent-42, self-evaluating)
-  (parent-handle)        — returns the handle of the agent that spawned you (nil if not spawned)
-  (create-msg name val)  — helper: creates f that reopens completion and appends (quine name val)
-  (spawn llm-fn prompt)  — start an agent in a background future, returns its handle
+  (ask target msg)         — send msg to target and block until target replies; msg is packaged with your handle so the target knows who to reply to
+  (ask target)             — poke target (wake it) and block until it sends to you; use when you need to wait for a specific agent without sending a message
+  (send f handle)          — fire-and-forget: send function f to agent at handle (low-level)
+  (current-handle)         — your handle (keyword like :agent-42); works at all levels including root
+  (parent-handle)          — returns the handle of the agent that spawned you (nil if not spawned)
+  (create-msg name val)    — creates f that reopens completion, appends (quine name val), and triggers an llm-self extension
+  (spawn llm-fn prompt)    — start an agent in a background future, returns its handle (auto-generated)
+  (spawn llm-fn prompt :name) — same, but with a fixed handle name (keyword)
+  (spawn-recv llm-fn prompt) — spawn and block until child sends back
 
 Handles are keywords, so they pass safely through wrap-cat and child code without lookup errors.
 
-spawn starts a concurrent agent. The returned handle is addressable (send to it). Spawned children find their parent via (parent-handle) — a function call returning the spawner's handle directly.
+ask pattern (request-reply):
+  (def child (spawn llm-self \"compute 6 * 7 and send result to (parent-handle)\"))
+  '(ask child \"what is the result?\")
+  ;; sends message to child, blocks until child replies
 
-Spawn-send-recv pattern:
-  ;; parent:
-  (spawn llm-self \"compute 42 and send result to parent\")
-  '(recv)  ;; trailing expression — blocks until child sends back
+  ;; child receives the ask as (quine message {:from :parent-42, :body \"what is the result?\"})
+  ;; child replies: (send (create-msg 'result 42) (:from message))
+
+spawn-recv pattern (spawn + get result):
+  '(spawn-recv llm-self \"compute 42 and send result to (parent-handle)\")
 
   ;; child:
-  (send (create-msg 'result 42) (parent-handle))  ;; call (parent-handle) inline
+  (send (create-msg 'result 42) (parent-handle))
 
-(parent-handle) works automatically — pass instructions to the child via the prompt string; the child calls (parent-handle) inline in send.
+Named spawn pattern (agents know each other's handles):
+  (spawn llm-self \"You are seller. Buyer is :buyer.\" :seller)
+  (spawn llm-self \"You are buyer. Seller is :seller.\" :buyer)
+  ;; Each agent can send directly to the other by name
 
-Passing handles through wrap-cat or quine is fragile:
-  (quine my-h (current-handle))
-  (spawn llm-self (wrap-cat task (quine parent my-h))) ;; child gets quine form, not keyword
-  ;; Instead: child calls (parent-handle) directly
+Multi-round negotiation via ask:
+  (def seller (spawn llm-self \"negotiate painting price\" :seller))
+  '(ask :seller \"I offer $100\")
+  ;; seller processes offer, replies with counter
+  ;; parent receives counter, asks again:
+  ;; '(ask :seller \"I offer $125\")
 
-Unquoted spawn (violates trailing expression pattern):
-  (spawn llm-self \"do X\")
-  '(recv)
-  ;; On re-eval after recv, (spawn ...) re-executes, creating a phantom child.
-  ;; This is the same issue as unquoted llm-self or call-now. Wrap spawn+recv in a function or use plet when you need spawn results.
-
-recv follows the trailing expression pattern, like llm-self and call-now. When a message arrives, your program is extended and re-evaluated; the appended data becomes the new trailing expression.
+Deadlock prevention: ask always wakes the target. If A asks B while B asks A, both sends cross and both unblock.
 
 Handle inheritance: llm-self calls within an agent inherit the agent's handle.
 All llm-self descendants share the same address.
 
-Pattern: fire-and-forget
-  (send (create-msg 'msg-from-me {:text \"hello\"}) target-handle)
+Agents persist after returning (orphan box state). Sending to a returned agent wakes it for another turn.
 
 GLOBALS
 
@@ -191,13 +184,19 @@ globals/ is shared state visible to all agents. Pre-initialized with :roles (han
   (globals/pop :tasks)                          — atomic remove-and-return first element
   (globals/keys)                                — list all global keys
 
-Pattern: role-based peer discovery
-  ;; orchestrator registers workers:
-  (def w1 (spawn llm-self \"research A\"))
-  (globals/update :roles (fn [m] (assoc m w1 \"researcher-a\")))
-  ;; any agent finds a peer by role:
-  (def target (first (filter (fn [kv] (= \"researcher-a\" (val kv))) (globals/get :roles))))
-  (send (create-msg 'data findings) (key target))
+Prefer direct handles when available: spawn returns the child handle, parent-handle gives parent.
+Use globals/roles when agents need to discover peers they were not directly given.
+
+Pattern: role-based peer discovery (parent and child code shown separately)
+  ;; parent: register self, spawn, wait for child's message
+  (globals/update :roles (fn [m] (assoc m (current-handle) \"orchestrator\")))
+  '(spawn-recv llm-self \"register as worker, find orchestrator in globals, send 42\")
+
+  ;; child: register self, look up peer by role, send
+  ;; filter returns [handle role] entries — extract handle with (key entry)
+  (globals/update :roles (fn [m] (assoc m (current-handle) \"worker\")))
+  (def orch (key (first (filter (fn [kv] (= \"orchestrator\" (val kv))) (globals/get :roles)))))
+  (send (create-msg 'result 42) orch)
 
 OTHER AGENTS
 
@@ -223,12 +222,9 @@ KEY PATTERNS
 Using call-now as the trailing expression:
   (eval (do ... '(call-now files (io/sh \"ls\")))) ; quoted (trailing expression pattern)
 
-Wrapping call-now with quine, such that the entire expression can be passed around:
-  '(quine tool-call-expr (call-now tool-result (tool-call))) ; again, quoted
-
-When you can compute on a tool result without inspecting it, using quine directly:
-  (quine files (io/sh \"ls\"))
-  (quine each-file (strings/split (:out files) \"\\n\")) ;; you can use the result but cannot see it
+When you can compute on a tool result without inspecting it:
+  (def files (io/sh \"ls\"))
+  (def each-file (strings/split (:out files) \"\\n\")) ;; you can use the result but cannot see it
 
 Chaining call-now across extensions (each line is a separate LLM turn; call-now extends, then the child continues):
   ;; turn 1: you output one call-now
@@ -272,7 +268,7 @@ Pass snippets not full documents; include the file path so the child can search 
 
 FILE EDITING
 
-io/read-file returns {line-number \"content\" ...}. Edit with io/replace-lines (1-indexed, inclusive):
+io/read-file returns a string with numbered lines (\"1: first line\\n2: second line\\n...\"). Edit with io/replace-lines (1-indexed, inclusive):
   (io/replace-lines \"main.py\" 42 44 \"    x = fixed_value\\n    return x\")
 
 Use (io/read-file path start end) to extract a line range for passing a subset to a child.
@@ -289,7 +285,7 @@ Use (io/read-file path start end) to extract a line range for passing a subset t
   (str "BUILTINS\n\n"
        "Includes most Clojure builtins (except I/O and host interop), plus Spell-specific forms.\n\n"
        "Spell specific: quine expand spell-eval wrap-cat reopen strip-parens\n"
-       "Math: + inc int quot mod max ...\n"
+       "Math: + inc int quot mod max max-key min-key parse-number ...\n"
        "Compare: < = not= ...\n"
        "Strings: str cat pr-str\n"
        "Type: string? number? ...\n"
@@ -297,9 +293,9 @@ Use (io/read-file path start end) to extract a line range for passing a subset t
        "Higher-order: map map-indexed filter reduce keep some range\n"
        "Logic: if cond and empty? ...\n"
        "Binding: def let do eval \n"
-       "Control: loop recur for memo\n"
-       "Concurrency: future await await-all plet pmap\n"
-       "Communication: send recv current-handle parent-handle create-msg spawn\n"
+       "Control: loop recur for memo plet pmap\n"
+       "Concurrency: spawn ask send future await await-all\n"
+       "Communication: ask send current-handle parent-handle create-msg spawn spawn-recv\n"
        "Globals: globals/ namespace (get set update pop keys)\n"
        "Namespace: describe\n"
        "Error: try catch throw \n"))

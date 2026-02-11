@@ -86,10 +86,13 @@
       ;; = eval-fn(a:(b:hello)) = "A:B:HELLO"
       (is (= "A:B:HELLO" (comm/box "hello" handle))))))
 
-(deftest recv-asserts-outside-context-test
-  (testing "recv throws when not in agent context"
+(deftest ask-asserts-outside-context-test
+  (testing "ask with msg throws when not in agent context"
     (is (thrown-with-msg? Exception #"not inside an agent context"
-          (comm/recv-builtin)))))
+          (comm/ask-builtin :some-target "hello"))))
+  (testing "ask without msg throws when not in agent context"
+    (is (thrown-with-msg? Exception #"not inside an agent context"
+          (comm/ask-builtin :some-target)))))
 
 (deftest create-msg-test
   (testing "create-msg produces function that modifies raw string"
@@ -138,33 +141,29 @@
                             r))})
         (is (= "hello world" (spell/llm "(do ")))))))
 
-(deftest recv-blocks-send-unblocks-test
-  (testing "recv blocks until send, and returned value is from the sent pipeline"
-    ;; Agent A's initial eval-fn captures its handle and calls recv.
-    ;; When recv re-enters box, it gets a new function from the inbox.
-    ;; Agent B sends to A with a function that ignores raw and returns a constant.
-    ;; The sent fn is composed with the eval-fn that was seeded in inbox.
-    ;; So we need A's eval-fn for the recv to be simple (identity).
+(deftest ask-no-msg-blocks-send-unblocks-test
+  (testing "ask(target) pokes target and blocks until send"
+    ;; Agent A calls ask(B) (no message — just poke + block).
+    ;; We register B so the poke doesn't fail. Then send to A from test thread.
     (let [a-handle (atom nil)
           a-started (promise)
-          ;; A's initial eval captures handle, then blocks on recv
+          h-a :agent-a
+          h-b :agent-b
+          ;; A's initial eval captures handle, then blocks via ask(B)
           a-initial-fn (fn [raw]
                          (reset! a-handle comm/*current-handle*)
                          (deliver a-started true)
-                         ;; recv releases has-box and re-enters box,
-                         ;; which will pick up whatever B sends
-                         (comm/recv-builtin))
-          h-a :agent-a]
+                         ;; ask with no msg = poke + block
+                         (comm/ask-builtin h-b))]
+      ;; Register both handles (ask pokes target, so target must be registered)
       (comm/register! h-a a-initial-fn)
+      (comm/register! h-b identity)
       (reset! (:inbox (get @comm/registry h-a)) a-initial-fn)
       (let [fa (future (comm/box "a-raw" h-a))]
-        ;; Wait for A to start and expose its handle
+        ;; Wait for A to start
         (deref a-started 2000 :timeout)
         (Thread/sleep 50)
-        ;; Now send to A. The sent function replaces raw entirely.
-        ;; send composes (comp eval-fn f). eval-fn is a-initial-fn.
-        ;; To avoid recursion (a-initial-fn calls recv again),
-        ;; we use -send! directly to put a simple fn in the inbox.
+        ;; Now send to A via -send! to avoid composition with a-initial-fn
         (comm/-send! h-a (fn [_] (fn [raw] (str "from-b:" raw))))
         (is (= "from-b:a-raw" (deref fa 5000 :timeout)))))))
 
@@ -277,6 +276,30 @@
             (comm/box "raw" child-h))
           (is (= parent-h @captured)))))))
 
+(deftest spawn-recv-test
+  (testing "spawn-recv spawns child and blocks until child sends back"
+    (let [parent-h :sr-parent
+          eval-fn identity
+          ;; Mock child llm-fn: register handle, signal ready, send 42 to parent
+          child-llm-fn (fn [_prompt _hooks handle]
+                          (comm/register! handle identity)
+                          (when comm/*spawn-ready*
+                            (deliver comm/*spawn-ready* true))
+                          (comm/send (comm/create-msg 'answer 42) comm/*parent-handle*)
+                          :done)]
+      (comm/register! parent-h eval-fn)
+      ;; Do NOT seed inbox — recv should block until child sends
+      (let [parent-result
+            (future
+              (binding [comm/*current-handle* parent-h
+                        comm/*current-raw* "(quine completion (eval (do )))"]
+                (reset! (:has-box (get @comm/registry parent-h)) true)
+                (comm/spawn-recv child-llm-fn "test")))]
+        ;; spawn-recv blocks until child sends; child runs in a future
+        (let [result (deref parent-result 5000 :timeout)]
+          (is (string? result))
+          (is (.contains ^String result "(quine answer 42)")))))))
+
 (deftest spawn-addressable-test
   (testing "spawned agent can be sent to (handle is registered)"
     (let [call-count (atom 0)
@@ -291,4 +314,78 @@
                             (swap! call-count inc)
                             r))})
         (is (= true (spell/llm "(do ")))))))
+
+;; =============================================================================
+;; Ask tests
+;; =============================================================================
+
+(deftest ask-sends-and-blocks-test
+  (testing "ask sends message to target and blocks until reply arrives"
+    ;; A asks B. B receives the ask message, then replies to A via -send!
+    ;; (bypassing eval-fn composition to avoid re-evaluation of a-eval-fn).
+    ;; Raw strings must be valid completion wrappers (create-msg calls reopen which strips 3 trailing parens).
+    (let [h-a :ask-agent-a
+          h-b :ask-agent-b
+          a-raw "(quine completion (eval (do )))"
+          b-raw "(quine completion (eval (do )))"
+          a-started (promise)
+          b-received (atom nil)
+          ;; A's eval-fn: calls ask(B, "hello"), which sends to B and blocks
+          a-eval-fn (fn [raw]
+                      (deliver a-started true)
+                      (comm/ask-builtin h-b "hello"))
+          ;; B's eval-fn: captures what it receives, then replies to A
+          b-eval-fn (fn [raw]
+                      (reset! b-received raw)
+                      ;; Reply to A via -send! to avoid re-evaluating a-eval-fn
+                      (comm/-send! h-a (fn [_] (fn [_raw] "reply-from-b")))
+                      "b-done")]
+      (comm/register! h-a a-eval-fn)
+      (comm/register! h-b b-eval-fn)
+      (reset! (:inbox (get @comm/registry h-a)) a-eval-fn)
+      ;; B starts in a box waiting for messages
+      (future (comm/box b-raw h-b))
+      (let [fa (future (comm/box a-raw h-a))]
+        (deref a-started 2000 :timeout)
+        ;; A should unblock when B replies
+        (let [result (deref fa 5000 :timeout)]
+          (is (= "reply-from-b" result))
+          ;; B should have received the ask message (modified raw with quine injected)
+          (is (some? @b-received))
+          (is (.contains ^String @b-received "(quine message")))))))
+
+(deftest ask-no-msg-wakes-target-test
+  (testing "ask(target) sends a poke to target, waking it"
+    ;; A calls ask(B) with no msg. This pokes B (waking it) and blocks.
+    ;; B receives the poke, replies to A via -send! (bypasses eval-fn re-evaluation).
+    ;; Raw strings must be valid completion wrappers (create-msg calls reopen).
+    (let [h-a :ask-wake-a
+          h-b :ask-wake-b
+          a-raw "(quine completion (eval (do )))"
+          b-raw "(quine completion (eval (do )))"
+          a-started (promise)
+          b-received (atom nil)
+          ;; A's eval-fn: calls ask(B) which pokes B and blocks
+          a-eval-fn (fn [raw]
+                      (deliver a-started true)
+                      (comm/ask-builtin h-b))
+          ;; B's eval-fn: captures the poke, then replies to A
+          b-eval-fn (fn [raw]
+                      (reset! b-received raw)
+                      ;; Reply to A via -send! to avoid re-evaluating a-eval-fn
+                      (comm/-send! h-a (fn [_] (fn [_raw] "reply-from-b")))
+                      "b-done")]
+      (comm/register! h-a a-eval-fn)
+      (comm/register! h-b b-eval-fn)
+      (reset! (:inbox (get @comm/registry h-a)) a-eval-fn)
+      ;; B starts in a box waiting (inbox nil, blocks until poke)
+      (future (comm/box b-raw h-b))
+      (let [fa (future (comm/box a-raw h-a))]
+        (deref a-started 2000 :timeout)
+        ;; A should unblock after B receives poke and replies
+        (let [result (deref fa 5000 :timeout)]
+          (is (= "reply-from-b" result))
+          ;; B should have been woken by A's ask poke
+          (is (some? @b-received))
+          (is (.contains ^String @b-received "(quine waiting-for :ask-wake-a)")))))))
 

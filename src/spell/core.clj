@@ -86,8 +86,11 @@
                       'with-env-hints with-env-hints
                       ;; Communication
                       'send comm/send
-                      'recv comm/recv-builtin
+                      'ask comm/ask-builtin
                       'current-handle (fn [] comm/*current-handle*)
                       'parent-handle (fn [] comm/*parent-handle*)
                       'create-msg comm/create-msg
-                      'spawn (fn [llm-fn prompt] (comm/spawn llm-fn prompt))})))
+                      'spawn (fn
+                               ([llm-fn prompt] (comm/spawn llm-fn prompt))
+                               ([llm-fn prompt handle-name] (comm/spawn llm-fn prompt handle-name)))
+                      'spawn-recv (fn [llm-fn prompt] (comm/spawn-recv llm-fn prompt))})))

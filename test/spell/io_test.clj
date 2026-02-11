@@ -26,20 +26,20 @@
   (let [path (str test-dir "/read-test.txt")
         content "Hello, Spell!"]
     (spit path content)
-    (is (= (sorted-map 1 "Hello, Spell!") (io/read-file path)))))
+    (is (= "1: Hello, Spell!" (io/read-file path)))))
 
 (deftest read-file-multiline
   (let [path (str test-dir "/multiline.txt")
         content "Line 1\nLine 2\nLine 3"]
     (spit path content)
-    (is (= (sorted-map 1 "Line 1" 2 "Line 2" 3 "Line 3")
+    (is (= "1: Line 1\n2: Line 2\n3: Line 3"
            (io/read-file path)))))
 
 (deftest read-file-unicode
   (let [path (str test-dir "/unicode.txt")
         content "Hello 世界 🌍"]
     (spit path content)
-    (is (= (sorted-map 1 "Hello 世界 🌍") (io/read-file path)))))
+    (is (= "1: Hello 世界 🌍" (io/read-file path)))))
 
 (deftest read-file-not-found
   (let [result (io/read-file (str test-dir "/nonexistent.txt"))]
@@ -49,23 +49,23 @@
 (deftest read-file-empty
   (let [path (str test-dir "/empty.txt")]
     (spit path "")
-    (is (= (sorted-map) (io/read-file path)))))
+    (is (= "" (io/read-file path)))))
 
 (deftest read-file-line-range
   (let [path (str test-dir "/range.txt")
         content "line1\nline2\nline3\nline4\nline5"]
     (spit path content)
     (testing "middle range"
-      (is (= (sorted-map 2 "line2" 3 "line3")
+      (is (= "2: line2\n3: line3"
              (io/read-file path 2 3))))
     (testing "single line"
-      (is (= (sorted-map 4 "line4")
+      (is (= "4: line4"
              (io/read-file path 4 4))))
     (testing "full range"
-      (is (= (sorted-map 1 "line1" 2 "line2" 3 "line3" 4 "line4" 5 "line5")
+      (is (= "1: line1\n2: line2\n3: line3\n4: line4\n5: line5"
              (io/read-file path 1 5))))
     (testing "clamped to bounds"
-      (is (= (sorted-map 4 "line4" 5 "line5")
+      (is (= "4: line4\n5: line5"
              (io/read-file path 4 100))))))
 
 (deftest read-file-range-not-found

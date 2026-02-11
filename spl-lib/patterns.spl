@@ -28,7 +28,7 @@
 ;; This way the side effect only runs once (before call-now).
 
 (defn call-now [result name]
-  (if (strings/includes? completion (cat "(quine " (str name) " "))
+  (if (strings/includes? (pr-str completion) (cat "(quine " (str name) " "))
     result
     (llm-self (cat (reopen completion) "(quine " (str name) " " (pr-str result) ") "))))
 

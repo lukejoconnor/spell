@@ -30,7 +30,7 @@ The **completion wrapper** `(quine completion (eval (do ...)))` is the standard 
 
 The **trailing expression** is the last expression in the completion wrapper's `do` block. Because of double evaluation, the trailing expression is special — it is the only expression whose return value gets evaluated again by the outer `eval`.
 
-The **trailing expression pattern** is the practice of quoting the trailing expression (e.g., `'(llm-self (reopen completion))`, `'(call-now ...)`, `'(recv)`). This works because:
+The **trailing expression pattern** is the practice of quoting the trailing expression (e.g., `'(llm-self (reopen completion))`, `'(call-now ...)`, `'(ask target)`). This works because:
 
 - **Quoted trailing expressions execute via double evaluation**: `'(llm ...)` as the trailing expression returns a list from `do`. The outer `eval` evaluates this list, actually calling `llm`. Same for `'(recv)`, `'(call-now ...)`, etc.
 - **Extensions make previous trailing expressions inert**: When a new expression is appended (by a message or extension), the previously-quoted expression is no longer last. The quote makes it return data (discarded as an intermediate value). Only the new trailing expression is double-evaluated by the outer `eval`.
@@ -76,11 +76,11 @@ Use `describe` to inspect namespace contents:
 
 Qualified symbols work recursively: `outer/inner/item` looks up `:inner` in `outer`, then `:item` in that.
 
-### Concurrency (Future/Await)
-`(future expr)` evaluates `expr` in a new thread, capturing the current env. `(await f)` blocks until the future completes and returns its value — `await` is for futures only (not spawn handles). Dynamic bindings (`*usage*`, `*builtins*`, etc.) are conveyed via `bound-fn`. Futures are isolated: env updates don't leak back to the parent. Enables parallel LLM calls.
+### Concurrency
+Two concurrency patterns: **serial llm-self** (child inherits your handle, entire call tree is one logical agent) and **spawn** (new handle, independent agent, communicates via ask). `plet`/`pmap`/`future` are for deterministic parallel computation only — never for LLM calls (they'd share the parent handle and contend over the box). This invariant guarantees deadlock freedom: same-handle trees are serial (can't self-deadlock), and cross-handle dependencies use `ask` (which always wakes the target).
 
-### Communication (Send/Recv/Spawn)
-`send` and `recv` enable message passing between concurrent agents. `spawn` starts an agent in a background future. Handles are keywords (`:agent-42`) — self-evaluating, safe through serialization. `parent-handle` lets spawned children find their parent automatically. `globals/` provides shared state visible to all agents (pre-initialized with `:roles` and `:tasks`).
+### Communication (Ask/Send/Spawn)
+`ask` enables request-reply message passing between concurrent agents. `(ask target msg)` sends a message and blocks for reply; `(ask target)` pokes target and blocks (no message). Every form of ask wakes the target, preventing deadlocks. `send` is low-level fire-and-forget. `spawn` starts an agent in a background future. Handles are keywords (`:agent-42`) — self-evaluating, safe through serialization. `parent-handle` lets spawned children find their parent automatically. `globals/` provides shared state visible to all agents (pre-initialized with `:roles` and `:tasks`).
 
 ### Implicit Returns
 Programs return the value of their last expression (standard Lisp semantics). No explicit `(def return ...)` needed.
@@ -123,9 +123,8 @@ Core interpreter and tooling complete:
 - Namespace system: qualified symbol access (`tools/bash`, `strings/trim`) with recursive lookup
 - Standard library namespaces: `tools`, `strings`, `seqs`, `fns`, `math`, `patterns`
 - `llm-self` for automatic self-recursion (atom-based forward ref, available in all `make-llm` variants)
-- `future`/`await`/`await-all`/`pmap` for concurrent evaluation with env capture and dynamic binding conveyance
-- `plet` for parallel let (fan-out and use results)
-- Inter-agent communication: `send`/`recv`/`spawn`, keyword handles, `parent-handle`, `create-msg`
+- `future`/`await`/`await-all`/`plet`/`pmap` for deterministic parallel computation (not for LLM calls)
+- Inter-agent communication: `spawn`/`ask`/`send`, keyword handles, `parent-handle`, `create-msg`
 - Global shared state: `globals/` namespace (`get`, `set`, `update`, `pop`, `keys`) for all-to-all coordination
 - Hooks system: `apply-hooks`, `prepend-hooks-to-llm`, `recurse`
 - Tools: `bash`, `read-name`, `read-file`, `write-file`, `str-replace`, `replace-lines` (in `tools` namespace)

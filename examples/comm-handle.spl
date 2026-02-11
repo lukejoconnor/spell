@@ -1,1 +1,1 @@
-Return your agent handle using (current-handle). The result should be a keyword like :agent-1234.
+Return your own agent handle.

@@ -32,6 +32,12 @@
    Allows Clojure builtins (like apply) to access the current env for spell-fn support."
   {})
 
+(def ^:dynamic *raw-text*
+  "Balanced raw text of the current completion being evaluated.
+   Set by the eval pipeline; used by reopen to preserve original formatting
+   for KV cache compatibility (avoids pr-str round-trip divergence)."
+  nil)
+
 (defn spell-future?
   "Returns true if v is a Spell future handle."
   [v]
@@ -101,8 +107,13 @@
    Extended functions are in stdlib registries (strings, seqs, fns)."
   {;; Math
    '+ +, '- -, '* *, '/ /, 'inc inc, 'dec dec,
-   'int int, 'quot quot, 'mod mod, 'max max, 'min min, 'rem rem,
+   'int int, 'quot quot, 'mod mod, 'max max, 'min min, 'max-key max-key, 'min-key min-key, 'rem rem,
    'abs abs,
+   'parse-number (fn [s]
+                   (let [s (str s)
+                         m (re-find #"-?\d+(?:\.\d+)?" s)]
+                     (when m
+                       (if (re-find #"\." m) (Double/parseDouble m) (Long/parseLong m))))),
    ;; Numeric predicates
    'even? even?, 'odd? odd?, 'pos? pos?, 'neg? neg?, 'zero? zero?,
    ;; Comparison
@@ -175,8 +186,12 @@
             ([start end] (vec (range start end)))
             ([start end step] (vec (range start end step)))),
    ;; Strip / Reopen
-   'strip-parens parse/strip-trailing-parens,
-   'reopen (fn [s] (parse/strip-trailing-parens 3 s)),
+   'strip-parens (fn [n s] (parse/strip-trailing-parens n (if (string? s) s (pr-str s)))),
+   'reopen (fn [s]
+              (parse/strip-trailing-parens 3
+                (cond (string? s) s
+                      *raw-text*  *raw-text*
+                      :else       (pr-str s)))),
    ;; wrap-cat: combine quine-bound forms into an open preamble prefix
    'wrap-cat (fn [& forms]
                (str "(quine completion (eval (do "
@@ -304,7 +319,7 @@
 
 (def special-forms
   "Special forms that are not free variables."
-  #{'quote 'def 'do 'if 'let 'fn 'fn* 'defn 'cond 'and 'or 'expand 'eval 'future 'plet 'quine 'call-now '-> '->> 'memo 'loop 'recur 'for 'try 'throw})
+  #{'quote 'def 'do 'if 'when 'let 'fn 'fn* 'defn 'cond 'and 'or 'expand 'eval 'future 'plet 'quine 'call-now '-> '->> 'memo 'loop 'recur 'for 'try 'throw})
 
 (defn- thread-first
   "Transform (-> x (f a) (g b)) into (g (f x a) b)."
@@ -391,6 +406,8 @@
              [(list* 'do forms) final-inner])
 
         if [(list* 'if (map expand1 (rest expr))) inner]
+
+        when [(list* 'when (map expand1 (rest expr))) inner]
 
         let (let [pairs (partition 2 (second expr))
                   [expanded-bindings final-inner]
@@ -648,6 +665,9 @@
                                      (:memo test-result)
                                      (:idx test-result))))
 
+               ;; when: (when test body...) - evaluate body when test is truthy, else nil
+               when  (spell-eval (list 'if (second expr) (cons 'do (drop 2 expr)) nil) env memo idx)
+
                ;; let: (let [bindings...] body...) - local bindings
                let   (let [bindings (partition 2 (second expr))
                            body (drop 2 expr)]
@@ -773,8 +793,7 @@
                          ;; Not bound - call llm-self with extended completion
                          (let [;; Build the continuation prompt
                                reopen-fn (get *builtins* 'reopen)
-                               completion-str (pr-str completion)
-                               reopened (reopen-fn completion-str)
+                               reopened (reopen-fn completion)
                                continuation (str reopened "(quine " name-sym " " (pr-str result-val) ") ")
                                ;; Get llm-self and call it
                                llm-self-fn (get *builtins* 'llm-self)]

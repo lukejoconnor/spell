@@ -1,10 +1,11 @@
 (ns spell.comm
-  "Inter-agent communication: box/send/recv primitives.
+  "Inter-agent communication: ask/recv/send primitives.
 
    box is the universal execution primitive: it waits for a function (from
-   an inbox) and applies it to a raw completion string. send delivers a
-   function to an agent's inbox. recv lets an agent block until someone
-   sends to it."
+   an inbox) and applies it to a raw completion string. ask sends a message
+   and blocks for reply. recv wakes a source and blocks for its message.
+   send is low-level fire-and-forget. Every wait wakes the target,
+   preventing deadlocks."
   (:refer-clojure :exclude [send])
   (:require [spell.parse :as parse]))
 
@@ -47,6 +48,11 @@
 
 (def ^:dynamic *parent-handle*
   "Handle of the agent that spawned the current agent (set by spawn)."
+  nil)
+
+(def ^:dynamic *spawn-ready*
+  "Promise delivered by -llm after registering a spawned handle.
+   Lets spawn block until the handle is fully live."
   nil)
 
 ;; =============================================================================
@@ -99,25 +105,6 @@
   nil)
 
 ;; =============================================================================
-;; Recv
-;; =============================================================================
-
-(defn recv-builtin
-  "Block until someone sends to the current agent's handle.
-   Returns the result of the sent function applied to the current raw completion.
-   Must be called from within an agent context (inside box).
-   Releases the current box claim before re-entering box."
-  []
-  (when-not *current-handle*
-    (throw (ex-info "recv: not inside an agent context" {})))
-  (when-not *current-raw*
-    (throw (ex-info "recv: no raw completion available" {})))
-  (let [{:keys [has-box]} (get @registry *current-handle*)]
-    ;; Release current box claim so box can re-acquire
-    (reset! has-box false)
-    (box *current-raw* *current-handle*)))
-
-;; =============================================================================
 ;; Create-msg helper
 ;; =============================================================================
 
@@ -127,11 +114,52 @@
   (parse/strip-trailing-parens 3 s))
 
 (defn create-msg
-  "Create a function that reopens a completion and appends (quine name value).
+  "Create a function that reopens a completion, appends (quine name value),
+   and appends an llm-self extension so the recipient continues thinking.
    Useful for injecting data into another agent's completion."
   [name value]
   (fn [raw]
-    (str (reopen raw) "(quine " name " " (pr-str value) ") ")))
+    (str (reopen raw) "(quine " name " " (pr-str value) ") '(llm-self (reopen completion)) ")))
+
+;; =============================================================================
+;; Block-for-message (internal)
+;; =============================================================================
+
+(defn- block-for-message
+  "Release box claim and re-enter box. Blocks until inbox receives a function.
+   Must be called from within an agent context (inside box)."
+  []
+  (let [{:keys [has-box]} (get @registry *current-handle*)]
+    (reset! has-box false)
+    (box *current-raw* *current-handle*)))
+
+;; =============================================================================
+;; Ask
+;; =============================================================================
+
+(defn ask-builtin
+  "Request-reply communication primitive.
+   (ask target msg) — send msg to target and wait for reply. The message
+     includes the sender's handle so the target knows who to reply to.
+   (ask target) — poke target (wake it) and wait for a message. Use when
+     woken by the wrong agent and you need to go back to sleep for a specific one.
+   Every form of ask wakes the target, preventing deadlocks."
+  ([target]
+   (when-not *current-handle*
+     (throw (ex-info "ask: not inside an agent context" {})))
+   (when-not *current-raw*
+     (throw (ex-info "ask: no raw completion available" {})))
+   ;; Poke target to wake them (prevents deadlock)
+   (send (create-msg 'waiting-for *current-handle*) target)
+   (block-for-message))
+  ([target msg]
+   (when-not *current-handle*
+     (throw (ex-info "ask: not inside an agent context" {})))
+   (when-not *current-raw*
+     (throw (ex-info "ask: no raw completion available" {})))
+   (send (create-msg 'message {:from *current-handle* :body msg}) target)
+   (block-for-message)))
+
 
 ;; =============================================================================
 ;; Orphan box
@@ -162,18 +190,30 @@
 (defn spawn
   "Start an agent in a background future. Returns its handle immediately.
    The handle is addressable (send to it). The child must explicitly send
-   its result if needed; use recv-based patterns to collect spawn results.
+   its result if needed; use ask-based patterns to collect spawn results.
    llm-fn must accept (prompt hooks handle) — 3-arity.
-   Sets *parent-handle* so the child can find its spawner."
+   Sets *parent-handle* so the child can find its spawner.
+   Blocks until the child registers (handle is live before spawn returns).
+   Optional handle-name (keyword) sets a fixed handle instead of auto-generating."
+  ([llm-fn prompt] (spawn llm-fn prompt nil))
+  ([llm-fn prompt handle-name]
+   (let [handle (or handle-name (keyword (gensym "spawn-")))
+         parent *current-handle*
+         ready  (promise)]
+     (future
+       ((bound-fn []
+          (binding [*parent-handle* parent
+                    *spawn-ready*   ready]
+            (llm-fn prompt [] handle)))))
+     @ready
+     handle)))
+
+(defn spawn-recv
+  "Spawn a child agent and block until it sends back a result.
+   Combines spawn + block for safe use as a quoted trailing expression:
+     '(spawn-recv llm-self \"do X and send result to (parent-handle)\")
+   The child must send its result via (send (create-msg 'name val) (parent-handle)).
+   No poke is sent since the child is already running."
   [llm-fn prompt]
-  (let [handle (keyword (gensym "spawn-"))
-        parent *current-handle*]
-    (register! handle identity) ;; placeholder eval-fn; -llm seeds real one
-    (future
-      ((bound-fn []
-         (try
-           (binding [*parent-handle* parent]
-             (llm-fn prompt [] handle))
-           (finally
-             (unregister! handle))))))
-    handle))
+  (spawn llm-fn prompt)
+  (block-for-message))

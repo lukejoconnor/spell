@@ -62,17 +62,25 @@
     (catch Exception e
       {:error (str "Error reading file: " (.getMessage e))})))
 
+(defn- format-lines
+  "Format lines with line numbers. lines is a seq of [line-num content] pairs."
+  [pairs]
+  (let [max-num (reduce max 0 (map first pairs))
+        width   (count (str max-num))]
+    (str/join "\n" (map (fn [[n line]]
+                          (str (format (str "%" width "d") n) ": " line))
+                        pairs))))
+
 (defn read-file
-  "Read file with line numbers. Returns sorted map {line-num content ...} or {:error msg}.
-   Optionally takes start and end line numbers (1-indexed, inclusive)."
+  "Read file with line numbers. Returns a formatted string with numbered lines,
+   or {:error msg}. Optionally takes start and end line numbers (1-indexed, inclusive)."
   ([path]
    (try
      (let [content (slurp path)]
        (if (empty? content)
-         (sorted-map)
+         ""
          (let [lines (str/split-lines content)]
-           (into (sorted-map)
-                 (map-indexed (fn [i line] [(inc i) line]) lines)))))
+           (format-lines (map-indexed (fn [i line] [(inc i) line]) lines)))))
      (catch java.io.FileNotFoundException _
        {:error (str "File not found: " path)})
      (catch Exception e
@@ -81,14 +89,13 @@
    (try
      (let [content (slurp path)]
        (if (empty? content)
-         (sorted-map)
+         ""
          (let [lines (str/split-lines content)
                n (count lines)
                start (max 1 (min start n))
                end (max start (min end n))]
-           (into (sorted-map)
-                 (map (fn [i] [(inc i) (nth lines i)])
-                      (range (dec start) end))))))
+           (format-lines (map (fn [i] [(inc i) (nth lines i)])
+                              (range (dec start) end))))))
      (catch java.io.FileNotFoundException _
        {:error (str "File not found: " path)})
      (catch Exception e
@@ -362,7 +369,7 @@
           :slurp "Read entire file as string. Returns {:ok content} or {:error msg}."
           :spit "Write to file. (spit path content) or (spit path content {:append true}). Returns {:ok path} or {:error msg}."
           :slurp-bytes "Read file as byte array. Returns {:ok bytes} or {:error msg}."
-          :read-file "Read file with line numbers. Returns {1 \"line1\" 2 \"line2\" ...} or {:error msg}. Optional start/end for range."
+          :read-file "Read file with line numbers. Returns string \"1: line1\\n2: line2\\n...\" or {:error msg}. Optional start/end for range."
           :write-file "Write content to file. Creates parent dirs. Returns {:ok path} or {:error msg}."
           ;; String replacement
           :str-replace "Replace unique string in file. Returns {:ok path} or {:error msg}."

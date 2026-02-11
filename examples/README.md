@@ -31,3 +31,4 @@ spell -v -m opus "Your prompt here"
 | `twenty-questions.md` | Worker/checker loop (Ralph pattern) | Opus |
 | `explain-spell.md` | Self-reflection + multi-agent debate | Opus |
 | `fix-bug.md` | Multi-step bug fixing with delegation | Sonnet |
+| `auction.spl` | Sealed-bid auction with parallel bidders | Opus |

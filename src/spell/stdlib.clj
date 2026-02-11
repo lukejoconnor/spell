@@ -168,9 +168,18 @@
 
 (def patterns
   "Reusable orchestration patterns (Spell-specific)."
-  {:docs {:check-result "Verify an answer using leaf-llm. Returns {:ok answer} if correct, {:wrong msg} if not. Caller decides how to handle wrong results (retry, extend, etc.).
+  {:docs {:call-now "Evaluate a tool, bind the result, and extend to a child LLM that sees it.
+(patterns/call-now (tools/bash \"ls\") 'files)
+Requires the completion binding (from quine preamble in NL prompts)."
+          :check-result "Verify an answer using leaf-llm. Returns {:ok answer} if correct, {:wrong msg} if not. Caller decides how to handle wrong results (retry, extend, etc.).
 (check-result \"What is 2+2?\" 4)  ; => {:ok 4}
 (check-result \"Capital of France?\" \"London\")  ; => {:wrong \"London is the capital of the UK, not France.\"}"}
+   ;; call-now: evaluate tool, bind result in completion, extend to child
+   :call-now {:spell/fn true
+              :params ['result 'name]
+              :body '((if (strings/includes? (pr-str completion) (cat "(quine " (str name) " "))
+                        result
+                        (llm-self (cat (reopen completion) "(quine " (str name) " " (pr-str result) ") "))))}
    ;; check-result: verify answer with leaf-llm (core builtin), return {:ok answer} or {:wrong msg}
    :check-result {:spell/fn true
                   :params ['prompt 'answer]
