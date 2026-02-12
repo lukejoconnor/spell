@@ -184,7 +184,7 @@
 (deftest integration-nested-calls-test
   (testing "nested llm calls produce correct trace tree"
     (let [call-count (atom 0)
-          responses ["(cat \"hello \" (llm \"(do \"))"
+          responses ["'(cat \"hello \" (llm \"(do \"))"
                      "\"world\")"]]
       (binding [trace/*trace* (trace/new-trace)]
         (provider/with-provider
@@ -193,7 +193,7 @@
                             (let [r (nth responses @call-count)]
                               (swap! call-count inc)
                               r))})
-          (let [result (spell/llm "(do ")]
+          (let [result (spell/llm "(eval (do ")]
             (is (= "hello world" result))
             (let [{:keys [nodes root]} @trace/*trace*]
               ;; Two nodes: root + child
@@ -232,9 +232,9 @@
 (deftest integration-three-deep-test
   (testing "three levels of nesting produce correct parent chain"
     (let [call-count (atom 0)
-          responses ["(llm \"(do \")"          ; depth 0 → calls depth 1
-                     "(llm \"(do \")"          ; depth 1 → calls depth 2
-                     "99)"]]                   ; depth 2 → returns 99
+          responses ["'(llm \"(eval (do \")"  ; depth 0 → calls depth 1
+                     "'(llm \"(eval (do \")"  ; depth 1 → calls depth 2
+                     "99)))"]]                ; depth 2 → returns 99
       (binding [trace/*trace* (trace/new-trace)]
         (provider/with-provider
           (provider/dummy-provider
@@ -242,7 +242,7 @@
                             (let [r (nth responses @call-count)]
                               (swap! call-count inc)
                               r))})
-          (let [result (spell/llm "(do ")]
+          (let [result (spell/llm "(eval (do ")]
             (is (= 99 result))
             (let [nodes (:nodes @trace/*trace*)]
               (is (= 3 (count nodes)))

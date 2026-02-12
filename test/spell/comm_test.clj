@@ -100,8 +100,8 @@
           ;; Simulate a raw completion with 3 trailing parens
           raw "(quine completion (eval (do (def x 1))))"
           result (msg-fn raw)]
-      ;; Should have reopened (stripped 3 parens) and appended quine
-      (is (.contains ^String result "(quine my-data 42)"))
+      ;; Should have reopened (stripped 3 parens) and appended def binding
+      (is (.contains ^String result "(def my-data 42)"))
       (is (not (.endsWith ^String result ")))"))))))
 
 (deftest dynamic-vars-bound-in-box-test
@@ -129,17 +129,17 @@
       (is (= 42 (spell/llm "(do "))))))
 
 (deftest llm-nested-still-works-test
-  (testing "nested llm calls work through box"
+  (testing "nested llm calls work through box (llm is effect-only)"
     (let [call-count (atom 0)
-          responses ["(def return (cat \"hello \" (llm \"(do \"))))"
-                     "(def return \"world\"))"]]
+          responses ["'(cat \"hello \" (llm \"(eval (do \")))"
+                     "'\"world\")))"]]
       (provider/with-provider
         (provider/dummy-provider
           {:response-fn (fn [_]
                           (let [r (nth responses @call-count)]
                             (swap! call-count inc)
                             r))})
-        (is (= "hello world" (spell/llm "(do ")))))))
+        (is (= "hello world" (spell/llm "(eval (do ")))))))
 
 (deftest ask-no-msg-blocks-send-unblocks-test
   (testing "ask(target) pokes target and blocks until send"
@@ -205,22 +205,20 @@
 
 (deftest handle-inheritance-test
   (testing "llm-self calls inherit the parent's handle"
-    ;; Outer call captures current-handle; inner llm-self call should see same handle
+    ;; All effect builtins (current-handle, llm-self) go through eval's second pass.
     (let [call-count (atom 0)
-          outer-handle (atom nil)
-          inner-handle (atom nil)
-          responses [;; Outer: capture handle, recurse, return both handles
-                     "(def h1 (current-handle))(def h2 (llm-self \"(do \"))(list h1 h2))"
-                     ;; Inner: return current-handle
-                     "(current-handle))"]]
+          responses [;; Outer: use eval to access current-handle and llm-self via double-eval
+                     "'(list (current-handle) (llm-self \"(eval (do \")))"
+                     ;; Inner: return current-handle (via eval)
+                     "'(current-handle)))"]]
       (provider/with-provider
         (provider/dummy-provider
           {:response-fn (fn [_]
                           (let [r (nth responses @call-count)]
                             (swap! call-count inc)
                             r))})
-        (let [result (spell/llm "(do ")]
-          ;; result is (h1 h2) — both should be the same symbol
+        (let [result (spell/llm "(eval (do ")]
+          ;; result is (h1 h2) — both should be the same handle
           (is (= (first result) (second result))))))))
 
 ;; =============================================================================
@@ -244,10 +242,10 @@
 (deftest spawn-sets-parent-handle-test
   (testing "spawned agent sees spawner's handle via parent-handle"
     (let [call-count (atom 0)
-          responses [;; Parent: capture own handle, spawn child that returns parent-handle
-                     "(def my-h (current-handle))(def child-result (llm-self \"(do \"))(list my-h child-result))"
+          responses [;; Parent: all effect builtins via eval
+                     "'(let [my-h (current-handle) child-result (llm-self \"(eval (do \")] (list my-h child-result)))"
                      ;; Inner llm-self (inherits handle, not spawned): return nil for parent-handle
-                     "(parent-handle))"]]
+                     "'(parent-handle)))"]]
       ;; First test: llm-self inherits handle, so parent-handle is nil (not spawned)
       (provider/with-provider
         (provider/dummy-provider
@@ -255,7 +253,7 @@
                           (let [r (nth responses @call-count)]
                             (swap! call-count inc)
                             r))})
-        (let [result (spell/llm "(do ")]
+        (let [result (spell/llm "(eval (do ")]
           ;; parent-handle should be nil for non-spawned agents
           (is (nil? (second result)))))))
 
@@ -298,13 +296,14 @@
         ;; spawn-recv blocks until child sends; child runs in a future
         (let [result (deref parent-result 5000 :timeout)]
           (is (string? result))
-          (is (.contains ^String result "(quine answer 42)")))))))
+          (is (.contains ^String result "(def answer 42)")))))))
 
 (deftest spawn-addressable-test
   (testing "spawned agent can be sent to (handle is registered)"
+    ;; spawn and llm-self are effect-builtins: accessed via eval double-evaluation.
     (let [call-count (atom 0)
-          responses [;; Outer: spawn worker, verify handle is valid, return it
-                     "(def w (spawn llm-self \"(do \"))(not (nil? w)))"
+          responses [;; Outer: use eval to access spawn+llm-self via double-eval
+                     "(eval (do '(let [w (spawn llm-self \"(do \")] (not (nil? w)))))"
                      ;; Worker: just return 77
                      "77)"]]
       (provider/with-provider
@@ -352,7 +351,7 @@
           (is (= "reply-from-b" result))
           ;; B should have received the ask message (modified raw with quine injected)
           (is (some? @b-received))
-          (is (.contains ^String @b-received "(quine message")))))))
+          (is (.contains ^String @b-received "(def message")))))))
 
 (deftest ask-no-msg-wakes-target-test
   (testing "ask(target) sends a poke to target, waking it"
@@ -387,5 +386,157 @@
           (is (= "reply-from-b" result))
           ;; B should have been woken by A's ask poke
           (is (some? @b-received))
-          (is (.contains ^String @b-received "(quine waiting-for :ask-wake-a)")))))))
+          (is (.contains ^String @b-received "(def waiting-for :ask-wake-a)")))))))
+
+;; =============================================================================
+;; Multi-target ask tests
+;; =============================================================================
+
+(deftest ask-multi-asserts-outside-context-test
+  (testing "ask with vector throws when not in agent context"
+    (is (thrown-with-msg? Exception #"not inside an agent context"
+          (comm/ask-builtin [:a :b]))))
+  (testing "ask with empty vector throws"
+    (comm/register! :dummy identity)
+    (binding [comm/*current-handle* :dummy
+              comm/*current-raw* "(quine completion (eval (do )))"]
+      (reset! (:has-box (get @comm/registry :dummy)) true)
+      (is (thrown-with-msg? Exception #"empty target list"
+            (comm/ask-builtin []))))))
+
+(deftest ask-multi-collector-basic-test
+  (testing "collector accumulates messages from multiple targets"
+    ;; Use identity as eval-fn so box returns the accumulated raw directly.
+    ;; Call ask-multi from a direct binding context (not through box's eval-fn)
+    ;; to avoid infinite re-evaluation.
+    (let [h-parent :multi-parent
+          h-a :multi-child-a
+          h-b :multi-child-b
+          parent-raw "(quine completion (eval (do )))"]
+      (comm/register! h-parent identity)
+      (comm/register! h-a identity)
+      (comm/register! h-b identity)
+      ;; Start ask-multi in a future with the parent's context
+      (let [result-future
+            (future
+              (binding [comm/*current-handle* h-parent
+                        comm/*current-raw*    parent-raw]
+                (reset! (:has-box (get @comm/registry h-parent)) true)
+                (comm/ask-builtin [h-a h-b])))]
+        (Thread/sleep 50)
+        ;; Child A sends to parent
+        (binding [comm/*current-handle* h-a]
+          (comm/send (comm/create-msg 'result-a 42) h-parent))
+        ;; Child B sends to parent
+        (binding [comm/*current-handle* h-b]
+          (comm/send (comm/create-msg 'result-b 99) h-parent))
+        ;; Parent should unblock with accumulated raw containing both quines
+        (let [result (deref result-future 5000 :timeout)]
+          (is (string? result))
+          (is (.contains ^String result "(def result-a 42)"))
+          (is (.contains ^String result "(def result-b 99)")))))))
+
+(deftest ask-multi-single-target-test
+  (testing "ask with single-element vector works"
+    (let [h-parent :multi-single-parent
+          h-child :multi-single-child
+          parent-raw "(quine completion (eval (do )))"]
+      (comm/register! h-parent identity)
+      (comm/register! h-child identity)
+      (let [result-future
+            (future
+              (binding [comm/*current-handle* h-parent
+                        comm/*current-raw*    parent-raw]
+                (reset! (:has-box (get @comm/registry h-parent)) true)
+                (comm/ask-builtin [h-child])))]
+        (Thread/sleep 50)
+        (binding [comm/*current-handle* h-child]
+          (comm/send (comm/create-msg 'answer 7) h-parent))
+        (let [result (deref result-future 5000 :timeout)]
+          (is (string? result))
+          (is (.contains ^String result "(def answer 7)")))))))
+
+(deftest ask-multi-concurrent-sends-test
+  (testing "concurrent sends from multiple targets are collected correctly"
+    (let [h-parent :multi-conc-parent
+          targets (mapv #(keyword (str "multi-conc-child-" %)) (range 5))
+          parent-raw "(quine completion (eval (do )))"]
+      (comm/register! h-parent identity)
+      (doseq [t targets] (comm/register! t identity))
+      (let [result-future
+            (future
+              (binding [comm/*current-handle* h-parent
+                        comm/*current-raw*    parent-raw]
+                (reset! (:has-box (get @comm/registry h-parent)) true)
+                (comm/ask-builtin targets)))]
+        (Thread/sleep 50)
+        ;; All children send concurrently
+        (let [send-futures
+              (mapv (fn [t]
+                      (future
+                        (binding [comm/*current-handle* t]
+                          (comm/send (comm/create-msg (symbol (name t)) (name t))
+                                     h-parent))))
+                    targets)]
+          (doseq [sf send-futures] (deref sf 2000 :timeout)))
+        ;; Parent should have all 5 quine bindings
+        (let [result (deref result-future 5000 :timeout)]
+          (is (string? result))
+          (doseq [t targets]
+            (is (.contains ^String result
+                           (str "(def " (name t))))))))))
+
+(deftest ask-multi-notify-waiters-test
+  (testing "notify-waiters with correct *current-handle* triggers collector"
+    (let [h-parent :multi-nw-parent
+          h-child :multi-nw-child
+          parent-raw "(quine completion (eval (do )))"]
+      (comm/register! h-parent identity)
+      (comm/register! h-child identity)
+      (let [result-future
+            (future
+              (binding [comm/*current-handle* h-parent
+                        comm/*current-raw*    parent-raw]
+                (reset! (:has-box (get @comm/registry h-parent)) true)
+                (comm/ask-builtin [h-child])))]
+        (Thread/sleep 50)
+        ;; Simulate child completing — notify-waiters sends spawn-result
+        (comm/notify-waiters! h-child :child-returned)
+        (let [result (deref result-future 5000 :timeout)]
+          (is (string? result))
+          (is (.contains ^String result "(def spawn-result :child-returned)")))))))
+
+;; =============================================================================
+;; Effect guard tests
+;; =============================================================================
+
+(deftest effect-guard-blocks-in-first-pass-test
+  (testing "effect builtins are unbound in eval's first pass (do block)"
+    ;; send, spawn, ask — communication effects
+    (is (thrown-with-msg? Exception #"Unbound symbol: send"
+          (eval/run-spell '(send identity :nobody))))
+    (is (thrown-with-msg? Exception #"Unbound symbol: spawn"
+          (eval/run-spell '(spawn identity "test"))))
+    (is (thrown-with-msg? Exception #"Unbound symbol: ask"
+          (eval/run-spell '(ask :nobody "hello"))))
+    ;; current-handle, parent-handle — context-dependent
+    (is (thrown-with-msg? Exception #"Unbound symbol: current-handle"
+          (eval/run-spell '(current-handle))))
+    (is (thrown-with-msg? Exception #"Unbound symbol: parent-handle"
+          (eval/run-spell '(parent-handle))))
+    ;; pmap — concurrency effect (await is now a core builtin)
+    (is (thrown-with-msg? Exception #"Unbound symbol: pmap"
+          (eval/run-spell '(pmap inc [1 2 3]))))
+    ;; io/, globals/ — side-effectful namespaces
+    (is (thrown-with-msg? Exception #"Unbound symbol: io"
+          (eval/run-spell '(io/sh "echo hi"))))
+    (is (thrown-with-msg? Exception #"Unbound symbol: globals"
+          (eval/run-spell '(globals/get :roles))))))
+
+(deftest effect-guard-allows-in-second-pass-test
+  (testing "dangerous fns work through double-evaluation (eval special form)"
+    ;; (eval (do '(send ...))) — the quoted expression is double-evaluated
+    ;; send will still fail at runtime (no registered handle), but the symbol resolves
+    (is (thrown-with-msg? Exception #"not inside an agent context|not registered"
+          (eval/run-spell '(eval (do '(ask :nobody "hello"))))))))
 

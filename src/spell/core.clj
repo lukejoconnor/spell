@@ -70,11 +70,7 @@
 ;; Note: seqs, fns, and bit- ops are in core-builtins (matching Clojure).
 (alter-var-root #'eval/*builtins*
   (constantly (merge eval/core-builtins
-                     {'llm #'llm
-                      'leaf-llm leaf-llm
-                      ;; Namespaces
-                      'io io/io-namespace
-                      'globals globals/globals-namespace
+                     {;; Pure namespaces
                       'strings stdlib/strings
                       'math stdlib/math
                       'patterns stdlib/patterns
@@ -84,13 +80,42 @@
                       'prefix-prompt #'prefix-prompt
                       'with-env with-env
                       'with-env-hints with-env-hints
-                      ;; Communication
-                      'send comm/send
-                      'ask comm/ask-builtin
-                      'current-handle (fn [] comm/*current-handle*)
-                      'parent-handle (fn [] comm/*parent-handle*)
-                      'create-msg comm/create-msg
-                      'spawn (fn
-                               ([llm-fn prompt] (comm/spawn llm-fn prompt))
-                               ([llm-fn prompt handle-name] (comm/spawn llm-fn prompt handle-name)))
-                      'spawn-recv (fn [llm-fn prompt] (comm/spawn-recv llm-fn prompt))})))
+                      'create-msg comm/create-msg})))
+
+;; Effect builtins — only available inside eval's second pass (double-evaluation).
+;; Contains non-deterministic and side-effectful operations:
+;; LLM calls, communication, concurrency, IO, globals.
+(alter-var-root #'eval/*effect-builtins*
+  (constantly {'llm #'llm
+               'leaf-llm leaf-llm
+               ;; Namespaces with side effects
+               'io io/io-namespace
+               'globals globals/globals-namespace
+               ;; Communication
+               'send comm/send
+               'ask comm/ask-builtin
+               'spawn (fn
+                        ([llm-fn prompt] (comm/spawn llm-fn prompt))
+                        ([llm-fn prompt handle-name] (comm/spawn llm-fn prompt handle-name)))
+               'spawn-recv (fn [llm-fn prompt] (comm/spawn-recv llm-fn prompt))
+               'current-handle (fn [] comm/*current-handle*)
+               'parent-handle (fn [] comm/*parent-handle*)
+               ;; Concurrency
+               'await (fn [future-val]
+                        (when-not (eval/spell-future? future-val)
+                          (throw (ex-info "await: argument must be a future" {:got future-val})))
+                        (deref (:ref future-val)))
+               'await-all (fn [futures]
+                            (when-not (sequential? futures)
+                              (throw (ex-info "await-all: argument must be a collection" {:got futures})))
+                            (mapv (fn [f]
+                                    (when-not (eval/spell-future? f)
+                                      (throw (ex-info "await-all: all elements must be futures" {:got f})))
+                                    (deref (:ref f)))
+                                  futures))
+               'pmap (fn [f coll]
+                       (let [futures (mapv (fn [item]
+                                             {:spell/future true
+                                              :ref (clojure.core/future ((bound-fn [] (eval/invoke-fn f [item]))))})
+                                           coll)]
+                         (mapv #(deref (:ref %)) futures)))}))

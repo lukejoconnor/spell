@@ -177,9 +177,9 @@ Requires the completion binding (from quine preamble in NL prompts)."
    ;; call-now: evaluate tool, bind result in completion, extend to child
    :call-now {:spell/fn true
               :params ['result 'name]
-              :body '((if (strings/includes? (pr-str completion) (cat "(quine " (str name) " "))
+              :body '((if (strings/includes? (pr-str completion) (cat "(def " (str name) " "))
                         result
-                        (llm-self (cat (reopen completion) "(quine " (str name) " " (pr-str result) ") "))))}
+                        (llm-self (cat (reopen completion) "(def " (str name) " " (pr-str result) ") "))))}
    ;; check-result: verify answer with leaf-llm (core builtin), return {:ok answer} or {:wrong msg}
    :check-result {:spell/fn true
                   :params ['prompt 'answer]

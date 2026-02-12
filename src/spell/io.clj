@@ -315,8 +315,9 @@
 
 (defn sh
   "Execute shell command. Returns {:exit N :out \"...\" :err \"...\"}."
-  [command]
-  (let [shell (or (System/getenv "SHELL") "bash")
+  [command & more]
+  (let [command (if (seq more) (apply str command more) command)
+        shell (or (System/getenv "SHELL") "bash")
         pb (ProcessBuilder. [shell "-c" command])
         process (.start pb)
         out-future (future (slurp (.getInputStream process)))

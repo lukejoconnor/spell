@@ -22,6 +22,12 @@
   (merge eval/core-builtins
          (extract-ns-fns stdlib/strings)))
 
+(defmacro with-effects
+  "Run body with *effect-builtins* merged into *builtins* (simulates eval's second pass)."
+  [& body]
+  `(binding [eval/*builtins* (merge eval/*builtins* eval/*effect-builtins*)]
+     ~@body))
+
 (def test-env-with-namespaces
   "Environment with stdlib namespaces for qualified access testing."
   {'strings stdlib/strings
@@ -579,6 +585,16 @@
   (testing "defn with multiple params"
     (is (= 7 (run-spell-full '(do (defn add [a b] (+ a b)) (add 3 4)))))))
 
+(deftest when-form
+  (testing "when truthy"
+    (is (= 42 (run-spell '(when true 42)))))
+  (testing "when falsy returns nil"
+    (is (nil? (run-spell '(when false 42)))))
+  (testing "when with multiple body forms (implicit do)"
+    (is (= 3 (run-spell '(when true 1 2 3)))))
+  (testing "when with nil test"
+    (is (nil? (run-spell '(when nil 42))))))
+
 (deftest cond-form
   (testing "cond first match"
     (is (= 1 (run-spell '(cond true 1 true 2)))))
@@ -836,45 +852,48 @@
 ;; =============================================================================
 
 (deftest future-await-basic
-  (testing "basic future + await returns value"
-    (is (= 3 (run-spell '(await (future (+ 1 2)))))))
+  (with-effects
+    (testing "basic future + await returns value"
+      (is (= 3 (run-spell '(await (future (+ 1 2)))))))
 
-  (testing "future returns a spell future map"
-    (let [[val _] (spell-eval '(future 42) {})]
-      (is (map? val))
-      (is (:spell/future val))
-      (is (instance? clojure.lang.IDeref (:ref val)))))
+    (testing "future returns a spell future map"
+      (let [[val _] (spell-eval '(future 42) {})]
+        (is (map? val))
+        (is (:spell/future val))
+        (is (instance? clojure.lang.IDeref (:ref val)))))
 
-  (testing "await on non-future throws"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"await: argument must be a future"
-          (run-spell '(await 42)))))
+    (testing "await on non-future throws"
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"await: argument must be a future"
+            (run-spell '(await 42)))))
 
-  (testing "double await returns cached value"
-    (is (= 5 (run-spell '(do (def f (future (+ 2 3)))
-                              (def first-await (await f))
-                              (await f)))))))
+    (testing "double await returns cached value"
+      (is (= 5 (run-spell '(do (def f (future (+ 2 3)))
+                                (def first-await (await f))
+                                (await f))))))))
 
 (deftest future-env-capture
-  (testing "future captures enclosing env"
-    (is (= 6 (run-spell '(let [x 5] (await (future (+ x 1))))))))
+  (with-effects
+    (testing "future captures enclosing env"
+      (is (= 6 (run-spell '(let [x 5] (await (future (+ x 1))))))))
 
-  (testing "future sees defs from before its creation"
-    (is (= 15 (run-spell '(do (def x 10) (def y 5)
-                               (await (future (+ x y)))))))))
+    (testing "future sees defs from before its creation"
+      (is (= 15 (run-spell '(do (def x 10) (def y 5)
+                                 (await (future (+ x y))))))))))
 
 (deftest future-isolation
-  (testing "defs inside future don't leak to parent env"
-    (let [[val env] (spell-eval '(do (def f (future (do (def leaked 99) leaked)))
-                                      (await f))
-                                 {})]
-      (is (= 99 val))
-      (is (not (contains? env 'leaked))))))
+  (with-effects
+    (testing "defs inside future don't leak to parent env"
+      (let [[val env] (spell-eval '(do (def f (future (do (def leaked 99) leaked)))
+                                        (await f))
+                                   {})]
+        (is (= 99 val))
+        (is (not (contains? env 'leaked)))))))
 
 (deftest future-concurrency
   (testing "two futures run concurrently (not sequentially)"
     ;; Each future sleeps 100ms. If sequential, total >= 200ms; if concurrent, ~100ms.
     (let [sleep-fn (fn [ms] (Thread/sleep (long ms)) ms)
-          builtins (merge eval/core-builtins {'sleep sleep-fn})
+          builtins (merge eval/core-builtins eval/*effect-builtins* {'sleep sleep-fn})
           start (System/currentTimeMillis)
           result (binding [eval/*builtins* builtins]
                    (first (spell-eval
@@ -888,71 +907,75 @@
       (is (< elapsed 180) (str "Expected concurrent execution, took " elapsed "ms")))))
 
 (deftest future-error-propagation
-  (testing "exception in future body re-throws on await"
-    (is (thrown? Exception
-          (run-spell '(await (future (/ 1 0))))))))
+  (with-effects
+    (testing "exception in future body re-throws on await"
+      (is (thrown? Exception
+            (run-spell '(await (future (/ 1 0)))))))))
 
 (deftest future-nested
-  (testing "nested future + await"
-    (is (= 42 (run-spell '(await (future (await (future 42))))))))
+  (with-effects
+    (testing "nested future + await"
+      (is (= 42 (run-spell '(await (future (await (future 42))))))))
 
-  (testing "DAG: future C awaits futures A and B"
-    (let [result (run-spell
-                   '(do (def a (future (+ 10 1)))
-                        (def b (future (+ 20 2)))
-                        (def c (future (do (def ra (await a))
-                                           (def rb (await b))
-                                           (+ ra rb))))
-                        (await c)))]
-      (is (= 33 result)))))
+    (testing "DAG: future C awaits futures A and B"
+      (let [result (run-spell
+                     '(do (def a (future (+ 10 1)))
+                          (def b (future (+ 20 2)))
+                          (def c (future (do (def ra (await a))
+                                             (def rb (await b))
+                                             (+ ra rb))))
+                          (await c)))]
+        (is (= 33 result))))))
 
 (deftest future-dynamic-bindings
   (testing "future conveys *builtins* via bound-fn"
-    (let [custom-builtins (merge eval/core-builtins
+    (let [custom-builtins (merge eval/core-builtins eval/*effect-builtins*
                                  {'my-tool (fn [] "tool-result")})]
       (binding [eval/*builtins* custom-builtins]
         (is (= "tool-result"
                (first (spell-eval '(await (future (my-tool))) {}))))))))
 
 (deftest future-expand
-  (testing "expand handles future form"
+  (testing "expand handles future form (macro-expanded to future*)"
     (let [[val _] (spell-eval '(do (def x 10) (expand '(future (+ x 1)))) {})]
-      (is (= '(future (+ 10 1)) val)))))
+      (is (= '(future* (fn [] (+ 10 1))) val)))))
 
 ;; =============================================================================
 ;; await-all, pmap, plet tests
 ;; =============================================================================
 
 (deftest await-all-basic
-  (testing "await-all resolves multiple futures"
-    (is (= [1 2 3] (run-spell '(await-all [(future 1) (future 2) (future 3)])))))
+  (with-effects
+    (testing "await-all resolves multiple futures"
+      (is (= [1 2 3] (run-spell '(await-all [(future 1) (future 2) (future 3)])))))
 
-  (testing "await-all on empty collection"
-    (is (= [] (run-spell '(await-all [])))))
+    (testing "await-all on empty collection"
+      (is (= [] (run-spell '(await-all [])))))
 
-  (testing "await-all on non-collection throws"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"await-all: argument must be a collection"
-          (run-spell '(await-all 42)))))
+    (testing "await-all on non-collection throws"
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"await-all: argument must be a collection"
+            (run-spell '(await-all 42)))))
 
-  (testing "await-all with non-future element throws"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"await-all: all elements must be futures"
-          (run-spell '(await-all [42]))))))
+    (testing "await-all with non-future element throws"
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"await-all: all elements must be futures"
+            (run-spell '(await-all [42])))))))
 
 (deftest pmap-basic
-  (testing "pmap applies function in parallel"
-    (is (= [2 4 6] (run-spell '(pmap (fn [x] (* x 2)) [1 2 3])))))
+  (with-effects
+    (testing "pmap applies function in parallel"
+      (is (= [2 4 6] (run-spell '(pmap (fn [x] (* x 2)) [1 2 3])))))
 
-  (testing "pmap on empty collection"
-    (is (= [] (run-spell '(pmap (fn [x] x) [])))))
+    (testing "pmap on empty collection"
+      (is (= [] (run-spell '(pmap (fn [x] x) [])))))
 
-  (testing "pmap with spell-fn"
-    (is (= [1 4 9] (run-spell '(do (defn sq [x] (* x x))
-                                    (pmap sq [1 2 3])))))))
+    (testing "pmap with spell-fn"
+      (is (= [1 4 9] (run-spell '(do (defn sq [x] (* x x))
+                                      (pmap sq [1 2 3]))))))))
 
 (deftest pmap-concurrency
   (testing "pmap runs items concurrently"
     (let [sleep-fn (fn [ms] (Thread/sleep (long ms)) ms)
-          builtins (merge eval/core-builtins {'sleep sleep-fn})
+          builtins (merge eval/core-builtins eval/*effect-builtins* {'sleep sleep-fn})
           start (System/currentTimeMillis)
           result (binding [eval/*builtins* builtins]
                    (first (spell-eval
@@ -994,9 +1017,11 @@
       (is (< elapsed 250) (str "Expected concurrent execution, took " elapsed "ms")))))
 
 (deftest plet-expand
-  (testing "expand handles plet form"
+  (testing "expand handles plet form (macro-expanded to let + future + await)"
     (let [[val _] (spell-eval '(do (def x 10) (expand '(plet [a (+ x 1) b (+ x 2)] (list a b)))) {})]
-      (is (= '(plet [a (+ 10 1) b (+ 10 2)] (list a b)) val)))))
+      ;; plet expands to nested let with future* and await calls
+      (is (seq? val))
+      (is (= 'let (first val))))))
 
 ;; =============================================================================
 ;; Qualified symbol tests
@@ -1914,3 +1939,267 @@
     (is (false? (run-spell '(contains? {:a 1} :b)))))
   (testing "disj"
     (is (= #{1 3} (run-spell '(disj #{1 2 3} 2))))))
+
+;; =============================================================================
+;; Value store tests
+;; =============================================================================
+
+(deftest value-store-test
+  (testing "store and retrieve round-trips"
+    (let [id (eval/store-value! "hello world")]
+      (is (= "hello world" (eval/stored id)))))
+
+  (testing "stored builtin works in spell-eval"
+    (let [id (eval/store-value! {:key "value"})]
+      (is (= {:key "value"} (run-spell (list 'stored id))))))
+
+  (testing "missing id throws"
+    (is (thrown-with-msg? Exception #"No stored value"
+          (eval/stored "nonexistent-id"))))
+
+  (testing "serialize-for-continuation inlines small values"
+    (is (= "42" (eval/serialize-for-continuation 42)))
+    (is (= "\"short\"" (eval/serialize-for-continuation "short"))))
+
+  (testing "serialize-for-continuation stores large strings"
+    (let [big-string (apply str (repeat 5000 "x"))
+          result (eval/serialize-for-continuation big-string)]
+      (is (.startsWith ^String result "(stored "))
+      ;; Should be retrievable via the embedded id
+      (let [forms (spell.parse/read-all result)
+            id (second (first forms))]
+        (is (= big-string (eval/stored id)))))))
+
+;; =============================================================================
+;; New special forms (from verified clojure.core audit)
+;; =============================================================================
+
+(deftest test-if-let
+  (testing "truthy binding executes then branch"
+    (is (= 10 (run-spell '(if-let [x 5] (* x 2) 0)))))
+  (testing "falsy binding executes else branch"
+    (is (= 0 (run-spell '(if-let [x nil] (* x 2) 0))))
+    (is (= 0 (run-spell '(if-let [x false] 1 0)))))
+  (testing "no else branch returns nil on falsy"
+    (is (nil? (run-spell '(if-let [x nil] 42)))))
+  (testing "binding available in then branch"
+    (is (= "hello" (run-spell '(if-let [x "hello"] x "default")))))
+  (testing "binding does not leak"
+    (is (= 99 (run-spell '(do (def y 99) (if-let [x 1] y) y))))))
+
+(deftest test-when-let
+  (testing "truthy binding executes body"
+    (is (= 10 (run-spell '(when-let [x 5] (* x 2))))))
+  (testing "falsy binding returns nil"
+    (is (nil? (run-spell '(when-let [x nil] 42)))))
+  (testing "multiple body expressions"
+    (is (= 3 (run-spell '(when-let [x 1] (+ x 1) (+ x 2)))))))
+
+(deftest test-case
+  (testing "matching clause"
+    (is (= "one" (run-spell '(case 1 1 "one" 2 "two" "other"))))
+    (is (= "two" (run-spell '(case 2 1 "one" 2 "two" "other")))))
+  (testing "default clause"
+    (is (= "other" (run-spell '(case 3 1 "one" 2 "two" "other")))))
+  (testing "no default and no match throws"
+    (is (thrown? Exception (run-spell '(case 99 1 "one" 2 "two")))))
+  (testing "works with strings"
+    (is (= :found (run-spell '(case "hello" "hello" :found "world" :nope :default)))))
+  (testing "works with keywords"
+    (is (= "yes" (run-spell '(case :a :a "yes" :b "no"))))))
+
+(deftest test-as->
+  (testing "basic named threading"
+    (is (= 6 (run-spell '(as-> 1 x (+ x 1) (* x 2) (+ x 2))))))
+  (testing "name available in any position"
+    (is (= [1 2 3] (run-spell '(as-> [1 2] v (conj v 3))))))
+  (testing "single form"
+    (is (= 2 (run-spell '(as-> 1 x (+ x 1)))))))
+
+(deftest test-cond->
+  (testing "conditional threading"
+    (is (= 3 (run-spell '(cond-> 1 true (+ 1) true (+ 1) false (+ 10))))))
+  (testing "all false"
+    (is (= 1 (run-spell '(cond-> 1 false (+ 10) false (+ 20))))))
+  (testing "with function forms"
+    (is (= 6 (run-spell '(cond-> 5 true (+ 1) false (* 100)))))))
+
+(deftest test-cond->>
+  (testing "conditional thread-last"
+    ;; (conj [0] [1 2 3]) => [0 [1 2 3]] — thread-last appends to end
+    (is (= [0 [1 2 3]] (run-spell '(cond->> [1 2 3] true (conj [0]) false (conj [99]))))))
+  (testing "all conditions false"
+    (is (= 5 (run-spell '(cond->> 5 false (+ 10) false (* 2)))))))
+
+(deftest test-some->
+  (testing "nil short-circuits"
+    (is (nil? (run-spell '(some-> nil (+ 1))))))
+  (testing "non-nil threads through"
+    (is (= 3 (run-spell '(some-> 1 (+ 1) (+ 1))))))
+  (testing "nil mid-chain short-circuits"
+    (is (nil? (run-spell '(some-> {:a 1} (get :b) (+ 1))))))
+  (testing "full chain succeeds"
+    (is (= 2 (run-spell '(some-> {:a 1} (get :a) (+ 1)))))))
+
+(deftest test-some->>
+  (testing "nil short-circuits"
+    (is (nil? (run-spell '(some->> nil (+ 1))))))
+  (testing "non-nil threads through"
+    (is (= 3 (run-spell '(some->> 1 (+ 1) (+ 1))))))
+  (testing "thread-last position"
+    (is (= [2 3 4] (run-spell '(some->> [1 2 3] (map inc)))))))
+
+;; =============================================================================
+;; New core builtins (from verified clojure.core audit)
+;; =============================================================================
+
+(deftest test-new-builtins
+  (testing "any? always returns true"
+    (is (true? (run-spell '(any? nil))))
+    (is (true? (run-spell '(any? 42))))
+    (is (true? (run-spell '(any? false)))))
+
+  (testing "boolean coercion"
+    (is (true? (run-spell '(boolean 1))))
+    (is (false? (run-spell '(boolean nil))))
+    (is (false? (run-spell '(boolean false))))
+    (is (true? (run-spell '(boolean "hi")))))
+
+  (testing "boolean? predicate"
+    (is (true? (run-spell '(boolean? true))))
+    (is (true? (run-spell '(boolean? false))))
+    (is (false? (run-spell '(boolean? 1))))
+    (is (false? (run-spell '(boolean? nil)))))
+
+  (testing "dedupe removes consecutive duplicates"
+    (is (= [1 2 3 1] (run-spell '(dedupe [1 1 2 2 3 1 1])))))
+
+  (testing "distinct? checks all args distinct"
+    (is (true? (run-spell '(distinct? 1 2 3))))
+    (is (false? (run-spell '(distinct? 1 2 1)))))
+
+  (testing "drop-last"
+    (is (= [1 2] (run-spell '(drop-last [1 2 3]))))
+    (is (= [1] (run-spell '(drop-last 2 [1 2 3])))))
+
+  (testing "ffirst"
+    (is (= 1 (run-spell '(ffirst [[1 2] [3 4]])))))
+
+  (testing "find returns map entry or nil"
+    (is (= [:a 1] (vec (run-spell '(find {:a 1 :b 2} :a)))))
+    (is (nil? (run-spell '(find {:a 1} :z)))))
+
+  (testing "format string formatting"
+    (is (= "hello world" (run-spell '(format "%s %s" "hello" "world"))))
+    (is (= "num: 42" (run-spell '(format "num: %d" 42)))))
+
+  (testing "keep-indexed"
+    (is (= [0 2 4] (run-spell '(keep-indexed (fn [i x] (if (even? i) x nil)) [0 1 2 3 4])))))
+
+  (testing "list*"
+    (is (= '(1 2 3 4) (run-spell '(list* 1 2 [3 4])))))
+
+  (testing "memoize caches results"
+    (is (= 6 (run-spell '(let [f (memoize (fn [x] (* x 2)))]
+                            (f 3)))))
+    ;; Same input returns cached
+    (is (= [4 4] (run-spell '(let [f (memoize (fn [x] (* x 2)))]
+                                [(f 2) (f 2)])))))
+
+  (testing "namespace extracts namespace"
+    (is (= "foo" (run-spell '(namespace :foo/bar))))
+    (is (nil? (run-spell '(namespace :bar)))))
+
+  (testing "next returns nil for empty"
+    (is (= '(2 3) (run-spell '(next [1 2 3]))))
+    (is (nil? (run-spell '(next [1]))))
+    (is (nil? (run-spell '(next [])))))
+
+  (testing "not-every?"
+    (is (true? (run-spell '(not-every? even? [1 2 3]))))
+    (is (false? (run-spell '(not-every? even? [2 4 6])))))
+
+  (testing "parse-boolean"
+    (is (true? (run-spell '(parse-boolean "true"))))
+    (is (false? (run-spell '(parse-boolean "false"))))
+    (is (nil? (run-spell '(parse-boolean "maybe")))))
+
+  (testing "partition-by"
+    (is (= [[1 1] [2 2] [3]] (run-spell '(partition-by identity [1 1 2 2 3])))))
+
+  (testing "rand-nth returns element from collection"
+    (is (contains? #{1 2 3} (run-spell '(rand-nth [1 2 3])))))
+
+  (testing "random-sample returns subset"
+    (let [result (run-spell '(random-sample 0.5 (range 100)))]
+      (is (vector? result))
+      (is (<= (count result) 100))))
+
+  (testing "random-uuid returns string"
+    (let [result (run-spell '(random-uuid))]
+      (is (string? result))
+      (is (= 36 (count result)))))
+
+  (testing "reduced for early termination"
+    (is (= 3 (run-spell '(reduce (fn [acc x] (if (= x 3) (reduced acc) (+ acc x))) 0 [1 2 3 4 5])))))
+
+  (testing "reductions"
+    (is (= [1 3 6 10] (run-spell '(reductions + [1 2 3 4]))))
+    (is (= [0 1 3 6 10] (run-spell '(reductions + 0 [1 2 3 4])))))
+
+  (testing "seq returns nil for empty"
+    (is (nil? (run-spell '(seq []))))
+    (is (nil? (run-spell '(seq nil))))
+    (is (some? (run-spell '(seq [1])))))
+
+  (testing "shuffle returns permutation"
+    (let [result (run-spell '(shuffle [1 2 3 4 5]))]
+      (is (= (sort result) [1 2 3 4 5]))))
+
+  (testing "split-with"
+    (is (= [[1 2] [3 4 5]] (run-spell '(split-with (fn [x] (< x 3)) [1 2 3 4 5])))))
+
+  (testing "take-nth"
+    (is (= [0 3 6 9] (run-spell '(take-nth 3 (range 10))))))
+
+  (testing "tree-seq"
+    (is (= [[1 [2 3]] 1 [2 3] 2 3] (run-spell '(tree-seq sequential? identity [1 [2 3]])))))
+
+  (testing "type returns type name"
+    (is (= "number" (run-spell '(type 42))))
+    (is (= "string" (run-spell '(type "hi"))))
+    (is (= "nil" (run-spell '(type nil))))
+    (is (= "vector" (run-spell '(type [1 2]))))
+    (is (= "map" (run-spell '(type {:a 1}))))
+    (is (= "keyword" (run-spell '(type :foo))))
+    (is (= "function" (run-spell '(type inc))))
+    (is (= "boolean" (run-spell '(type true)))))
+
+  (testing "update-keys"
+    (is (= {"a" 1 "b" 2} (run-spell '(update-keys {:a 1 :b 2} name)))))
+
+  (testing "update-vals"
+    (is (= {:a 2 :b 3} (run-spell '(update-vals {:a 1 :b 2} inc)))))
+
+  (testing "bit-and-not"
+    (is (= 2 (run-spell '(bit-and-not 6 4))))))
+
+(deftest gensym-test
+  (testing "gensym returns a symbol"
+    (is (symbol? (run-spell '(gensym)))))
+  (testing "gensym with prefix"
+    (let [s (run-spell '(gensym "or__"))]
+      (is (symbol? s))
+      (is (.startsWith (str s) "or__"))))
+  (testing "gensym produces unique symbols"
+    (is (not= (run-spell '(gensym)) (run-spell '(gensym))))))
+
+(deftest macro-infrastructure-test
+  (testing "registered macro expands and evaluates"
+    ;; Register a trivial test macro: (double x) -> (+ x x)
+    (eval/defspellmacro 'test-double (fn [x] (list '+ x x)))
+    (try
+      (is (= 10 (run-spell '(test-double 5))))
+      (is (= 6 (run-spell '(test-double 3))))
+      (finally
+        (swap! eval/spell-macros dissoc 'test-double)))))

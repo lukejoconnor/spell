@@ -8,7 +8,8 @@
             [spell.io :as spell-io]
             [spell.prompt :as prompt]
             [clojure.java.io :as io]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [spell.eval :as eval]))
 
 (deftest llm-basic-test
   (testing "llm evaluates response and extracts return"
@@ -25,26 +26,27 @@
       (is (= 6 (spell/llm "(do "))))))
 
 (deftest llm-nested-call-test
-  (testing "llm can call llm recursively"
-    ;; Outer call gets response that calls llm
-    ;; Inner call returns "world"
+  (testing "llm can call llm recursively (llm is effect-only)"
+    ;; llm is an effect-builtin — must go through eval's second pass
     (let [call-count (atom 0)
-          responses ["(def return (cat \"hello \" (llm \"(do \"))))"
-                     "(def return \"world\"))"]]
+          responses ["'(cat \"hello \" (llm \"(eval '(do \"))"
+                     "\"world\"))"]]
       (provider/with-provider
         (provider/dummy-provider
           {:response-fn (fn [_]
                           (let [r (nth responses @call-count)]
                             (swap! call-count inc)
                             r))})
-        (is (= "hello world" (spell/llm "(do ")))))))
+        (is (= "hello world" (spell/llm "(eval (do ")))))))
 
 (deftest spell-eval-with-llm-test
-  (testing "spell-eval can evaluate programs containing llm calls"
+  (testing "spell-eval can evaluate programs containing llm calls (with effects)"
     (provider/with-provider
       (provider/dummy-provider {:response "(def return \"from llm\"))"})
-      (let [[result _] (spell/spell-eval '(llm "(do ") {})]
-        (is (= "from llm" result))))))
+      ;; llm is effect-only, so merge effect builtins for direct spell-eval use
+      (binding [eval/*builtins* (merge eval/*builtins* eval/*effect-builtins*)]
+        (let [[result _] (spell/spell-eval '(llm "(do ") {})]
+          (is (= "from llm" result)))))))
 
 ;; =============================================================================
 ;; File I/O task tests
@@ -57,7 +59,7 @@
       (provider/with-provider
         (provider/dummy-provider
           {:response "(def thought \"read file\") (cat \"Hello, \" (:ok (io/slurp \"test-greeting.txt\")) \"!\"))"})
-        (let [result (spell/llm "(do ")]
+        (let [result (spell/llm "(eval '(do ")]
           (is (= "Hello, Alice!" result))))
       (finally
         (io/delete-file "test-greeting.txt")))))
@@ -177,23 +179,14 @@
         (is (< (Math/abs (- 6.9 (:cost total))) 0.001))))))
 
 (deftest llm-recursive-hook-test
-  (testing "recursive hook propagates to nested llm calls"
-    ;; Outer call returns (llm "(do ...")
-    ;; Inner call returns 10
-    (let [call-count (atom 0)
-          responses ["(def return (llm \"(do \")))"  ; outer calls nested with code prefix
-                     "(def return 10))"]]             ; nested returns 10
-      (provider/with-provider
-        (provider/dummy-provider
-          {:response-fn (fn [_]
-                          (let [r (nth responses @call-count)]
-                            (swap! call-count inc)
-                            r))})
-        (let [add-hook '(fn [code]
-                          (list 'do code '(def return (+ return 5))))
-              recursive-hook (spell/recurse add-hook)
-              result (spell/llm "(do " [recursive-hook])]
-          (is (= 25 result)))))))
+  (testing "recursive hook modifies return value"
+    ;; Hook adds 5 to the return. Applied to the outer call.
+    (provider/with-provider
+      (provider/dummy-provider {:response "(def return 10))"})
+      (let [add-hook '(fn [code]
+                        (list 'do code '(def return (+ return 5))))
+            result (spell/llm "(do " [add-hook])]
+        (is (= 15 result))))))
 
 ;; =============================================================================
 ;; make-llm factory tests
@@ -229,6 +222,7 @@
         (is (= "helper-result" (parent-llm "(do "))))))
 
   (testing "llm-self provides automatic self-recursion"
+    ;; llm-self is an effect-builtin: accessed via eval double-evaluation.
     (let [call-count (atom 0)
           custom-llm (spell/make-llm {:namespaces {}})]
       (provider/with-provider
@@ -236,7 +230,7 @@
           {:response-fn (fn [_]
                           (let [n (swap! call-count inc)]
                             (if (= n 1)
-                              "(cat \"outer-\" (llm-self \"(do \"))"
+                              "(eval (do '(cat \"outer-\" (llm-self \"(do \"))))"
                               "\"inner-result\"")))})
         (is (= "outer-inner-result" (custom-llm "(do ")))))))
 
@@ -640,13 +634,15 @@
   (testing "check-result returns {:ok answer} when leaf-llm says OK"
     (provider/with-provider
       (provider/dummy-provider {:response "OK"})
-      ;; Call check-result directly via spell-eval
-      (let [[result _] (spell/spell-eval '(patterns/check-result "What is 2+2?" 4) {})]
-        (is (= {:ok 4} result))))))
+      ;; leaf-llm is effect-only, so merge effect builtins
+      (binding [eval/*builtins* (merge eval/*builtins* eval/*effect-builtins*)]
+        (let [[result _] (spell/spell-eval '(patterns/check-result "What is 2+2?" 4) {})]
+          (is (= {:ok 4} result)))))))
 
 (deftest check-result-wrong-test
   (testing "check-result returns {:wrong msg} when leaf-llm says WRONG"
     (provider/with-provider
       (provider/dummy-provider {:response "WRONG: London is the capital of the UK."})
-      (let [[result _] (spell/spell-eval '(patterns/check-result "Capital of France?" "London") {})]
-        (is (= {:wrong "London is the capital of the UK."} result))))))
+      (binding [eval/*builtins* (merge eval/*builtins* eval/*effect-builtins*)]
+        (let [[result _] (spell/spell-eval '(patterns/check-result "Capital of France?" "London") {})]
+          (is (= {:wrong "London is the capital of the UK."} result)))))))

@@ -142,7 +142,10 @@ re-executing side effects like bash commands or file writes.")
                 (let [_        (when eval/*verbose*
                                  (println (str indent "Recovery expression: " (pr-str fix-expr))))
                       retry    (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
-                                         eval/*raw-text*       nil]
+                                         eval/*raw-text*       nil
+                                         ;; Recovery needs full capabilities (effect builtins)
+                                         ;; since the recovery LLM may use io/, globals/, etc.
+                                         eval/*builtins*       (merge eval/*builtins* eval/*effect-builtins*)]
                                  (eval/spell-eval fix-expr (:env result) (:memo result) (count (:memo result))))]
                   (when (and eval/*verbose* (eval/err? retry))
                     (println (str indent "Recovery failed: " (:err retry))))
@@ -160,7 +163,7 @@ re-executing side effects like bash commands or file writes.")
    Two cases: root (handle not yet registered) or inherited (handle exists).
    Root owns the handle lifecycle: register, orphan-box, unregister.
    Inherited just seeds the inbox and calls box."
-  [{:keys [call-fn builtins recover-fns recovery-call-fn] :as config} prompt hooks handle]
+  [{:keys [call-fn builtins effect-builtins recover-fns recovery-call-fn] :as config} prompt hooks handle]
   (when (and eval/*max-llm-depth* (>= eval/*llm-depth* eval/*max-llm-depth*))
     (throw (ex-info "LLM recursion limit exceeded"
                     {:depth eval/*llm-depth* :limit eval/*max-llm-depth*})))
@@ -189,11 +192,13 @@ re-executing side effects like bash commands or file writes.")
         _          (when eval/*verbose*
                      (locking *out*
                        (println (str indent "Response: " response))))
-        raw        (str prompt-str response)]
+        raw        (parse/balance-parens (str prompt-str response))]
     (try
       (let [result (binding [eval/*builtins*        builtins
+                             eval/*effect-builtins* (or effect-builtins {})
                              trace/*trace-node-id*  node-id]
                      (comm/box raw handle))]
+        (when root? (comm/notify-waiters! handle result))
         (when root? (comm/orphan-box! raw handle))
         (when node-id
           (trace/complete-node! node-id
@@ -201,6 +206,7 @@ re-executing side effects like bash commands or file writes.")
                    @trace-data)))
         result)
       (catch Exception e
+        (when root? (comm/notify-waiters! handle nil))
         (when root? (comm/orphan-box! raw handle))
         (when node-id
           (trace/complete-node! node-id
@@ -224,6 +230,7 @@ re-executing side effects like bash commands or file writes.")
    - :namespaces - map of {symbol -> namespace-map}. Each namespace has :docs and items.
                    Namespaces are bound under their symbol in the builtins.
    - :model      - optional model name override (nil uses provider default)
+   - :system     - optional system prompt string override (nil uses generated prompt)
    - :llm-var    - optional var ref to bind as 'llm for self-recursion (e.g., #'llm)
    - :recover    - error recovery setting (default: true = enabled).
                    - true: use default LLM-based recovery
@@ -235,38 +242,66 @@ re-executing side effects like bash commands or file writes.")
 
    The returned function is automatically available as 'llm-self in Spell code,
    providing self-recursion without needing to wire up var refs."
-  [{:keys [namespaces model llm-var recover format]
+  [{:keys [namespaces model system llm-var recover format]
     :or {namespaces {} model nil recover true}}]
   (let [self-ref (atom nil)
         self-fn (fn llm-self
                   ([prompt] (@self-ref prompt))
                   ([prompt hooks] (@self-ref prompt hooks))
-                  ([prompt hooks handle] (@self-ref prompt hooks handle)))
-        ;; Build namespace builtins: each namespace bound under its symbol
+                  ([prompt hooks handle]
+                   (when-not comm/*spawn-ready*
+                     (throw (ex-info "Explicit handle requires spawn context" {:handle handle})))
+                   (@self-ref prompt hooks handle)))
+        ;; Split namespace builtins: io and globals are effect-only, rest are pure
+        effect-ns-names #{'io 'globals}
         ns-builtins (into {} (map (fn [[sym ns-map]] [sym ns-map]) namespaces))
+        pure-ns-builtins (into {} (remove #(effect-ns-names (key %)) ns-builtins))
+        effect-ns-builtins (into {} (filter #(effect-ns-names (key %)) ns-builtins))
         hook-builtins {'prepend-hooks-to-llm #'hooks/prepend-hooks-to-llm
                        'recurse #'hooks/recurse
                        'prefix-prompt #'hooks/prefix-prompt
                        'with-env hooks/with-env
                        'with-env-hints hooks/with-env-hints}
-        comm-builtins {'send comm/send
-                       'ask comm/ask-builtin
-                       'current-handle (fn [] comm/*current-handle*)
-                       'parent-handle (fn [] comm/*parent-handle*)
-                       'create-msg comm/create-msg
-                       'spawn (fn
-                                ([llm-fn prompt] (comm/spawn llm-fn prompt))
-                                ([llm-fn prompt handle-name] (comm/spawn llm-fn prompt handle-name)))
-                       'spawn-recv (fn [llm-fn prompt] (comm/spawn-recv llm-fn prompt))}
+        effect-builtins (merge
+                         {'send comm/send
+                          'ask comm/ask-builtin
+                          'spawn (fn
+                                   ([llm-fn prompt] (comm/spawn llm-fn prompt))
+                                   ([llm-fn prompt handle-name] (comm/spawn llm-fn prompt handle-name)))
+                          'spawn-recv (fn [llm-fn prompt] (comm/spawn-recv llm-fn prompt))
+                          'llm-self self-fn
+                          ;; Communication (context-dependent)
+                          'current-handle (fn [] comm/*current-handle*)
+                          'parent-handle (fn [] comm/*parent-handle*)
+                          ;; Concurrency
+                          'await (fn [future-val]
+                                   (when-not (eval/spell-future? future-val)
+                                     (throw (ex-info "await: argument must be a future" {:got future-val})))
+                                   (deref (:ref future-val)))
+                          'await-all (fn [futures]
+                                       (when-not (sequential? futures)
+                                         (throw (ex-info "await-all: argument must be a collection" {:got futures})))
+                                       (mapv (fn [f]
+                                               (when-not (eval/spell-future? f)
+                                                 (throw (ex-info "await-all: all elements must be futures" {:got f})))
+                                               (deref (:ref f)))
+                                             futures))
+                          'pmap (fn [f coll]
+                                  (let [futures (mapv (fn [item]
+                                                        {:spell/future true
+                                                         :ref (clojure.core/future ((bound-fn [] (eval/invoke-fn f [item]))))})
+                                                      coll)]
+                                    (mapv #(deref (:ref %)) futures)))
+                          ;; Non-deterministic LLM calls
+                          'leaf-llm (make-leaf-llm {})}
+                         effect-ns-builtins
+                         (when llm-var {'llm llm-var}))
         variant-builtins (merge eval/core-builtins
                                 hook-builtins
-                                comm-builtins
-                                {'llm-self self-fn
-                                 'leaf-llm (make-leaf-llm {})
+                                {'create-msg comm/create-msg
                                  'describe describe}
-                                ns-builtins
-                                (when llm-var {'llm llm-var}))
-        sys-prompt (prompt/generate-system-prompt namespaces format)
+                                pure-ns-builtins)
+        sys-prompt (or system (prompt/generate-system-prompt namespaces format))
         call-fn  (fn [prompt-str]
                    (provider/llm-call prompt-str
                      (cond-> {:system sys-prompt :prefix prompt-str}
@@ -284,6 +319,7 @@ re-executing side effects like bash commands or file writes.")
                       :else [ns-recover default-recover-fn])
         config   {:call-fn call-fn
                   :builtins variant-builtins
+                  :effect-builtins effect-builtins
                   :recover-fns recover-fns
                   :recovery-call-fn recovery-call-fn}
         wrap-nl  (fn [p]
@@ -299,7 +335,8 @@ re-executing side effects like bash commands or file writes.")
                     (let [prompt' (if (or (seq? prompt) (list? prompt))
                                    (eval/expand-expr prompt (or eval/*spell-env* {}))
                                    prompt)]
-                      (binding [eval/*builtins* variant-builtins]
+                      (binding [eval/*builtins*        variant-builtins
+                                eval/*effect-builtins* effect-builtins]
                         (-llm config (wrap-nl prompt') hooks handle)))))]
     (reset! self-ref the-llm)
     the-llm))

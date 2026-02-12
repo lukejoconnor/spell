@@ -1,0 +1,8 @@
+;; Minimal-prompt agent — stripped-down system prompt for testing.
+;; No comms, fewer examples, principle-based (not exhaustive).
+;; Extends with-io so it can run fix-bug, famous-greeting, etc.
+
+{:base with-io.agent.edn
+ :name minimal
+ :doc "Agent with minimal system prompt (no comms, concise)"
+ :system {:file ../prompts/minimal.txt}}

@@ -11,8 +11,9 @@
   (:gen-class))
 
 (def model-aliases
-  {"haiku"  "claude-3-5-haiku-20241022"
-   "sonnet" "claude-sonnet-4-20250514"
+  {"haiku"  "claude-haiku-4-5-20251001"
+   "sonnet" "claude-sonnet-4-5-20250929"
+   ;; opus-4-6 does not support assistant prefill (prompt-as-prefix)
    "opus"   "claude-opus-4-5-20251101"})
 
 (def provider-prefixes
@@ -83,7 +84,7 @@
    ["-b" "--budget DOLLARS" "Max spend in dollars (halts if exceeded)"
     :parse-fn #(Double/parseDouble %)
     :validate [pos? "Must be positive"]]
-   ["-M" "--max-tokens TOKENS" "Max tokens per LLM response (default: 4096)"
+   ["-M" "--max-tokens TOKENS" "Max tokens per LLM response (default: 16384)"
     :parse-fn #(Integer/parseInt %)
     :validate [pos? "Must be positive"]]
    ["-T" "--trace" "Record execution trace to traces/"]
@@ -209,6 +210,7 @@
                    (let [config (cond-> {}
                                   namespaces (assoc :namespaces namespaces)
                                   model (assoc :model model)
+                                  system (assoc :system system)
                                   (some? recover) (assoc :recover recover)
                                   format (assoc :format format))]
                      (llm/make-llm config))

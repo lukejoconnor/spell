@@ -40,8 +40,11 @@
 (def ^:private model-costs
   "Cost per million tokens: {model-prefix [input-cost output-cost]}"
   {"claude-3-5-haiku"  [0.80 4.00]
+   "claude-haiku-4-5"  [1.00 5.00]
+   "claude-sonnet-5"   [3.00 15.00]
    "claude-sonnet-4"   [3.00 15.00]
    "claude-opus-4-5"   [15.00 75.00]
+   "claude-opus-4-6"   [5.00 25.00]
    ;; OpenAI models
    "gpt-4o-mini"       [0.15 0.60]
    "gpt-4o"            [2.50 10.00]
@@ -149,7 +152,7 @@
                           :text system-prompt
                           :cache_control {:type "ephemeral"}}])
         body (cond-> {:model model
-                      :max_tokens (or max-tokens 4096)
+                      :max_tokens (or max-tokens 16384)
                       :messages messages}
                cached-system (assoc :system cached-system))
         request (-> (HttpRequest/newBuilder)
@@ -197,10 +200,10 @@
    Options:
    - :api-key - API key (default: ANTHROPIC_API_KEY env var)
    - :model - Model name (default: claude-sonnet-4-20250514)
-   - :max-tokens - Max tokens per response (default: 4096)"
+   - :max-tokens - Max tokens per response (default: 16384)"
   ([] (anthropic-provider {}))
   ([{:keys [api-key model max-tokens]
-     :or {model "claude-sonnet-4-20250514"}}]
+     :or {model "claude-sonnet-4-5-20250929"}}]
    (let [key (or api-key (System/getenv "ANTHROPIC_API_KEY"))]
      (when-not key
        (throw (ex-info "No API key provided. Set ANTHROPIC_API_KEY or pass :api-key"
@@ -301,7 +304,7 @@
                    true (conj {:role "user" :content prompt}))
         body {:model model
               :messages messages
-              :max_completion_tokens (or max-tokens 4096)}
+              :max_completion_tokens (or max-tokens 16384)}
         request (-> (HttpRequest/newBuilder)
                     (.uri (URI/create (str base-url "/chat/completions")))
                     (.header "Content-Type" "application/json")
@@ -345,7 +348,7 @@
    - :api-key    - API key (default: OPENAI_API_KEY env var)
    - :base-url   - API base URL (default: https://api.openai.com/v1)
    - :model      - Model name (default: gpt-4o)
-   - :max-tokens - Max tokens per response (default: 4096)"
+   - :max-tokens - Max tokens per response (default: 16384)"
   ([] (openai-provider {}))
   ([{:keys [api-key base-url model max-tokens]
      :or {model "gpt-4o"
