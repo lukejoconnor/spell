@@ -17,7 +17,7 @@
 ;; Re-export from spell.eval
 (def spell-eval eval/spell-eval)
 (def run-spell eval/run-spell)
-;; Result map helpers for memo-based error recovery
+;; Result map helpers
 (def ok? eval/ok?)
 (def err? eval/err?)
 (def result-value eval/result-value)
@@ -75,6 +75,7 @@
                       'math stdlib/math
                       'patterns stdlib/patterns
                       'describe describe
+                      'guides prompt/guides
                       'prepend-hooks-to-llm #'prepend-hooks-to-llm
                       'recurse #'recurse
                       'prefix-prompt #'prefix-prompt
@@ -86,36 +87,8 @@
 ;; Contains non-deterministic and side-effectful operations:
 ;; LLM calls, communication, concurrency, IO, globals.
 (alter-var-root #'eval/*effect-builtins*
-  (constantly {'llm #'llm
-               'leaf-llm leaf-llm
-               ;; Namespaces with side effects
-               'io io/io-namespace
-               'globals globals/globals-namespace
-               ;; Communication
-               'send comm/send
-               'ask comm/ask-builtin
-               'spawn (fn
-                        ([llm-fn prompt] (comm/spawn llm-fn prompt))
-                        ([llm-fn prompt handle-name] (comm/spawn llm-fn prompt handle-name)))
-               'spawn-recv (fn [llm-fn prompt] (comm/spawn-recv llm-fn prompt))
-               'current-handle (fn [] comm/*current-handle*)
-               'parent-handle (fn [] comm/*parent-handle*)
-               ;; Concurrency
-               'await (fn [future-val]
-                        (when-not (eval/spell-future? future-val)
-                          (throw (ex-info "await: argument must be a future" {:got future-val})))
-                        (deref (:ref future-val)))
-               'await-all (fn [futures]
-                            (when-not (sequential? futures)
-                              (throw (ex-info "await-all: argument must be a collection" {:got futures})))
-                            (mapv (fn [f]
-                                    (when-not (eval/spell-future? f)
-                                      (throw (ex-info "await-all: all elements must be futures" {:got f})))
-                                    (deref (:ref f)))
-                                  futures))
-               'pmap (fn [f coll]
-                       (let [futures (mapv (fn [item]
-                                             {:spell/future true
-                                              :ref (clojure.core/future ((bound-fn [] (eval/invoke-fn f [item]))))})
-                                           coll)]
-                         (mapv #(deref (:ref %)) futures)))}))
+  (constantly (merge (comm/build-effect-builtins)
+                     {'llm #'llm
+                      'leaf-llm leaf-llm
+                      'io io/io-namespace
+                      'globals globals/globals-namespace})))

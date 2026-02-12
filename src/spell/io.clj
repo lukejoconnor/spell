@@ -366,7 +366,33 @@
 
 (def io-namespace
   "The io/ namespace map for Spell agents."
-  {:docs {;; File reading/writing
+  {:guide "FILE EDITING
+
+io/read-file returns numbered lines (\"1: first line\\n2: second line\\n...\"). Edit with io/replace-lines (1-indexed, inclusive):
+  (io/replace-lines \"main.py\" 42 44 \"    x = fixed_value\\n    return x\")
+
+Use (io/read-file path start end) to extract a line range for passing a subset to a child.
+
+CONTEXT EXPLORATION
+
+For large files, use grep to find relevant lines rather than reading the entire file.
+Pattern: search with grep, collect ALL matches, examine ALL of them, then decide.
+  '(call-now matches (io/sh \"grep -n 'keyword' path/to/file\"))
+  ;; grep output is \"42: line content\". The number is the LINE NUMBER, not the answer.
+  ;; Read ALL matches before answering. For temporal/location questions, the LAST match is usually the answer.
+
+io/sh takes a single string argument. Concatenate arguments with str:
+  (io/sh (str \"grep -n 'pattern' \" path))  ;; correct: one string
+  (io/sh \"grep\" path)                       ;; wrong: multiple args
+
+For multi-file search, aggregate snippets from each file:
+  '(call-now files (io/sh \"grep -rln 'error' src/\"))
+  '(call-now snippets (map (fn [f] {:path f :lines (io/read-file f 1 30)})
+                           (strings/split-lines (:out files))))
+  '(llm-self (wrap-cat task snippets)) ;; child sees all snippets, decides
+
+io/slurp returns raw content: (:ok (io/slurp \"file.txt\")) for the string without line numbers."
+   :docs {;; File reading/writing
           :slurp "Read entire file as string. Returns {:ok content} or {:error msg}."
           :spit "Write to file. (spit path content) or (spit path content {:append true}). Returns {:ok path} or {:error msg}."
           :slurp-bytes "Read file as byte array. Returns {:ok bytes} or {:error msg}."

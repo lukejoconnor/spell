@@ -22,7 +22,8 @@
    (describe ns) — all docs
    (describe ns :key) — doc for specific item"
   ([ns] (:docs ns))
-  ([ns key] (get-in ns [:docs key])))
+  ([ns key] (or (get-in ns [:docs key])
+                (get ns key))))
 
 ;; ---------------------------------------------------------------------------
 ;; Error Recovery
@@ -30,26 +31,17 @@
 
 (def ^:private recovery-system-prompt
   "You are fixing a Spell program error. Return ONLY the fixed Spell s-expression.
-No explanation, no markdown code blocks, just the raw s-expression.
-Use (memo N) to reference cached values from prior evaluation - this avoids
-re-executing side effects like bash commands or file writes.")
+No explanation, no markdown code blocks, just the raw s-expression.")
 
 (defn format-error-for-recovery
   "Format an error result for the recovery LLM.
-   Shows the full program, failing expression, error message, and memo."
-  [{:keys [err expr memo program]}]
+   Shows the full program, failing expression, and error message."
+  [{:keys [err expr program]}]
   (str "The following Spell program failed:\n\n"
        (pr-str program)
        "\n\nError at expression:\n"
        (pr-str expr)
-       "\n\nError message: " err
-       "\n\nMemo (cached values - use (memo N) to reference):\n"
-       (if (empty? memo)
-         "(empty - no prior values cached)"
-         (with-out-str
-           (doseq [[i entry] (map-indexed vector memo)]
-             (println (str i ": " (pr-str (:expr entry))
-                           " => " (pr-str (:value entry)))))))))
+       "\n\nError message: " err))
 
 (defn- find-in-namespaces
   "Search all namespaces for a keyword matching sym.
@@ -102,11 +94,8 @@ re-executing side effects like bash commands or file writes.")
                          (when eval/*verbose*
                            (println (str "  Namespace recovery: " bad-qualified " -> " correct)))
                          (substitute-symbol program bad-qualified correct)))))]
-        ;; Return the fixed program, but strip the outer (do ...) if recovery
-        ;; re-evaluates from scratch — we need the remaining expressions from
-        ;; where the error occurred onward. Actually, the recovery mechanism
-        ;; evaluates fix-expr with the memo, so returning the full fixed program
-        ;; is correct — memo'd expressions will re-use cached values.
+        ;; Return the fixed program for re-evaluation from scratch
+        ;; (safe because spell-eval is pure).
         fix))))
 
 ;; ---------------------------------------------------------------------------
@@ -115,7 +104,7 @@ re-executing side effects like bash commands or file writes.")
 
 (defn- make-eval-pipeline
   "Create closure: raw-string -> value. Captures config and hooks.
-   trace-data-atom, when non-nil, receives {:program :hooked :memo} for tracing."
+   trace-data-atom, when non-nil, receives {:program :hooked} for tracing."
   [{:keys [builtins recover-fns recovery-call-fn]} hooks trace-data-atom]
   (fn [raw]
     (let [balanced  (parse/balance-parens raw)
@@ -129,31 +118,35 @@ re-executing side effects like bash commands or file writes.")
                       (println (str indent "Program (after hooks): " (pr-str program'))))
           result    (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
                              eval/*raw-text*       balanced]
-                      (eval/spell-eval program' {} [] 0))
+                      (eval/spell-eval program' {}))
           final-result
           (if (and (eval/err? result) recover-fns)
             (let [_        (when eval/*verbose*
                              (println (str indent "=== Error Recovery ==="))
-                             (println (str indent "Error: " (:err result)))
-                             (println (str indent "Memo entries: " (count (:memo result)))))
-                  result-with-program (assoc result :program program')
-                  fix-expr (some #(% result-with-program recovery-call-fn) recover-fns)]
-              (if fix-expr
-                (let [_        (when eval/*verbose*
-                                 (println (str indent "Recovery expression: " (pr-str fix-expr))))
-                      retry    (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
-                                         eval/*raw-text*       nil
-                                         ;; Recovery needs full capabilities (effect builtins)
-                                         ;; since the recovery LLM may use io/, globals/, etc.
-                                         eval/*builtins*       (merge eval/*builtins* eval/*effect-builtins*)]
-                                 (eval/spell-eval fix-expr (:env result) (:memo result) (count (:memo result))))]
-                  (when (and eval/*verbose* (eval/err? retry))
-                    (println (str indent "Recovery failed: " (:err retry))))
-                  retry)
-                result))
+                             (println (str indent "Error: " (:err result))))
+                  result-with-program (assoc result :program program')]
+              ;; Pipeline: try each recover-fn on the current error.
+              ;; If a fix is found, eval it. If eval succeeds, done.
+              ;; If eval fails, continue pipeline with the new error.
+              ;; Recovery re-evaluates from scratch (safe because spell-eval is pure).
+              (loop [current result-with-program
+                     fns     recover-fns]
+                (if (empty? fns)
+                  current
+                  (if-let [fix-expr ((first fns) current recovery-call-fn)]
+                    (let [_     (when eval/*verbose*
+                                  (println (str indent "Recovery expression: " (pr-str fix-expr))))
+                          retry (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
+                                          eval/*raw-text*       nil
+                                          eval/*effect-builtins* {}]
+                                  (eval/spell-eval fix-expr (:env current)))]
+                      (if (eval/err? retry)
+                        (recur (assoc retry :program fix-expr) (rest fns))
+                        retry))
+                    (recur current (rest fns))))))
             result)]
       (when trace-data-atom
-        (reset! trace-data-atom {:program program :hooked (when (seq hooks) program') :memo (:memo final-result)}))
+        (reset! trace-data-atom {:program program :hooked (when (seq hooks) program')}))
       (if (eval/ok? final-result)
         (:ok final-result)
         (throw (ex-info (:err final-result) {:result final-result}))))))
@@ -166,7 +159,7 @@ re-executing side effects like bash commands or file writes.")
   [{:keys [call-fn builtins effect-builtins recover-fns recovery-call-fn] :as config} prompt hooks handle]
   (when (and eval/*max-llm-depth* (>= eval/*llm-depth* eval/*max-llm-depth*))
     (throw (ex-info "LLM recursion limit exceeded"
-                    {:depth eval/*llm-depth* :limit eval/*max-llm-depth*})))
+                    {:type :depth-exceeded :depth eval/*llm-depth* :limit eval/*max-llm-depth*})))
   (let [handle     (or handle
                        comm/*current-handle*
                        (keyword (gensym "agent-")))
@@ -262,44 +255,16 @@ re-executing side effects like bash commands or file writes.")
                        'prefix-prompt #'hooks/prefix-prompt
                        'with-env hooks/with-env
                        'with-env-hints hooks/with-env-hints}
-        effect-builtins (merge
-                         {'send comm/send
-                          'ask comm/ask-builtin
-                          'spawn (fn
-                                   ([llm-fn prompt] (comm/spawn llm-fn prompt))
-                                   ([llm-fn prompt handle-name] (comm/spawn llm-fn prompt handle-name)))
-                          'spawn-recv (fn [llm-fn prompt] (comm/spawn-recv llm-fn prompt))
-                          'llm-self self-fn
-                          ;; Communication (context-dependent)
-                          'current-handle (fn [] comm/*current-handle*)
-                          'parent-handle (fn [] comm/*parent-handle*)
-                          ;; Concurrency
-                          'await (fn [future-val]
-                                   (when-not (eval/spell-future? future-val)
-                                     (throw (ex-info "await: argument must be a future" {:got future-val})))
-                                   (deref (:ref future-val)))
-                          'await-all (fn [futures]
-                                       (when-not (sequential? futures)
-                                         (throw (ex-info "await-all: argument must be a collection" {:got futures})))
-                                       (mapv (fn [f]
-                                               (when-not (eval/spell-future? f)
-                                                 (throw (ex-info "await-all: all elements must be futures" {:got f})))
-                                               (deref (:ref f)))
-                                             futures))
-                          'pmap (fn [f coll]
-                                  (let [futures (mapv (fn [item]
-                                                        {:spell/future true
-                                                         :ref (clojure.core/future ((bound-fn [] (eval/invoke-fn f [item]))))})
-                                                      coll)]
-                                    (mapv #(deref (:ref %)) futures)))
-                          ;; Non-deterministic LLM calls
+        effect-builtins (merge (comm/build-effect-builtins)
+                         {'llm-self self-fn
                           'leaf-llm (make-leaf-llm {})}
                          effect-ns-builtins
                          (when llm-var {'llm llm-var}))
         variant-builtins (merge eval/core-builtins
                                 hook-builtins
                                 {'create-msg comm/create-msg
-                                 'describe describe}
+                                 'describe describe
+                                 'guides prompt/guides}
                                 pure-ns-builtins)
         sys-prompt (or system (prompt/generate-system-prompt namespaces format))
         call-fn  (fn [prompt-str]
@@ -316,7 +281,7 @@ re-executing side effects like bash commands or file writes.")
         recover-fns (cond
                       (false? recover) nil
                       (fn? recover) [ns-recover recover]
-                      :else [ns-recover default-recover-fn])
+                      :else [ns-recover default-recover-fn ns-recover])
         config   {:call-fn call-fn
                   :builtins variant-builtins
                   :effect-builtins effect-builtins

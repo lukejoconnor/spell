@@ -33,8 +33,10 @@ Use `quine` only when a child LLM needs to see source code. For regular value bi
 Programs in Spell usually have this completion wrapper:
   (quine completion (eval (do ...)))
 The entire program is bound to the symbol completion. The `do` block's last expression is the trailing expression.
-
-Effect functions resolve only in the trailing expression (the last expression of the do block), via the completion wrapper's double evaluation. The `do` block returns its last value as data, then `eval` evaluates it with effect functions available. Quote the trailing expression so it passes through the first evaluation as data.
+Effect functions like llm-self resolve only in the trailing expression (the last expression of the do block),
+via the completion wrapper's double evaluation: the `do` block returns its last value as data,
+then `eval` evaluates it with effect functions available.
+Quote the trailing expression so it passes through the first evaluation as data.
 
 Effect functions: llm-self, spawn, ask, send, spawn-recv, llm, leaf-llm, current-handle, parent-handle, and all of io/ and globals/.
 
@@ -50,21 +52,22 @@ KEY RESPONSE PATTERNS
 Your response completes the completion wrapper. Common patterns:
 
 Binding values with def:
-(def num-subagents 3)
-(def thought \"Let me analyze this...\")
-(def approach \"I'll try X\")
+(def num-subagents 3)...
+
+Binding string literals with quine:
+(quine thought \"Let me analyze this...\")(quine approach \"I'll try X\")...
 
 Extension with reopen and llm-self:
 '(llm-self (reopen completion)) ;; reopen strips the wrapper's 3 trailing parentheses, allowing do block to continue
 
 CoT pruning with wrap-cat and llm-self:
-(def thought \"...\")(def approach \"Wait actually...\")'(llm-self (wrap-cat thought approach))
-;; wrap-cat concatenates string arguments and adds the wrapper
+(quine prompt \"...\")(quine thought \"...\")(quine approach \"Wait actually...\")'(llm-self (wrap-cat prompt approach))
+;; Avoid context rot in a long CoT by pruning unproductive branches
 
 Passing source code to a child with quine:
 (quine helper-fn (fn ...))'(llm-self (wrap-cat \"Use this:\" helper-fn))
-;; quine binds the name to the *entire quine form*, not its value — use ONLY when a child LLM needs the source code
-;; for all other bindings, use def
+;; quine binds the name to the *entire quine form*, not its value.
+;; if you need to use the *value*, use def
 
 Calling llm-self with a string literal, which gets wrapped automatically:
 '(llm-self \"...\") ;; child LLM sees: (quine completion (eval (do (quine prompt \"...\")
@@ -77,7 +80,8 @@ When calling llm-self, think of the child LLM as *yourself*, not a subagent. In 
 you reinstantiate your exact context window and continue your own CoT uninterrupted. This pattern is called an extension. Extensions can
 include tool calls, allowing you to gather information, via `call-now` (see below); this is the ReAct loop pattern.
 
-All effect functions and call-now go in the quoted trailing expression. Quoting makes them inert data in the first pass; they resolve when double-evaluated by the completion wrapper.
+All effect functions and call-now go in the quoted trailing expression.
+Quoting makes them inert data in the first pass; they resolve when double-evaluated by the completion wrapper.
 
 KEY ANTIPATTERNS
 
@@ -106,9 +110,19 @@ Quine self-reference:
   (quine history-data history) ;; correct: different name, so body `history` still resolves to the original binding
 
 RETURN VALUE
-The trailing expression of the do block is evaluated and returned. Your response may have a required format (see below).
+The trailing expression of the do block is evaluated and returned. You do not need to one-shot your response;
+instead, you may *compute* it, either via a deterministic calculation or (more often) via delegation or extension.
 
-You do not need to one-shot your response; instead, you may *compute* it, either via a deterministic calculation or (more often) via delegation or extension.
+DESTRUCTURING
+
+All binding forms (let, fn, defn, loop, for) support vector and map destructuring:
+  (let [[a b] [1 2]] (+ a b))                          ;; => 3
+  (let [{:keys [x y]} {:x 1 :y 2}] (+ x y))           ;; => 3
+  (let [{:keys [a] :or {a 0}} {}] a)                    ;; => 0 (default)
+  (let [{:keys [x] :as m} {:x 1 :y 2}] [x m])          ;; => [1 {:x 1 :y 2}]
+  (let [{name :name} {:name \"Alice\"}] name)              ;; => \"Alice\" (direct binding)
+  (map (fn [{:keys [a b]}] (+ a b)) [{:a 1 :b 2}])     ;; => [3]
+  (for [{:keys [x]} [{:x 1} {:x 2}]] (* x x))         ;; => [1 4]
 
 SCOPING
 
@@ -334,19 +348,6 @@ io/read-file returns a string with numbered lines (\"1: first line\\n2: second l
   (io/replace-lines \"main.py\" 42 44 \"    x = fixed_value\\n    return x\")
 
 Use (io/read-file path start end) to extract a line range for passing a subset to a child.
-
-GENERAL ADVICE
-
-1. You need not one-shot your answer: use patterns like
-'(call-now tool-call-or-calculation), '(spawn llm-self prompt), and '(llm-self (wrap-cat ...))
-to get information, delegate tasks, and manipulate your own context.
-
-2. Be intentional about your orchestration strategy; consider what approach will maximize the
-quality of your response.
-
-3. Anything you know how to do using tools, you can do using Spell; think about how
-you would solve the problem using tools, then transfer that approach to Spell.
-
 ")
 
 
@@ -362,7 +363,7 @@ you would solve the problem using tools, then transfer that approach to Spell.
        "Spell specific: quine expand spell-eval wrap-cat reopen strip-parens\n"
        "Math: + inc int quot mod max max-key min-key parse-number ... (max-key takes varargs: (apply max-key :k items))\n"
        "Compare: < = not= ...\n"
-       "Strings: str cat pr-str format\n"
+       "Strings: str cat pr-str format read-string\n"
        "Type: string? number? type boolean? ...\n"
        "Collections: list first rest conj get keys vals into reverse apply take find seq ...\n"
        "Higher-order: map map-indexed filter reduce keep some range reduced reductions memoize partition-by\n"
@@ -370,7 +371,7 @@ you would solve the problem using tools, then transfer that approach to Spell.
        "Logic: if cond case and empty? ...\n"
        "Binding: def let if-let when-let do eval\n"
        "Threading: -> ->> as-> cond-> cond->> some-> some->>\n"
-       "Control: loop recur for memo\n"
+       "Control: loop recur for\n"
        "Communication: create-msg\n"
        "Namespace: describe\n"
        "Error: try catch throw \n"
@@ -397,6 +398,153 @@ you would solve the problem using tools, then transfer that approach to Spell.
          "  (describe io :sh)           — doc for specific item\n")))
 
 ;; =============================================================================
+;; Guides — progressive disclosure via (describe guides :topic)
+;; =============================================================================
+
+(def guides
+  "Progressive disclosure: detailed guides accessible via (describe guides :topic).
+   The :docs map provides short summaries (visible via (describe guides)).
+   Top-level keys hold the full guide text (accessible via (describe guides :topic))."
+  {:docs {:_ "Available topics: communication, concurrency, globals, scoping, builtins. Use (describe guides :topic) for full documentation."}
+
+   :communication
+   "COMMUNICATION
+
+Agents communicate by sending messages. A message is a function that extends the recipient's completion with a quine binding and triggers a new LLM turn.
+
+  (create-msg name val)       — create a message that binds (quine name val) in the recipient's completion
+  (send msg handle)           — deliver msg to agent at handle (fire-and-forget)
+  (spawn llm-fn prompt)       — start a background agent, returns its handle (auto-generated)
+  (spawn llm-fn prompt :name) — same, but with a fixed handle name (keyword)
+  (current-handle)            — your handle (keyword like :agent-42); works at all levels including root
+  (parent-handle)             — returns the handle of the agent that spawned you (nil if not spawned)
+
+Blocking primitives — these block until a message arrives, then trigger a new turn (extension) with the message's quine binding. Code after a blocking call in the same expression is dead code; continue in the next turn instead.
+
+  (ask target msg)             — send msg to target, block for reply; msg is packaged with your handle
+  (ask target)                 — poke target (wake it), block until it sends to you
+  (ask [a b c])                — multi-target ask: poke all, block until all have sent (one turn for N agents)
+  (spawn-recv llm-fn prompt)   — spawn agent, block until it sends back
+
+Handles are keywords, so they pass safely through wrap-cat and child code without lookup errors.
+
+Named handles for multi-turn conversations: when using send+ask to exchange messages across turns, use named handles. Bindings from a quoted trailing expression (like a variable holding a spawn result) do not persist to the next turn — the previous trailing expression becomes inert data after extension. Keywords are self-evaluating, so they work in every turn.
+  ;; fragile: seller binding lost after ask triggers extension
+  '(do (def seller (spawn llm-self \"...\"))
+       (send (create-msg 'offer 100) seller) (ask seller))
+  ;; robust: keyword handle works in every turn
+  '(do (spawn llm-self \"...\" :seller)
+       (send (create-msg 'offer 100) :seller) (ask :seller))
+
+Message timing: a message sent to a spawned agent arrives *after* the agent completes its LLM call and evaluates its code. Everything the child needs before completion must be in the prompt.
+
+spawn-recv pattern (spawn + block — the primary delegation pattern):
+  '(spawn-recv llm-self \"compute 42 and send result to (parent-handle)\")
+
+  ;; child:
+  '(send (create-msg 'result 42) (parent-handle))
+
+  ;; parent's next turn sees (quine result 42), continues:
+  (def answer result)  ;; result is bound by the quine
+  answer               ;; return it
+
+Multi-target ask — collect from all targets in a single turn:
+  ;; turn 1: spawn agents, wait for all at once
+  '(do (def a (spawn llm-self \"Send your bid as 'bid-a to (parent-handle)\"))
+       (def b (spawn llm-self \"Send your bid as 'bid-b to (parent-handle)\"))
+       (ask [a b]))
+  ;; turn 2: both bids arrived as separate quine bindings
+  {:winner (if (> (nth bid-a 2) (nth bid-b 2)) a b)}
+
+ask pattern (for agents that have already completed):
+  ;; '(ask :worker \"I got your result, now do X\")
+  ;; child receives the ask as (quine message {:from :parent-42, :body \"...\"})
+  ;; child replies: '(send (create-msg 'reply val) (:from message))
+
+Named spawn pattern (agents know each other's handles):
+  '(do (spawn llm-self \"You are seller. Buyer is :buyer.\" :seller)
+       (spawn llm-self \"You are buyer. Seller is :seller.\" :buyer))
+
+Deadlock prevention: ask always wakes the target.
+Handle inheritance: llm-self calls inherit the agent's handle. All llm-self descendants share the same address.
+Agents persist after returning (orphan box state). Sending to a returned agent wakes it for another turn."
+
+   :concurrency
+   "CONCURRENCY
+
+For parallel LLM work, use spawn. Each spawned agent gets its own handle and communicates via ask/send.
+
+  ;; spawn a worker and wait for its result:
+  '(spawn-recv llm-self \"compute 6 * 7 and send result to (parent-handle)\")
+
+  ;; spawn named agents that can find each other:
+  '(do (spawn llm-self \"You are researcher A. Send findings to :coordinator.\" :researcher-a)
+       (spawn llm-self \"You are researcher B. Send findings to :coordinator.\" :researcher-b))
+
+llm-self calls are always serial — the child inherits your handle, so your entire llm-self call tree is one logical agent. For parallel LLM work, use spawn (separate handles).
+
+future/await/plet/pmap are for deterministic parallel computation only — never for LLM calls (they'd share the parent handle and contend over the box)."
+
+   :globals
+   "GLOBALS
+
+globals/ is shared state visible to all agents. Pre-initialized with :roles (handle -> description) and :tasks (vector).
+globals/ is an effect namespace — all globals/ calls must be inside the quoted trailing expression.
+
+  (globals/get :roles)                          — read a global
+  (globals/set :roles {})                       — write a global (returns value)
+  (globals/update :roles (fn [m] (assoc m h desc))) — atomic read-modify-write (returns new value)
+  (globals/pop :tasks)                          — atomic remove-and-return first element
+  (globals/keys)                                — list all global keys
+
+Prefer direct handles when available: spawn returns the child handle, parent-handle gives parent.
+Use globals/roles when agents need to discover peers they were not directly given.
+
+Pattern: role-based peer discovery
+  ;; parent: register self, spawn, wait for child's message (all in trailing expression)
+  '(do (globals/update :roles (fn [m] (assoc m (current-handle) \"orchestrator\")))
+       (spawn-recv llm-self \"register as worker, find orchestrator in globals, send 42\"))
+
+  ;; child: register self, look up peer by role, send (all in trailing expression)
+  '(do (globals/update :roles (fn [m] (assoc m (current-handle) \"worker\")))
+       (def orch (key (first (filter (fn [kv] (= \"orchestrator\" (val kv))) (globals/get :roles)))))
+       (send (create-msg 'result 42) orch))"
+
+   :scoping
+   "SCOPING
+
+Functions have dynamic scope in Spell; there are no closures.
+They are passed between LLMs via their raw source code, so that child LLMs know exactly what they do.
+
+The `spell-eval` function insulates its inner and outer environments from each other. It is called on your completion, so your completion's environment cannot be affected by a parent or child program.
+
+The `eval` function is transparent: it is the inverse of `quote`.
+
+When passing a quoted expression to a child LLM, any free variables in that expression are looked up in your program's namespace via a function `expand`.
+  (def x 1)(llm-self '(+ x 2)) ;; child receives expr (+ 1 2) because free var x is expanded
+  (llm-self '(do (def x 1)(+ x 2))) ;; child receives expr (do (def x 1)(+ x 2))"
+
+   :builtins
+   (str "BUILTINS\n\n"
+        "Includes most Clojure builtins (except I/O and host interop), plus Spell-specific forms.\n\n"
+        "Spell specific: quine expand spell-eval wrap-cat reopen strip-parens\n"
+        "Math: + inc int quot mod max max-key min-key parse-number ... (max-key takes varargs: (apply max-key :k items))\n"
+        "Compare: < = not= ...\n"
+        "Strings: str cat pr-str format read-string\n"
+        "Type: string? number? type boolean? ...\n"
+        "Collections: list first rest conj get keys vals into reverse apply take find seq ...\n"
+        "Higher-order: map map-indexed filter reduce keep some range reduced reductions memoize partition-by\n"
+        "Map: update-keys update-vals merge-with select-keys ...\n"
+        "Logic: if cond case and empty? ...\n"
+        "Binding: def let if-let when-let do eval\n"
+        "Threading: -> ->> as-> cond-> cond->> some-> some->>\n"
+        "Control: loop recur for\n"
+        "Communication: create-msg\n"
+        "Namespace: describe\n"
+        "Error: try catch throw\n"
+        "Effect (trailing expression only): llm-self llm leaf-llm spawn ask send spawn-recv current-handle parent-handle io/ globals/\n")})
+
+;; =============================================================================
 ;; Public API
 ;; =============================================================================
 
@@ -413,6 +561,24 @@ you would solve the problem using tools, then transfer that approach to Spell.
        (when optional
          (str "Optional keys: " (pr-str optional) "\n"))))
 
+(def ^:private postamble
+  "
+GENERAL ADVICE
+
+1. You need not one-shot your answer: use patterns like
+'(call-now tool-call)
+'(call-now calculate-something-numerically) ;; just compute stuff!
+'(spawn llm-self subtask-prompt) ;; parallelize
+'(llm-self (wrap-cat prompt thought1 thought3 thought6)) ;; prune your CoT
+
+2. Anything you know how to do using tools, you can do using Spell; think about how
+you would solve the problem using tools, then transfer that approach to Spell.
+
+3. More generally, be intentional about your orchestration strategy; consider what approach will maximize the
+quality of your response.
+
+")
+
 (defn generate-system-prompt
   "Build a system prompt from namespaces.
    namespaces: map of {symbol -> namespace-map} where each has :docs and items
@@ -424,4 +590,4 @@ you would solve the problem using tools, then transfer that approach to Spell.
         "\n"
         (namespaces-section namespaces)
         (when format (format-section format))
-        "\n")))
+        postamble)))

@@ -45,8 +45,8 @@
       (provider/dummy-provider {:response "(def return \"from llm\"))"})
       ;; llm is effect-only, so merge effect builtins for direct spell-eval use
       (binding [eval/*builtins* (merge eval/*builtins* eval/*effect-builtins*)]
-        (let [[result _] (spell/spell-eval '(llm "(do ") {})]
-          (is (= "from llm" result)))))))
+        (let [r (spell/spell-eval '(llm "(do ") {})]
+          (is (= "from llm" (:ok r))))))))
 
 ;; =============================================================================
 ;; File I/O task tests
@@ -254,6 +254,70 @@
       (provider/with-provider
         (provider/dummy-provider {:response "(describe r))"})
         (is (= {:a "first" :b "second"} (test-llm "(do ")))))))
+
+(deftest describe-fallback-test
+  (testing "describe falls back to top-level key when :docs doesn't have it"
+    (let [ns-map {:docs {:a "doc for a"} :a identity :guide "full guide text"}]
+      (is (= {:a "doc for a"} (llm/describe ns-map)))
+      (is (= "doc for a" (llm/describe ns-map :a)))
+      (is (= "full guide text" (llm/describe ns-map :guide)))))
+
+  (testing "describe prefers :docs over top-level"
+    (let [ns-map {:docs {:x "from docs"} :x "from top"}]
+      (is (= "from docs" (llm/describe ns-map :x)))))
+
+  (testing "describe returns nil for missing key"
+    (let [ns-map {:docs {:a "doc"}}]
+      (is (nil? (llm/describe ns-map :missing))))))
+
+(deftest guides-builtin-test
+  (testing "guides docs returns topic listing"
+    (let [r (spell/spell-eval '(describe guides) {})]
+      (is (eval/ok? r))
+      (is (map? (:ok r)))
+      (is (contains? (:ok r) :_))
+      (is (str/includes? (:_ (:ok r)) "communication"))))
+
+  (testing "guides topic returns full text"
+    (let [r (spell/spell-eval '(describe guides :communication) {})]
+      (is (eval/ok? r))
+      (is (string? (:ok r)))
+      (is (str/includes? (:ok r) "COMMUNICATION"))))
+
+  (testing "guides builtins topic returns string"
+    (let [r (spell/spell-eval '(describe guides :builtins) {})]
+      (is (eval/ok? r))
+      (is (string? (:ok r)))
+      (is (str/includes? (:ok r) "BUILTINS")))))
+
+(deftest namespace-guide-test
+  (testing "io namespace has :guide accessible via describe"
+    (let [guide (llm/describe spell-io/io-namespace :guide)]
+      (is (string? guide))
+      (is (str/includes? guide "FILE EDITING"))))
+
+  (testing "io describe :sh still returns doc (no regression)"
+    (let [doc (llm/describe spell-io/io-namespace :sh)]
+      (is (string? doc))
+      (is (str/includes? doc "shell command"))))
+
+  (testing "math namespace has :guide via spell-eval"
+    (let [r (spell/spell-eval '(describe math :guide) {})]
+      (is (eval/ok? r))
+      (is (string? (:ok r)))
+      (is (str/includes? (:ok r) "MATH NAMESPACE"))))
+
+  (testing "strings namespace has :guide via spell-eval"
+    (let [r (spell/spell-eval '(describe strings :guide) {})]
+      (is (eval/ok? r))
+      (is (string? (:ok r)))
+      (is (str/includes? (:ok r) "STRINGS NAMESPACE"))))
+
+  (testing "patterns namespace has :guide via spell-eval"
+    (let [r (spell/spell-eval '(describe patterns :guide) {})]
+      (is (eval/ok? r))
+      (is (string? (:ok r)))
+      (is (str/includes? (:ok r) "PATTERNS NAMESPACE")))))
 
 (deftest namespace-multiple-calls-test
   (testing "can use multiple items from same namespace"
@@ -499,20 +563,6 @@
           (is @recovery-called)
           (is (= 42 result))))))
 
-  (testing "recovery can use memo references"
-    (let [test-llm (spell/make-llm
-                     {:namespaces {}
-                      :recover (fn [result _recovery-call-fn]
-                                 ;; The memo should have the def x = 5 value
-                                 ;; Return expression that uses it
-                                 '(do (def return (memo 0))))})]
-      (provider/with-provider
-        ;; First part succeeds (def x 5), then fails on undefined
-        (provider/dummy-provider {:response "(def x 5) undefined)"})
-        ;; Recovery uses (memo 0) to get the cached value
-        (let [result (test-llm "(do ")]
-          (is (= 5 result))))))
-
   (testing "default recovery uses LLM to fix errors"
     ;; Recovery is now on by default - test that it calls the recovery LLM
     (let [call-count (atom 0)
@@ -535,25 +585,15 @@
         (is (thrown? Exception (test-llm "(do ")))))))
 
 (deftest format-error-for-recovery-test
-  (testing "formats error with program and memo context"
+  (testing "formats error with program context"
     (let [result {:err "Unbound symbol: foo"
                   :expr 'foo
                   :env {'x 1}
-                  :memo [{:expr '(def x 1) :value 1}
-                         {:expr '(+ 2 3) :value 5}]
-                  :idx 2
                   :program '(do (def x 1) foo)}
           formatted (llm/format-error-for-recovery result)]
       (is (str/includes? formatted "Unbound symbol: foo"))
       (is (str/includes? formatted "foo"))
-      (is (str/includes? formatted "(def x 1)"))
-      (is (str/includes? formatted "=> 1"))
-      (is (str/includes? formatted "(memo N)"))))
-
-  (testing "handles empty memo"
-    (let [result {:err "Error" :expr 'x :env {} :memo [] :idx 0 :program 'x}
-          formatted (llm/format-error-for-recovery result)]
-      (is (str/includes? formatted "empty")))))
+      (is (str/includes? formatted "(do (def x 1) foo)")))))
 
 ;; =============================================================================
 ;; make-form-llm tests
@@ -636,13 +676,13 @@
       (provider/dummy-provider {:response "OK"})
       ;; leaf-llm is effect-only, so merge effect builtins
       (binding [eval/*builtins* (merge eval/*builtins* eval/*effect-builtins*)]
-        (let [[result _] (spell/spell-eval '(patterns/check-result "What is 2+2?" 4) {})]
-          (is (= {:ok 4} result)))))))
+        (let [r (spell/spell-eval '(patterns/check-result "What is 2+2?" 4) {})]
+          (is (= {:ok 4} (:ok r))))))))
 
 (deftest check-result-wrong-test
   (testing "check-result returns {:wrong msg} when leaf-llm says WRONG"
     (provider/with-provider
       (provider/dummy-provider {:response "WRONG: London is the capital of the UK."})
       (binding [eval/*builtins* (merge eval/*builtins* eval/*effect-builtins*)]
-        (let [[result _] (spell/spell-eval '(patterns/check-result "Capital of France?" "London") {})]
-          (is (= {:wrong "London is the capital of the UK."} result)))))))
+        (let [r (spell/spell-eval '(patterns/check-result "Capital of France?" "London") {})]
+          (is (= {:wrong "London is the capital of the UK."} (:ok r))))))))
