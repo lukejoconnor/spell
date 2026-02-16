@@ -107,6 +107,60 @@
         (is (empty? (globals/get-val :work)))))))
 
 ;; =============================================================================
+;; wait-until tests
+;; =============================================================================
+
+(deftest wait-until-already-satisfied-test
+  (testing "returns true immediately if predicate is already satisfied"
+    (globals/set-val :x 42)
+    (is (true? (globals/wait-until (fn [state] (= 42 (:x state))))))))
+
+(deftest wait-until-blocks-then-unblocks-test
+  (testing "blocks until a concurrent update satisfies predicate"
+    (globals/set-val :counter 0)
+    (let [result (future (globals/wait-until (fn [state] (>= (:counter state) 5))))]
+      ;; Should be blocked
+      (Thread/sleep 50)
+      (is (not (realized? result)))
+      ;; Increment counter in steps
+      (dotimes [_ 5]
+        (globals/update-val :counter inc))
+      ;; Should unblock
+      (is (true? (deref result 2000 :timeout))))))
+
+(deftest wait-until-race-condition-test
+  (testing "handles state change between check and add-watch"
+    ;; State changes to satisfy predicate immediately after initial check.
+    ;; The double-check after add-watch catches this.
+    (globals/set-val :ready false)
+    (let [result (future
+                   ;; Another thread sets ready=true almost immediately
+                   (future (Thread/sleep 10) (globals/set-val :ready true))
+                   (globals/wait-until (fn [state] (:ready state))))]
+      (is (true? (deref result 2000 :timeout))))))
+
+(deftest wait-until-concurrent-agents-test
+  (testing "multiple agents posting results, coordinator waits"
+    (globals/set-val :results [])
+    (let [n 10
+          ;; Start wait-until in coordinator
+          coordinator (future
+                        (globals/wait-until
+                          (fn [state] (= n (count (:results state))))))
+          ;; Spawn n workers that each post a result
+          workers (doall
+                    (for [i (range n)]
+                      (future
+                        (Thread/sleep (rand-int 50))
+                        (globals/update-val :results
+                          (fn [r] (conj r i))))))]
+      ;; Wait for all workers
+      (doseq [w workers] (deref w 2000 :timeout))
+      ;; Coordinator should have unblocked
+      (is (true? (deref coordinator 2000 :timeout)))
+      (is (= n (count (globals/get-val :results)))))))
+
+;; =============================================================================
 ;; Integration tests (with DummyProvider)
 ;; =============================================================================
 

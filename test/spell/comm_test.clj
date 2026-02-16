@@ -94,15 +94,41 @@
     (is (thrown-with-msg? Exception #"not inside an agent context"
           (comm/ask-builtin :some-target)))))
 
-(deftest create-msg-test
-  (testing "create-msg produces function that modifies raw string"
-    (let [msg-fn (comm/create-msg 'my-data 42)
-          ;; Simulate a raw completion with 3 trailing parens
-          raw "(quine completion (eval (do (def x 1))))"
-          result (msg-fn raw)]
-      ;; Should have reopened (stripped 3 parens) and appended def binding
-      (is (.contains ^String result "(def my-data 42)"))
-      (is (not (.endsWith ^String result ")))"))))))
+(deftest send-msg-test
+  (testing "send-msg sends def message with :from and :value to target"
+    (let [h-sender :test-sender
+          h-target :test-target
+          received (atom nil)
+          eval-fn (fn [raw] (reset! received raw) raw)]
+      (comm/register! h-sender identity)
+      (comm/register! h-target eval-fn)
+      (reset! (:inbox (get @comm/registry h-target)) eval-fn)
+      (binding [comm/*current-handle* h-sender]
+        (comm/send-msg 42 h-target))
+      ;; Process the message through box
+      (comm/box "(quine completion (eval (do )))" h-target)
+      ;; Should contain def with :from and :value
+      (is (.contains ^String @received ":from :test-sender"))
+      (is (.contains ^String @received ":value 42"))
+      (is (.contains ^String @received "(def msg-")))))
+
+(deftest reply-send-test
+  (testing "reply-send extracts :from from message map and sends back"
+    (let [h-a :reply-a
+          h-b :reply-b
+          b-received (atom nil)
+          eval-fn (fn [raw] (reset! b-received raw) raw)]
+      (comm/register! h-a identity)
+      (comm/register! h-b eval-fn)
+      (reset! (:inbox (get @comm/registry h-b)) eval-fn)
+      ;; Simulate a message map that h-a would have received from h-b
+      (let [fake-msg {:from :reply-b :value "hello"}]
+        (binding [comm/*current-handle* h-a]
+          (comm/reply-send fake-msg "reply-value")))
+      ;; Process the message at h-b
+      (comm/box "(quine completion (eval (do )))" h-b)
+      (is (.contains ^String @b-received ":from :reply-a"))
+      (is (.contains ^String @b-received ":value \"reply-value\"")))))
 
 (deftest dynamic-vars-bound-in-box-test
   (testing "*current-handle* and *current-raw* are bound during box execution"
@@ -205,12 +231,12 @@
 
 (deftest handle-inheritance-test
   (testing "llm-self calls inherit the parent's handle"
-    ;; All effect builtins (current-handle, llm-self) go through eval's second pass.
+    ;; All effect builtins (agents/current-handle, llm-self) go through eval's second pass.
     (let [call-count (atom 0)
           responses [;; Outer: use eval to access current-handle and llm-self via double-eval
-                     "'(list (current-handle) (llm-self \"(eval (do \")))"
+                     "'(list (agents/current-handle) (llm-self \"(eval (do \")))"
                      ;; Inner: return current-handle (via eval)
-                     "'(current-handle)))"]]
+                     "'(agents/current-handle)))"]]
       (provider/with-provider
         (provider/dummy-provider
           {:response-fn (fn [_]
@@ -243,9 +269,9 @@
   (testing "spawned agent sees spawner's handle via parent-handle"
     (let [call-count (atom 0)
           responses [;; Parent: all effect builtins via eval
-                     "'(let [my-h (current-handle) child-result (llm-self \"(eval (do \")] (list my-h child-result)))"
+                     "'(let [my-h (agents/current-handle) child-result (llm-self \"(eval (do \")] (list my-h child-result)))"
                      ;; Inner llm-self (inherits handle, not spawned): return nil for parent-handle
-                     "'(parent-handle)))"]]
+                     "'(agents/parent-handle)))"]]
       ;; First test: llm-self inherits handle, so parent-handle is nil (not spawned)
       (provider/with-provider
         (provider/dummy-provider
@@ -283,7 +309,7 @@
                           (comm/register! handle identity)
                           (when comm/*spawn-ready*
                             (deliver comm/*spawn-ready* true))
-                          (comm/send (comm/create-msg 'answer 42) comm/*parent-handle*)
+                          (comm/send-msg 42 comm/*parent-handle*)
                           :done)]
       (comm/register! parent-h eval-fn)
       ;; Do NOT seed inbox — recv should block until child sends
@@ -296,14 +322,14 @@
         ;; spawn-recv blocks until child sends; child runs in a future
         (let [result (deref parent-result 5000 :timeout)]
           (is (string? result))
-          (is (.contains ^String result "(def answer 42)")))))))
+          (is (.contains ^String result ":value 42")))))))
 
 (deftest spawn-addressable-test
   (testing "spawned agent can be sent to (handle is registered)"
     ;; spawn and llm-self are effect-builtins: accessed via eval double-evaluation.
     (let [call-count (atom 0)
           responses [;; Outer: use eval to access spawn+llm-self via double-eval
-                     "(eval (do '(let [w (spawn llm-self \"(do \")] (not (nil? w)))))"
+                     "(eval (do '(let [w (agents/spawn llm-self \"(do \")] (not (nil? w)))))"
                      ;; Worker: just return 77
                      "77)"]]
       (provider/with-provider
@@ -322,7 +348,7 @@
   (testing "ask sends message to target and blocks until reply arrives"
     ;; A asks B. B receives the ask message, then replies to A via -send!
     ;; (bypassing eval-fn composition to avoid re-evaluation of a-eval-fn).
-    ;; Raw strings must be valid completion wrappers (create-msg calls reopen which strips 3 trailing parens).
+    ;; Raw strings must be valid completion wrappers (send-msg calls reopen which strips 3 trailing parens).
     (let [h-a :ask-agent-a
           h-b :ask-agent-b
           a-raw "(quine completion (eval (do )))"
@@ -351,13 +377,14 @@
           (is (= "reply-from-b" result))
           ;; B should have received the ask message (modified raw with quine injected)
           (is (some? @b-received))
-          (is (.contains ^String @b-received "(def message")))))))
+          (is (.contains ^String @b-received ":value \"hello\""))
+          (is (.contains ^String @b-received ":from :ask-agent-a")))))))
 
 (deftest ask-no-msg-wakes-target-test
   (testing "ask(target) sends a poke to target, waking it"
     ;; A calls ask(B) with no msg. This pokes B (waking it) and blocks.
     ;; B receives the poke, replies to A via -send! (bypasses eval-fn re-evaluation).
-    ;; Raw strings must be valid completion wrappers (create-msg calls reopen).
+    ;; Raw strings must be valid completion wrappers (send-msg calls reopen).
     (let [h-a :ask-wake-a
           h-b :ask-wake-b
           a-raw "(quine completion (eval (do )))"
@@ -426,15 +453,15 @@
         (Thread/sleep 50)
         ;; Child A sends to parent
         (binding [comm/*current-handle* h-a]
-          (comm/send (comm/create-msg 'result-a 42) h-parent))
+          (comm/send-msg 42 h-parent))
         ;; Child B sends to parent
         (binding [comm/*current-handle* h-b]
-          (comm/send (comm/create-msg 'result-b 99) h-parent))
-        ;; Parent should unblock with accumulated raw containing both quines
+          (comm/send-msg 99 h-parent))
+        ;; Parent should unblock with accumulated raw containing both quine messages
         (let [result (deref result-future 5000 :timeout)]
           (is (string? result))
-          (is (.contains ^String result "(def result-a 42)"))
-          (is (.contains ^String result "(def result-b 99)")))))))
+          (is (.contains ^String result ":value 42"))
+          (is (.contains ^String result ":value 99")))))))
 
 (deftest ask-multi-single-target-test
   (testing "ask with single-element vector works"
@@ -451,10 +478,10 @@
                 (comm/ask-builtin [h-child])))]
         (Thread/sleep 50)
         (binding [comm/*current-handle* h-child]
-          (comm/send (comm/create-msg 'answer 7) h-parent))
+          (comm/send-msg 7 h-parent))
         (let [result (deref result-future 5000 :timeout)]
           (is (string? result))
-          (is (.contains ^String result "(def answer 7)")))))))
+          (is (.contains ^String result ":value 7")))))))
 
 (deftest ask-multi-concurrent-sends-test
   (testing "concurrent sends from multiple targets are collected correctly"
@@ -475,16 +502,15 @@
               (mapv (fn [t]
                       (future
                         (binding [comm/*current-handle* t]
-                          (comm/send (comm/create-msg (symbol (name t)) (name t))
-                                     h-parent))))
+                          (comm/send-msg (name t) h-parent))))
                     targets)]
           (doseq [sf send-futures] (deref sf 2000 :timeout)))
-        ;; Parent should have all 5 quine bindings
+        ;; Parent should have all 5 quine messages
         (let [result (deref result-future 5000 :timeout)]
           (is (string? result))
           (doseq [t targets]
             (is (.contains ^String result
-                           (str "(def " (name t))))))))))
+                           (str ":value \"" (name t) "\"")))))))))
 
 (deftest ask-multi-notify-waiters-test
   (testing "notify-waiters with correct *current-handle* triggers collector"
@@ -507,26 +533,85 @@
           (is (.contains ^String result "(def spawn-result :child-returned)")))))))
 
 ;; =============================================================================
+;; Inbox preservation tests (#89)
+;; =============================================================================
+
+(deftest inherited-llm-preserves-inbox-test
+  (testing "CAS preserves pending inbox content for inherited calls"
+    ;; Simulates the bug: after box drains inbox, a -send! puts a new
+    ;; function in the inbox. Then a recursive -llm call (inherited, not
+    ;; root) should NOT overwrite the pending function via reset!.
+    ;; With the fix, CAS detects non-nil and skips seeding.
+    (let [handle :test-cas
+          eval-fn (fn [raw] (str "evaluated:" raw))
+          sent-fn (fn [raw] (str "sent:" raw))]
+      (comm/register! handle eval-fn)
+      ;; Simulate: box drained inbox (nil), then a send happened during eval
+      (comm/send sent-fn handle)
+      ;; Now inbox has (comp eval-fn sent-fn) from the send
+      (let [inbox-before @(:inbox (get @comm/registry handle))]
+        (is (some? inbox-before) "inbox should have the sent function")
+        ;; Simulate inherited -llm: CAS only seeds if nil
+        (let [new-eval-fn (fn [raw] (str "new:" raw))
+              cas-result (compare-and-set! (:inbox (get @comm/registry handle))
+                                           nil new-eval-fn)]
+          (is (false? cas-result) "CAS should fail (inbox non-nil)")
+          ;; Inbox should be unchanged — the sent function is preserved
+          (is (= inbox-before @(:inbox (get @comm/registry handle)))
+              "inbox should still have the sent function"))
+        ;; Box should process the preserved sent function
+        ;; Composition is (comp eval-fn sent-fn): eval-fn(sent-fn(raw))
+        (is (= "evaluated:sent:hello" (comm/box "hello" handle))
+              "box should apply the preserved composition"))))
+
+  (testing "CAS seeds inbox when empty for inherited calls"
+    (let [handle :test-cas-empty
+          eval-fn (fn [raw] (str "evaluated:" raw))]
+      (comm/register! handle eval-fn)
+      ;; inbox is nil (no pending sends)
+      (is (nil? @(:inbox (get @comm/registry handle))))
+      ;; Simulate inherited -llm: CAS succeeds when nil
+      (let [new-eval-fn (fn [raw] (str "new:" raw))
+            cas-result (compare-and-set! (:inbox (get @comm/registry handle))
+                                         nil new-eval-fn)]
+        (is (true? cas-result) "CAS should succeed (inbox was nil)")
+        ;; Box should use the CAS-seeded function
+        (is (= "new:hello" (comm/box "hello" handle)))))))
+
+(deftest inbox-cas-seeds-when-empty-test
+  (testing "inherited -llm seeds inbox when it's empty (no pending sends)"
+    ;; Simple recursive llm-self without any sends — should work as before
+    (let [call-count (atom 0)
+          responses ["'(llm-self \"(eval (do \"))"
+                     "99))"]]
+      (provider/with-provider
+        (provider/dummy-provider
+          {:response-fn (fn [_]
+                          (let [r (nth responses @call-count)]
+                            (swap! call-count inc)
+                            r))})
+        (is (= 99 (spell/llm "(eval (do ")))))))
+
+;; =============================================================================
 ;; Effect guard tests
 ;; =============================================================================
 
 (deftest effect-guard-blocks-in-first-pass-test
   (testing "effect builtins are unbound in eval's first pass (do block)"
-    ;; send, spawn, ask — communication effects
-    (is (thrown-with-msg? Exception #"Unbound symbol: send"
-          (eval/run-spell '(send identity :nobody))))
-    (is (thrown-with-msg? Exception #"Unbound symbol: spawn"
-          (eval/run-spell '(spawn identity "test"))))
-    (is (thrown-with-msg? Exception #"Unbound symbol: ask"
-          (eval/run-spell '(ask :nobody "hello"))))
-    ;; current-handle, parent-handle — context-dependent
-    (is (thrown-with-msg? Exception #"Unbound symbol: current-handle"
-          (eval/run-spell '(current-handle))))
-    (is (thrown-with-msg? Exception #"Unbound symbol: parent-handle"
-          (eval/run-spell '(parent-handle))))
-    ;; pmap — concurrency effect (await is now a core builtin)
-    (is (thrown-with-msg? Exception #"Unbound symbol: pmap"
-          (eval/run-spell '(pmap inc [1 2 3]))))
+    ;; agents/ — communication effects (namespace-qualified)
+    (is (thrown-with-msg? Exception #"Unbound symbol: agents"
+          (eval/run-spell '(agents/send-msg 42 :nobody))))
+    (is (thrown-with-msg? Exception #"Unbound symbol: agents"
+          (eval/run-spell '(agents/spawn identity "test"))))
+    (is (thrown-with-msg? Exception #"Unbound symbol: agents"
+          (eval/run-spell '(agents/ask :nobody "hello"))))
+    (is (thrown-with-msg? Exception #"Unbound symbol: agents"
+          (eval/run-spell '(agents/current-handle))))
+    (is (thrown-with-msg? Exception #"Unbound symbol: agents"
+          (eval/run-spell '(agents/parent-handle))))
+    ;; futures/ — concurrency effect (await is still a core builtin)
+    (is (thrown-with-msg? Exception #"Unbound symbol: futures"
+          (eval/run-spell '(futures/pmap inc [1 2 3]))))
     ;; io/, globals/ — side-effectful namespaces
     (is (thrown-with-msg? Exception #"Unbound symbol: io"
           (eval/run-spell '(io/sh "echo hi"))))
@@ -535,8 +620,8 @@
 
 (deftest effect-guard-allows-in-second-pass-test
   (testing "dangerous fns work through double-evaluation (eval special form)"
-    ;; (eval (do '(send ...))) — the quoted expression is double-evaluated
-    ;; send will still fail at runtime (no registered handle), but the symbol resolves
+    ;; (eval (do '(agents/ask ...))) — the quoted expression is double-evaluated
+    ;; ask will still fail at runtime (no registered handle), but the symbol resolves
     (is (thrown-with-msg? Exception #"not inside an agent context|not registered"
-          (eval/run-spell '(eval (do '(ask :nobody "hello"))))))))
+          (eval/run-spell '(eval (do '(agents/ask :nobody "hello"))))))))
 
