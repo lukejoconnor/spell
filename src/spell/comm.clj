@@ -308,6 +308,18 @@
   (contains? @registry h))
 
 ;; =============================================================================
+;; Start box helper
+;; =============================================================================
+
+(defn start-box
+  "Register handle and start box with initial completion. Returns handle.
+   Used by both spawn (via -llm) and register-agent."
+  [handle eval-fn initial-completion]
+  (register! handle eval-fn)
+  (future (box initial-completion handle))
+  handle)
+
+;; =============================================================================
 ;; Spawn
 ;; =============================================================================
 
@@ -357,6 +369,7 @@ Agents communicate by sending messages. A message extends the recipient's comple
   (agents/reply-ask msg value)        — reply to a received message, then block for their response
   (agents/spawn llm-fn prompt)        — start a background agent, returns its handle (auto-generated)
   (agents/spawn llm-fn prompt :name)  — same, but with a fixed handle name (keyword)
+  (agents/register :handle-name)      — register a dormant agent; wakes on first message (no initial LLM call)
   (agents/current-handle)             — your handle (keyword like :agent-42); works at all levels including root
   (agents/parent-handle)              — returns the handle of the agent that spawned you (nil if not spawned)
 
@@ -432,6 +445,7 @@ llm-self calls are always serial — the child inherits your handle, so your ent
           :ask "Send msg to target and block for reply; (ask [a b c]) for multi-target"
           :spawn "Start background agent, returns handle"
           :spawn-recv "Spawn agent, block until it sends back"
+          :register "Register dormant agent; wakes on first message (no initial LLM call)"
           :current-handle "Your handle (keyword like :agent-42)"
           :parent-handle "Handle of agent that spawned you (nil if root)"
           :send "Low-level fire-and-forget send"}

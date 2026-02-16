@@ -572,18 +572,13 @@
    Root binding set by spell.core after all definitions exist."
   nil)
 
-(def ^:dynamic *effect-builtins*
-  "Builtins only available inside eval's second pass (double-evaluation).
-   Contains effectful functions: send, ask, spawn, spawn-recv, llm-self."
-  {})
-
 ;; =============================================================================
 ;; Free variable analysis
 ;; =============================================================================
 
 (def special-forms
   "Special forms that are not free variables."
-  #{'quote 'def 'do 'if 'let 'fn 'fn* 'expand 'eval 'quine 'loop 'recur 'for 'try})
+  #{'quote 'def 'do 'if 'let 'fn 'fn* 'expand 'quine 'loop 'recur 'for 'try})
 
 (defn quote-value
   "Wrap non-self-evaluating values in (quote ...) for safe embedding in generated code."
@@ -901,22 +896,6 @@
                  quoted-result
                  (ok (expand-expr (:ok quoted-result) (:env quoted-result))
                      (:env quoted-result))))
-
-      ;; eval: (eval expr) - expand and evaluate using current env (like Clojure's eval)
-      ;; Merges *effect-builtins* into *builtins* for the second pass,
-      ;; making effectful functions (send, ask, spawn, llm-self) available
-      ;; only through double-evaluation (the trailing expression pattern).
-      ;; Tags second-pass errors with :effect-phase true so error recovery
-      ;; skips programs where effects may have already executed.
-      eval (let [quoted-result (spell-eval (second expr) env)]
-             (if (err? quoted-result)
-               quoted-result
-               (let [expanded (expand-expr (:ok quoted-result) (:env quoted-result))
-                     result (binding [*builtins* (merge *builtins* *effect-builtins*)]
-                              (spell-eval expanded (:env quoted-result)))]
-                 (if (err? result)
-                   (assoc result :effect-phase true)
-                   result))))
 
       ;; quine: (quine name body) — bind name to the source form (= expr), eval body
       quine (let [name-sym (second expr)

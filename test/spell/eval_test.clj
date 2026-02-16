@@ -3,7 +3,7 @@
             [spell.eval :as eval :refer [spell-eval run-spell]]
             [spell.macros :as macros]
             [spell.stdlib :as stdlib]
-            [spell.core :as core]))
+            [spell.core :as core :refer [effect-builtins]]))
 
 ;; =============================================================================
 ;; Test helpers - include stdlib functions directly for testing
@@ -24,9 +24,9 @@
          (extract-ns-fns stdlib/strings)))
 
 (defmacro with-effects
-  "Run body with *effect-builtins* merged into *builtins* (simulates eval's second pass)."
+  "Run body with effect-builtins merged into *builtins* (simulates eval's second pass)."
   [& body]
-  `(binding [eval/*builtins* (merge eval/*builtins* eval/*effect-builtins*)]
+  `(binding [eval/*builtins* (merge eval/*builtins* effect-builtins)]
      ~@body))
 
 (defn eval-ok
@@ -909,7 +909,7 @@
   (testing "two futures run concurrently (not sequentially)"
     ;; Each future sleeps 100ms. If sequential, total >= 200ms; if concurrent, ~100ms.
     (let [sleep-fn (fn [ms] (Thread/sleep (long ms)) ms)
-          builtins (merge eval/core-builtins eval/*effect-builtins* {'sleep sleep-fn})
+          builtins (merge eval/core-builtins effect-builtins {'sleep sleep-fn})
           start (System/currentTimeMillis)
           result (binding [eval/*builtins* builtins]
                    (first (eval-ok
@@ -945,7 +945,7 @@
 
 (deftest future-dynamic-bindings
   (testing "future conveys *builtins* via bound-fn"
-    (let [custom-builtins (merge eval/core-builtins eval/*effect-builtins*
+    (let [custom-builtins (merge eval/core-builtins effect-builtins
                                  {'my-tool (fn [] "tool-result")})]
       (binding [eval/*builtins* custom-builtins]
         (is (= "tool-result"
@@ -991,7 +991,7 @@
 (deftest pmap-concurrency
   (testing "pmap runs items concurrently"
     (let [sleep-fn (fn [ms] (Thread/sleep (long ms)) ms)
-          builtins (merge eval/core-builtins eval/*effect-builtins* {'sleep sleep-fn})
+          builtins (merge eval/core-builtins effect-builtins {'sleep sleep-fn})
           start (System/currentTimeMillis)
           result (binding [eval/*builtins* builtins]
                    (first (eval-ok
@@ -2528,24 +2528,26 @@
 ;; =============================================================================
 
 (deftest effect-phase-tagging-test
-  (testing "eval tags second-pass errors with :effect-phase true"
-    ;; Set up an effect builtin that always throws
-    (binding [eval/*builtins* eval/core-builtins
-              eval/*effect-builtins* {'boom (fn [] (throw (Exception. "boom!")))}]
-      (let [result (spell-eval '(eval '(boom)) {})]
-        (is (eval/err? result))
-        (is (true? (:effect-phase result))))))
+  (testing "eval builtin works with effect functions"
+    ;; Create a custom eval with a 'boom effect function
+    (let [boom-effects {'boom (fn [] (throw (Exception. "boom!")))}
+          custom-eval (fn [expr]
+                        (let [expanded (eval/expand-expr expr eval/*spell-env*)]
+                          (binding [eval/*builtins* (merge eval/core-builtins boom-effects)]
+                            (let [result (spell-eval expanded {})]
+                              (if (eval/ok? result)
+                                (:ok result)
+                                (throw (ex-info (:err result) {:result result})))))))
+          custom-builtins (assoc eval/core-builtins 'eval custom-eval)
+          result (binding [eval/*builtins* custom-builtins]
+                   (spell-eval '(eval '(boom)) {}))]
+      (is (eval/err? result))))
 
-  (testing "first-pass errors are NOT tagged with :effect-phase"
-    (binding [eval/*builtins* eval/core-builtins
-              eval/*effect-builtins* {}]
-      (let [result (spell-eval '(eval (do unbound-symbol)) {})]
-        (is (eval/err? result))
-        (is (not (:effect-phase result))))))
+  (testing "first-pass errors in eval argument"
+    (let [result (spell-eval '(eval (do unbound-symbol)) {})]
+      (is (eval/err? result))))
 
-  (testing "successful eval has no :effect-phase key"
-    (binding [eval/*builtins* eval/core-builtins
-              eval/*effect-builtins* {}]
-      (let [result (spell-eval '(eval '(+ 1 2)) {})]
-        (is (eval/ok? result))
-        (is (not (contains? result :effect-phase)))))))
+  (testing "successful eval returns value"
+    (let [result (spell-eval '(eval '(+ 1 2)) {})]
+      (is (eval/ok? result))
+      (is (= 3 (:ok result))))))

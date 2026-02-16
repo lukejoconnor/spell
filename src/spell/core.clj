@@ -68,30 +68,39 @@
   (make-llm {:namespaces all-namespaces
              :llm-var #'llm}))
 
+;; Effect builtins map - exposed for testing
+(def effect-builtins
+  "Effect namespaces and functions (io, globals, agents, futures, llm, leaf-llm).
+   Used by the eval builtin to merge effects in the second pass."
+  {'llm #'llm
+   'leaf-llm leaf-llm
+   'io io/io-namespace
+   'globals globals/globals-namespace
+   'agents comm/agents-namespace
+   'futures comm/futures-namespace})
+
 ;; Set root binding for eval/*builtins* — used by direct spell-eval/run-spell calls
 ;; (tests, REPL) that don't go through an llm function.
 ;; Note: seqs, fns, and bit- ops are in core-builtins (matching Clojure).
-(alter-var-root #'eval/*builtins*
-  (constantly (merge eval/core-builtins
-                     {;; Pure namespaces
-                      'strings stdlib/strings
-                      'math stdlib/math
-                      'patterns stdlib/patterns
-                      'builtins prompt/builtins-namespace
-                      'describe-fn describe
-                      'prepend-hooks-to-llm #'prepend-hooks-to-llm
-                      'recurse #'recurse
-                      'prefix-prompt #'prefix-prompt
-                      'with-env with-env
-                      'with-env-hints with-env-hints})))
-
-;; Effect builtins — only available inside eval's second pass (double-evaluation).
-;; Contains non-deterministic and side-effectful operations:
-;; LLM calls, communication, concurrency, IO, globals.
-(alter-var-root #'eval/*effect-builtins*
-  (constantly {'llm #'llm
-               'leaf-llm leaf-llm
-               'io io/io-namespace
-               'globals globals/globals-namespace
-               'agents comm/agents-namespace
-               'futures comm/futures-namespace}))
+(let [pure-builtins (merge eval/core-builtins
+                           {;; Pure namespaces
+                            'strings stdlib/strings
+                            'math stdlib/math
+                            'patterns stdlib/patterns
+                            'builtins prompt/builtins-namespace
+                            'describe-fn describe
+                            'prepend-hooks-to-llm #'prepend-hooks-to-llm
+                            'recurse #'recurse
+                            'prefix-prompt #'prefix-prompt
+                            'with-env with-env
+                            'with-env-hints with-env-hints})
+      ;; Create eval builtin that merges effect builtins
+      eval-builtin (fn [expr]
+                     (let [expanded (eval/expand-expr expr eval/*spell-env*)]
+                       (binding [eval/*builtins* (merge pure-builtins effect-builtins)]
+                         (let [result (eval/spell-eval expanded {})]
+                           (if (eval/ok? result)
+                             (:ok result)
+                             (throw (ex-info (:err result) {:result result})))))))
+      full-builtins (assoc pure-builtins 'eval eval-builtin)]
+  (alter-var-root #'eval/*builtins* (constantly full-builtins)))

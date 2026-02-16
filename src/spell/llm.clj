@@ -197,12 +197,23 @@ No explanation, no markdown code blocks, just the raw s-expression.")
         (:ok final-result)
         (throw (ex-info (:err final-result) {:result final-result}))))))
 
+(defn- register-agent
+  "Register a dormant agent with a minimal sleeping completion.
+   Returns handle. Agent wakes on first message.
+   config is the llm config map (from make-llm)."
+  [config handle-name]
+  (when-not (keyword? handle-name)
+    (throw (ex-info "register-agent: handle must be keyword" {:got handle-name})))
+  (let [eval-fn (make-eval-pipeline config [] (atom nil))
+        initial-completion "(quine completion (eval (do)))"]
+    (comm/start-box handle-name eval-fn initial-completion)))
+
 (defn- -llm
   "Core llm: call LLM, concat prefix+response, parse, apply hooks, eval.
    Two cases: root (handle not yet registered) or inherited (handle exists).
    Root owns the handle lifecycle: register, orphan-box, unregister.
    Inherited just seeds the inbox and calls box."
-  [{:keys [call-fn builtins effect-builtins recover-fns recovery-call-fn] :as config} prompt hooks handle]
+  [{:keys [call-fn builtins recover-fns recovery-call-fn] :as config} prompt hooks handle]
   (when (and eval/*max-llm-depth* (>= eval/*llm-depth* eval/*max-llm-depth*))
     (throw (ex-info "LLM recursion limit exceeded"
                     {:type :depth-exceeded :depth eval/*llm-depth* :limit eval/*max-llm-depth*})))
@@ -238,9 +249,8 @@ No explanation, no markdown code blocks, just the raw s-expression.")
                        (println (str indent "Response: " response))))
         raw        (parse/balance-parens (str prompt-str response))]
     (try
-      (let [result (binding [eval/*builtins*        builtins
-                             eval/*effect-builtins* (or effect-builtins {})
-                             trace/*trace-node-id*  node-id]
+      (let [result (binding [eval/*builtins*       builtins
+                             trace/*trace-node-id* node-id]
                      (comm/box raw handle))]
         (when root? (comm/notify-waiters! handle result))
         (when root? (comm/orphan-box! raw handle))
@@ -343,11 +353,31 @@ No explanation, no markdown code blocks, just the raw s-expression.")
                       (false? recover) nil
                       (fn? recover) [ns-recover recover]
                       :else [ns-recover default-recover-fn ns-recover])
-        config   {:call-fn call-fn
-                  :builtins variant-builtins
-                  :effect-builtins effect-builtins
+        ;; Create a promise for the final config (to break circular dependency)
+        final-config (promise)
+        ;; Add register-agent to agents namespace (if present)
+        register-agent-fn (fn [handle-name] (register-agent @final-config handle-name))
+        effect-builtins' (if (contains? effect-ns-builtins 'agents)
+                           (assoc effect-builtins 'agents
+                                  (assoc (get effect-ns-builtins 'agents)
+                                         :register register-agent-fn))
+                           effect-builtins)
+        ;; Create eval builtin that merges effect-builtins
+        eval-builtin (fn [expr]
+                       (let [expanded (eval/expand-expr expr eval/*spell-env*)]
+                         (binding [eval/*builtins* (merge variant-builtins effect-builtins')]
+                           (let [result (eval/spell-eval expanded {})]
+                             (if (eval/ok? result)
+                               (:ok result)
+                               (throw (ex-info (:err result) {:result result})))))))
+        ;; Full builtins includes eval
+        full-builtins (assoc variant-builtins 'eval eval-builtin)
+        ;; Final config with full builtins
+        config'  {:call-fn call-fn
+                  :builtins full-builtins
                   :recover-fns recover-fns
                   :recovery-call-fn recovery-call-fn}
+        _        (deliver final-config config')
         wrap-nl  (fn [p]
                    (let [s (if (or (seq? p) (list? p)) (pr-str p) (str p))]
                      (if (.startsWith (.trim ^String s) "(")
@@ -361,9 +391,8 @@ No explanation, no markdown code blocks, just the raw s-expression.")
                     (let [prompt' (if (or (seq? prompt) (list? prompt))
                                    (eval/expand-expr prompt (or eval/*spell-env* {}))
                                    prompt)]
-                      (binding [eval/*builtins*        variant-builtins
-                                eval/*effect-builtins* effect-builtins]
-                        (-llm config (wrap-nl prompt') hooks handle)))))]
+                      (binding [eval/*builtins* full-builtins]
+                        (-llm config' (wrap-nl prompt') hooks handle)))))]
     (reset! self-ref the-llm)
     the-llm))
 
