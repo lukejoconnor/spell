@@ -16,75 +16,81 @@
 ;; Unit tests (no LLM)
 ;; =============================================================================
 
-(deftest register-unregister-test
+(deftest register-test
   (testing "register! creates registry entry"
     (comm/register! :h1 identity)
     (is (contains? @comm/registry :h1))
     (is (some? (:inbox (get @comm/registry :h1))))
     (is (some? (:signal (get @comm/registry :h1))))
     (is (some? (:has-box (get @comm/registry :h1))))
-    (is (= identity (:eval-fn (get @comm/registry :h1)))))
+    (is (= identity (:default-inbox-fn (get @comm/registry :h1)))))
 
   (testing "register! throws on duplicate handle"
     (is (thrown-with-msg? Exception #"already registered"
-          (comm/register! :h1 identity))))
-
-  (testing "unregister! removes entry"
-    (comm/unregister! :h1)
-    (is (not (contains? @comm/registry :h1)))))
+          (comm/register! :h1 identity)))))
 
 (deftest box-with-pre-seeded-inbox-test
   (testing "box with pre-seeded inbox applies fn to raw immediately"
     (let [handle :test-box
-          eval-fn (fn [raw] (str "evaluated:" raw))]
+          eval-fn (fn [raw] (str "evaluated:" raw))
+          p (promise)]
       (comm/register! handle eval-fn)
       (reset! (:inbox (get @comm/registry handle)) eval-fn)
-      (is (= "evaluated:hello" (comm/box "hello" handle))))))
+      (deliver p "hello")
+      (is (= "evaluated:hello" (comm/box handle handle p))))))
 
-(deftest box-blocks-until-send-test
-  (testing "box blocks until someone sends"
+(deftest box-blocks-on-signal-via-sleep-test
+  (testing "box with sleep-fn blocks until someone sends"
     (let [handle :test-block
-          eval-fn identity]
+          eval-fn (fn [raw] (str "got:" raw))
+          p (promise)]
       (comm/register! handle eval-fn)
-      ;; Box will block (inbox is nil)
-      (let [result (future (comm/box "raw" handle))]
+      ;; Seed inbox with a sleep fn (simulating what orphan-box would do)
+      (reset! (:inbox (get @comm/registry handle)) (#'comm/make-sleep-fn handle))
+      (deliver p "raw")
+      (let [result (future (comm/box handle handle p))]
         (Thread/sleep 50)
         (is (not (realized? result)))
-        ;; Send identity — eval-fn is identity, so result = "raw"
+        ;; Send identity — compose with default-inbox-fn (eval-fn)
         (comm/send identity handle)
-        (is (= "raw" (deref result 2000 :timeout)))))))
+        (is (= "got:raw" (deref result 2000 :timeout)))))))
 
 (deftest has-box-invariant-test
   (testing "has-box is false after box completes"
     (let [handle :test-hasbox
-          eval-fn identity]
+          eval-fn identity
+          p (promise)]
       (comm/register! handle eval-fn)
       (reset! (:inbox (get @comm/registry handle)) eval-fn)
-      (comm/box "x" handle)
+      (deliver p "x")
+      (comm/box handle handle p)
       (is (false? @(:has-box (get @comm/registry handle)))))))
 
 (deftest send-composes-correctly-test
-  (testing "send composes f before eval-fn (f pre-processes, then eval-fn runs)"
+  (testing "send composes f before default-inbox-fn"
     (let [handle :test-compose
-          ;; eval-fn uppercases
-          eval-fn (fn [raw] (.toUpperCase ^String raw))]
+          ;; default-inbox-fn uppercases
+          eval-fn (fn [raw] (.toUpperCase ^String raw))
+          p (promise)]
       (comm/register! handle eval-fn)
-      ;; Send f that prepends "pre:" — composition is (comp eval-fn f), so eval-fn(f(raw))
+      ;; Send f that prepends "pre:" — composition: eval-fn(f(raw))
       (comm/send (fn [raw] (str "pre:" raw)) handle)
+      (deliver p "hello")
       ;; f("hello") = "pre:hello", eval-fn("pre:hello") = "PRE:HELLO"
-      (is (= "PRE:HELLO" (comm/box "hello" handle))))))
+      (is (= "PRE:HELLO" (comm/box handle handle p))))))
 
 (deftest multiple-sends-compose-test
   (testing "multiple sends compose in order"
     (let [handle :test-multi
-          eval-fn (fn [raw] (.toUpperCase ^String raw))]
+          eval-fn (fn [raw] (.toUpperCase ^String raw))
+          p (promise)]
       (comm/register! handle eval-fn)
       ;; Send two transforms: first adds "a:", then second adds "b:"
       (comm/send (fn [raw] (str "a:" raw)) handle)
       (comm/send (fn [raw] (str "b:" raw)) handle)
-      ;; Composition: (comp (comp eval-fn (fn [raw] (str "a:" raw))) (fn [raw] (str "b:" raw)))
-      ;; = eval-fn(a:(b:hello)) = "A:B:HELLO"
-      (is (= "A:B:HELLO" (comm/box "hello" handle))))))
+      ;; Composition: eval-fn(a:(b:raw)) = "A:B:HELLO"
+      (deliver p "hello")
+      (is (= "A:B:HELLO" (comm/box handle handle p))))))
 
 (deftest ask-asserts-outside-context-test
   (testing "ask with msg throws when not in agent context"
@@ -99,14 +105,16 @@
     (let [h-sender :test-sender
           h-target :test-target
           received (atom nil)
-          eval-fn (fn [raw] (reset! received raw) raw)]
+          eval-fn (fn [raw] (reset! received raw) raw)
+          p (promise)]
       (comm/register! h-sender identity)
       (comm/register! h-target eval-fn)
       (reset! (:inbox (get @comm/registry h-target)) eval-fn)
       (binding [comm/*current-handle* h-sender]
         (comm/send-msg 42 h-target))
       ;; Process the message through box
-      (comm/box "(quine completion (eval (do )))" h-target)
+      (deliver p "(quine completion (eval (do )))")
+      (comm/box h-target h-target p)
       ;; Should contain def with :from and :value
       (is (.contains ^String @received ":from :test-sender"))
       (is (.contains ^String @received ":value 42"))
@@ -117,7 +125,8 @@
     (let [h-a :reply-a
           h-b :reply-b
           b-received (atom nil)
-          eval-fn (fn [raw] (reset! b-received raw) raw)]
+          eval-fn (fn [raw] (reset! b-received raw) raw)
+          p (promise)]
       (comm/register! h-a identity)
       (comm/register! h-b eval-fn)
       (reset! (:inbox (get @comm/registry h-b)) eval-fn)
@@ -126,7 +135,8 @@
         (binding [comm/*current-handle* h-a]
           (comm/reply-send fake-msg "reply-value")))
       ;; Process the message at h-b
-      (comm/box "(quine completion (eval (do )))" h-b)
+      (deliver p "(quine completion (eval (do )))")
+      (comm/box h-b h-b p)
       (is (.contains ^String @b-received ":from :reply-a"))
       (is (.contains ^String @b-received ":value \"reply-value\"")))))
 
@@ -137,12 +147,59 @@
           eval-fn (fn [raw]
                     (reset! captured {:handle comm/*current-handle*
                                       :raw    comm/*current-raw*})
-                    raw)]
+                    raw)
+          p (promise)]
       (comm/register! handle eval-fn)
       (reset! (:inbox (get @comm/registry handle)) eval-fn)
-      (comm/box "test-raw" handle)
+      (deliver p "test-raw")
+      (comm/box handle handle p)
       (is (= :test-dynvars (:handle @captured)))
       (is (= "test-raw" (:raw @captured))))))
+
+(deftest box-root-detection-test
+  (testing "root box (parent != handle) calls notify-waiters and orphan-box"
+    (let [handle :test-root
+          parent :some-parent
+          eval-fn (fn [raw] :result)
+          p (promise)]
+      (comm/register! handle eval-fn)
+      (reset! (:inbox (get @comm/registry handle)) eval-fn)
+      (deliver p "raw")
+      ;; parent != handle → root
+      (let [result (comm/box handle parent p)]
+        (is (= :result result))
+        ;; Waiters should be reset (empty, no waiters registered)
+        (is (= #{} @(:waiters (get @comm/registry handle)))))))
+
+  (testing "non-root box (parent = handle) skips root cleanup"
+    (let [handle :test-nonroot
+          eval-fn (fn [raw] :result)
+          p (promise)]
+      (comm/register! handle eval-fn)
+      (reset! (:inbox (get @comm/registry handle)) eval-fn)
+      (deliver p "raw")
+      ;; parent = handle → not root
+      (is (= :result (comm/box handle handle p))))))
+
+(deftest box-throws-on-empty-inbox-test
+  (testing "box throws when inbox is nil (not seeded)"
+    (let [handle :test-empty
+          p (promise)]
+      (comm/register! handle identity)
+      ;; Don't seed inbox
+      (deliver p "raw")
+      (is (thrown-with-msg? Exception #"empty inbox"
+            (comm/box handle handle p))))))
+
+(deftest box-handles-exception-promise-test
+  (testing "box rethrows exception delivered to promise"
+    (let [handle :test-ex
+          p (promise)]
+      (comm/register! handle identity)
+      (reset! (:inbox (get @comm/registry handle)) identity)
+      (deliver p (ex-info "API error" {:status 500}))
+      (is (thrown-with-msg? Exception #"API error"
+            (comm/box handle handle p))))))
 
 ;; =============================================================================
 ;; Integration tests (with DummyProvider)
@@ -169,23 +226,21 @@
 
 (deftest ask-no-msg-blocks-send-unblocks-test
   (testing "ask(target) pokes target and blocks until send"
-    ;; Agent A calls ask(B) (no message — just poke + block).
-    ;; We register B so the poke doesn't fail. Then send to A from test thread.
-    (let [a-handle (atom nil)
-          a-started (promise)
+    (let [a-started (promise)
           h-a :agent-a
           h-b :agent-b
           ;; A's initial eval captures handle, then blocks via ask(B)
           a-initial-fn (fn [raw]
-                         (reset! a-handle comm/*current-handle*)
                          (deliver a-started true)
                          ;; ask with no msg = poke + block
-                         (comm/ask-builtin h-b))]
+                         (comm/ask-builtin h-b))
+          p (promise)]
       ;; Register both handles (ask pokes target, so target must be registered)
       (comm/register! h-a a-initial-fn)
       (comm/register! h-b identity)
       (reset! (:inbox (get @comm/registry h-a)) a-initial-fn)
-      (let [fa (future (comm/box "a-raw" h-a))]
+      (deliver p "a-raw")
+      (let [fa (future (comm/box h-a h-a p))]
         ;; Wait for A to start
         (deref a-started 2000 :timeout)
         (Thread/sleep 50)
@@ -196,25 +251,26 @@
 (deftest orphan-box-responds-to-send-test
   (testing "orphan box processes a message sent after agent completes"
     (let [handle :test-orphan
-          eval-fn (fn [raw] (str "orphan:" raw))]
+          eval-fn (fn [raw] (str "orphan:" raw))
+          p (promise)]
       (comm/register! handle eval-fn)
       (reset! (:inbox (get @comm/registry handle)) eval-fn)
-      ;; First box call — immediate (inbox seeded)
-      (comm/box "first" handle)
+      (deliver p "first")
+      ;; First box call — immediate (inbox seeded), non-root
+      (comm/box handle handle p)
       ;; Create orphan box
-      (comm/orphan-box! "raw-data" handle)
+      (comm/orphan-box! handle "raw-data")
       ;; Give orphan a moment to start and block
       (Thread/sleep 50)
       ;; Send to orphan
       (comm/send identity handle)
       ;; Give orphan time to process
       (Thread/sleep 100)
-      ;; The orphan ran; we can't directly observe its result since it's fire-and-forget,
-      ;; but we can verify no exceptions were thrown and the handle is still valid.
+      ;; The orphan ran; we can verify no exceptions and handle still valid
       (is (contains? @comm/registry handle)))))
 
 ;; =============================================================================
-;; Handle?, await-result, result promise
+;; Handle? tests
 ;; =============================================================================
 
 (deftest handle?-test
@@ -252,16 +308,16 @@
 ;; =============================================================================
 
 (deftest spawn-returns-handle-test
-  (testing "spawn returns a keyword handle that auto-unregisters on completion"
+  (testing "spawn returns a keyword handle (handle persists after completion)"
     (let [responses ["42)"]]
       (provider/with-provider
         (provider/dummy-provider
           {:response-fn (fn [_] (first responses))})
         (let [handle (comm/spawn spell/llm "(do ")]
           (is (keyword? handle))
-          ;; Wait for spawn future to finish, then handle should be unregistered
+          ;; Wait for spawn future to finish — handle persists (no unregister)
           (Thread/sleep 2000)
-          (is (not (comm/handle? handle))))))))
+          (is (comm/handle? handle)))))))
 
 
 
@@ -288,36 +344,41 @@
           parent-h :test-parent
           child-fn (fn [raw]
                      (reset! captured comm/*parent-handle*)
-                     "done")]
+                     "done")
+          p (promise)]
       (comm/register! parent-h identity)
       ;; Simulate spawn from within parent context
       (binding [comm/*current-handle* parent-h]
-        (let [child-h (keyword (gensym "child-"))
-              parent comm/*current-handle*]
+        (let [child-h (keyword (gensym "child-"))]
           (comm/register! child-h identity)
           (reset! (:inbox (get @comm/registry child-h)) child-fn)
-          (binding [comm/*parent-handle* parent]
-            (comm/box "raw" child-h))
+          (deliver p "raw")
+          (binding [comm/*parent-handle* parent-h]
+            (comm/box child-h child-h p))
           (is (= parent-h @captured)))))))
 
 (deftest spawn-recv-test
   (testing "spawn-recv spawns child and blocks until child sends back"
     (let [parent-h :sr-parent
-          eval-fn identity
-          ;; Mock child llm-fn: register handle, signal ready, send 42 to parent
-          child-llm-fn (fn [_prompt _hooks handle]
-                          (comm/register! handle identity)
-                          (when comm/*spawn-ready*
-                            (deliver comm/*spawn-ready* true))
-                          (comm/send-msg 42 comm/*parent-handle*)
-                          :done)]
-      (comm/register! parent-h eval-fn)
+          ;; Mock child llm-fn: send 42 to parent
+          ;; In the new design, spawn registers synchronously,
+          ;; so child's llm-fn just needs to send to parent
+          child-llm-fn (fn [_prompt handle]
+                          ;; Simulate the-llm behavior: register is done by spawn,
+                          ;; just need to seed inbox and use box to run
+                          (let [inbox-fn (fn [_raw]
+                                          (comm/send-msg 42 comm/*parent-handle*)
+                                          :done)
+                                p (promise)]
+                            (reset! (:inbox (get @comm/registry handle)) inbox-fn)
+                            (deliver p "(quine completion (eval (do )))")
+                            (comm/box handle comm/*parent-handle* p)))]
+      (comm/register! parent-h identity)
       ;; Do NOT seed inbox — recv should block until child sends
       (let [parent-result
             (future
               (binding [comm/*current-handle* parent-h
                         comm/*current-raw* "(quine completion (eval (do )))"]
-                (reset! (:has-box (get @comm/registry parent-h)) true)
                 (comm/spawn-recv child-llm-fn "test")))]
         ;; spawn-recv blocks until child sends; child runs in a future
         (let [result (deref parent-result 5000 :timeout)]
@@ -346,9 +407,6 @@
 
 (deftest ask-sends-and-blocks-test
   (testing "ask sends message to target and blocks until reply arrives"
-    ;; A asks B. B receives the ask message, then replies to A via -send!
-    ;; (bypassing eval-fn composition to avoid re-evaluation of a-eval-fn).
-    ;; Raw strings must be valid completion wrappers (send-msg calls reopen which strips 3 trailing parens).
     (let [h-a :ask-agent-a
           h-b :ask-agent-b
           a-raw "(quine completion (eval (do )))"
@@ -364,27 +422,29 @@
                       (reset! b-received raw)
                       ;; Reply to A via -send! to avoid re-evaluating a-eval-fn
                       (comm/-send! h-a (fn [_] (fn [_raw] "reply-from-b")))
-                      "b-done")]
+                      "b-done")
+          pa (promise)
+          pb (promise)]
       (comm/register! h-a a-eval-fn)
       (comm/register! h-b b-eval-fn)
       (reset! (:inbox (get @comm/registry h-a)) a-eval-fn)
-      ;; B starts in a box waiting for messages
-      (future (comm/box b-raw h-b))
-      (let [fa (future (comm/box a-raw h-a))]
+      ;; B starts in a box waiting for messages (sleep-fn)
+      (reset! (:inbox (get @comm/registry h-b)) (#'comm/make-sleep-fn h-b))
+      (deliver pb b-raw)
+      (future (comm/box h-b h-b pb))
+      (deliver pa a-raw)
+      (let [fa (future (comm/box h-a h-a pa))]
         (deref a-started 2000 :timeout)
         ;; A should unblock when B replies
         (let [result (deref fa 5000 :timeout)]
           (is (= "reply-from-b" result))
-          ;; B should have received the ask message (modified raw with quine injected)
+          ;; B should have received the ask message
           (is (some? @b-received))
           (is (.contains ^String @b-received ":value \"hello\""))
           (is (.contains ^String @b-received ":from :ask-agent-a")))))))
 
 (deftest ask-no-msg-wakes-target-test
   (testing "ask(target) sends a poke to target, waking it"
-    ;; A calls ask(B) with no msg. This pokes B (waking it) and blocks.
-    ;; B receives the poke, replies to A via -send! (bypasses eval-fn re-evaluation).
-    ;; Raw strings must be valid completion wrappers (send-msg calls reopen).
     (let [h-a :ask-wake-a
           h-b :ask-wake-b
           a-raw "(quine completion (eval (do )))"
@@ -398,20 +458,22 @@
           ;; B's eval-fn: captures the poke, then replies to A
           b-eval-fn (fn [raw]
                       (reset! b-received raw)
-                      ;; Reply to A via -send! to avoid re-evaluating a-eval-fn
                       (comm/-send! h-a (fn [_] (fn [_raw] "reply-from-b")))
-                      "b-done")]
+                      "b-done")
+          pa (promise)
+          pb (promise)]
       (comm/register! h-a a-eval-fn)
       (comm/register! h-b b-eval-fn)
       (reset! (:inbox (get @comm/registry h-a)) a-eval-fn)
-      ;; B starts in a box waiting (inbox nil, blocks until poke)
-      (future (comm/box b-raw h-b))
-      (let [fa (future (comm/box a-raw h-a))]
+      ;; B starts with sleep-fn (waiting for messages)
+      (reset! (:inbox (get @comm/registry h-b)) (#'comm/make-sleep-fn h-b))
+      (deliver pb b-raw)
+      (future (comm/box h-b h-b pb))
+      (deliver pa a-raw)
+      (let [fa (future (comm/box h-a h-a pa))]
         (deref a-started 2000 :timeout)
-        ;; A should unblock after B receives poke and replies
         (let [result (deref fa 5000 :timeout)]
           (is (= "reply-from-b" result))
-          ;; B should have been woken by A's ask poke
           (is (some? @b-received))
           (is (.contains ^String @b-received "(def waiting-for :ask-wake-a)")))))))
 
@@ -427,19 +489,15 @@
     (comm/register! :dummy identity)
     (binding [comm/*current-handle* :dummy
               comm/*current-raw* "(quine completion (eval (do )))"]
-      (reset! (:has-box (get @comm/registry :dummy)) true)
       (is (thrown-with-msg? Exception #"empty target list"
             (comm/ask-builtin []))))))
 
 (deftest ask-multi-collector-basic-test
   (testing "collector accumulates messages from multiple targets"
-    ;; Use identity as eval-fn so box returns the accumulated raw directly.
-    ;; Call ask-multi from a direct binding context (not through box's eval-fn)
-    ;; to avoid infinite re-evaluation.
     (let [h-parent :multi-parent
           h-a :multi-child-a
           h-b :multi-child-b
-          parent-raw "(quine completion (eval (do )))"]
+          parent-raw "(quine completion (eval (do)))"]
       (comm/register! h-parent identity)
       (comm/register! h-a identity)
       (comm/register! h-b identity)
@@ -448,7 +506,6 @@
             (future
               (binding [comm/*current-handle* h-parent
                         comm/*current-raw*    parent-raw]
-                (reset! (:has-box (get @comm/registry h-parent)) true)
                 (comm/ask-builtin [h-a h-b])))]
         (Thread/sleep 50)
         ;; Child A sends to parent
@@ -457,7 +514,7 @@
         ;; Child B sends to parent
         (binding [comm/*current-handle* h-b]
           (comm/send-msg 99 h-parent))
-        ;; Parent should unblock with accumulated raw containing both quine messages
+        ;; Parent should unblock with accumulated raw containing both messages
         (let [result (deref result-future 5000 :timeout)]
           (is (string? result))
           (is (.contains ^String result ":value 42"))
@@ -467,14 +524,13 @@
   (testing "ask with single-element vector works"
     (let [h-parent :multi-single-parent
           h-child :multi-single-child
-          parent-raw "(quine completion (eval (do )))"]
+          parent-raw "(quine completion (eval (do)))"]
       (comm/register! h-parent identity)
       (comm/register! h-child identity)
       (let [result-future
             (future
               (binding [comm/*current-handle* h-parent
                         comm/*current-raw*    parent-raw]
-                (reset! (:has-box (get @comm/registry h-parent)) true)
                 (comm/ask-builtin [h-child])))]
         (Thread/sleep 50)
         (binding [comm/*current-handle* h-child]
@@ -487,14 +543,13 @@
   (testing "concurrent sends from multiple targets are collected correctly"
     (let [h-parent :multi-conc-parent
           targets (mapv #(keyword (str "multi-conc-child-" %)) (range 5))
-          parent-raw "(quine completion (eval (do )))"]
+          parent-raw "(quine completion (eval (do)))"]
       (comm/register! h-parent identity)
       (doseq [t targets] (comm/register! t identity))
       (let [result-future
             (future
               (binding [comm/*current-handle* h-parent
                         comm/*current-raw*    parent-raw]
-                (reset! (:has-box (get @comm/registry h-parent)) true)
                 (comm/ask-builtin targets)))]
         (Thread/sleep 50)
         ;; All children send concurrently
@@ -505,7 +560,7 @@
                           (comm/send-msg (name t) h-parent))))
                     targets)]
           (doseq [sf send-futures] (deref sf 2000 :timeout)))
-        ;; Parent should have all 5 quine messages
+        ;; Parent should have all 5 messages
         (let [result (deref result-future 5000 :timeout)]
           (is (string? result))
           (doseq [t targets]
@@ -516,14 +571,13 @@
   (testing "notify-waiters with correct *current-handle* triggers collector"
     (let [h-parent :multi-nw-parent
           h-child :multi-nw-child
-          parent-raw "(quine completion (eval (do )))"]
+          parent-raw "(quine completion (eval (do)))"]
       (comm/register! h-parent identity)
       (comm/register! h-child identity)
       (let [result-future
             (future
               (binding [comm/*current-handle* h-parent
                         comm/*current-raw*    parent-raw]
-                (reset! (:has-box (get @comm/registry h-parent)) true)
                 (comm/ask-builtin [h-child])))]
         (Thread/sleep 50)
         ;; Simulate child completing — notify-waiters sends spawn-result
@@ -538,17 +592,14 @@
 
 (deftest inherited-llm-preserves-inbox-test
   (testing "CAS preserves pending inbox content for inherited calls"
-    ;; Simulates the bug: after box drains inbox, a -send! puts a new
-    ;; function in the inbox. Then a recursive -llm call (inherited, not
-    ;; root) should NOT overwrite the pending function via reset!.
-    ;; With the fix, CAS detects non-nil and skips seeding.
     (let [handle :test-cas
           eval-fn (fn [raw] (str "evaluated:" raw))
-          sent-fn (fn [raw] (str "sent:" raw))]
+          sent-fn (fn [raw] (str "sent:" raw))
+          p (promise)]
       (comm/register! handle eval-fn)
       ;; Simulate: box drained inbox (nil), then a send happened during eval
       (comm/send sent-fn handle)
-      ;; Now inbox has (comp eval-fn sent-fn) from the send
+      ;; Now inbox has composition from the send
       (let [inbox-before @(:inbox (get @comm/registry handle))]
         (is (some? inbox-before) "inbox should have the sent function")
         ;; Simulate inherited -llm: CAS only seeds if nil
@@ -560,13 +611,15 @@
           (is (= inbox-before @(:inbox (get @comm/registry handle)))
               "inbox should still have the sent function"))
         ;; Box should process the preserved sent function
-        ;; Composition is (comp eval-fn sent-fn): eval-fn(sent-fn(raw))
-        (is (= "evaluated:sent:hello" (comm/box "hello" handle))
+        ;; Composition is (fn [raw] (eval-fn (sent-fn raw)))
+        (deliver p "hello")
+        (is (= "evaluated:sent:hello" (comm/box handle handle p))
               "box should apply the preserved composition"))))
 
   (testing "CAS seeds inbox when empty for inherited calls"
     (let [handle :test-cas-empty
-          eval-fn (fn [raw] (str "evaluated:" raw))]
+          eval-fn (fn [raw] (str "evaluated:" raw))
+          p (promise)]
       (comm/register! handle eval-fn)
       ;; inbox is nil (no pending sends)
       (is (nil? @(:inbox (get @comm/registry handle))))
@@ -576,7 +629,8 @@
                                          nil new-eval-fn)]
         (is (true? cas-result) "CAS should succeed (inbox was nil)")
         ;; Box should use the CAS-seeded function
-        (is (= "new:hello" (comm/box "hello" handle)))))))
+        (deliver p "hello")
+        (is (= "new:hello" (comm/box handle handle p)))))))
 
 (deftest inbox-cas-seeds-when-empty-test
   (testing "inherited -llm seeds inbox when it's empty (no pending sends)"
@@ -624,4 +678,3 @@
     ;; ask will still fail at runtime (no registered handle), but the symbol resolves
     (is (thrown-with-msg? Exception #"not inside an agent context|not registered"
           (eval/run-spell '(eval (do '(agents/ask :nobody "hello"))))))))
-

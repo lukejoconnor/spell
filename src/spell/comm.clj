@@ -16,26 +16,22 @@
 
 (def registry
   "Global registry: handle -> {:inbox (atom nil), :signal (atom (promise)),
-                                :has-box (atom false), :eval-fn fn}"
+                                :has-box (atom false), :default-inbox-fn fn,
+                                :waiters (atom #{}), :collector (atom nil)}"
   (atom {}))
 
 (defn register!
-  "Register a handle with its eval pipeline function."
-  [handle eval-fn]
+  "Register a handle with its default inbox fn."
+  [handle default-inbox-fn]
   (when (contains? @registry handle)
     (throw (ex-info "Handle already registered" {:handle handle})))
   (swap! registry assoc handle
-         {:inbox     (atom nil)
-          :signal    (atom (promise))
-          :has-box   (atom false)
-          :eval-fn   eval-fn
-          :waiters   (atom #{})
-          :collector (atom nil)}))
-
-(defn unregister!
-  "Remove a handle from the registry."
-  [handle]
-  (swap! registry dissoc handle))
+         {:inbox             (atom nil)
+          :signal            (atom (promise))
+          :has-box           (atom false)
+          :default-inbox-fn  default-inbox-fn
+          :waiters           (atom #{})
+          :collector         (atom nil)}))
 
 ;; =============================================================================
 ;; Dynamic vars
@@ -53,34 +49,70 @@
   "Handle of the agent that spawned the current agent (set by spawn)."
   nil)
 
-(def ^:dynamic *spawn-ready*
-  "Promise delivered by -llm after registering a spawned handle.
-   Lets spawn block until the handle is fully live."
-  nil)
+;; =============================================================================
+;; Forward declarations
+;; =============================================================================
+
+(declare box notify-waiters! orphan-box!)
+
+;; =============================================================================
+;; Sleep
+;; =============================================================================
+
+(defn- make-sleep-fn
+  "Create an inbox function that blocks on signal then re-enters box.
+   When woken, re-enters box as non-root (parent=self)."
+  [handle]
+  (fn [_raw]
+    (let [{:keys [signal]} (get @registry handle)]
+      (deref @signal)
+      (reset! signal (promise))
+      (let [p (promise)]
+        (deliver p *current-raw*)
+        (box handle handle p)))))
 
 ;; =============================================================================
 ;; Box
 ;; =============================================================================
 
 (defn box
-  "Core execution primitive. Drains inbox, applies fn to raw.
-   If inbox is empty, blocks until someone sends to this handle."
-  [raw handle]
-  (let [{:keys [inbox signal has-box]} (get @registry handle)]
+  "Core execution primitive. Awaits completion, drains inbox, applies inbox-fn.
+   Takes handle, parent-handle, and a promise that delivers the raw completion.
+   Inbox functions take [raw] and return a value.
+   Root detection: (not= parent-handle handle).
+   Callers must seed inbox before calling box."
+  [handle parent-handle completion-promise]
+  (let [{:keys [inbox has-box]} (get @registry handle)]
     (when-not inbox
       (throw (ex-info "Handle not registered" {:handle handle})))
-    (when-not (compare-and-set! has-box false true)
-      (throw (ex-info "Box already active for handle" {:handle handle})))
-    (loop []
-      (let [[f _] (reset-vals! inbox nil)]
-        (if f
-          (do (reset! has-box false)
-              (binding [*current-handle* handle
-                        *current-raw*    raw]
-                (f raw)))
-          (do (deref @signal) ; block until signal
-              (reset! signal (promise))
-              (recur)))))))
+    (let [root?    (not= parent-handle handle)
+          raw-or-ex (deref completion-promise)]
+      (when (instance? Exception raw-or-ex)
+        (when root?
+          (notify-waiters! handle nil)
+          (orphan-box! handle ""))
+        (throw raw-or-ex))
+      (let [raw (parse/balance-parens raw-or-ex)]
+        (when-not (compare-and-set! has-box false true)
+          (throw (ex-info "Box already active for handle" {:handle handle})))
+        (let [[f _] (reset-vals! inbox nil)]
+          (when-not f
+            (reset! has-box false)
+            (throw (ex-info "Box entered with empty inbox" {:handle handle})))
+          (reset! has-box false)
+          (let [result (try
+                         (binding [*current-handle* handle
+                                   *current-raw*    raw]
+                           (f raw))
+                         (catch Exception e
+                           (when root?
+                             (notify-waiters! handle nil)
+                             (orphan-box! handle raw))
+                           (throw e)))]
+            (when root?
+              (notify-waiters! handle result)
+              (orphan-box! handle raw))
+            result))))))
 
 ;; =============================================================================
 ;; Send
@@ -116,11 +148,12 @@
         (swap! pending disj *current-handle*)
         (when (empty? @pending)
           (deliver done true))))
-    ;; Normal send: compose with eval-fn and signal box
+    ;; Normal send: compose transform with inbox-fn (which takes [raw])
     (-send! handle
       (fn [current]
-        (let [base (or current (:eval-fn (get @registry handle)))]
-          (comp base f)))))
+        (let [base (or current (:default-inbox-fn (get @registry handle)))]
+          (fn [raw]
+            (base (f raw)))))))
   nil)
 
 ;; =============================================================================
@@ -166,12 +199,15 @@
 ;; =============================================================================
 
 (defn- block-for-message
-  "Release box claim and re-enter box. Blocks until inbox receives a function.
-   Must be called from within an agent context (inside box)."
+  "Seed inbox with sleep-fn and re-enter box as non-root.
+   Must be called from within an agent context (inside box).
+   has-box is already false (box releases before calling inbox fn)."
   []
-  (let [{:keys [has-box]} (get @registry *current-handle*)]
-    (reset! has-box false)
-    (box *current-raw* *current-handle*)))
+  (let [{:keys [inbox]} (get @registry *current-handle*)]
+    (compare-and-set! inbox nil (make-sleep-fn *current-handle*))
+    (let [p (promise)]
+      (deliver p *current-raw*)
+      (box *current-handle* *current-handle* p))))
 
 (defn reply-ask
   "Reply to a message and block for response.
@@ -218,15 +254,16 @@
       (let [{:keys [inbox]} (get @registry target)]
         (when (nil? @inbox)
           (send (create-msg 'waiting-for handle) target))))
-    ;; Release box claim and wait for all targets to respond
-    (reset! (:has-box entry) false)
+    ;; Wait for all targets to respond
     @(:done collector-state)
     ;; Deactivate collector
     (reset! (:collector entry) nil)
     ;; Re-enter box with accumulated raw (closed with 3 parens)
     (let [final-raw (str @(:raw collector-state) ")))")]
-      (reset! (:inbox entry) (:eval-fn entry))
-      (box final-raw handle))))
+      (reset! (:inbox entry) (:default-inbox-fn entry))
+      (let [p (promise)]
+        (deliver p final-raw)
+        (box handle handle p)))))
 
 (defn ask-builtin
   "Request-reply communication primitive.
@@ -272,7 +309,7 @@
 
 (defn notify-waiters!
   "Send return value to agents still waiting on this handle.
-   Called when root -llm completes. Agents that already received an
+   Called when root box completes. Agents that already received an
    explicit send were removed from :waiters, so only genuinely blocked
    agents get the fallback notification.
    Binds *current-handle* to the completing handle so multi-ask
@@ -290,13 +327,16 @@
 ;; =============================================================================
 
 (defn orphan-box!
-  "If no box is active for handle, spawn a one-shot future that calls box.
-   Processes one message then exits. No-op if box is already active.
-   Best-effort: races are acceptable since orphan is a convenience."
-  [raw handle]
-  (let [{:keys [has-box]} (get @registry handle)]
+  "If no box is active for handle, seed inbox with sleep-fn and start a
+   non-root box in a future. Processes messages then sleeps.
+   No-op if box is already active. Best-effort: races are acceptable."
+  [handle raw]
+  (let [{:keys [has-box inbox]} (get @registry handle)]
     (when (and has-box (not @has-box))
-      (future (box raw handle)))))
+      (compare-and-set! inbox nil (make-sleep-fn handle))
+      (let [p (promise)]
+        (deliver p raw)
+        (future (box handle handle p))))))
 
 ;; =============================================================================
 ;; Handle queries
@@ -313,10 +353,13 @@
 
 (defn start-box
   "Register handle and start box with initial completion. Returns handle.
-   Used by both spawn (via -llm) and register-agent."
-  [handle eval-fn initial-completion]
-  (register! handle eval-fn)
-  (future (box initial-completion handle))
+   Used by register-agent for dormant agents."
+  [handle default-inbox-fn initial-completion]
+  (register! handle default-inbox-fn)
+  (let [p (promise)]
+    (deliver p initial-completion)
+    (reset! (:inbox (get @registry handle)) default-inbox-fn)
+    (future (box handle nil p)))
   handle)
 
 ;; =============================================================================
@@ -327,21 +370,20 @@
   "Start an agent in a background future. Returns its handle immediately.
    The handle is addressable (send to it). The child must explicitly send
    its result if needed; use ask-based patterns to collect spawn results.
-   llm-fn must accept (prompt hooks handle) — 3-arity.
+   llm-fn must accept (prompt handle) — 2-arity.
    Sets *parent-handle* so the child can find its spawner.
-   Blocks until the child registers (handle is live before spawn returns).
+   Registers synchronously so the handle is live before spawn returns.
    Optional handle-name (keyword) sets a fixed handle instead of auto-generating."
   ([llm-fn prompt] (spawn llm-fn prompt nil))
   ([llm-fn prompt handle-name]
    (let [handle (or handle-name (keyword (gensym "spawn-")))
-         parent *current-handle*
-         ready  (promise)]
+         parent *current-handle*]
+     ;; Register synchronously — handle is live before future starts
+     (register! handle (make-sleep-fn handle))
      (future
        ((bound-fn []
-          (binding [*parent-handle* parent
-                    *spawn-ready*   ready]
-            (llm-fn prompt [] handle)))))
-     @ready
+          (binding [*parent-handle* parent]
+            (llm-fn prompt handle)))))
      handle)))
 
 (defn spawn-recv

@@ -65,45 +65,6 @@
         (io/delete-file "test-greeting.txt")))))
 
 ;; =============================================================================
-;; Hook tests
-;; =============================================================================
-
-(deftest llm-hooks-basic-test
-  (testing "hook transforms completion before evaluation"
-    (provider/with-provider
-      (provider/dummy-provider {:response "(def return 10))"})
-      (let [hook '(fn [code]
-                    (list 'do code '(def return (+ return 5))))
-            result (spell/llm "(do " [hook])]
-        (is (= 15 result))))))
-
-(deftest llm-hooks-multiple-test
-  (testing "multiple hooks compose left-to-right"
-    (provider/with-provider
-      (provider/dummy-provider {:response "(def return 5))"})
-      (let [add-hook '(fn [code]
-                        (list 'do code '(def return (+ return 10))))
-            double-hook '(fn [code]
-                           (list 'do code '(def return (* return 2))))
-            result (spell/llm "(do " [add-hook double-hook])]
-        (is (= 30 result))))))
-
-(deftest llm-hooks-inject-binding-test
-  (testing "hook can inject bindings into program"
-    (provider/with-provider
-      (provider/dummy-provider {:response "(def return (+ secret 1)))"})
-      (let [inject-hook '(fn [code]
-                           (list 'do '(def secret 99) code))
-            result (spell/llm "(do " [inject-hook])]
-        (is (= 100 result))))))
-
-(deftest llm-hooks-no-hooks-unchanged-test
-  (testing "empty hooks list doesn't change behavior"
-    (provider/with-provider
-      (provider/dummy-provider {:response "(def return 42))"})
-      (is (= 42 (spell/llm "(do " []))))))
-
-;; =============================================================================
 ;; Token usage tracking tests
 ;; =============================================================================
 
@@ -178,16 +139,6 @@
         ;; Total: 6.9
         (is (< (Math/abs (- 6.9 (:cost total))) 0.001))))))
 
-(deftest llm-recursive-hook-test
-  (testing "recursive hook modifies return value"
-    ;; Hook adds 5 to the return. Applied to the outer call.
-    (provider/with-provider
-      (provider/dummy-provider {:response "(def return 10))"})
-      (let [add-hook '(fn [code]
-                        (list 'do code '(def return (+ return 5))))
-            result (spell/llm "(do " [add-hook])]
-        (is (= 15 result))))))
-
 ;; =============================================================================
 ;; make-llm factory tests
 ;; =============================================================================
@@ -212,7 +163,7 @@
   (testing "make-llm with agent in namespace"
     (let [helper-fn (fn
                       ([prompt] "helper-result")
-                      ([prompt hooks] "helper-result"))
+                      ([prompt _handle] "helper-result"))
           ns-map {'helpers {:docs {:helper "Helper agent"}
                             :helper helper-fn}}
           parent-llm (spell/make-llm {:namespaces ns-map})]

@@ -1,13 +1,12 @@
 (ns spell.core
   "Spell — wiring layer.
-   Assembles components (eval, hooks, llm, prompt) into the default configuration.
+   Assembles components (eval, llm, prompt) into the default configuration.
    Re-exports key vars for public API."
   (:require [spell.comm :as comm]
             [spell.globals :as globals]
             [spell.llm :as llm-engine]
             [spell.prompt :as prompt]
             [spell.eval :as eval]
-            [spell.hooks :as hooks]
             [spell.io :as io]
             [spell.stdlib :as stdlib]))
 
@@ -21,13 +20,6 @@
 (def ok? eval/ok?)
 (def err? eval/err?)
 (def result-value eval/result-value)
-;; Re-export from spell.hooks
-(def prepend-hooks-to-llm hooks/prepend-hooks-to-llm)
-(def recurse hooks/recurse)
-(def with-env hooks/with-env)
-(def prefix-prompt hooks/prefix-prompt)
-(def with-env-hints hooks/with-env-hints)
-
 ;; Re-export from spell.llm
 (def make-llm llm-engine/make-llm)
 (def make-leaf-llm llm-engine/make-leaf-llm)
@@ -88,19 +80,8 @@
                             'math stdlib/math
                             'patterns stdlib/patterns
                             'builtins prompt/builtins-namespace
-                            'describe-fn describe
-                            'prepend-hooks-to-llm #'prepend-hooks-to-llm
-                            'recurse #'recurse
-                            'prefix-prompt #'prefix-prompt
-                            'with-env with-env
-                            'with-env-hints with-env-hints})
-      ;; Create eval builtin that merges effect builtins
-      eval-builtin (fn [expr]
-                     (let [expanded (eval/expand-expr expr eval/*spell-env*)]
-                       (binding [eval/*builtins* (merge pure-builtins effect-builtins)]
-                         (let [result (eval/spell-eval expanded {})]
-                           (if (eval/ok? result)
-                             (:ok result)
-                             (throw (ex-info (:err result) {:result result})))))))
+                            'describe-fn describe})
+      ;; Create eval builtin using make-eval (requires llm-engine loaded)
+      eval-builtin (llm-engine/make-eval pure-builtins effect-builtins)
       full-builtins (assoc pure-builtins 'eval eval-builtin)]
   (alter-var-root #'eval/*builtins* (constantly full-builtins)))

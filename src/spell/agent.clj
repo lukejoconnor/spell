@@ -11,7 +11,6 @@
    Merge semantics:
    - Scalars (:name, :model, etc.): child overrides parent
    - :namespaces: maps are merged (child adds to / overrides parent)
-   - :hooks: concatenated (parent first, then child)
 
    Resolution patterns for namespace values:
    - stdlib/X           → stdlib namespace
@@ -235,8 +234,7 @@
 (defn- merge-agent-defs
   "Merge child agent def onto parent.
    - Scalars: child wins if present
-   - :namespaces: merge maps (child overrides parent entries)
-   - :hooks: concatenate (parent first, then child)"
+   - :namespaces: merge maps (child overrides parent entries)"
   [parent child]
   (let [;; Start with parent, override with non-nil child scalars
         merged (reduce (fn [m k]
@@ -249,11 +247,6 @@
         merged (if (or (:namespaces parent) (:namespaces child))
                  (assoc merged :namespaces
                         (merge (:namespaces parent) (:namespaces child)))
-                 merged)
-        ;; Concatenate hooks
-        merged (if (or (:hooks parent) (:hooks child))
-                 (assoc merged :hooks
-                        (vec (concat (:hooks parent) (:hooks child))))
                  merged)]
     merged))
 
@@ -307,7 +300,7 @@
          agent-def (resolve-inheritance raw-def base-dir')
 
          ;; Extract fields (from merged def)
-         {:keys [name doc system model budget recover namespaces hooks]} agent-def
+         {:keys [name doc system model budget recover namespaces]} agent-def
 
          ;; Resolve system prompt
          resolved-system (resolve-system-prompt system base-dir')
@@ -344,8 +337,7 @@
     :budget ...
     :eval ...          ; true (default) = Spell evaluation, false = plain text
     :format ...        ; optional format spec {:required [...] :optional [...]}
-    :max-retries ...   ; optional retry count for format validation
-    :hooks [...]}      ; quoted hook expressions"
+    :max-retries ...   ; optional retry count for format validation}"
   [path]
   (let [file (java.io.File. path)
         base-dir (.getParent file)
@@ -354,7 +346,7 @@
         raw-def (read-agent-edn path nil)
         agent-def (resolve-inheritance raw-def base-dir)
 
-        {:keys [name doc system model budget recover namespaces hooks eval format max-retries retries thinking]} agent-def
+        {:keys [name doc system model budget recover namespaces eval format max-retries retries thinking]} agent-def
 
         ;; We need make-llm to resolve sub-agents, but we don't have it yet.
         ;; For now, return a thunk that resolves namespaces when called with make-llm-fn.
@@ -372,8 +364,7 @@
      :max-retries max-retries
      :retries retries     ; API retry sleep durations, e.g. [0 10]
      :thinking thinking
-     :resolve-namespaces-fn resolve-fn
-     :hooks hooks}))
+     :resolve-namespaces-fn resolve-fn}))
 
 (defn- try-slurp
   "Slurp file, returning nil if not found."
@@ -397,5 +388,4 @@
      :eval nil           ; nil means default (true)
      :format format
      :max-retries max-retries
-     :resolve-namespaces-fn resolve-fn
-     :hooks nil}))
+     :resolve-namespaces-fn resolve-fn}))

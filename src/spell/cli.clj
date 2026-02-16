@@ -207,7 +207,7 @@
    - :eval false: plain text LLM (no Spell parsing/eval)
    - :format: optional format spec for output validation"
   [agent-config]
-  (let [{:keys [system model budget recover resolve-namespaces-fn hooks eval format max-retries
+  (let [{:keys [system model budget recover resolve-namespaces-fn eval format max-retries
                 prefill? thinking]} agent-config
         ;; :eval defaults to true if not specified
         eval? (if (nil? eval) true eval)

@@ -1,15 +1,15 @@
 (ns spell.llm
   "LLM orchestration engine for Spell.
 
-   Core loop: call LLM, concatenate prefix+response, parse, apply hooks, eval."
+   Core loop: call LLM, concatenate prefix+response, parse, eval."
   (:require [clojure.edn :as edn]
             [clojure.string :as str]
             [spell.comm :as comm]
             [spell.eval :as eval]
-            [spell.hooks :as hooks]
             [spell.parse :as parse]
             [spell.prompt :as prompt]
             [spell.provider :as provider]
+            [spell.recovery :as recovery]
             [spell.trace :as trace]))
 
 (declare make-leaf-llm)
@@ -26,83 +26,8 @@
   ([ns key] (or (get-in ns [:docs key])
                 (get ns key))))
 
-;; ---------------------------------------------------------------------------
-;; Error Recovery
-;; ---------------------------------------------------------------------------
-
-(def ^:private recovery-system-prompt
-  "You are fixing a Spell program error. Return ONLY the fixed Spell s-expression.
-No explanation, no markdown code blocks, just the raw s-expression.")
-
-(defn format-error-for-recovery
-  "Format an error result for the recovery LLM.
-   Shows the full program, failing expression, and error message."
-  [{:keys [err expr program]}]
-  (str "The following Spell program failed:\n\n"
-       (pr-str program)
-       "\n\nError at expression:\n"
-       (pr-str expr)
-       "\n\nError message: " err))
-
-(defn- find-in-namespaces
-  "Search all namespaces for a keyword matching sym.
-   Returns a list of qualified symbols, e.g. (seqs/distinct)."
-  [sym namespaces]
-  (let [kw (keyword sym)]
-    (for [[ns-sym ns-map] namespaces
-          :when (map? ns-map)
-          :when (contains? ns-map kw)]
-      (symbol (str ns-sym "/" sym)))))
-
-(defn- substitute-symbol
-  "Recursively replace occurrences of old-sym with new-sym in expr."
-  [expr old-sym new-sym]
-  (cond
-    (= expr old-sym) new-sym
-    (seq? expr) (apply list (map #(substitute-symbol % old-sym new-sym) expr))
-    (vector? expr) (mapv #(substitute-symbol % old-sym new-sym) expr)
-    (map? expr) (into {} (map (fn [[k v]] [(substitute-symbol k old-sym new-sym)
-                                            (substitute-symbol v old-sym new-sym)]) expr))
-    :else expr))
-
-(defn- make-namespace-recover-fn
-  "Create a recovery fn that fixes unbound/misqualified symbols by searching namespaces.
-   Returns nil if no unique match found (letting the next strategy try)."
-  [namespaces]
-  (fn [result _recovery-call-fn]
-    (let [{:keys [err expr program]} result
-          ;; Unwrap "Function call failed: " prefix from invoke-fn errors
-          ;; so we can match the inner error pattern.
-          inner-err (if (str/starts-with? err "Function call failed: ")
-                      (subs err (count "Function call failed: "))
-                      err)]
-      (when-let [fix
-                 (cond
-                   ;; Case 1: "Unbound symbol: X" — bare symbol, search all namespaces
-                   (str/starts-with? inner-err "Unbound symbol: ")
-                   (let [sym (symbol (subs inner-err (count "Unbound symbol: ")))
-                         matches (find-in-namespaces sym namespaces)]
-                     (when (= 1 (count matches))
-                       (let [qualified (first matches)]
-                         (when eval/*verbose*
-                           (println (str "  Namespace recovery: " sym " -> " qualified)))
-                         (substitute-symbol program sym qualified))))
-
-                   ;; Case 2: "Namespace lookup failed: ns/item" — wrong namespace
-                   (str/starts-with? inner-err "Namespace lookup failed: ")
-                   (let [qualified-str (subs inner-err (count "Namespace lookup failed: "))
-                         parts (str/split qualified-str #"/")
-                         item-sym (symbol (last parts))
-                         bad-qualified (symbol qualified-str)
-                         matches (find-in-namespaces item-sym namespaces)]
-                     (when (= 1 (count matches))
-                       (let [correct (first matches)]
-                         (when eval/*verbose*
-                           (println (str "  Namespace recovery: " bad-qualified " -> " correct)))
-                         (substitute-symbol program bad-qualified correct)))))]
-        ;; Return the fixed program for re-evaluation from scratch
-        ;; (safe because spell-eval is pure).
-        fix))))
+;; Re-export from recovery (for core.clj)
+(def format-error-for-recovery recovery/format-error-for-recovery)
 
 ;; ---------------------------------------------------------------------------
 ;; Prefix Echo Deduplication
@@ -145,29 +70,26 @@ No explanation, no markdown code blocks, just the raw s-expression.")
 ;; LLM Engine
 ;; ---------------------------------------------------------------------------
 
-(defn- make-eval-pipeline
-  "Create closure: raw-string -> value. Captures config and hooks.
-   trace-data-atom, when non-nil, receives {:program :hooked} for tracing."
-  [{:keys [builtins recover-fns recovery-call-fn]} hooks trace-data-atom]
+(defn- make-inbox-fn
+  "Create inbox function: [raw] -> value.
+   Closes over eval-builtin from config. Box does balance-parens,
+   so raw is already balanced when this is called.
+   trace-data-atom, when non-nil, receives {:program} for tracing."
+  [{:keys [variant-builtins eval-builtin recover-fns recovery-call-fn]} trace-data-atom]
   (fn [raw]
-    (let [balanced  (parse/balance-parens raw)
-          forms     (parse/read-all balanced)
+    (let [forms     (parse/read-all raw)
           program   (if (> (count (vec forms)) 1) (list* 'do forms) (first forms))
-          program'  (if (empty? hooks)
-                      program
-                      (hooks/apply-hooks hooks program))
           indent    (apply str (repeat eval/*llm-depth* "  "))
-          _         (when (and eval/*verbose* (seq hooks))
-                      (println (str indent "Program (after hooks): " (pr-str program'))))
           result    (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
-                             eval/*raw-text*       balanced]
-                      (eval/spell-eval program' {}))
+                             eval/*raw-text*       raw
+                             eval/*builtins*       variant-builtins]
+                      (eval/spell-eval program {'eval eval-builtin}))
           final-result
           (if (and (eval/err? result) recover-fns (not (:effect-phase result)))
             (let [_        (when eval/*verbose*
                              (println (str indent "=== Error Recovery ==="))
                              (println (str indent "Error: " (:err result))))
-                  result-with-program (assoc result :program program')]
+                  result-with-program (assoc result :program program)]
               ;; Pipeline: try each recover-fn on the current error.
               ;; If a fix is found, eval it. If eval succeeds, done.
               ;; If eval fails, continue pipeline with the new error.
@@ -182,8 +104,9 @@ No explanation, no markdown code blocks, just the raw s-expression.")
                     (let [_     (when eval/*verbose*
                                   (println (str indent "Recovery expression: " (pr-str fix-expr))))
                           retry (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
-                                          eval/*raw-text*       nil]
-                                  (eval/spell-eval fix-expr (:env current)))]
+                                          eval/*raw-text*       nil
+                                          eval/*builtins*       variant-builtins]
+                                  (eval/spell-eval fix-expr (merge (:env current) {'eval eval-builtin})))]
                       (if (eval/err? retry)
                         (if (:effect-phase retry)
                           retry ;; effects may have run; stop recovery loop
@@ -192,7 +115,7 @@ No explanation, no markdown code blocks, just the raw s-expression.")
                     (recur current (rest fns))))))
             result)]
       (when trace-data-atom
-        (reset! trace-data-atom {:program program :hooked (when (seq hooks) program')}))
+        (reset! trace-data-atom {:program program}))
       (if (eval/ok? final-result)
         (:ok final-result)
         (throw (ex-info (:err final-result) {:result final-result}))))))
@@ -204,78 +127,71 @@ No explanation, no markdown code blocks, just the raw s-expression.")
   [config handle-name]
   (when-not (keyword? handle-name)
     (throw (ex-info "register-agent: handle must be keyword" {:got handle-name})))
-  (let [eval-fn (make-eval-pipeline config [] (atom nil))
+  (let [default-inbox (make-inbox-fn config (atom nil))
         initial-completion "(quine completion (eval (do)))"]
-    (comm/start-box handle-name eval-fn initial-completion)))
+    (comm/start-box handle-name default-inbox initial-completion)))
 
 (defn- -llm
-  "Core llm: call LLM, concat prefix+response, parse, apply hooks, eval.
-   Two cases: root (handle not yet registered) or inherited (handle exists).
-   Root owns the handle lifecycle: register, orphan-box, unregister.
-   Inherited just seeds the inbox and calls box."
-  [{:keys [call-fn builtins recover-fns recovery-call-fn] :as config} prompt hooks handle]
+  "Core llm engine: make API call, deliver to box.
+   handle and parent-handle determine root behavior (handled by box).
+   Does NOT handle registration or inbox seeding — caller does that."
+  [{:keys [call-fn]} handle parent-handle prompt-str trace-data-atom]
   (when (and eval/*max-llm-depth* (>= eval/*llm-depth* eval/*max-llm-depth*))
     (throw (ex-info "LLM recursion limit exceeded"
                     {:type :depth-exceeded :depth eval/*llm-depth* :limit eval/*max-llm-depth*})))
-  (let [handle     (or handle
-                       comm/*current-handle*
-                       (keyword (gensym "agent-")))
-        root?      (not (comm/handle? handle))
-        indent     (apply str (repeat eval/*llm-depth* "  "))
-        is-thunk   (or (seq? prompt) (list? prompt))
-        prompt-str (if is-thunk (pr-str prompt) (str prompt))
-        trace-data (atom nil)
-        eval-fn    (make-eval-pipeline config hooks trace-data)
-        _          (when root? (comm/register! handle eval-fn))
-        _          (let [inbox (:inbox (get @comm/registry handle))]
-                     (if root?
-                       (reset! inbox eval-fn)
-                       ;; Inherited call: only seed if empty. Preserves any
-                       ;; function -send!'d during the current turn's eval.
-                       (compare-and-set! inbox nil eval-fn)))
-        _          (when comm/*spawn-ready*
-                     (deliver comm/*spawn-ready* true))
-        node-id    (when trace/*trace*
-                     (trace/begin-node! trace/*trace-node-id*
-                                        eval/*llm-depth* :default prompt-str))
-        _          (when eval/*verbose*
-                     (Thread/sleep (rand-int 500))
-                     (locking *out*
-                       (println (str indent "=== LLM Call (depth " eval/*llm-depth* ") ==="))
-                       (println (str indent "Prompt: " (pr-str prompt)))))
-        response   (call-fn prompt-str)
-        _          (when eval/*verbose*
-                     (locking *out*
-                       (println (str indent "Response: " response))))
-        raw        (parse/balance-parens (str prompt-str response))]
+  (let [indent         (apply str (repeat eval/*llm-depth* "  "))
+        node-id        (when trace/*trace*
+                         (trace/begin-node! trace/*trace-node-id*
+                                            eval/*llm-depth* :default prompt-str))
+        _              (when eval/*verbose*
+                         (Thread/sleep (rand-int 500))
+                         (locking *out*
+                           (println (str indent "=== LLM Call (depth " eval/*llm-depth* ") ==="))
+                           (println (str indent "Prompt: " (pr-str prompt-str)))))
+        response-atom  (atom nil)
+        completion     (promise)]
+    (future
+      (try
+        (let [response (call-fn prompt-str)]
+          (reset! response-atom response)
+          (when eval/*verbose*
+            (locking *out*
+              (println (str indent "Response: " response))))
+          (deliver completion (str prompt-str response)))
+        (catch Exception e
+          (deliver completion e))))
     (try
-      (let [result (binding [eval/*builtins*       builtins
-                             trace/*trace-node-id* node-id]
-                     (comm/box raw handle))]
-        (when root? (comm/notify-waiters! handle result))
-        (when root? (comm/orphan-box! raw handle))
+      (let [result (binding [trace/*trace-node-id* node-id]
+                     (comm/box handle parent-handle completion))]
         (when node-id
           (trace/complete-node! node-id
-            (merge {:response response :raw-text raw :value result}
-                   @trace-data)))
+            (merge {:response @response-atom
+                    :raw-text (try @completion (catch Exception _ ""))
+                    :value result}
+                   @trace-data-atom)))
         result)
       (catch Exception e
-        (when root? (comm/notify-waiters! handle nil))
-        (when root? (comm/orphan-box! raw handle))
         (when node-id
           (trace/complete-node! node-id
-            (merge {:response response :raw-text raw :error e}
-                   @trace-data)))
-        (throw e))
-      (finally
-        (when root? (comm/unregister! handle))))))
+            (merge {:response (or @response-atom "")
+                    :raw-text (try @completion (catch Exception _ ""))
+                    :error e}
+                   @trace-data-atom)))
+        (throw e)))))
 
-(defn- default-recover-fn
-  "Default recovery function: calls recovery LLM, parses response as s-expression."
-  [result recovery-call-fn]
-  (let [prompt (format-error-for-recovery result)
-        response (recovery-call-fn prompt)]
-    (first (parse/read-all response))))
+(defn make-eval
+  "Create an eval builtin (inner/dangerous evaluator) from effect-builtins.
+   Returns a function that merges variant-builtins with effect-builtins and evaluates.
+   The eval builtin binds itself in eval/*builtins* to support recursive eval calls."
+  [variant-builtins effect-builtins]
+  (letfn [(eval-builtin [expr]
+            (let [expanded (eval/expand-expr expr eval/*spell-env*)]
+              (binding [eval/*builtins* (merge variant-builtins effect-builtins {'eval eval-builtin})]
+                (let [result (eval/spell-eval expanded {})]
+                  (if (eval/ok? result)
+                    (:ok result)
+                    (throw (ex-info (:err result) {:result result})))))))]
+    eval-builtin))
 
 (defn make-llm
   "Factory: create an llm function with namespaces.
@@ -296,36 +212,18 @@ No explanation, no markdown code blocks, just the raw s-expression.")
                    Number = budget_tokens, true = default (10000).
 
    Returns a function with the same signature as llm:
-   (f prompt) or (f prompt hooks).
+   (f prompt) or (f prompt handle).
 
    The returned function is automatically available as 'llm-self in Spell code,
    providing self-recursion without needing to wire up var refs."
   [{:keys [namespaces model system llm-var recover format prefill? thinking]
     :or {namespaces {} model nil recover true prefill? true}}]
-  (let [self-ref (atom nil)
-        self-fn (fn llm-self
-                  ([prompt] (@self-ref prompt))
-                  ([prompt hooks] (@self-ref prompt hooks))
-                  ([prompt hooks handle]
-                   (when-not comm/*spawn-ready*
-                     (throw (ex-info "Explicit handle requires spawn context" {:handle handle})))
-                   (@self-ref prompt hooks handle)))
-        ;; Split namespace builtins: io, globals, agents, futures are effect-only, rest are pure
+  (let [;; Split namespace builtins: io, globals, agents, futures are effect-only, rest are pure
         effect-ns-names #{'io 'globals 'agents 'futures}
         ns-builtins (into {} (map (fn [[sym ns-map]] [sym ns-map]) namespaces))
         pure-ns-builtins (into {} (remove #(effect-ns-names (key %)) ns-builtins))
         effect-ns-builtins (into {} (filter #(effect-ns-names (key %)) ns-builtins))
-        hook-builtins {'prepend-hooks-to-llm #'hooks/prepend-hooks-to-llm
-                       'recurse #'hooks/recurse
-                       'prefix-prompt #'hooks/prefix-prompt
-                       'with-env hooks/with-env
-                       'with-env-hints hooks/with-env-hints}
-        effect-builtins (merge {'llm-self self-fn
-                               'leaf-llm (make-leaf-llm {})}
-                         effect-ns-builtins
-                         (when llm-var {'llm llm-var}))
         variant-builtins (merge eval/core-builtins
-                                hook-builtins
                                 {'describe-fn describe}
                                 pure-ns-builtins)
         sys-prompt (or system (prompt/generate-system-prompt namespaces format))
@@ -345,16 +243,30 @@ No explanation, no markdown code blocks, just the raw s-expression.")
         ;; Recovery call fn: text in, text out, no prefix semantics
         recovery-call-fn (fn [prompt-str]
                            (provider/llm-call prompt-str
-                             (cond-> {:system recovery-system-prompt}
+                             (cond-> {:system recovery/recovery-system-prompt}
                                model (assoc :model model))))
         ;; Resolve recovery setting into a chain of strategies
-        ns-recover (make-namespace-recover-fn namespaces)
+        ns-recover (recovery/make-namespace-recover-fn namespaces)
         recover-fns (cond
                       (false? recover) nil
                       (fn? recover) [ns-recover recover]
-                      :else [ns-recover default-recover-fn ns-recover])
+                      :else [ns-recover recovery/default-recover-fn ns-recover])
         ;; Create a promise for the final config (to break circular dependency)
         final-config (promise)
+        ;; Create llm-self that closes over api-config, gets eval dynamically
+        self-ref (atom nil)
+        self-fn (fn llm-self
+                  ([prompt] (@self-ref prompt))
+                  ([prompt handle]
+                   ;; 2-arity only valid from spawn context
+                   (when-not comm/*parent-handle*
+                     (throw (ex-info "Explicit handle requires spawn context" {:handle handle})))
+                   (@self-ref prompt handle)))
+        ;; Create effect-builtins (closes over llm-self)
+        effect-builtins (merge {'llm-self self-fn
+                               'leaf-llm (make-leaf-llm {})}
+                         effect-ns-builtins
+                         (when llm-var {'llm llm-var}))
         ;; Add register-agent to agents namespace (if present)
         register-agent-fn (fn [handle-name] (register-agent @final-config handle-name))
         effect-builtins' (if (contains? effect-ns-builtins 'agents)
@@ -362,37 +274,45 @@ No explanation, no markdown code blocks, just the raw s-expression.")
                                   (assoc (get effect-ns-builtins 'agents)
                                          :register register-agent-fn))
                            effect-builtins)
-        ;; Create eval builtin that merges effect-builtins
-        eval-builtin (fn [expr]
-                       (let [expanded (eval/expand-expr expr eval/*spell-env*)]
-                         (binding [eval/*builtins* (merge variant-builtins effect-builtins')]
-                           (let [result (eval/spell-eval expanded {})]
-                             (if (eval/ok? result)
-                               (:ok result)
-                               (throw (ex-info (:err result) {:result result})))))))
-        ;; Full builtins includes eval
-        full-builtins (assoc variant-builtins 'eval eval-builtin)
-        ;; Final config with full builtins
+        ;; Create eval builtin using make-eval
+        eval-builtin (make-eval variant-builtins effect-builtins')
+        ;; Config with variant-builtins and eval-builtin
         config'  {:call-fn call-fn
-                  :builtins full-builtins
+                  :variant-builtins variant-builtins
+                  :eval-builtin eval-builtin
                   :recover-fns recover-fns
                   :recovery-call-fn recovery-call-fn}
         _        (deliver final-config config')
         wrap-nl  (fn [p]
                    (let [s (if (or (seq? p) (list? p)) (pr-str p) (str p))]
                      (if (.startsWith (.trim ^String s) "(")
-                       p
+                       (str p)
                        (str "(quine completion (eval (do "
                             "(quine prompt \"" (parse/escape-string s) "\") "))))
         the-llm  (fn the-llm
-                   ([prompt] (the-llm prompt []))
-                   ([prompt hooks] (the-llm prompt hooks nil))
-                   ([prompt hooks handle]
-                    (let [prompt' (if (or (seq? prompt) (list? prompt))
-                                   (eval/expand-expr prompt (or eval/*spell-env* {}))
-                                   prompt)]
-                      (binding [eval/*builtins* full-builtins]
-                        (-llm config' (wrap-nl prompt') hooks handle)))))]
+                   ([prompt] (the-llm prompt nil))
+                   ([prompt handle]
+                    (let [handle     (or handle comm/*current-handle* (keyword (gensym "agent-")))
+                          parent     (cond
+                                       comm/*current-handle* comm/*current-handle*  ;; llm-self (inherited)
+                                       comm/*parent-handle*  comm/*parent-handle*   ;; spawn child
+                                       :else                 nil)                   ;; top-level
+                          root?      (not= parent handle)
+                          prompt'    (if (or (seq? prompt) (list? prompt))
+                                       (eval/expand-expr prompt (or eval/*spell-env* {}))
+                                       prompt)
+                          prompt-str (wrap-nl prompt')
+                          trace-data (atom nil)
+                          inbox-fn   (make-inbox-fn config' trace-data)
+                          default-inbox (make-inbox-fn config' (atom nil))]
+                      ;; Register if new handle
+                      (when-not (comm/handle? handle)
+                        (comm/register! handle default-inbox))
+                      ;; Seed inbox: root resets, inherited CAS (preserve pending sends)
+                      (if root?
+                        (reset! (:inbox (get @comm/registry handle)) inbox-fn)
+                        (compare-and-set! (:inbox (get @comm/registry handle)) nil inbox-fn))
+                      (-llm config' handle parent prompt-str trace-data))))]
     (reset! self-ref the-llm)
     the-llm))
 
