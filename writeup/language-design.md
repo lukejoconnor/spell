@@ -159,10 +159,10 @@ The ReAct loop can be implemented in Spell using extensions:
 '(llm (cat (reopen (pr-str completion)) (format (tool-call))))
 ```
 
-This line calls a tool, formats its result into Spell code (for example, `(def tool-call-result "...")`), concatenates this to the current completion, and extends. For ergonomics, this is packaged into `patterns/call-now`, a Spell function in the patterns namespace.
+This line calls a tool, formats its result into Spell code (for example, `(def tool-call-result "...")`), concatenates this to the current completion, and extends. For ergonomics, this is packaged into `call-now`, a macro:
 
 ```clojure
-(patterns/call-now (tool-call) 'result-name)
+'(call-now result-name (tool-call))
 ```
 
 
@@ -187,13 +187,13 @@ LLM-written completions may throw exceptions, potentially crashing a long-runnin
 
 ## Concurrent agents
 
-`(spawn llm-fn prompt)` starts an LLM function in a background future and returns its handle. An optional third argument specifies a fixed handle name: `(spawn llm-fn prompt :name)`. The first argument must be an LLM function (created by `make-llm`) because `spawn` depends on the LLM engine's handle registration mechanism. Each spawned agent is independent and communicates via `send` and `ask` (see *Inter-agent communication* below):
+`(agents/spawn llm-fn prompt)` starts an LLM function in a background future and returns its handle. An optional third argument specifies a fixed handle name: `(agents/spawn llm-fn prompt :name)`. The first argument must be an LLM function (created by `make-llm`) because `agents/spawn` depends on the LLM engine's handle registration mechanism. Each spawned agent is independent and communicates via `agents/send` and `agents/ask` (see *Inter-agent communication* below):
 
 ```clojure
-(def a (spawn llm-self "summarize document A, send result to (parent-handle)"))
-(def b (spawn llm-self "summarize document B, send result to (parent-handle)"))
-'(ask a "send your summary")
-;; next turn: '(ask b "send your summary")
+(def a (agents/spawn llm-self "summarize document A, send result to (agents/parent-handle)"))
+(def b (agents/spawn llm-self "summarize document B, send result to (agents/parent-handle)"))
+'(agents/ask a "send your summary")
+;; next turn: '(agents/ask b "send your summary")
 ```
 
 
@@ -203,9 +203,9 @@ Inter-agent communication in Spell involves one core mechanism, the *inbox funct
 
 When `llm` is called, it produces a globally mutable reference, the *inbox*, to its inbox function. Initially, the inbox function is `spell-eval`. At any later time, another LLM can send a *message function* to the inbox, modifying the inbox function via the atomic operation `swap!`. The typical pattern is composition: a message function with a message `f` inputs an inbox function `inbxfn` and returns `(comp inbxfn f)`. The function `f` is typically a macro which inputs a completion and adds an expression. The built-in `create-msg` produces such functions; for example, `(create-msg 'msg {:from :Alice :body "Hello Bob!"})` returns a function that reopens a completion, appends `(quine msg {:from :Alice :body "Hello Bob!"})`, and triggers an `llm-self` extension. This message replaces Bob's trailing expression (extending his completion). Instead of doing what he was about to do, Bob is given this extra context and re-prompted via `llm-self`.
 
-The low-level primitive is `(send f handle)`, which is fire-and-forget: it deposits a function into the target's inbox and wakes it. `ask` builds on `send` by coupling it with a block: `(ask target msg)` sends a message to the target and then blocks until the target replies. `(ask target)` (without a message) pokes the target and blocks. Every form of `ask` wakes the target, which prevents deadlocks: if agent A asks B while B asks A, both sends cross and both agents unblock.
+The low-level primitive is `(agents/send f handle)`, which is fire-and-forget: it deposits a function into the target's inbox and wakes it. `agents/ask` builds on `agents/send` by coupling it with a block: `(agents/ask target msg)` sends a message to the target and then blocks until the target replies. `(agents/ask target)` (without a message) pokes the target and blocks. Every form of `agents/ask` wakes the target, which prevents deadlocks: if agent A asks B while B asks A, both sends cross and both agents unblock.
 
-Because `llm-self` calls inherit the parent's handle (see *`llm` and `spell-eval`*), each handle's call tree is serial — there is no concurrent access to the same inbox. Deadlock freedom follows from two properties: same-handle trees cannot deadlock with themselves (they are serial), and cross-handle dependencies use `ask` (which always wakes the target).
+Because `llm-self` calls inherit the parent's handle (see *`llm` and `spell-eval`*), each handle's call tree is serial — there is no concurrent access to the same inbox. Deadlock freedom follows from two properties: same-handle trees cannot deadlock with themselves (they are serial), and cross-handle dependencies use `agents/ask` (which always wakes the target).
 
 Within `llm`, all of the logic except actually calling the LLM is packaged into a helper function, `box`, which awaits the LLM completion as a promise, then looks up the inbox function, then applies it and returns the result. The reason for this separation is so that an inbox can be left open while an agent is not working. When an agent returns, its handle is not made unavailable; instead, `box` is called with the agent's completion and handle. This now corresponds to an empty inbox. When the inbox is empty, `box` simply polls for a message to wake. When awoken, it is able to call `llm`, do additional work, or respond to the query. The other way an agent can enter the polling state is by calling `ask`.
 

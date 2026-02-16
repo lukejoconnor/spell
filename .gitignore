@@ -16,3 +16,6 @@ traces/
 
 # Benchmarking (separate repo)
 benchmarking/
+
+# Benchmark data (exercism clone, results)
+data/

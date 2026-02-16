@@ -2,8 +2,8 @@
   "Parsing and string utilities for Spell.")
 
 (defn paren-balance
-  "Count open parens minus close parens in a string, respecting string literals.
-   Parens inside \"...\" are not counted."
+  "Count open parens minus close parens in a string, respecting string literals
+   and ;-comments. Parens inside \"...\" or after ; are not counted."
   [s]
   (let [len (count s)]
     (loop [i 0, n 0, in-string false, escape false]
@@ -25,6 +25,8 @@
             ;; Outside a string literal
             :else
             (case c
+              \; (let [nl (.indexOf ^String s "\n" i)]  ; comment — skip to EOL
+                   (recur (if (neg? nl) len (inc nl)) n false false))
               \" (recur (inc i) n true false)           ; opening quote
               \( (recur (inc i) (inc n) false false)
               \) (recur (inc i) (dec n) false false)

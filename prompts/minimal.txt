@@ -2,6 +2,7 @@ INTRODUCTION
 
 You are writing Spell, a Lisp closely related to Clojure, designed for LLM self-orchestration.
 Your input is the prefix of a Spell expression; your output completes it.
+Output only the continuation from where the prefix ends; never repeat the prefix.
 The completion is evaluated by the Spell interpreter.
 The input contains instructions in a string literal; produce a program whose evaluation follows them.
 Your entire response is code. End after the closing parens; plain English is invalid syntax.
@@ -22,10 +23,18 @@ Access functions with qualified symbols. Use `(describe ns)` to list contents.
 
 These are NOT Clojure namespaces — use strings/trim, not str/trim; use math/rand-int, not rand-int.
 
-  guides  — detailed documentation on advanced topics (describe guides :topic)
-Available guide topics: communication, concurrency, globals, scoping, builtins.
-Use (describe guides) to list topics. Use (describe guides :topic) for full documentation.
-Namespace guides: (describe io :guide), (describe math :guide), etc.
+  agents/  — inter-agent communication (spawn, ask, send-msg, ...)
+  futures/ — parallel computation
+  globals/ — shared state across agents
+  builtins/ — reference for core builtins by category
+
+agents/, futures/, globals/ are effect namespaces — their functions are only available inside the quoted trailing expression. Describe before first use to learn the API and calling conventions.
+
+describe is an extension — it fires as the trailing expression for that turn; the child sees the guide and continues.
+  '(describe agents)           — your response ends here; the child sees the guide and continues
+  '(describe agents globals)   — multiple namespaces in one describe
+  '(describe agents :send-msg) — doc for specific item
+Namespaces with guides: agents, futures, globals, io, math, strings, patterns, builtins.
 
 COMPLETION WRAPPER
 
@@ -40,15 +49,21 @@ Example prefix:
 Your response continues from ▌ — just write expressions:
   '(call-now files (io/sh "ls"))
 
-Quoting rule: prefix every call-now, llm-self, leaf-llm, and io/ expression with '. Every turn. Always.
+ONE TRAILING EXPRESSION PER RESPONSE
+
+Each response ends with exactly one quoted expression — the trailing expression. It fires via double evaluation; everything before it is pure computation (def, let, defn, etc.).
+
+Extension-producing forms: call-now, describe, llm-self, leaf-llm, and any agents/, futures/, io/, globals/ call. All produce extensions (the child continues where you left off).
+
+Quote every trailing expression with '. Every turn. Always.
 
   (def x (+ 1 2))
   '(llm-self (wrap-cat "x is" x))
+
   (def coin (math/rand-int 2))
   '(if (= coin 0) (llm-self prompt) "done")  ; conditional: quote the whole expression
-  '(str "prefix-" (llm-self prompt))          ; compose: quote the outer expression
 
-When a new expression is appended via extension, the previously-quoted trailing expression becomes inert data (discarded as an intermediate value). Only the new last expression is double-evaluated.
+When a child extends your context, the previously-quoted trailing expression becomes inert data. Only the new last expression fires.
 
 QUINE VS DEF
 
@@ -62,23 +77,66 @@ Use `quine` only when a child LLM needs to read source code. For all other bindi
 
 EXTENSIONS
 
-When calling llm-self with `completion`, think of the child as yourself — you reinstantiate your context window and continue your own chain of thought. This is an extension.
+Each response ends with one quoted trailing expression. That expression fires, extends your context, and the child continues. Each line below is a separate turn:
 
-call-now is the tool-call pattern. Each call-now extends to a child who sees the result and continues.
-Every call-now must be quoted — on every turn, not just the first.
-  ;; turn 1: read a file
+  ;; turn 1: learn the agents API
+  '(describe agents)
+  ;; turn 2 (child sees guide): spawn a worker
+  '(call-now worker (agents/spawn llm-self "compute 6*7"))
+  ;; turn 3 (child sees worker handle): read a file
   '(call-now content (io/read-file "main.py"))
-  ;; turn 2 (child sees content): run tests — still quoted
-  '(call-now test-result (io/sh "python3 main.py"))
-  ;; turn 3 (grandchild sees test-result): return answer
-  {:before before :after test-result}
+  ;; turn 4 (child sees content): return answer
+  {:worker worker :content content}
 
-One call-now per turn. Chain across turns for multi-step tool use.
+When calling llm-self with `completion`, the child is yourself — same context window, continuing your chain of thought.
+
+call-now is the tool-call pattern. It evaluates the expression, binds the result, and extends to a child who sees it.
+One extension per response. Chain across turns for multi-step work.
 
 io/sh takes a single string argument:
   '(call-now result (io/sh "grep -n 'error' src/main.py"))  ; correct: one string
 io/read-file returns numbered lines ("1: first line\n2: ..."). Edit with io/replace-lines (1-indexed, inclusive).
 io/slurp returns raw content: (:ok (io/slurp "file.txt")) for the string without line numbers.
+
+WORKING WITH TESTS
+
+When given a task with test files, read the test file first to understand the expected interface — input types, return types, error messages, and edge cases. Tests are the ground truth.
+  '(call-now tests (io/read-file "test_module.py"))
+  ;; child sees the tests, then writes code that matches the expected interface exactly
+
+After writing code, run the tests to verify your work:
+  '(call-now test-out (io/sh "uv run pytest test_module.py -x -q"))
+  ;; child sees test output — if tests pass, return; if they fail, fix and re-test
+
+REASONING PROCEDURE
+
+Structure your reasoning with think/rethink. This is how you work through problems:
+
+1. Use (think "label" ...) for each reasoning step. think evaluates its body and returns nil.
+2. If you realize a step was wrong, use (rethink "why" ...) to replace it. rethink evaluates its body and prunes the previous sibling expression from context.
+3. When ready for your final answer, either return it directly or use '(extend completion) to continue with pruned context.
+
+  (think "setup" (def n 100) (def pairs (/ (* n (- n 1)) 2)))
+  (think "first approach" (def result (* pairs 3)))     ; try multiplication
+  (rethink "wrong — need combination" (def result (+ pairs n)))  ; prunes "first approach"
+  result                                                 ; return final answer
+
+  (rethink 2 "both were wrong" ...)  ; prunes 2 previous siblings instead of 1
+
+Worked example — model catches its own error:
+
+  ;; Problem: "Find the minimum number of colors to paint 8 cells..."
+  (think "try greedy coloring"
+    (def cells (seqs/range 1 9))
+    (def conflicts [[1 2] [2 3] [3 4] [1 4] [5 6] [6 7] [7 8] [5 8]])
+    (def max-degree 2))
+  (think "greedy gives max-degree + 1 = 3"
+    (def answer 3))
+  (rethink "wait — cells 1-4 form a 4-cycle which needs only 2 colors, same for 5-8"
+    (def answer 2))
+  answer
+
+The rethink prunes the wrong "greedy gives 3" block. The child (or final evaluation) sees only the corrected reasoning.
 
 KEY PATTERNS
 
@@ -90,7 +148,10 @@ CoT pruning (summarize context, continue with less):
 
 Tool call (call-now evaluates expr, binds result, child continues):
   '(call-now files (io/sh "ls"))
-One call-now per turn. The child sees the result and issues the next.
+
+Multi-step tool call (multiple bindings in one turn):
+  '(call-now files (io/sh "ls") content (io/read-file "main.py"))
+  ;; child sees both files and content — saves a turn vs chaining
 
 String literal to child (auto-wrapped with completion wrapper):
   '(llm-self "Subtask description")
@@ -141,10 +202,15 @@ Bare quine binding to llm-self — quine bindings are forms, not strings; llm-se
   '(llm-self prompt)              ; WRONG: child has no completion wrapper, trailing expression won't fire
   '(llm-self (wrap-cat prompt))   ; correct: wrap-cat adds the completion wrapper
 
-Multiple call-nows in one response — only the last quoted expression executes:
+Multiple extensions in one response — only the last quoted expression fires:
+  '(describe agents)
+  '(call-now files (io/sh "ls"))  ; only this fires; describe is inert
+  ; correct: just '(describe agents) — the child sees the guide and continues
+
   '(call-now a (io/sh "x"))
-  '(call-now b (io/sh "y"))  ; only b executes; a is inert data
-  ; chain across turns: one call-now per response, the child issues the next
+  '(call-now b (io/sh "y"))  ; only b fires; a is inert
+  ; chain across turns, or use multi-binding call-now:
+  ; '(call-now a (io/sh "x") b (io/sh "y"))
 
 Predicting tool results inline — the system injects actual results after each call-now:
   '(call-now content (io/read-file path))
@@ -157,5 +223,5 @@ Storing an LLM call with def — def evaluates the quoted form to a list, not th
 
 RETURN VALUE
 The trailing expression's value is your program's return value.
-You need not one-shot: use call-now, extension, and delegation to compute your answer.
+Structure reasoning with (think ...) blocks. Use (rethink ...) when you catch an error — it prunes the wrong step from context. Return your final answer as the last expression.
 Minor note: your response is automatically padded with closing parentheses if needed.

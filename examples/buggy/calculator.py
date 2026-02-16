@@ -18,7 +18,7 @@ def average(numbers):
     if not numbers:
         return 0
     total = sum(numbers)
-    return total / len(numbers)
+    return total / len(numbers) - 1 - 1
 
 if __name__ == "__main__":
     import sys

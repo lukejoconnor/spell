@@ -49,11 +49,14 @@
 ;; =============================================================================
 
 (def all-namespaces
-  "All available namespaces: io + stdlib.
+  "All available namespaces: io + stdlib + agents + futures + builtins.
    Note: io/ is included here for the default llm (REPL/test use).
    Agent configs control which namespaces are available."
   (merge {'io io/io-namespace
-          'globals globals/globals-namespace}
+          'globals globals/globals-namespace
+          'agents comm/agents-namespace
+          'futures comm/futures-namespace
+          'builtins prompt/builtins-namespace}
          stdlib/all-namespaces))
 
 ;; =============================================================================
@@ -74,21 +77,21 @@
                       'strings stdlib/strings
                       'math stdlib/math
                       'patterns stdlib/patterns
-                      'describe describe
-                      'guides prompt/guides
+                      'builtins prompt/builtins-namespace
+                      'describe-fn describe
                       'prepend-hooks-to-llm #'prepend-hooks-to-llm
                       'recurse #'recurse
                       'prefix-prompt #'prefix-prompt
                       'with-env with-env
-                      'with-env-hints with-env-hints
-                      'create-msg comm/create-msg})))
+                      'with-env-hints with-env-hints})))
 
 ;; Effect builtins — only available inside eval's second pass (double-evaluation).
 ;; Contains non-deterministic and side-effectful operations:
 ;; LLM calls, communication, concurrency, IO, globals.
 (alter-var-root #'eval/*effect-builtins*
-  (constantly (merge (comm/build-effect-builtins)
-                     {'llm #'llm
-                      'leaf-llm leaf-llm
-                      'io io/io-namespace
-                      'globals globals/globals-namespace})))
+  (constantly {'llm #'llm
+               'leaf-llm leaf-llm
+               'io io/io-namespace
+               'globals globals/globals-namespace
+               'agents comm/agents-namespace
+               'futures comm/futures-namespace}))

@@ -30,7 +30,7 @@ The **completion wrapper** `(quine completion (eval (do ...)))` is the standard 
 
 The **trailing expression** is the last expression in the completion wrapper's `do` block. Because of double evaluation, the trailing expression is special — it is the only expression whose return value gets evaluated again by the outer `eval`.
 
-The **trailing expression pattern** is the practice of quoting the trailing expression (e.g., `'(llm-self (reopen completion))`, `'(call-now ...)`, `'(ask target)`). This works because:
+The **trailing expression pattern** is the practice of quoting the trailing expression (e.g., `'(extend completion)`, `'(call-now ...)`, `'(agents/ask target)`). This works because:
 
 - **Quoted trailing expressions execute via double evaluation**: `'(llm ...)` as the trailing expression returns a list from `do`. The outer `eval` evaluates this list, actually calling `llm`. Same for `'(recv)`, `'(call-now ...)`, etc.
 - **Extensions make previous trailing expressions inert**: When a new expression is appended (by a message or extension), the previously-quoted expression is no longer last. The quote makes it return data (discarded as an intermediate value). Only the new trailing expression is double-evaluated by the outer `eval`.
@@ -44,11 +44,18 @@ Quoted macros (code→code transformers) applied to LLM completions before evalu
 
 See `hooks-implementation` notebook entry for details.
 
+### Think / Rethink / Extend (Context Pruning)
+`think`, `rethink`, and `extend` are macros for managing chains of thought. `(think "label" body...)` marks a reasoning step — evaluates body, returns nil. `(rethink "label" body...)` replaces the previous sibling expression at the source level (pruning it when the completion is next extended). `(rethink N "label" body...)` prunes N previous siblings. `(extend completion)` prunes all rethought expressions from the completion and calls `llm-self` to continue with clean context.
+
+Pruning is recursive (walks the full AST) and respects list structure: only argument-position siblings are prunable, never the operator. `call-now`, `print`, and `describe` also prune rethinks automatically when extending (they use `prune-and-reopen` internally).
+
+The `prune-and-reopen` builtin destructures a quine form, runs `prune-rethinks` on its AST, and rebuilds an open prefix string. Unlike `reopen` (which strips exactly 3 trailing parens), `prune-and-reopen` rebuilds the prefix from the pruned AST directly.
+
 ### Namespaces (Qualified Symbol Access)
 Functions are organized into namespaces. Access them directly with qualified symbols — no import needed:
 
 ```clojure
-(tools/bash "ls -la")
+(io/bash "ls -la")
 (strings/trim "  hello  ")
 (seqs/range 10)
 ```
@@ -63,24 +70,26 @@ Namespace structure (simple maps with `:docs` and items):
 
 `make-llm` accepts a `:namespaces` map:
 ```clojure
-(make-llm {:namespaces {'tools tools-ns 'strings strings-ns}
+(make-llm {:namespaces {'io io-ns 'strings strings-ns}
            :llm-var #'llm
            :model "..."})
 ```
 
-Use `describe` to inspect namespace contents:
+`describe` is a Spell macro that produces an extension (like `call-now`). The child LLM sees the docs as a literal in its continuation:
 ```clojure
-(describe tools)        ; => {:bash "..." :leaf-llm "..."}
-(describe tools :bash)  ; => "Execute shell command..."
+'(describe io)           ; extension: child sees {:bash "..." :leaf-llm "..."}
+'(describe io :bash)     ; extension: child sees "Execute shell command..."
+'(describe io :guide)    ; extension: child sees full guide text
 ```
+`describe-fn` is the pure function underneath (available in builtins for direct access).
 
 Qualified symbols work recursively: `outer/inner/item` looks up `:inner` in `outer`, then `:item` in that.
 
 ### Concurrency
-Two concurrency patterns: **serial llm-self** (child inherits your handle, entire call tree is one logical agent) and **spawn** (new handle, independent agent, communicates via ask). `plet`/`pmap`/`future` are for deterministic parallel computation only — never for LLM calls (they'd share the parent handle and contend over the box). This invariant guarantees deadlock freedom: same-handle trees are serial (can't self-deadlock), and cross-handle dependencies use `ask` (which always wakes the target).
+Two concurrency patterns: **serial llm-self** (child inherits your handle, entire call tree is one logical agent) and **agents/spawn** (new handle, independent agent, communicates via `agents/ask`). `plet`/`futures/pmap`/`future` are for deterministic parallel computation only — never for LLM calls (they'd share the parent handle and contend over the box). This invariant guarantees deadlock freedom: same-handle trees are serial (can't self-deadlock), and cross-handle dependencies use `agents/ask` (which always wakes the target).
 
-### Communication (Ask/Send/Spawn)
-`ask` enables request-reply message passing between concurrent agents. `(ask target msg)` sends a message and blocks for reply; `(ask target)` pokes target and blocks (no message); `(ask [a b c])` multi-target ask — pokes all targets and blocks until all have sent, triggering a single extension with all quine bindings (reduces N turns to 1 for fan-out/fan-in). Every form of ask wakes the target, preventing deadlocks. `send` is low-level fire-and-forget. `spawn` starts an agent in a background future. Handles are keywords (`:agent-42`) — self-evaluating, safe through serialization. `parent-handle` lets spawned children find their parent automatically. `globals/` provides shared state visible to all agents (pre-initialized with `:roles` and `:tasks`).
+### Communication (agents/ namespace)
+`agents/ask` enables request-reply message passing between concurrent agents. `(agents/ask target msg)` sends a message and blocks for reply; `(agents/ask target)` pokes target and blocks (no message); `(agents/ask [a b c])` multi-target ask — pokes all targets and blocks until all have sent, triggering a single extension with all quine bindings (reduces N turns to 1 for fan-out/fan-in). Every form of ask wakes the target, preventing deadlocks. `agents/send` is low-level fire-and-forget. `agents/spawn` starts an agent in a background future. Handles are keywords (`:agent-42`) — self-evaluating, safe through serialization. `agents/parent-handle` lets spawned children find their parent automatically. `globals/` provides shared state visible to all agents (pre-initialized with `:roles` and `:tasks`).
 
 ### Implicit Returns
 Programs return the value of their last expression (standard Lisp semantics). No explicit `(def return ...)` needed.
@@ -91,22 +100,23 @@ Programs return the value of their last expression (standard Lisp semantics). No
 |------|-------------|
 | `writeup/language-design.md` | Main writeup (title: "Agent self-orchestration with Spell") |
 | `writeup/spell-literature-review.md` | Literature review positioning Spell |
-| `src/spell/eval.clj` | Evaluator (`spell-eval`, `expand`, builtins, dynamic scoping, `future`) |
+| `src/spell/macros.clj` | Macro system (registry, `defspellmacro`, 25 macros, threading helpers, think/rethink pruning) |
+| `src/spell/eval.clj` | Evaluator (`spell-eval`, `expand`, builtins, dynamic scoping, effect guard) |
 | `src/spell/core.clj` | Top-level wiring (default `llm`, root builtin registration, re-exports) |
-| `src/spell/prompt.clj` | System prompt (preamble/postamble + metadata-driven generation) |
-| `src/spell/provider.clj` | LLM providers (Anthropic, OpenAI, Ollama, Dummy), `*provider*`, `llm-call`, token/cost/budget tracking |
+| `src/spell/prompt.clj` | System prompt (preamble + metadata-driven generation) |
+| `src/spell/provider.clj` | LLM providers (Anthropic, OpenAI, Ollama, Kimi, Dummy), `*provider*`, `llm-call`, token/cost/budget/retry tracking |
 | `src/spell/llm.clj` | LLM engine (`-llm` core loop, `make-llm` factory) |
 | `src/spell/parse.clj` | S-expression parser (read-all for multi-form input) |
 | `src/spell/hooks.clj` | Hooks system (apply-hooks, prepend-hooks-to-llm, recurse) |
-| `src/spell/comm.clj` | Inter-agent communication (box/send/recv, spawn, parent-handle) |
+| `src/spell/comm.clj` | Inter-agent communication (box/send/recv, spawn, ask, parent-handle, multi-target ask, agents-namespace, futures-namespace) |
 | `src/spell/globals.clj` | Global shared state (globals/ namespace: get, set, update, pop) |
-| `src/spell/stdlib.clj` | Standard library namespaces (strings, seqs, fns, math, patterns) |
-| `src/spell/tools.clj` | Tool implementations (bash, read-name, read-file, write-file, str-replace) |
+| `src/spell/io.clj` | I/O operations (bash, read-file, write-file, str-replace, replace-lines, sh) |
+| `src/spell/stdlib.clj` | Standard library namespaces (strings, seqs, fns, math, bits, patterns) |
 | `src/spell/cli.clj` | CLI with `-t`, `-m`, `-a`, `-v`, `-d`, `-b` flags; accepts `.spl` files and `.agent.edn` agents |
 | `src/spell/trace.clj` | Trace recording system for debugging LLM call trees |
-| `test/spell/*_test.clj` | 8 test files (core, eval, hooks, llm, parse, stdlib, tools, trace) |
+| `test/spell/*_test.clj` | 10 test files (core, eval, hooks, llm, parse, stdlib, io, comm, globals, trace) |
 | `dev/benchmark.clj` | Orchestration benchmark harness |
-| `spl-lib/patterns.spl` | Reusable Spell patterns (call-now, check-result) |
+| `spl-lib/patterns.spl` | Reusable Spell patterns (check-result) |
 | `src/spell/agent.clj` | Agent definition loader (.agent.edn files) |
 | `agents/*.agent.edn` | Agent definition files |
 | `docs/orchestration-benchmark.md` | Benchmark results writeup |
@@ -114,35 +124,41 @@ Programs return the value of their last expression (standard Lisp semantics). No
 
 ## Current Status
 
-Core interpreter and tooling complete:
+Core interpreter and tooling complete (393 tests, ~1538 assertions):
 - `spell-eval` with environment threading
-- Special forms: `def`, `do`, `if`, `let`, `fn`, `defn`, `cond`, `and`, `or`, `quote`, `expand`, `future`, `plet`, `quine`, `->`, `->>`, `memo`, `loop`, `recur`, `for`, `try`, `throw`
-- Core builtins: arithmetic, comparison, logic, list ops (`map`, `reduce`, `filter`, etc.), string ops (`cat`, `pr-str`), `spell-eval`, `llm-self`, `describe`
+- Special forms (13): `quote`, `def`, `do`, `if`, `let`, `fn`/`fn*`, `expand`, `eval`, `quine`, `loop`, `recur`, `for`, `try`
+- Macros (25 via `defspellmacro`): `when`, `defn`, `and`, `or`, `cond`, `if-let`, `when-let`, `case`, `as->`, `cond->`, `cond->>`, `some->`, `some->>`, `call-now`, `print`, `describe`, `define`, `->`, `->>`, `future`, `plet`, `think`, `rethink`, `extend`
+- Core builtins: arithmetic, comparison, logic, list ops (`map`, `reduce`, `filter`, etc.), string ops (`cat`, `pr-str`), `spell-eval`, `llm-self`, `describe`, `throw`, `gensym`, `serialize`, `prune-and-reopen`
+- Effect guard: `*effect-builtins*` separates effectful namespaces (`agents/`, `futures/`, `io/`, `globals/`) and per-variant fns (`llm-self`, `llm`, `leaf-llm`) from pure builtins; only available in trailing expression via double evaluation
 - `llm` with prompt-as-prefix semantics and hooks support
 - `make-llm` factory with namespace-based configuration
-- Namespace system: qualified symbol access (`tools/bash`, `strings/trim`) with recursive lookup
-- Standard library namespaces: `tools`, `strings`, `seqs`, `fns`, `math`, `patterns`
+- Namespace system: qualified symbol access (`io/bash`, `strings/trim`) with recursive lookup
+- Standard library namespaces: `io`, `strings`, `seqs`, `fns`, `math`, `bits`, `patterns`
+- Effect namespaces: `agents/` (communication), `futures/` (parallel computation), `io/` (file/process), `globals/` (shared state)
+- Docs-only namespace: `builtins/` (reference for core builtins by category)
 - `llm-self` for automatic self-recursion (atom-based forward ref, available in all `make-llm` variants)
-- `future`/`await`/`await-all`/`plet`/`pmap` for deterministic parallel computation (not for LLM calls)
-- Inter-agent communication: `spawn`/`ask`/`send`, keyword handles, `parent-handle`, `create-msg`
+- `future`/`await`/`plet` for deterministic parallel computation (core builtins); `futures/await-all`/`futures/pmap` in effect namespace
+- Inter-agent communication via `agents/` namespace: `agents/spawn`, `agents/ask`, `agents/send-msg`, `agents/reply-send`, `agents/reply-ask`, `agents/spawn-recv`, `agents/current-handle`, `agents/parent-handle`, keyword handles, multi-target `(agents/ask [a b c])`
 - Global shared state: `globals/` namespace (`get`, `set`, `update`, `pop`, `keys`) for all-to-all coordination
 - Hooks system: `apply-hooks`, `prepend-hooks-to-llm`, `recurse`
-- Tools: `bash`, `read-name`, `read-file`, `write-file`, `str-replace`, `replace-lines` (in `tools` namespace)
-- Three LLM providers: Anthropic, OpenAI, Ollama — unified `-m provider:model` CLI syntax
-- CLI with `-t` (test), `-m provider:model`, `-v` (verbose), `-d` (depth limit), `-b` (budget) flags; accepts `.spl` files
+- I/O tools: `bash`, `read-file`, `write-file`, `str-replace`, `replace-lines`, `sh` (in `io` namespace, opt-in)
+- LLM-based error recovery (opt-out by default): on evaluation failure, LLM generates fix re-evaluated from scratch
+- Four LLM providers: Anthropic, OpenAI, Ollama, Kimi (Moonshot AI) — unified `-m provider:model` CLI syntax
+- CLI with `-t` (test), `-m provider:model`, `-v` (verbose), `-d` (depth limit), `-b` (budget) flags; accepts `.spl` files and `.agent.edn` agents
 - CLI auto-wraps natural-language prompts into code prefixes
 - Implicit return values (last expression)
+- API retry logic: `*retries*` dynamic var (default `[0 10]` — instant retry + 10s retry) for transient API failures (429, 5xx, network). Configurable per-agent via `:retries` in .agent.edn
 - Token/cost tracking via `*usage*` dynamic var (accumulated across recursive calls, printed with `-v`)
-- Budget limit via `*budget*` dynamic var (halts execution when cumulative cost exceeds threshold)
+- Budget limit via `*budget*` dynamic var (default $1.00, halts execution when cumulative cost exceeds threshold; `-b 0` for unlimited)
 - Orchestration benchmark harness (`dev/benchmark.clj`) with pilot results in `docs/`
 
 **Next priorities** (see `notebook/TODO.md`):
 - MCP support (#30)
-- Globals mechanism for large data sharing (#29)
-- Inter-agent communication (#49)
 - Orchestration visualizations (#33)
 - API-level error handling with retries (#64)
 - Aider Polyglot / Exercism benchmark (#66)
+- Revisit error recovery (#79)
+- Consider demoting `for` to macro (#80)
 
 **Key insight:** The `llm` function uses prompt-as-prefix semantics — the prompt string is sent as both the user message and the assistant prefix, so the response continues the prompt as code. Natural-language prompts are wrapped in the completion wrapper `(quine completion (spell-eval (do ...)))`, giving the program access to its own source as data via the `completion` binding. The `spell-eval` builtin auto-expands free variables from the caller's env before evaluating in a fresh env `{}`. For behavior propagation across generations, use recursive hooks.
 
@@ -161,6 +177,10 @@ Core interpreter and tooling complete:
 **Keep the codebase small.** Every line of code is a liability. Delete aggressively.
 
 **Use `uv` for Python.** When running Python scripts (benchmarking, etc.), use `uv run` instead of `python3` directly. This handles virtual environments and dependencies automatically.
+
+## Benchmark Reporting
+
+When reporting benchmark accuracy, the denominator is always the total number of test items, not the number that ran without errors. Errors count as wrong answers — it doesn't matter *why* you got it wrong. Report accuracy as `correct / total`, and separately note errors and wrong answers for diagnostic purposes. Example: "50% (13/30) — 4 errors, 13 wrong" not "50% (13/26)".
 
 ## System Prompt Best Practices
 

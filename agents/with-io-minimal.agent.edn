@@ -1,0 +1,11 @@
+;; With-IO agent using the minimal system prompt
+;; For benchmarking: cut-down prompt without communication/concurrency sections
+
+{:base spell:default
+ :name with-io-minimal
+ :doc "With-IO agent using minimal system prompt"
+
+ :namespaces
+ {io stdlib/io}
+
+ :system {:file "../prompts/minimal.txt"}}
