@@ -1,13 +1,11 @@
 (ns spell.eval
   "Spell evaluator: spell-eval, expand, free variable analysis, builtins.
 
-   The evaluator now uses memo-based tracking for error recovery:
-   - spell-eval takes (expr, env, memo, idx) and returns a result map
-   - On success: {:ok value :env env' :memo memo' :idx idx'}
-   - On error: {:err msg :env env :memo memo :idx idx :expr failing-expr}
-   - The memo vector records evaluated expressions and their values
-   - (memo N) special form retrieves cached values by index"
-  (:require [spell.parse :as parse]
+   spell-eval takes (expr, env) and returns a result map:
+   - On success: {:ok value :env env'}
+   - On error: {:err msg :env env :expr failing-expr}"
+  (:require [spell.macros :as macros]
+            [spell.parse :as parse]
             [clojure.string :as str]
             [clojure.set :as set]))
 
@@ -25,32 +23,123 @@
 
 (def ^:dynamic *max-llm-depth*
   "Maximum allowed LLM recursion depth. Set to nil to disable limit."
-  8)
+  nil)
 
 (def ^:dynamic *spell-env*
   "Current spell-eval environment during function application.
    Allows Clojure builtins (like apply) to access the current env for spell-fn support."
   {})
 
+(def ^:dynamic *raw-text*
+  "Balanced raw text of the current completion being evaluated.
+   Set by the eval pipeline; used by reopen to preserve original formatting
+   for KV cache compatibility (avoids pr-str round-trip divergence)."
+  nil)
+
 (defn spell-future?
   "Returns true if v is a Spell future handle."
   [v]
   (and (map? v) (:spell/future v)))
 
+;; =============================================================================
+;; Call-now value store (out-of-band storage for large values)
+;; =============================================================================
+
+(def call-now-store
+  "Global store for large values that shouldn't be inlined in continuations.
+   Maps string IDs to values. Used by call-now to avoid embedding huge strings
+   (like file contents) directly in the code the LLM sees."
+  (atom {}))
+
+(def call-now-inline-limit
+  "Default max character count of pr-str output before truncation/storage.
+   Used by serialize-for-continuation when no explicit limit is provided."
+  10000)
+
+(defn store-value!
+  "Store a value in the call-now store, return its ID."
+  [value]
+  (let [id (str (gensym "ref-"))]
+    (swap! call-now-store assoc id value)
+    id))
+
+(defn stored
+  "Retrieve a value from the call-now store."
+  [id]
+  (let [v (get @call-now-store id ::not-found)]
+    (if (= v ::not-found)
+      (throw (ex-info (str "No stored value: " id) {:id id}))
+      v)))
+
+(defn- truncate-string
+  "Truncate a string to fit within limit chars when serialized.
+   Appends a note showing original length."
+  [s limit]
+  (let [note (format "\n... [truncated, %d chars total]" (count s))
+        max-chars (max 100 (- limit (count (pr-str note)) 50))
+        truncated (str (subs s 0 (min (count s) max-chars)) note)]
+    (pr-str truncated)))
+
+(defn- deep-truncate
+  "Recursively truncate string values within maps and sequences.
+   Returns a new value where all strings exceeding limit are truncated.
+   Non-string leaves are unchanged."
+  [value limit]
+  (cond
+    (string? value)
+    (if (<= (count (pr-str value)) limit)
+      value
+      (let [note (format "\n... [truncated, %d chars total]" (count value))
+            max-chars (max 100 (- limit (count (pr-str note)) 50))]
+        (str (subs value 0 (min (count value) max-chars)) note)))
+
+    (map? value)
+    (into {} (map (fn [[k v]] [k (deep-truncate v limit)]) value))
+
+    (sequential? value)
+    (mapv #(deep-truncate % limit) value)
+
+    :else value))
+
+(defn serialize-for-continuation
+  "Serialize a value for embedding in a call-now continuation.
+   Small values are inlined via pr-str. Large strings are truncated with a note.
+   Large non-strings are deep-truncated (string values within maps/seqs are
+   individually truncated) then inlined. Only stored out-of-band if still too large.
+   limit: max pr-str chars before truncation/storage. Negative means always inline."
+  ([value] (serialize-for-continuation value call-now-inline-limit))
+  ([value limit]
+   (if (neg? limit)
+     (pr-str value)
+     (let [serialized (pr-str value)]
+       (if (<= (count serialized) limit)
+         serialized
+         (if (string? value)
+           (truncate-string value limit)
+           ;; Non-string: deep-truncate string values within, then try to inline
+           (let [truncated (deep-truncate value limit)
+                 truncated-str (pr-str truncated)]
+             (if (<= (count truncated-str) (* limit 2))
+               ;; Fits after truncation (allow 2x limit since map structure has overhead)
+               truncated-str
+               ;; Still too large — store out-of-band
+               (let [id (store-value! value)]
+                 (str "(stored " (pr-str id) ")"))))))))))
+
 
 ;; =============================================================================
-;; Result helpers (for memo-based error recovery)
+;; Result helpers
 ;; =============================================================================
 
 (defn ok
   "Create a success result map."
-  [value env memo idx]
-  {:ok value :env env :memo memo :idx idx})
+  [value env]
+  {:ok value :env env})
 
 (defn err
   "Create an error result map."
-  [msg env memo idx expr]
-  {:err msg :env env :memo memo :idx idx :expr expr})
+  [msg env expr]
+  {:err msg :env env :expr expr})
 
 (defn ok?
   "Returns true if result is a success."
@@ -67,15 +156,6 @@
   [result]
   (:ok result))
 
-(defn- record-memo
-  "Record an expression and its value in the memo, incrementing idx."
-  [result expr]
-  (if (ok? result)
-    (-> result
-        (update :memo conj {:expr expr :value (:ok result)})
-        (update :idx inc))
-    result))
-
 ;; =============================================================================
 ;; Builtins
 ;; =============================================================================
@@ -87,13 +167,114 @@
   [v]
   (and (map? v) (:spell/fn v)))
 
+(defn destructure-bind
+  "Given a param pattern and a value, return a flat sequence of [symbol value] pairs.
+   If param is a symbol, returns [[param value]].
+   If param is a vector, recursively destructures positionally.
+   Supports & rest and :as whole."
+  [param value]
+  (cond
+    (symbol? param) [[param value]]
+    (vector? param)
+    (let [;; Check for :as
+          as-idx (.indexOf ^java.util.List param :as)
+          [core-params as-sym] (if (>= as-idx 0)
+                                 [(subvec param 0 as-idx) (get param (inc as-idx))]
+                                 [param nil])
+          ;; Check for &
+          amp-idx (.indexOf ^java.util.List core-params '&)
+          [positional rest-sym] (if (>= amp-idx 0)
+                                  [(subvec core-params 0 amp-idx) (get core-params (inc amp-idx))]
+                                  [core-params nil])
+          ;; Coerce value to sequential for nth access
+          val-seq (if (sequential? value) (vec value) [value])
+          ;; Bind positional params
+          bindings (vec (mapcat (fn [i p] (destructure-bind p (nth val-seq i nil)))
+                                (range) positional))
+          ;; Bind rest if present
+          bindings (if rest-sym
+                     (into bindings (destructure-bind rest-sym (vec (drop (count positional) val-seq))))
+                     bindings)
+          ;; Bind :as if present
+          bindings (if as-sym
+                     (conj bindings [as-sym value])
+                     bindings)]
+      bindings)
+    (map? param)
+    (let [special-keys #{:keys :strs :syms :or :as}
+          ;; Separate direct bindings from special keys (symbol or vector patterns mapped to keys)
+          direct (into {} (filter (fn [[k _]] (and (not (special-keys k)) (or (symbol? k) (vector? k)))) param))
+          keys-syms (:keys param)
+          strs-syms (:strs param)
+          syms-syms (:syms param)
+          defaults (:or param)
+          as-sym (:as param)
+          ;; Build bindings from :keys
+          key-bindings (mapcat (fn [s] (destructure-bind s (get value (keyword (name s))))) keys-syms)
+          ;; Build bindings from :strs
+          str-bindings (mapcat (fn [s] (destructure-bind s (get value (str (name s))))) strs-syms)
+          ;; Build bindings from :syms
+          sym-bindings (mapcat (fn [s] (destructure-bind s (get value (symbol (name s))))) syms-syms)
+          ;; Build bindings from direct {pattern key} entries
+          direct-bindings (mapcat (fn [[sym k]] (destructure-bind sym (get value k))) direct)
+          ;; Combine all bindings
+          bindings (vec (concat key-bindings str-bindings sym-bindings direct-bindings))
+          ;; Apply :or defaults (replace nil values for keys that have defaults)
+          bindings (if defaults
+                     (mapv (fn [[s v]]
+                             (if (and (nil? v) (contains? defaults s))
+                               [s (get defaults s)]
+                               [s v]))
+                           bindings)
+                     bindings)
+          ;; Add :as binding
+          bindings (if as-sym
+                     (conj bindings [as-sym value])
+                     bindings)]
+      bindings)
+
+    :else (throw (ex-info (str "Invalid destructuring pattern: " (pr-str param)) {:param param}))))
+
+(defn bind-params
+  "Bind fn params to args, supporting destructuring. Returns a flat seq of [sym val] pairs."
+  [params args]
+  (mapcat destructure-bind params args))
+
+(defn param-symbols
+  "Extract all binding symbols from a destructuring param pattern.
+   Used by expand-expr to track locally-bound names."
+  [param]
+  (cond
+    (symbol? param) [param]
+    (vector? param)
+    (loop [rem (seq param)
+           syms []]
+      (if (empty? rem)
+        syms
+        (let [item (first rem)]
+          (cond
+            (= item :as) (recur (drop 2 rem) (conj syms (second rem)))
+            (= item '&) (recur (drop 2 rem) (into syms (param-symbols (second rem))))
+            :else (recur (rest rem) (into syms (param-symbols item)))))))
+    (map? param)
+    (let [keys-syms (vec (mapcat param-symbols (:keys param)))
+          strs-syms (vec (mapcat param-symbols (:strs param)))
+          syms-syms (vec (mapcat param-symbols (:syms param)))
+          direct-syms (vec (mapcat (fn [[k _]] (when (or (symbol? k) (vector? k)) (param-symbols k)))
+                                   (dissoc param :keys :strs :syms :or :as)))
+          as-sym (when-let [s (:as param)] [s])]
+      (into [] (concat keys-syms strs-syms syms-syms direct-syms as-sym)))
+
+    :else []))
+
 (defn invoke-fn
   "Invoke f with args. Handles both spell-fns and Clojure fns.
    Uses *spell-env* for spell-fn body evaluation."
   [f args]
   (if (spell-fn? f)
-    (let [local-env (into *spell-env* (map vector (:params f) args))]
-      (first (spell-eval (cons 'do (:body f)) local-env)))
+    (let [local-env (into *spell-env* (bind-params (:params f) args))
+          r (spell-eval (cons 'do (:body f)) local-env)]
+      (if (ok? r) (:ok r) (throw (ex-info (:err r) {:result r}))))
     (apply f args)))
 
 (def core-builtins
@@ -101,8 +282,16 @@
    Extended functions are in stdlib registries (strings, seqs, fns)."
   {;; Math
    '+ +, '- -, '* *, '/ /, 'inc inc, 'dec dec,
-   'int int, 'quot quot, 'mod mod, 'max max, 'min min, 'rem rem,
-   'abs abs,
+   'int int, 'long long, 'float float, 'double double, 'bigdec bigdec, 'rationalize rationalize,
+   'quot quot, 'mod mod, 'max max, 'min min, 'max-key max-key, 'min-key min-key, 'rem rem,
+   'abs abs, 'floor (fn [x] (long (Math/floor x))), 'ceil (fn [x] (long (Math/ceil x))),
+   'rand rand, 'rand-int (fn [n] (rand-int n)),
+   '+' +', '-' -', '*' *', 'inc' inc', 'dec' dec',
+   'parse-number (fn [s]
+                   (let [s (str s)
+                         m (re-find #"-?\d+(?:\.\d+)?" s)]
+                     (when m
+                       (if (re-find #"\." m) (Double/parseDouble m) (Long/parseLong m))))),
    ;; Numeric predicates
    'even? even?, 'odd? odd?, 'pos? pos?, 'neg? neg?, 'zero? zero?,
    ;; Comparison
@@ -111,7 +300,12 @@
    'not not, 'nil? nil?, 'empty? empty?, 'some? some?, 'true? true?, 'false? false?,
    ;; Strings (core only - extended in strings registry)
    'str str, 'pr-str pr-str,
+   'subs (fn ([s start] (subs s start)) ([s start end] (subs s start end))),
    'cat (fn [& args] (apply str args)),
+   'read-string (fn [s] (first (parse/read-all (str s)))),
+   're-find (fn [pattern s] (re-find (re-pattern pattern) s)),
+   're-matches (fn [pattern s] (re-matches (re-pattern pattern) s)),
+   're-seq (fn [pattern s] (vec (re-seq (re-pattern pattern) s))),
    ;; Type predicates
    'string? string?, 'number? number?, 'list? list?, 'seq? seq?, 'vector? vector?, 'set? set?,
    'map? (fn [v] (and (map? v) (not (spell-fn? v)) (not (spell-future? v)))),
@@ -152,8 +346,9 @@
    'apply (fn [f & args]
             (let [all-args (concat (butlast args) (last args))]
               (if (spell-fn? f)
-                (let [local-env (into *spell-env* (map vector (:params f) all-args))]
-                  (first (spell-eval (cons 'do (:body f)) local-env)))
+                (let [local-env (into *spell-env* (bind-params (:params f) all-args))
+                      r (spell-eval (cons 'do (:body f)) local-env)]
+                  (if (ok? r) (:ok r) (throw (ex-info (:err r) {:result r}))))
                 (clojure.core/apply f all-args)))),
    ;; Core higher-order functions (spell-fn aware)
    'map (fn [f coll] (mapv #(invoke-fn f [%]) coll)),
@@ -175,34 +370,35 @@
             ([start end] (vec (range start end)))
             ([start end step] (vec (range start end step)))),
    ;; Strip / Reopen
-   'strip-parens parse/strip-trailing-parens,
-   'reopen (fn [s] (parse/strip-trailing-parens 3 s)),
+   'strip-parens (fn [n s] (parse/strip-trailing-parens n (if (string? s) s (pr-str s)))),
+   'reopen (fn [s]
+              (parse/strip-trailing-parens 3
+                (cond (string? s) s
+                      *raw-text*  *raw-text*
+                      :else       (pr-str s)))),
    ;; wrap-cat: combine quine-bound forms into an open preamble prefix
    'wrap-cat (fn [& forms]
                (str "(quine completion (eval (do "
                     (str/join " " (map pr-str forms))
                     " ")),
+   ;; Prune rethinks and reopen as prefix string
+   'prune-and-reopen (fn [quine-form]
+                       (let [pruned (macros/prune-rethinks quine-form)
+                             [_ _name-sym eval-form] (seq pruned)
+                             [_ do-form] (seq eval-form)
+                             body-forms (rest do-form)]
+                         (str "(quine completion (eval (do "
+                              (str/join " " (map pr-str body-forms))
+                              " "))),
+   ;; Value store (for call-now out-of-band large values)
+   'stored stored,
+   'serialize (fn
+               ([value] (serialize-for-continuation value))
+               ([value limit] (serialize-for-continuation value limit))),
    ;; Eval — auto-expands free vars from caller's env, then evaluates in fresh env
-   'spell-eval (fn [expr] (first (spell-eval (expand-expr expr *spell-env*) {}))),
-   ;; Concurrency
-   'await (fn [future-val]
-            (when-not (spell-future? future-val)
-              (throw (ex-info "await: argument must be a future" {:got future-val})))
-            (deref (:ref future-val))),
-   'await-all (fn [futures]
-                (when-not (sequential? futures)
-                  (throw (ex-info "await-all: argument must be a collection" {:got futures})))
-                (mapv (fn [f]
-                        (when-not (spell-future? f)
-                          (throw (ex-info "await-all: all elements must be futures" {:got f})))
-                        (deref (:ref f)))
-                      futures)),
-   'pmap (fn [f coll]
-           (let [futures (mapv (fn [item]
-                                 {:spell/future true
-                                  :ref (clojure.core/future ((bound-fn [] (invoke-fn f [item]))))})
-                               coll)]
-             (mapv #(deref (:ref %)) futures))),
+   'spell-eval (fn [expr]
+                 (let [r (spell-eval (expand-expr expr *spell-env*) {})]
+                   (if (ok? r) (:ok r) (throw (ex-info (:err r) {:result r}))))),
    ;; Extended sequence operations (from seqs/)
    'every? (fn [pred coll] (every? #(invoke-fn pred [%]) coll)),
    'remove (fn [pred coll] (filterv #(not (invoke-fn pred [%])) coll)),
@@ -291,7 +487,85 @@
    'bit-set bit-set,
    'bit-clear bit-clear,
    'bit-flip bit-flip,
-   'bit-test bit-test})
+   'bit-test bit-test,
+   'bit-and-not bit-and-not,
+   ;; Additional builtins (from verified clojure.core audit)
+   'any? (fn [_] true),
+   'boolean boolean,
+   'boolean? boolean?,
+   'dedupe (fn [coll] (vec (dedupe coll))),
+   'distinct? (fn [& args] (apply distinct? args)),
+   'drop-last (fn
+                ([coll] (vec (drop-last coll)))
+                ([n coll] (vec (drop-last n coll)))),
+   'ffirst (fn [x] (first (first x))),
+   'find find,
+   'format (fn [fmt & args] (apply format fmt args)),
+   'keep-indexed (fn [f coll] (vec (keep-indexed #(invoke-fn f [%1 %2]) coll))),
+   'list* (fn [& args] (apply list* args)),
+   'memoize (fn [f]
+              (let [cache (atom {})]
+                (fn [& args]
+                  (if-let [e (find @cache args)]
+                    (val e)
+                    (let [ret (invoke-fn f args)]
+                      (swap! cache assoc args ret)
+                      ret))))),
+   'namespace (fn [x] (namespace x)),
+   'next (fn [coll] (next coll)),
+   'not-every? (fn [pred coll] (not (every? #(invoke-fn pred [%]) coll))),
+   'parse-boolean (fn [s] (case s "true" true "false" false nil)),
+   'partition-by (fn [f coll] (vec (map vec (partition-by #(invoke-fn f [%]) coll)))),
+   'rand-nth rand-nth,
+   'random-sample (fn [prob coll] (vec (random-sample prob coll))),
+   'random-uuid (fn [] (str (java.util.UUID/randomUUID))),
+   'reduced reduced,
+   'reductions (fn
+                 ([f coll] (vec (reductions #(invoke-fn f [%1 %2]) coll)))
+                 ([f init coll] (vec (reductions #(invoke-fn f [%1 %2]) init coll)))),
+   'seq (fn [coll] (seq coll)),
+   'shuffle (fn [coll] (vec (shuffle coll))),
+   'split-with (fn [pred coll]
+                 [(vec (take-while #(invoke-fn pred [%]) coll))
+                  (vec (drop-while #(invoke-fn pred [%]) coll))]),
+   'take-nth (fn [n coll] (vec (take-nth n coll))),
+   'tree-seq (fn [branch? children root]
+               (vec (tree-seq #(invoke-fn branch? [%])
+                              #(invoke-fn children [%])
+                              root))),
+   'type (fn [x]
+           (cond
+             (nil? x) "nil"
+             (string? x) "string"
+             (number? x) "number"
+             (boolean? x) "boolean"
+             (keyword? x) "keyword"
+             (symbol? x) "symbol"
+             (vector? x) "vector"
+             (map? x) (if (spell-fn? x) "function" "map")
+             (set? x) "set"
+             (seq? x) "list"
+             (fn? x) "function"
+             :else (str (clojure.core/type x)))),
+   'update-keys (fn [m f] (into {} (map (fn [[k v]] [(invoke-fn f [k]) v]) m))),
+   'update-vals (fn [m f] (into {} (map (fn [[k v]] [k (invoke-fn f [v])]) m))),
+   ;; Gensym — generate unique symbols (for macro hygiene)
+   'gensym (fn
+             ([] (gensym))
+             ([prefix] (gensym prefix))),
+   ;; Throw — raise a catchable error (caught by try/catch and fn-application handler)
+   'throw (fn [v]
+            (throw (ex-info (if (string? v) v (pr-str v))
+                            {:spell/thrown v}))),
+   ;; future* — run a thunk in a new thread, return a future handle
+   'future* (fn [thunk]
+              (let [f (bound-fn [] (invoke-fn thunk []))]
+                {:spell/future true :ref (clojure.core/future (f))})),
+   ;; await — deref a future handle, blocking until the result is available
+   'await (fn [fut]
+            (if (spell-future? fut)
+              (deref (:ref fut))
+              (throw (ex-info "await requires a future" {:value fut}))))})
 
 (def ^:dynamic *builtins*
   "Active builtins map. Rebound by each llm variant during evaluation.
@@ -304,23 +578,7 @@
 
 (def special-forms
   "Special forms that are not free variables."
-  #{'quote 'def 'do 'if 'let 'fn 'fn* 'defn 'cond 'and 'or 'expand 'eval 'future 'plet 'quine 'call-now '-> '->> 'memo 'loop 'recur 'for 'try 'throw})
-
-(defn- thread-first
-  "Transform (-> x (f a) (g b)) into (g (f x a) b)."
-  [initial forms]
-  (reduce (fn [acc form]
-            (let [form (if (seq? form) form (list form))]
-              (list* (first form) acc (rest form))))
-          initial forms))
-
-(defn- thread-last
-  "Transform (->> x (f a) (g b)) into (g b (f a x))."
-  [initial forms]
-  (reduce (fn [acc form]
-            (let [form (if (seq? form) form (list form))]
-              (concat form [acc])))
-          initial forms))
+  #{'quote 'def 'do 'if 'let 'fn 'fn* 'expand 'quine 'loop 'recur 'for 'try})
 
 (defn quote-value
   "Wrap non-self-evaluating values in (quote ...) for safe embedding in generated code."
@@ -373,7 +631,10 @@
 
     ;; List
     (seq? expr)
-    (let [expand1 #(first (-expand-expr % outer-env inner))]
+    (if (and (symbol? (first expr)) (get @macros/spell-macros (first expr)))
+      ;; Macro: expand first, then continue expanding the result
+      (-expand-expr (macros/spell-macroexpand-1 expr) outer-env inner)
+      (let [expand1 #(first (-expand-expr % outer-env inner))]
       (case (first expr)
         nil   [expr inner]
         quote [expr inner]
@@ -392,35 +653,21 @@
 
         if [(list* 'if (map expand1 (rest expr))) inner]
 
+
         let (let [pairs (partition 2 (second expr))
                   [expanded-bindings final-inner]
-                  (reduce (fn [[acc i] [sym val-expr]]
-                            [(conj acc sym (first (-expand-expr val-expr outer-env i)))
-                             (conj i sym)])
+                  (reduce (fn [[acc i] [pattern val-expr]]
+                            [(conj acc pattern (first (-expand-expr val-expr outer-env i)))
+                             (into i (param-symbols pattern))])
                           [[] inner] pairs)
                   expanded-body (map #(first (-expand-expr % outer-env final-inner)) (drop 2 expr))]
               [(list* 'let (vec expanded-bindings) expanded-body) inner])
 
-        (fn fn*) (let [params (set (second expr))
-                       body-inner (into inner params)]
+        (fn fn*) (let [all-syms (set (mapcat param-symbols (second expr)))
+                       body-inner (into inner all-syms)]
                    [(list* 'fn (second expr) (map #(first (-expand-expr % outer-env body-inner)) (drop 2 expr))) inner])
 
-        defn (let [name-sym (second expr)
-                   params (set (nth expr 2))
-                   body-inner (into inner (conj params name-sym))]
-               [(list* 'defn name-sym (nth expr 2) (map #(first (-expand-expr % outer-env body-inner)) (drop 3 expr)))
-                (conj inner name-sym)])
 
-        future [(list 'future (expand1 (second expr))) inner]
-
-        plet (let [pairs (partition 2 (second expr))
-                   [expanded-bindings final-inner]
-                   (reduce (fn [[acc i] [sym val-expr]]
-                             [(conj acc sym (first (-expand-expr val-expr outer-env i)))
-                              (conj i sym)])
-                           [[] inner] pairs)
-                   expanded-body (map #(first (-expand-expr % outer-env final-inner)) (drop 2 expr))]
-               [(list* 'plet (vec expanded-bindings) expanded-body) inner])
 
         quine (let [name-sym (second expr)
                     [body-expanded _] (-expand-expr (nth expr 2) outer-env (conj inner name-sym))]
@@ -428,9 +675,9 @@
 
         loop (let [pairs (partition 2 (second expr))
                    [expanded-bindings final-inner]
-                   (reduce (fn [[acc i] [sym val-expr]]
-                             [(conj acc sym (first (-expand-expr val-expr outer-env i)))
-                              (conj i sym)])
+                   (reduce (fn [[acc i] [pattern val-expr]]
+                             [(conj acc pattern (first (-expand-expr val-expr outer-env i)))
+                              (into i (param-symbols pattern))])
                            [[] inner] pairs)
                    expanded-body (map #(first (-expand-expr % outer-env final-inner)) (drop 2 expr))]
                [(list* 'loop (vec expanded-bindings) expanded-body) inner])
@@ -459,24 +706,22 @@
                           (= item :let)
                           (let [let-pairs (partition 2 (second remaining))
                                 [let-expanded let-bound]
-                                (reduce (fn [[lacc lbound] [sym val-expr]]
-                                          [(conj lacc sym (first (-expand-expr val-expr outer-env lbound)))
-                                           (conj lbound sym)])
+                                (reduce (fn [[lacc lbound] [pattern val-expr]]
+                                          [(conj lacc pattern (first (-expand-expr val-expr outer-env lbound)))
+                                           (into lbound (param-symbols pattern))])
                                         [[] bound] let-pairs)]
                             (recur (drop 2 remaining)
                                    (conj acc :let (vec let-expanded))
                                    let-bound))
-                          ;; Normal binding: sym coll
+                          ;; Normal binding: pattern coll
                           :else
-                          (let [sym item
+                          (let [pattern item
                                 coll-expr (second remaining)
                                 [coll-expanded _] (-expand-expr coll-expr outer-env bound)]
                             (recur (drop 2 remaining)
-                                   (conj acc sym coll-expanded)
-                                   (conj bound sym)))))))]
+                                   (conj acc pattern coll-expanded)
+                                   (into bound (param-symbols pattern))))))))]
               [(list 'for (vec expanded-bindings) (first (-expand-expr body outer-env final-inner))) inner])
-
-        throw [(list 'throw (expand1 (second expr))) inner]
 
         try (let [forms (rest expr)
                   catch-form (when (and (seq forms) (seq? (last forms))
@@ -499,14 +744,8 @@
                  (list* 'try expanded-body))
                inner])
 
-        ;; Threading macros: transform then expand
-        -> (-expand-expr (thread-first (second expr) (drop 2 expr)) outer-env inner)
-        ->> (-expand-expr (thread-last (second expr) (drop 2 expr)) outer-env inner)
-
-        (cond and or) [(list* (first expr) (map expand1 (rest expr))) inner]
-
         ;; Default: recurse into all sub-expressions
-        [(apply list (map expand1 expr)) inner]))
+        [(apply list (map expand1 expr)) inner])))
 
     :else [expr inner]))
 
@@ -520,544 +759,327 @@
 ;; =============================================================================
 
 (defn- eval-seq
-  "Evaluate a sequence of expressions, threading env/memo/idx.
+  "Evaluate a sequence of expressions, threading env.
    Returns result map with last value."
-  [exprs env memo idx]
+  [exprs env]
   (if (empty? exprs)
-    (ok nil env memo idx)
+    (ok nil env)
     (loop [remaining exprs
-           result (ok nil env memo idx)]
+           result (ok nil env)]
       (if (empty? remaining)
         result
         (if (err? result)
           result
           (recur (rest remaining)
-                 (spell-eval (first remaining) (:env result) (:memo result) (:idx result))))))))
+                 (spell-eval (first remaining) (:env result))))))))
 
 (defn spell-eval
-  "Evaluate expr in env with memo tracking. Returns result map:
-   - Success: {:ok value :env env' :memo memo' :idx idx'}
-   - Error: {:err msg :env env :memo memo :idx idx :expr failing-expr}
+  "Evaluate expr in env. Returns result map:
+   - Success: {:ok value :env env'}
+   - Error: {:err msg :env env :expr failing-expr}"
+  [expr env]
+  (cond
+    ;; Self-evaluating: nil, strings, numbers, booleans, keywords, regex patterns, sets
+    (or (nil? expr) (string? expr) (number? expr) (boolean? expr) (keyword? expr)
+        (instance? java.util.regex.Pattern expr) (set? expr))
+    (ok expr env)
 
-   The memo vector records evaluated expressions and values for replay.
-   If idx points to an existing memo entry, return cached value (skip re-evaluation)."
-  ([expr env]
-   ;; Backwards-compatible 2-arg form: convert result to [value env] pair
-   (let [result (spell-eval expr env [] 0)]
-     (if (ok? result)
-       [(:ok result) (:env result)]
-       (throw (ex-info (:err result) {:result result})))))
-  ([expr env memo idx]
-   ;; Check memo first - if we have a cached value at this index, return it
-   (if-let [cached (get memo idx)]
-     (ok (:value cached) env memo (inc idx))
-     ;; Normal evaluation
-     (let [result
-           (cond
-             ;; Self-evaluating: nil, strings, numbers, booleans, keywords, regex patterns, sets
-             (or (nil? expr) (string? expr) (number? expr) (boolean? expr) (keyword? expr)
-                 (instance? java.util.regex.Pattern expr) (set? expr))
-             (ok expr env memo idx)
+    ;; Symbol: qualified (a/b/c) -> recursive namespace lookup; else env/*builtins*
+    (symbol? expr)
+    (let [sym-str (str expr)
+          parts (when (str/includes? sym-str "/")
+                  (let [p (str/split sym-str #"/")]
+                    (when (and (> (count p) 1)
+                               (seq (first p))
+                               (seq (second p)))
+                      p)))]
+      (if parts
+        ;; Qualified symbol: strings/trim or nested/path/item
+        (let [root-sym (symbol (first parts))
+              root-result (spell-eval root-sym env)]
+          (if (err? root-result)
+            root-result
+            (let [root-val (:ok root-result)
+                  result (reduce #(get %1 (keyword %2)) root-val (rest parts))]
+              (if (nil? result)
+                (err (str "Namespace lookup failed: " expr) env expr)
+                (ok result (:env root-result))))))
+        ;; Unqualified: lookup in env, fallback to *builtins*
+        (if-let [entry (or (find env expr) (find (or *builtins* core-builtins) expr))]
+          (ok (val entry) env)
+          (err (str "Unbound symbol: " expr) env expr))))
 
-             ;; Symbol: qualified (a/b/c) -> recursive namespace lookup; else env/*builtins*
-             (symbol? expr)
-             (let [sym-str (str expr)
-                   parts (when (str/includes? sym-str "/")
-                           (let [p (str/split sym-str #"/")]
-                             (when (and (> (count p) 1)
-                                        (seq (first p))
-                                        (seq (second p)))
-                               p)))]
-               (if parts
-                 ;; Qualified symbol: strings/trim or nested/path/item
-                 (let [root-sym (symbol (first parts))
-                       root-result (spell-eval root-sym env memo idx)]
-                   (if (err? root-result)
-                     root-result
-                     (let [root-val (:ok root-result)
-                           result (reduce #(get %1 (keyword %2)) root-val (rest parts))]
-                       (if (nil? result)
-                         (err (str "Namespace lookup failed: " expr) env memo idx expr)
-                         (ok result (:env root-result) (:memo root-result) (:idx root-result))))))
-                 ;; Unqualified: lookup in env, fallback to *builtins*
-                 (if-let [entry (or (find env expr) (find (or *builtins* core-builtins) expr))]
-                   (ok (val entry) env memo idx)
-                   (err (str "Unbound symbol: " expr) env memo idx expr))))
+    ;; Vector: evaluate each element, threading env
+    (vector? expr)
+    (loop [remaining expr
+           acc []
+           e env]
+      (if (empty? remaining)
+        (ok acc e)
+        (let [result (spell-eval (first remaining) e)]
+          (if (err? result)
+            result
+            (recur (rest remaining)
+                   (conj acc (:ok result))
+                   (:env result))))))
 
-             ;; Vector: evaluate each element, threading state
-             (vector? expr)
-             (loop [remaining expr
-                    acc []
-                    e env
-                    m memo
-                    i idx]
+    ;; Map: spell-fn maps are self-evaluating; otherwise evaluate values
+    (map? expr)
+    (if (spell-fn? expr)
+      (ok expr env)
+      (loop [remaining (seq expr)
+             acc {}
+             e env]
+        (if (empty? remaining)
+          (ok acc e)
+          (let [[k v] (first remaining)
+                result (spell-eval v e)]
+            (if (err? result)
+              result
+              (recur (rest remaining)
+                     (assoc acc k (:ok result))
+                     (:env result)))))))
+
+    ;; List: macros, special forms, or function application
+    (seq? expr)
+    ;; Check for macro expansion first
+    (if (and (symbol? (first expr)) (get @macros/spell-macros (first expr)))
+      (spell-eval (macros/spell-macroexpand-1 expr) env)
+      (case (first expr)
+      nil   (ok nil env)
+      quote (ok (second expr) env)
+
+      def   (let [sym (second expr)
+                  val-result (spell-eval (nth expr 2) env)]
+              (if (err? val-result)
+                val-result
+                (ok (:ok val-result)
+                    (assoc (:env val-result) sym (:ok val-result)))))
+
+      do    (eval-seq (rest expr) env)
+
+      if    (let [test-result (spell-eval (second expr) env)]
+              (if (err? test-result)
+                test-result
+                (spell-eval (nth expr (if (:ok test-result) 2 3) nil)
+                            (:env test-result))))
+
+
+      ;; let: (let [bindings...] body...) - local bindings (supports destructuring)
+      let   (let [bindings (partition 2 (second expr))
+                  body (drop 2 expr)]
+              (loop [remaining bindings
+                     local-env env]
+                (if (empty? remaining)
+                  (let [body-result (eval-seq body local-env)]
+                    (if (err? body-result)
+                      body-result
+                      ;; Let bindings don't escape
+                      (ok (:ok body-result) env)))
+                  (let [[pattern val-expr] (first remaining)
+                        val-result (spell-eval val-expr local-env)]
+                    (if (err? val-result)
+                      val-result
+                      (recur (rest remaining)
+                             (into local-env (destructure-bind pattern (:ok val-result)))))))))
+
+      ;; fn/fn*: (fn [params...] body...) - dynamic scoping, returns source form
+      ;; fn* is Clojure's internal form produced by #() reader macro
+      (fn fn*)
+            (ok {:spell/fn true :params (second expr) :body (drop 2 expr)} env)
+
+
+
+      ;; expand: (expand expr) - single-pass walk mirroring spell-eval
+      expand (let [quoted-result (spell-eval (second expr) env)]
+               (if (err? quoted-result)
+                 quoted-result
+                 (ok (expand-expr (:ok quoted-result) (:env quoted-result))
+                     (:env quoted-result))))
+
+      ;; quine: (quine name body) — bind name to the source form (= expr), eval body
+      quine (let [name-sym (second expr)
+                  body (nth expr 2)
+                  env' (assoc env name-sym expr)]
+              (spell-eval body env'))
+
+      ;; loop: (loop [bindings...] body...) - establishes a recursion point
+      loop (let [bindings (partition 2 (second expr))
+                 body (drop 2 expr)
+                 binding-patterns (mapv first bindings)
+                 init-exprs (mapv second bindings)]
+             ;; Evaluate initial values
+             (loop [remaining init-exprs
+                    init-vals []
+                    e env]
                (if (empty? remaining)
-                 (ok acc e m i)
-                 (let [result (spell-eval (first remaining) e m i)]
+                 ;; All initial values evaluated, now run the loop body
+                 (loop [current-vals init-vals]
+                   (let [local-env (into e (mapcat destructure-bind binding-patterns current-vals))
+                         body-result (eval-seq body local-env)]
+                     (if (err? body-result)
+                       body-result
+                       (if (and (map? (:ok body-result)) (:spell/recur (:ok body-result)))
+                         (recur (:vals (:ok body-result)))
+                         ;; Normal return - restore outer env
+                         (ok (:ok body-result) e)))))
+                 ;; Still evaluating initial values
+                 (let [result (spell-eval (first remaining) e)]
                    (if (err? result)
                      result
                      (recur (rest remaining)
-                            (conj acc (:ok result))
-                            (:env result)
-                            (:memo result)
-                            (:idx result))))))
+                            (conj init-vals (:ok result))
+                            (:env result)))))))
 
-             ;; Map: spell-fn maps are self-evaluating; otherwise evaluate values
-             (map? expr)
-             (if (spell-fn? expr)
-               (ok expr env memo idx)
-               (loop [remaining (seq expr)
-                      acc {}
-                      e env
-                      m memo
-                      i idx]
-                 (if (empty? remaining)
-                   (ok acc e m i)
-                   (let [[k v] (first remaining)
-                         result (spell-eval v e m i)]
-                     (if (err? result)
-                       result
-                       (recur (rest remaining)
-                              (assoc acc k (:ok result))
-                              (:env result)
-                              (:memo result)
-                              (:idx result)))))))
+      ;; recur: (recur exprs...) - jump back to loop with new values
+      recur (loop [remaining (rest expr)
+                   vals []
+                   e env]
+              (if (empty? remaining)
+                (ok {:spell/recur true :vals vals} e)
+                (let [result (spell-eval (first remaining) e)]
+                  (if (err? result)
+                    result
+                    (recur (rest remaining)
+                           (conj vals (:ok result))
+                           (:env result))))))
 
-             ;; List: special forms or function application
-             (seq? expr)
-             (case (first expr)
-               nil   (ok nil env memo idx)
-               quote (ok (second expr) env memo idx)
-
-               def   (let [sym (second expr)
-                           val-result (spell-eval (nth expr 2) env memo idx)]
-                       (if (err? val-result)
-                         val-result
-                         (ok (:ok val-result)
-                             (assoc (:env val-result) sym (:ok val-result))
-                             (:memo val-result)
-                             (:idx val-result))))
-
-               do    (eval-seq (rest expr) env memo idx)
-
-               if    (let [test-result (spell-eval (second expr) env memo idx)]
-                       (if (err? test-result)
-                         test-result
-                         (spell-eval (nth expr (if (:ok test-result) 2 3) nil)
-                                     (:env test-result)
-                                     (:memo test-result)
-                                     (:idx test-result))))
-
-               ;; let: (let [bindings...] body...) - local bindings
-               let   (let [bindings (partition 2 (second expr))
-                           body (drop 2 expr)]
-                       (loop [remaining bindings
-                              local-env env
-                              m memo
-                              i idx]
-                         (if (empty? remaining)
-                           (let [body-result (eval-seq body local-env m i)]
-                             (if (err? body-result)
-                               body-result
-                               ;; Let bindings don't escape
-                               (ok (:ok body-result) env (:memo body-result) (:idx body-result))))
-                           (let [[sym val-expr] (first remaining)
-                                 val-result (spell-eval val-expr local-env m i)]
-                             (if (err? val-result)
-                               val-result
-                               (recur (rest remaining)
-                                      (assoc local-env sym (:ok val-result))
-                                      (:memo val-result)
-                                      (:idx val-result)))))))
-
-               ;; fn/fn*: (fn [params...] body...) - dynamic scoping, returns source form
-               ;; fn* is Clojure's internal form produced by #() reader macro
-               (fn fn*)
-                     (ok {:spell/fn true :params (second expr) :body (drop 2 expr)} env memo idx)
-
-               ;; defn: (defn name [params...] body...)
-               defn  (let [name (second expr)
-                           params (nth expr 2)
-                           body (drop 3 expr)
-                           fn-result (spell-eval (list* 'fn params body) env memo idx)]
-                       (if (err? fn-result)
-                         fn-result
-                         (ok (:ok fn-result)
-                             (assoc (:env fn-result) name (:ok fn-result))
-                             (:memo fn-result)
-                             (:idx fn-result))))
-
-               ;; cond: (cond test1 expr1 test2 expr2 ... :else default)
-               cond  (loop [clauses (partition 2 (rest expr))
-                            e env
-                            m memo
-                            i idx]
-                       (if (empty? clauses)
-                         (ok nil e m i)
-                         (let [[test-expr result-expr] (first clauses)]
-                           (if (= test-expr :else)
-                             (spell-eval result-expr e m i)
-                             (let [test-result (spell-eval test-expr e m i)]
-                               (if (err? test-result)
-                                 test-result
-                                 (if (:ok test-result)
-                                   (spell-eval result-expr (:env test-result) (:memo test-result) (:idx test-result))
-                                   (recur (rest clauses) (:env test-result) (:memo test-result) (:idx test-result)))))))))
-
-               ;; and: short-circuit, returns last truthy or first falsy
-               and   (loop [exprs (rest expr)
-                            e env
-                            m memo
-                            i idx
-                            last-v true]
-                       (if (empty? exprs)
-                         (ok last-v e m i)
-                         (let [result (spell-eval (first exprs) e m i)]
-                           (if (err? result)
-                             result
-                             (if (:ok result)
-                               (recur (rest exprs) (:env result) (:memo result) (:idx result) (:ok result))
-                               (ok (:ok result) (:env result) (:memo result) (:idx result)))))))
-
-               ;; or: short-circuit, returns first truthy or last falsy
-               or    (loop [exprs (rest expr)
-                            e env
-                            m memo
-                            i idx
-                            last-v nil]
-                       (if (empty? exprs)
-                         (ok last-v e m i)
-                         (let [result (spell-eval (first exprs) e m i)]
-                           (if (err? result)
-                             result
-                             (if (:ok result)
-                               (ok (:ok result) (:env result) (:memo result) (:idx result))
-                               (recur (rest exprs) (:env result) (:memo result) (:idx result) (:ok result)))))))
-
-               ;; expand: (expand expr) - single-pass walk mirroring spell-eval
-               expand (let [quoted-result (spell-eval (second expr) env memo idx)]
-                        (if (err? quoted-result)
-                          quoted-result
-                          (ok (expand-expr (:ok quoted-result) (:env quoted-result))
-                              (:env quoted-result) (:memo quoted-result) (:idx quoted-result))))
-
-               ;; eval: (eval expr) - expand and evaluate using current env (like Clojure's eval)
-               eval (let [quoted-result (spell-eval (second expr) env memo idx)]
-                      (if (err? quoted-result)
-                        quoted-result
-                        (let [expanded (expand-expr (:ok quoted-result) (:env quoted-result))]
-                          (spell-eval expanded (:env quoted-result) (:memo quoted-result) (:idx quoted-result)))))
-
-               ;; call-now: (call-now name expr) - evaluate expr, bind to name, continue in child LLM
-               ;; Like def but spawns child LLM that continues with the binding in scope
-               call-now
-               (let [name-sym (second expr)
-                     val-expr (nth expr 2)]
-                 ;; Evaluate the value expression
-                 (let [val-result (spell-eval val-expr env memo idx)]
-                   (if (err? val-result)
-                     val-result
-                     (let [result-val (:ok val-result)
-                           e (:env val-result)
-                           m (:memo val-result)
-                           i (:idx val-result)
-                           ;; Get completion from env (bound by quine preamble)
-                           completion (get e 'completion)
-                           ;; Check if binding already exists (idempotency guard)
-                           quine-str (str "(quine " name-sym " ")
-                           already-bound? (and completion
-                                               (.contains (pr-str completion) quine-str))]
-                       (if already-bound?
-                         ;; Already bound, just return the result
-                         (ok result-val e m i)
-                         ;; Not bound - call llm-self with extended completion
-                         (let [;; Build the continuation prompt
-                               reopen-fn (get *builtins* 'reopen)
-                               completion-str (pr-str completion)
-                               reopened (reopen-fn completion-str)
-                               continuation (str reopened "(quine " name-sym " " (pr-str result-val) ") ")
-                               ;; Get llm-self and call it
-                               llm-self-fn (get *builtins* 'llm-self)]
-                           (if llm-self-fn
-                             (try
-                               (ok (llm-self-fn continuation) e m i)
-                               (catch Exception ex
-                                 (err (str "call-now failed: " (.getMessage ex)) e m i expr)))
-                             (err "call-now requires llm-self (only available inside llm calls)" e m i expr))))))))
-
-               ;; quine: (quine name body) — bind name to the source form (= expr), eval body
-               quine (let [name-sym (second expr)
-                           body (nth expr 2)
-                           env' (assoc env name-sym expr)]
-                       (spell-eval body env' memo idx))
-
-               ;; memo: (memo N) - retrieve cached value at index N
-               memo (let [n (second expr)]
-                      (if-let [entry (get memo n)]
-                        (ok (:value entry) env memo idx)
-                        (err (str "No memo entry at index " n) env memo idx expr)))
-
-               ;; loop: (loop [bindings...] body...) - establishes a recursion point
-               loop (let [bindings (partition 2 (second expr))
-                          body (drop 2 expr)
-                          binding-syms (mapv first bindings)
-                          init-exprs (mapv second bindings)]
-                      ;; Evaluate initial values
-                      (loop [remaining init-exprs
-                             init-vals []
-                             e env
-                             m memo
-                             i idx]
-                        (if (empty? remaining)
-                          ;; All initial values evaluated, now run the loop body
-                          (loop [current-vals init-vals
-                                 loop-m m
-                                 loop-i i]
-                            (let [local-env (into e (map vector binding-syms current-vals))
-                                  body-result (eval-seq body local-env loop-m loop-i)]
+      ;; for: (for [x coll :when pred :let [y expr]] body) - list comprehension
+      for (let [bindings (second expr)
+                body (nth expr 2)]
+            ;; Parse bindings into structured form
+            (letfn [(parse-bindings [remaining]
+                      (loop [rem (seq remaining)
+                             parsed []]
+                        (if (empty? rem)
+                          parsed
+                          (let [item (first rem)]
+                            (cond
+                              (= item :when)
+                              (recur (drop 2 rem) (conj parsed {:type :when :pred (second rem)}))
+                              (= item :let)
+                              (recur (drop 2 rem) (conj parsed {:type :let :bindings (partition 2 (second rem))}))
+                              :else
+                              (recur (drop 2 rem) (conj parsed {:type :iter :sym item :coll (second rem)})))))))]
+              (let [parsed (parse-bindings bindings)]
+                ;; Recursive evaluation of for comprehension
+                (letfn [(eval-for [segments local-env]
+                          (if (empty? segments)
+                            ;; Evaluate body and return single-element result
+                            (let [body-result (spell-eval body local-env)]
                               (if (err? body-result)
                                 body-result
-                                (if (and (map? (:ok body-result)) (:spell/recur (:ok body-result)))
-                                  (recur (:vals (:ok body-result))
-                                         (:memo body-result)
-                                         (:idx body-result))
-                                  ;; Normal return - restore outer env
-                                  (ok (:ok body-result) e (:memo body-result) (:idx body-result))))))
-                          ;; Still evaluating initial values
-                          (let [result (spell-eval (first remaining) e m i)]
-                            (if (err? result)
-                              result
-                              (recur (rest remaining)
-                                     (conj init-vals (:ok result))
-                                     (:env result)
-                                     (:memo result)
-                                     (:idx result)))))))
+                                (ok [(:ok body-result)] (:env body-result))))
+                            ;; Process next segment
+                            (let [seg (first segments)
+                                  rest-segs (rest segments)]
+                              (case (:type seg)
+                                :iter
+                                (let [coll-result (spell-eval (:coll seg) local-env)]
+                                  (if (err? coll-result)
+                                    coll-result
+                                    (loop [items (seq (:ok coll-result))
+                                           acc []]
+                                      (if (empty? items)
+                                        (ok acc local-env)
+                                        (let [item-env (into local-env (destructure-bind (:sym seg) (first items)))
+                                              sub-result (eval-for rest-segs item-env)]
+                                          (if (err? sub-result)
+                                            sub-result
+                                            (recur (rest items)
+                                                   (into acc (:ok sub-result)))))))))
+                                :when
+                                (let [pred-result (spell-eval (:pred seg) local-env)]
+                                  (if (err? pred-result)
+                                    pred-result
+                                    (if (:ok pred-result)
+                                      (eval-for rest-segs local-env)
+                                      (ok [] local-env))))
+                                :let
+                                (loop [let-bindings (:bindings seg)
+                                       let-env local-env]
+                                  (if (empty? let-bindings)
+                                    (eval-for rest-segs let-env)
+                                    (let [[pattern val-expr] (first let-bindings)
+                                          val-result (spell-eval val-expr let-env)]
+                                      (if (err? val-result)
+                                        val-result
+                                        (recur (rest let-bindings)
+                                               (into let-env (destructure-bind pattern (:ok val-result))))))))))))]
+                  (let [result (eval-for parsed env)]
+                    (if (err? result)
+                      result
+                      ;; Return env unchanged (for bindings don't escape)
+                      (ok (:ok result) env)))))))
 
-               ;; recur: (recur exprs...) - jump back to loop with new values
-               recur (loop [remaining (rest expr)
-                            vals []
-                            e env
-                            m memo
-                            i idx]
-                       (if (empty? remaining)
-                         (ok {:spell/recur true :vals vals} e m i)
-                         (let [result (spell-eval (first remaining) e m i)]
-                           (if (err? result)
-                             result
-                             (recur (rest remaining)
-                                    (conj vals (:ok result))
-                                    (:env result)
-                                    (:memo result)
-                                    (:idx result))))))
+      ;; try: (try body... (catch e handler...))
+      try (let [forms (rest expr)
+                catch-form (when (and (seq forms) (seq? (last forms))
+                                      (= 'catch (first (last forms))))
+                             (last forms))
+                body-forms (if catch-form (butlast forms) forms)
+                body-result (eval-seq body-forms env)]
+            (if (and (err? body-result) catch-form)
+              (let [catch-sym (second catch-form)
+                    catch-body (drop 2 catch-form)
+                    error-val (if (contains? body-result :thrown)
+                                (:thrown body-result)
+                                {:message (:err body-result) :expr (:expr body-result)})
+                    catch-env (assoc (:env body-result) catch-sym error-val)
+                    catch-result (eval-seq catch-body catch-env)]
+                (if (err? catch-result)
+                  catch-result
+                  (ok (:ok catch-result)
+                      (dissoc (:env catch-result) catch-sym))))
+              body-result))
 
-               ;; for: (for [x coll :when pred :let [y expr]] body) - list comprehension
-               for (let [bindings (second expr)
-                         body (nth expr 2)]
-                     ;; Parse bindings into structured form
-                     (letfn [(parse-bindings [remaining]
-                               (loop [rem (seq remaining)
-                                      parsed []]
-                                 (if (empty? rem)
-                                   parsed
-                                   (let [item (first rem)]
-                                     (cond
-                                       (= item :when)
-                                       (recur (drop 2 rem) (conj parsed {:type :when :pred (second rem)}))
-                                       (= item :let)
-                                       (recur (drop 2 rem) (conj parsed {:type :let :bindings (partition 2 (second rem))}))
-                                       :else
-                                       (recur (drop 2 rem) (conj parsed {:type :iter :sym item :coll (second rem)})))))))]
-                       (let [parsed (parse-bindings bindings)]
-                         ;; Recursive evaluation of for comprehension
-                         (letfn [(eval-for [segments local-env m i]
-                                   (if (empty? segments)
-                                     ;; Evaluate body and return single-element result
-                                     (let [body-result (spell-eval body local-env m i)]
-                                       (if (err? body-result)
-                                         body-result
-                                         (ok [(:ok body-result)] (:env body-result) (:memo body-result) (:idx body-result))))
-                                     ;; Process next segment
-                                     (let [seg (first segments)
-                                           rest-segs (rest segments)]
-                                       (case (:type seg)
-                                         :iter
-                                         (let [coll-result (spell-eval (:coll seg) local-env m i)]
-                                           (if (err? coll-result)
-                                             coll-result
-                                             (loop [items (seq (:ok coll-result))
-                                                    acc []
-                                                    cur-m (:memo coll-result)
-                                                    cur-i (:idx coll-result)]
-                                               (if (empty? items)
-                                                 (ok acc local-env cur-m cur-i)
-                                                 (let [item-env (assoc local-env (:sym seg) (first items))
-                                                       sub-result (eval-for rest-segs item-env cur-m cur-i)]
-                                                   (if (err? sub-result)
-                                                     sub-result
-                                                     (recur (rest items)
-                                                            (into acc (:ok sub-result))
-                                                            (:memo sub-result)
-                                                            (:idx sub-result))))))))
-                                         :when
-                                         (let [pred-result (spell-eval (:pred seg) local-env m i)]
-                                           (if (err? pred-result)
-                                             pred-result
-                                             (if (:ok pred-result)
-                                               (eval-for rest-segs local-env (:memo pred-result) (:idx pred-result))
-                                               (ok [] local-env (:memo pred-result) (:idx pred-result)))))
-                                         :let
-                                         (loop [let-bindings (:bindings seg)
-                                                let-env local-env
-                                                let-m m
-                                                let-i i]
-                                           (if (empty? let-bindings)
-                                             (eval-for rest-segs let-env let-m let-i)
-                                             (let [[sym val-expr] (first let-bindings)
-                                                   val-result (spell-eval val-expr let-env let-m let-i)]
-                                               (if (err? val-result)
-                                                 val-result
-                                                 (recur (rest let-bindings)
-                                                        (assoc let-env sym (:ok val-result))
-                                                        (:memo val-result)
-                                                        (:idx val-result))))))))))]
-                           (let [result (eval-for parsed env memo idx)]
-                             (if (err? result)
-                               result
-                               ;; Return env unchanged (for bindings don't escape)
-                               (ok (:ok result) env (:memo result) (:idx result))))))))
 
-               ;; try: (try body... (catch e handler...))
-               try (let [forms (rest expr)
-                         catch-form (when (and (seq forms) (seq? (last forms))
-                                               (= 'catch (first (last forms))))
-                                      (last forms))
-                         body-forms (if catch-form (butlast forms) forms)
-                         body-result (eval-seq body-forms env memo idx)]
-                     (if (and (err? body-result) catch-form)
-                       (let [catch-sym (second catch-form)
-                             catch-body (drop 2 catch-form)
-                             error-val (if (contains? body-result :thrown)
-                                         (:thrown body-result)
-                                         {:message (:err body-result) :expr (:expr body-result)})
-                             catch-env (assoc (:env body-result) catch-sym error-val)
-                             catch-result (eval-seq catch-body catch-env
-                                                    (:memo body-result) (:idx body-result))]
-                         (if (err? catch-result)
-                           catch-result
-                           (ok (:ok catch-result)
-                               (dissoc (:env catch-result) catch-sym)
-                               (:memo catch-result) (:idx catch-result))))
-                       body-result))
 
-               ;; throw: (throw value) - raise a catchable error
-               throw (let [val-result (spell-eval (second expr) env memo idx)]
-                       (if (err? val-result)
-                         val-result
-                         {:err (if (string? (:ok val-result))
-                                 (:ok val-result)
-                                 (pr-str (:ok val-result)))
-                          :thrown (:ok val-result)
-                          :env (:env val-result)
-                          :memo (:memo val-result)
-                          :idx (:idx val-result)
-                          :expr expr}))
+      ;; Function application: evaluate all, apply first to rest
+      (loop [remaining expr
+             vals []
+             e env]
+        (if (empty? remaining)
+          (let [f (first vals)
+                args (rest vals)]
+            (if (spell-fn? f)
+              ;; Spell fn: loop to support fn-level recur
+              (loop [current-args args]
+                (let [local-env (into e (bind-params (:params f) current-args))
+                      body-result (eval-seq (:body f) local-env)]
+                  (if (err? body-result)
+                    body-result
+                    (if (and (map? (:ok body-result)) (:spell/recur (:ok body-result)))
+                      ;; recur: rebind params, re-enter function body
+                      (recur (:vals (:ok body-result)))
+                      ;; normal return
+                      (ok (:ok body-result) e)))))
+              ;; Call Clojure function - wrap in try/catch for error handling
+              (try
+                (ok (binding [*spell-env* e] (apply f args)) e)
+                (catch Exception ex
+                  (let [thrown (get (ex-data ex) :spell/thrown)
+                        ex-type (get (ex-data ex) :type)]
+                    (cond
+                      ;; Resource limits — re-throw, not recoverable
+                      (#{:depth-exceeded :budget-exceeded} ex-type) (throw ex)
+                      ;; Spell throw — preserve thrown value for try/catch
+                      thrown {:err (ex-message ex) :thrown thrown :env e :expr expr}
+                      ;; Other errors — wrap as eval error
+                      :else (err (str "Function call failed: " (ex-message ex)) e expr)))))))
+          (let [result (spell-eval (first remaining) e)]
+            (if (err? result)
+              result
+              (recur (rest remaining)
+                     (conj vals (:ok result))
+                     (:env result)))))))) ;; end case + if-macro
 
-               ;; future: (future expr) - evaluate expr in a new thread, return future handle
-               future (let [body (second expr)
-                            captured-env env
-                            ;; Use 2-arg form for backwards compatibility in thread
-                            f (bound-fn [] (first (spell-eval body captured-env)))]
-                        (ok {:spell/future true :ref (clojure.core/future (f))} env memo idx))
-
-               ;; plet: (plet [name1 expr1 name2 expr2 ...] body...) - parallel let
-               ;; Evaluates all exprs as implicit futures, awaits all, binds results, runs body
-               plet (let [bindings (partition 2 (second expr))
-                          body (drop 2 expr)]
-                      ;; Evaluate all binding exprs sequentially to collect memo/idx,
-                      ;; then wrap each result in a future
-                      (let [eval-results
-                            (loop [remaining bindings
-                                   acc []
-                                   m memo
-                                   i idx]
-                              (if (empty? remaining)
-                                {:futures acc :memo m :idx i}
-                                (let [[sym val-expr] (first remaining)
-                                      captured-env env
-                                      f (bound-fn [] (first (spell-eval val-expr captured-env)))
-                                      fut {:spell/future true
-                                           :ref (clojure.core/future (f))}]
-                                  (recur (rest remaining)
-                                         (conj acc [sym fut])
-                                         m i))))]
-                        ;; Await all futures and bind results
-                        (let [local-env (reduce (fn [e [sym fut]]
-                                                  (assoc e sym (deref (:ref fut))))
-                                                env
-                                                (:futures eval-results))
-                              body-result (eval-seq body local-env
-                                                    (:memo eval-results) (:idx eval-results))]
-                          (if (err? body-result)
-                            body-result
-                            ;; Join bindings don't escape (like let)
-                            (ok (:ok body-result) env (:memo body-result) (:idx body-result))))))
-
-               ;; ->: (-> x (f a) (g b)) - thread-first
-               -> (spell-eval (thread-first (second expr) (drop 2 expr)) env memo idx)
-
-               ;; ->>: (->> x (f a) (g b)) - thread-last
-               ->> (spell-eval (thread-last (second expr) (drop 2 expr)) env memo idx)
-
-               ;; Function application: evaluate all, apply first to rest
-               (loop [remaining expr
-                      vals []
-                      e env
-                      m memo
-                      i idx]
-                 (if (empty? remaining)
-                   (let [f (first vals)
-                         args (rest vals)]
-                     (if (spell-fn? f)
-                       ;; Spell fn: loop to support fn-level recur
-                       (loop [current-args args
-                              fn-m m
-                              fn-i i]
-                         (let [local-env (into e (map vector (:params f) current-args))
-                               body-result (eval-seq (:body f) local-env fn-m fn-i)]
-                           (if (err? body-result)
-                             body-result
-                             (if (and (map? (:ok body-result)) (:spell/recur (:ok body-result)))
-                               ;; recur: rebind params, re-enter function body
-                               (recur (:vals (:ok body-result))
-                                      (:memo body-result)
-                                      (:idx body-result))
-                               ;; normal return
-                               (ok (:ok body-result) e (:memo body-result) (:idx body-result))))))
-                       ;; Call Clojure function - wrap in try/catch for error handling
-                       (try
-                         (ok (binding [*spell-env* e] (apply f args)) e m i)
-                         (catch Exception ex
-                           (let [thrown (get (ex-data ex) :spell/thrown)]
-                             (if thrown
-                               {:err (ex-message ex) :thrown thrown :env e :memo m :idx i :expr expr}
-                               (err (str "Function call failed: " (ex-message ex)) e m i expr)))))))
-                   (let [result (spell-eval (first remaining) e m i)]
-                     (if (err? result)
-                       result
-                       (recur (rest remaining)
-                              (conj vals (:ok result))
-                              (:env result)
-                              (:memo result)
-                              (:idx result)))))))
-
-             :else (err (str "Unknown expression type: " (type expr)) env memo idx expr))]
-       ;; Record to memo after successful evaluation
-       (record-memo result expr)))))
+    :else (err (str "Unknown expression type: " (type expr)) env expr)))
 
 (defn run-spell
   "Run a spell program, returning just the value."
   [program]
-  (let [result (spell-eval program {} [] 0)]
+  (let [result (spell-eval program {})]
     (if (ok? result)
       (:ok result)
       (throw (ex-info (:err result) {:result result})))))

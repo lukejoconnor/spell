@@ -11,7 +11,6 @@
    Merge semantics:
    - Scalars (:name, :model, etc.): child overrides parent
    - :namespaces: maps are merged (child adds to / overrides parent)
-   - :hooks: concatenated (parent first, then child)
 
    Resolution patterns for namespace values:
    - stdlib/X           → stdlib namespace
@@ -22,7 +21,10 @@
    - {:file f}          → slurp file as string"
   (:require [clojure.edn :as edn]
             [clojure.string :as str]
+            [spell.comm :as comm]
+            [spell.globals :as globals]
             [spell.llm :as llm]
+            [spell.prompt :as prompt]
             [spell.stdlib :as stdlib]
             [spell.io :as io]))
 
@@ -35,19 +37,25 @@
    Note: io/ is opt-in (not in default agent) for safety.
    Seqs, fns, and bit- ops are in core-builtins (matching Clojure)."
   {'io io/io-namespace
+   'globals globals/globals-namespace
+   'agents comm/agents-namespace
+   'futures comm/futures-namespace
+   'builtins prompt/builtins-namespace
    'strings stdlib/strings
    'math stdlib/math
    'patterns stdlib/patterns})
 
 (def default-agent-def
-  "Built-in default agent definition (equivalent to agents/default.agent.edn).
-   Available as :base spell:default or via load-default-agent-config.
-
-   Note: io/ is NOT included by default — agents that need file/process access
-   must explicitly include it: {:namespaces {io stdlib/io ...}}"
+  "Built-in default agent definition (equivalent to agents/with-io-minimal.agent.edn).
+   Available as :base spell:default or via load-default-agent-config."
   {:name 'default
-   :doc "Default agent with standard library (no I/O)"
-   :namespaces {'strings 'stdlib/strings
+   :doc "Default agent with standard library and I/O"
+   :namespaces {'io 'stdlib/io
+                'globals 'stdlib/globals
+                'agents 'stdlib/agents
+                'futures 'stdlib/futures
+                'builtins 'stdlib/builtins
+                'strings 'stdlib/strings
                 'math 'stdlib/math
                 'patterns 'stdlib/patterns}})
 
@@ -226,8 +234,7 @@
 (defn- merge-agent-defs
   "Merge child agent def onto parent.
    - Scalars: child wins if present
-   - :namespaces: merge maps (child overrides parent entries)
-   - :hooks: concatenate (parent first, then child)"
+   - :namespaces: merge maps (child overrides parent entries)"
   [parent child]
   (let [;; Start with parent, override with non-nil child scalars
         merged (reduce (fn [m k]
@@ -235,16 +242,11 @@
                            (assoc m k (get child k))
                            m))
                        parent
-                       [:name :doc :system :model :budget :recover :eval :format :max-retries])
+                       [:name :doc :system :model :budget :recover :eval :format :max-retries :retries :thinking])
         ;; Merge namespaces
         merged (if (or (:namespaces parent) (:namespaces child))
                  (assoc merged :namespaces
                         (merge (:namespaces parent) (:namespaces child)))
-                 merged)
-        ;; Concatenate hooks
-        merged (if (or (:hooks parent) (:hooks child))
-                 (assoc merged :hooks
-                        (vec (concat (:hooks parent) (:hooks child))))
                  merged)]
     merged))
 
@@ -298,7 +300,7 @@
          agent-def (resolve-inheritance raw-def base-dir')
 
          ;; Extract fields (from merged def)
-         {:keys [name doc system model budget recover namespaces hooks]} agent-def
+         {:keys [name doc system model budget recover namespaces]} agent-def
 
          ;; Resolve system prompt
          resolved-system (resolve-system-prompt system base-dir')
@@ -335,8 +337,7 @@
     :budget ...
     :eval ...          ; true (default) = Spell evaluation, false = plain text
     :format ...        ; optional format spec {:required [...] :optional [...]}
-    :max-retries ...   ; optional retry count for format validation
-    :hooks [...]}      ; quoted hook expressions"
+    :max-retries ...   ; optional retry count for format validation}"
   [path]
   (let [file (java.io.File. path)
         base-dir (.getParent file)
@@ -345,7 +346,7 @@
         raw-def (read-agent-edn path nil)
         agent-def (resolve-inheritance raw-def base-dir)
 
-        {:keys [name doc system model budget recover namespaces hooks eval format max-retries]} agent-def
+        {:keys [name doc system model budget recover namespaces eval format max-retries retries thinking]} agent-def
 
         ;; We need make-llm to resolve sub-agents, but we don't have it yet.
         ;; For now, return a thunk that resolves namespaces when called with make-llm-fn.
@@ -361,8 +362,14 @@
      :eval eval           ; nil means default (true)
      :format format
      :max-retries max-retries
-     :resolve-namespaces-fn resolve-fn
-     :hooks hooks}))
+     :retries retries     ; API retry sleep durations, e.g. [0 10]
+     :thinking thinking
+     :resolve-namespaces-fn resolve-fn}))
+
+(defn- try-slurp
+  "Slurp file, returning nil if not found."
+  [path]
+  (try (slurp path) (catch Exception _ nil)))
 
 (defn default-agent-config
   "Return config for the built-in default agent.
@@ -374,12 +381,11 @@
                      (resolve-namespaces namespaces nil make-llm-fn))]
     {:name name
      :doc doc
-     :system nil
+     :system (try-slurp "prompts/minimal.txt")
      :model nil
      :budget nil
      :recover nil
      :eval nil           ; nil means default (true)
      :format format
      :max-retries max-retries
-     :resolve-namespaces-fn resolve-fn
-     :hooks nil}))
+     :resolve-namespaces-fn resolve-fn}))

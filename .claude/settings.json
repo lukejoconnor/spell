@@ -6,6 +6,7 @@
       "Edit(/notebook/**)",
       "Write(/notebook/**)",
       "Bash(git -C notebook *)",
+      "Bash(git -C *)",
       "Bash(git init)",
       "Bash(git remote *)",
       "Bash(git add *)",

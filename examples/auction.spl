@@ -1,0 +1,1 @@
+Run a sealed-bid auction for a painting. Three bidders each independently decide how much to bid (they don't know each other's bids). Collect all bids and announce the winner with the highest bid.

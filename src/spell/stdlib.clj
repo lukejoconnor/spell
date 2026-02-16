@@ -14,24 +14,27 @@
 
 (def strings
   "String manipulation and regex functions (like clojure.string)."
-  {:docs {:subs "Substring. (subs s start) or (subs s start end)"
-          :index-of "Index of substr in s, or nil if not found"
-          :last-index-of "Last index of substr in s, or nil if not found"
-          :starts-with? "True if s starts with prefix"
-          :ends-with? "True if s ends with suffix"
-          :includes? "True if s contains substr"
-          :blank? "True if s is nil, empty, or only whitespace"
-          :trim "Remove leading/trailing whitespace"
-          :replace "Replace all occurrences: (replace s match replacement)"
-          :split "Split string by regex pattern"
-          :split-lines "Split string on line breaks"
-          :join "Join collection with separator"
-          :lower-case "Convert to lowercase"
-          :upper-case "Convert to uppercase"
-          :capitalize "Capitalize first character"
-          :re-find "Find first regex match in string"
-          :re-matches "True if entire string matches regex"
-          :re-seq "Return lazy seq of all regex matches"}
+  {:guide "STRINGS NAMESPACE — Full Function Listing
+
+  subs          — substring: (strings/subs s start) or (strings/subs s start end)
+  index-of      — first index of substring, or nil
+  last-index-of — last index of substring, or nil
+  starts-with?  — test prefix
+  ends-with?    — test suffix
+  includes?     — test containment
+  blank?        — nil, empty, or whitespace only
+  trim          — strip leading/trailing whitespace
+  replace       — replace all occurrences: (strings/replace s match replacement)
+  split         — split by regex: (strings/split s \"pattern\")
+  split-lines   — split by newlines
+  join          — join: (strings/join coll) or (strings/join sep coll)
+  lower-case    — to lowercase
+  upper-case    — to uppercase
+  capitalize    — capitalize first char
+  re-find       — first regex match: (strings/re-find \"pattern\" s)
+  re-matches    — full-string regex match
+  re-seq        — all regex matches as vector"
+   :docs {:_ "Identical to clojure.string — split, join, replace, trim, includes?, starts-with?, ends-with?, upper-case, lower-case, blank?, index-of, subs, re-find, re-seq, re-matches, split-lines, capitalize"}
    :subs (fn
            ([s start] (subs s start))
            ([s start end] (subs s start end)))
@@ -90,15 +93,22 @@
 
 (def math
   "Mathematical functions (like Java's Math/)."
-  {:docs {:_ "Wraps java.lang.Math — sqrt pow log sin cos tan abs floor ceil round etc. all work as expected. Non-obvious extras:"
-          :factorial "n! (bigint-safe)"
-          :gcd "Greatest common divisor"
-          :lcm "Least common multiple"
-          :log2 "Base-2 logarithm"
-          :+' "+' -' *' inc' dec': auto-promoting arithmetic for big numbers"
-          :float "float double long bigdec rationalize: type coercion"
-          :PI "PI E INF NEG-INF NaN: constants"
-          :rand "Random float in [0, 1); rand-int for integers"}
+  {:guide "MATH NAMESPACE — Full Function Listing
+
+  Basic:        sqrt, cbrt, pow, exp, expm1, abs, sign
+  Rounding:     floor, ceil, round, trunc
+  Logarithms:   log (natural), log10, log2, log1p
+  Trigonometric: sin, cos, tan, asin, acos, atan, atan2
+  Hyperbolic:   sinh, cosh, tanh
+  Angles:       degrees (rad->deg), radians (deg->rad)
+  Number theory: factorial, gcd, lcm
+  Misc:         hypot, rand, rand-int
+  Type checks:  NaN?, infinite?
+  Auto-promoting: +', -', *', inc', dec' (arbitrary precision)
+  Type coercion: float, double, long, bigdec, rationalize
+  Constants:    PI, E, INF, NEG-INF, NaN"
+   :docs {:_ "Wraps java.lang.Math — sqrt pow log sin cos tan abs floor ceil round, plus: factorial, gcd, lcm, log2, rand, rand-int, +' *' (auto-promoting), PI, E, float/double/long/bigdec/rationalize"}
+
    ;; Basic
    :sqrt (fn [x] (Math/sqrt x))
    :cbrt (fn [x] (Math/cbrt x))
@@ -168,9 +178,29 @@
 
 (def patterns
   "Reusable orchestration patterns (Spell-specific)."
-  {:docs {:check-result "Verify an answer using leaf-llm. Returns {:ok answer} if correct, {:wrong msg} if not. Caller decides how to handle wrong results (retry, extend, etc.).
+  {:guide "PATTERNS NAMESPACE
+
+call-now: Evaluates an expression, binds the result to a name, and extends to a child LLM that sees it.
+  '(call-now files (io/sh \"ls\"))
+  The child's next turn sees (def files {:exit 0 :out \"...\" :err \"...\"}).
+  Requires the completion binding (from quine wrapper in NL prompts).
+  One call-now per turn — chain across turns for multi-step tool use.
+
+check-result: Verifies an answer using leaf-llm. Returns {:ok answer} or {:wrong msg}.
+  (patterns/check-result \"What is 2+2?\" 4)            ;; => {:ok 4}
+  (patterns/check-result \"Capital of France?\" \"London\") ;; => {:wrong \"London is...\"}"
+   :docs {:call-now "Evaluate a tool, bind the result, and extend to a child LLM that sees it.
+(patterns/call-now (tools/bash \"ls\") 'files)
+Requires the completion binding (from quine preamble in NL prompts)."
+          :check-result "Verify an answer using leaf-llm. Returns {:ok answer} if correct, {:wrong msg} if not. Caller decides how to handle wrong results (retry, extend, etc.).
 (check-result \"What is 2+2?\" 4)  ; => {:ok 4}
 (check-result \"Capital of France?\" \"London\")  ; => {:wrong \"London is the capital of the UK, not France.\"}"}
+   ;; call-now: evaluate tool, bind result in completion, extend to child
+   :call-now {:spell/fn true
+              :params ['result 'name]
+              :body '((if (strings/includes? (pr-str completion) (cat "(def " (str name) " "))
+                        result
+                        (llm-self (cat (reopen completion) "(def " (str name) " " (pr-str result) ") "))))}
    ;; check-result: verify answer with leaf-llm (core builtin), return {:ok answer} or {:wrong msg}
    :check-result {:spell/fn true
                   :params ['prompt 'answer]

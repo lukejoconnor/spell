@@ -1,1 +1,1 @@
-Greet a famous person with the first name from name.txt. Use (llm (cat prefix " Name: " (read-name))) to delegate.
+Read a first name from examples/data/name.txt, then greet a famous person with that first name.

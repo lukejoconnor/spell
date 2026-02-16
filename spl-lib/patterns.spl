@@ -1,36 +1,7 @@
 ;; Spell Pattern Library
 ;;
 ;; Reusable patterns for common Spell idioms.
-;; Available as patterns namespace: (patterns/call-now result 'name)
-
-;; ---------------------------------------------------------------------------
-;; call-now — tool use with continuation
-;; ---------------------------------------------------------------------------
-;; Evaluates a tool, binds the result in the completion, and extends to a
-;; child LLM that can see the result and continue reasoning.
-;;
-;; (patterns/call-now (io/sh "ls") 'files)
-;; (patterns/call-now (:out (io/sh "wc -l data.csv")) 'line-count)
-;;
-;; How it works:
-;; 1. The tool argument is evaluated (bash, read-file, etc.)
-;; 2. The result is formatted as (quine name <value>) and appended to completion
-;; 3. A child LLM receives the extended prefix and continues
-;;
-;; Idempotent in extensions: when the child re-evaluates call-now, it detects
-;; that the binding already exists in the completion and returns early. The tool
-;; arg IS re-evaluated (Lisp semantics), but no new extension is created.
-;;
-;; Requires: completion binding (from quine preamble in NL prompts)
-;;
-;; For side-effecting tools, pre-compute:
-;;   (def r (io/sh "rm ...")) (patterns/call-now r 'result)
-;; This way the side effect only runs once (before call-now).
-
-(defn call-now [result name]
-  (if (strings/includes? completion (cat "(quine " (str name) " "))
-    result
-    (llm-self (cat (reopen completion) "(quine " (str name) " " (pr-str result) ") "))))
+;; Available as patterns namespace: (patterns/check-result prompt answer)
 
 ;; ---------------------------------------------------------------------------
 ;; check-result — verify answer with LLM-as-judge

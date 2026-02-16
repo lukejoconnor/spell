@@ -11,12 +11,16 @@
   (:gen-class))
 
 (def model-aliases
-  {"haiku"  "claude-3-5-haiku-20241022"
-   "sonnet" "claude-sonnet-4-20250514"
-   "opus"   "claude-opus-4-5-20251101"})
+  {"haiku"   "claude-haiku-4-5-20251001"
+   "sonnet"  "claude-sonnet-4-5-20250929"
+   "opus"    "claude-opus-4-5-20251101"
+   "opus46"  "claude-opus-4-6"
+   "o3"      "o3"
+   "o4-mini" "o4-mini"
+   "gpt52"   "gpt-5.2"})
 
 (def provider-prefixes
-  #{"ollama" "chatgpt" "openai" "anthropic"})
+  #{"ollama" "chatgpt" "openai" "anthropic" "kimi" "moonshot"})
 
 (defn parse-model-spec
   "Parse 'provider:model' into {:provider str :model str}.
@@ -76,14 +80,17 @@
   [["-t" "--test" "Use dummy LLM provider (returns 'hello world')"]
    ["-e" "--example NAME" "Run a named example from examples/"]
    ["-a" "--agent FILE" "Use agent definition from .agent.edn file"]
-   ["-m" "--model MODEL" "Model spec: haiku, sonnet, opus, ollama:<model>, openai:<model>, user (default: openai:gpt-4.1)"]
-   ["-d" "--depth DEPTH" "Max recursion depth (default: 8, 0 = unlimited)"
+   ["-m" "--model MODEL" "Model spec: haiku, sonnet, opus, ollama:<model>, openai:<model>, user (default: openai:gpt-5.2)"]
+   ["-d" "--depth DEPTH" "Max recursion depth (default: unlimited, 0 = unlimited)"
     :parse-fn #(Integer/parseInt %)
     :validate [#(>= % 0) "Must be non-negative"]]
-   ["-b" "--budget DOLLARS" "Max spend in dollars (halts if exceeded)"
+   ["-b" "--budget DOLLARS" "Max spend in dollars (default: $1.00, 0 = unlimited)"
     :parse-fn #(Double/parseDouble %)
+    :validate [#(>= % 0) "Must be non-negative"]]
+   ["-M" "--max-tokens TOKENS" "Max tokens per LLM response (default: 16384)"
+    :parse-fn #(Integer/parseInt %)
     :validate [pos? "Must be positive"]]
-   ["-M" "--max-tokens TOKENS" "Max tokens per LLM response (default: 4096)"
+   ["-K" "--thinking BUDGET" "Enable Anthropic adaptive thinking (budget_tokens, e.g. 10000)"
     :parse-fn #(Integer/parseInt %)
     :validate [pos? "Must be positive"]]
    ["-T" "--trace" "Record execution trace to traces/"]
@@ -169,7 +176,7 @@
     :else
     (let [{:keys [provider model]} (if model
                                      (parse-model-spec model)
-                                     {:provider "openai" :model "gpt-4.1"})
+                                     {:provider "openai" :model "gpt-5.2"})
           resolved-model (when model (resolve-model model))
           base-opts (cond-> {}
                       resolved-model (assoc :model resolved-model)
@@ -180,6 +187,9 @@
 
         ("chatgpt" "openai")
         (provider/openai-provider base-opts)
+
+        ("kimi" "moonshot")
+        (provider/kimi-provider base-opts)
 
         ;; anthropic (explicit or default)
         ("anthropic" nil)
@@ -197,7 +207,8 @@
    - :eval false: plain text LLM (no Spell parsing/eval)
    - :format: optional format spec for output validation"
   [agent-config]
-  (let [{:keys [system model budget recover resolve-namespaces-fn hooks eval format max-retries]} agent-config
+  (let [{:keys [system model budget recover resolve-namespaces-fn eval format max-retries
+                prefill? thinking]} agent-config
         ;; :eval defaults to true if not specified
         eval? (if (nil? eval) true eval)
         ;; Resolve namespaces with make-llm available for sub-agents
@@ -209,8 +220,11 @@
                    (let [config (cond-> {}
                                   namespaces (assoc :namespaces namespaces)
                                   model (assoc :model model)
+                                  system (assoc :system system)
                                   (some? recover) (assoc :recover recover)
-                                  format (assoc :format format))]
+                                  format (assoc :format format)
+                                  (some? prefill?) (assoc :prefill? prefill?)
+                                  thinking (assoc :thinking thinking))]
                      (llm/make-llm config))
                    ;; Leaf mode (no eval)
                    (llm/make-leaf-llm (cond-> {}
@@ -223,23 +237,36 @@
                                        :max-retries (or max-retries 3)})
       base-llm)))
 
-(defn run-prompt [prompt {:keys [depth verbose budget trace agent] :as opts}]
+(defn run-prompt [prompt {:keys [depth verbose budget trace agent thinking] :as opts}]
   (let [max-depth (cond
-                    (nil? depth) 8      ; default
-                    (zero? depth) nil   ; 0 means unlimited
+                    (nil? depth) nil    ; default: no depth limit
+                    (zero? depth) nil   ; 0 also means unlimited
                     :else depth)
         provider (make-provider opts)
         usage-atom (atom {:by-model {}})
         trace-atom (when trace (trace/new-trace))
+        ;; Determine prefill support: provider capability minus thinking override
+        prefill? (and (provider/supports-prefill provider) (not thinking))
         ;; Load agent if specified, otherwise use default agent
-        llm-fn (make-agent-llm (if agent
-                                 (agent/load-agent-config agent)
-                                 (agent/default-agent-config)))]
+        agent-config (cond-> (if agent
+                               (agent/load-agent-config agent)
+                               (agent/default-agent-config))
+                       (some? prefill?) (assoc :prefill? prefill?)
+                       thinking (assoc :thinking thinking))
+        llm-fn (make-agent-llm agent-config)
+        ;; Budget: CLI flag > agent config > dynamic var default
+        ;; -b 0 means unlimited (nil)
+        effective-budget (cond
+                           (nil? budget) (or (:budget agent-config)
+                                             provider/*budget*)
+                           (zero? budget) nil
+                           :else budget)]
     (provider/with-provider provider
       (binding [eval/*verbose* verbose
                 eval/*max-llm-depth* max-depth
                 provider/*usage* usage-atom
-                provider/*budget* budget
+                provider/*budget* effective-budget
+                provider/*retries* (or (:retries agent-config) provider/*retries*)
                 trace/*trace* trace-atom]
         (let [result (try
                        {:result (llm-fn prompt) :usage usage-atom}
@@ -258,6 +285,11 @@
     (when (pos? (+ cache-write cache-read))
       (format " [cache: %,d write, %,d read]" cache-write cache-read))))
 
+(defn- format-reasoning-stats [stats]
+  (when-let [r (:reasoning_tokens stats)]
+    (when (pos? r)
+      (format " [reasoning: %,d]" r))))
+
 (defn- print-usage [usage-atom]
   (let [{:keys [by-model total]} (provider/usage-summary usage-atom)]
     (when (pos? (:calls total 0))
@@ -265,19 +297,21 @@
       (println "=== Token Usage ===")
       (when (> (count by-model) 1)
         (doseq [[model stats] (sort-by key by-model)]
-          (println (format "  %s: %,d in / %,d out (%d calls)%s%s"
+          (println (format "  %s: %,d in / %,d out (%d calls)%s%s%s"
                      model
                      (:input_tokens stats 0)
                      (:output_tokens stats 0)
                      (:calls stats 0)
                      (if-let [c (:cost stats)] (format " $%.4f" c) "")
-                     (or (format-cache-stats stats) "")))))
-      (println (format "  Total: %,d in / %,d out (%d calls)%s%s"
+                     (or (format-cache-stats stats) "")
+                     (or (format-reasoning-stats stats) "")))))
+      (println (format "  Total: %,d in / %,d out (%d calls)%s%s%s"
                  (:input_tokens total 0)
                  (:output_tokens total 0)
                  (:calls total 0)
                  (if-let [c (:cost total)] (format " $%.4f" c) "")
-                 (or (format-cache-stats total) ""))))))
+                 (or (format-cache-stats total) "")
+                 (or (format-reasoning-stats total) ""))))))
 
 (defn- run-shell [cmd]
   (when cmd

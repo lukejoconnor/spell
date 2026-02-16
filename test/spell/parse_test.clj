@@ -1,7 +1,8 @@
 (ns spell.parse-test
   (:require [clojure.test :refer [deftest is testing]]
             [spell.parse :refer [read-all paren-balance balance-parens
-                                 strip-trailing-parens escape-string]]))
+                                 strip-trailing-parens escape-string
+                                 sanitize-string-escapes]]))
 
 ;; =============================================================================
 ;; read-all tests
@@ -51,7 +52,16 @@
     (is (= 0 (paren-balance ""))))
 
   (testing "mixed brackets - only parens count"
-    (is (= 1 (paren-balance "(+ [1 2]")))))
+    (is (= 1 (paren-balance "(+ [1 2]"))))
+
+  (testing "parens inside strings are not counted"
+    (is (= 1 (paren-balance "(def x \"text with ( unbalanced parens\"")))
+    (is (= 0 (paren-balance "(str \"hello (world)\")")))
+    (is (= 0 (paren-balance "(quine content \"He said (hello\")"))))
+
+  (testing "escaped quotes inside strings"
+    (is (= 0 (paren-balance "(str \"she said \\\"(hi\\\" ok\")")))
+    (is (= 1 (paren-balance "(def x \"escaped \\\" inside ( string\"")))))
 
 ;; =============================================================================
 ;; balance-parens tests
@@ -124,3 +134,31 @@
 
   (testing "no special characters"
     (is (= "hello world" (escape-string "hello world")))))
+
+;; =============================================================================
+;; sanitize-string-escapes tests
+;; =============================================================================
+
+(deftest sanitize-string-escapes-test
+  (testing "valid escapes are preserved"
+    (is (= "(str \"hello\\nworld\")" (sanitize-string-escapes "(str \"hello\\nworld\")")))
+    (is (= "(str \"tab\\there\")" (sanitize-string-escapes "(str \"tab\\there\")")))
+    (is (= "(str \"quote\\\"ok\")" (sanitize-string-escapes "(str \"quote\\\"ok\")")))
+    (is (= "(str \"back\\\\slash\")" (sanitize-string-escapes "(str \"back\\\\slash\")"))))
+
+  (testing "unknown escapes are doubled (prevents reader crash)"
+    ;; \e is not a valid escape — would crash without sanitization
+    (is (= "(def x \"a \\\\equiv b\")" (sanitize-string-escapes "(def x \"a \\equiv b\")")))
+    ;; \a is not valid — doubled
+    (is (= "(str \"\\\\alpha\")" (sanitize-string-escapes "(str \"\\alpha\")")))
+    ;; \f IS valid (formfeed) so it's left alone; \b IS valid (backspace)
+    (is (= "(str \"\\frac\")" (sanitize-string-escapes "(str \"\\frac\")")))
+    (is (= "(str \"\\beta\")" (sanitize-string-escapes "(str \"\\beta\")"))))
+
+  (testing "backslashes outside strings are unchanged"
+    (is (= "\\x" (sanitize-string-escapes "\\x"))))
+
+  (testing "read-all parses LaTeX strings without crashing"
+    ;; \equiv would crash without sanitization — now reads as literal text
+    (is (= ['(def x "a \\equiv b")]
+           (read-all "(def x \"a \\equiv b\")")))))
