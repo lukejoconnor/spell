@@ -152,11 +152,14 @@
               ;; Clojure function (e.g. with-env, with-env-hints) - call directly
               (fn? hook) (hook c)
               ;; Spell function map - apply via spell-eval with quoted arg
-              (eval/spell-fn? hook) (first (eval/spell-eval (list hook (list 'quote c)) {}))
+              (eval/spell-fn? hook) (let [r (eval/spell-eval (list hook (list 'quote c)) {})]
+                                      (if (eval/ok? r) (:ok r) (throw (ex-info (:err r) {:result r}))))
               ;; Quoted form - evaluate to get a function, then apply
-              :else (let [hook-fn (first (eval/spell-eval hook {}))]
+              :else (let [r (eval/spell-eval hook {})
+                          hook-fn (if (eval/ok? r) (:ok r) (throw (ex-info (:err r) {:result r})))]
                       (if (eval/spell-fn? hook-fn)
-                        (first (eval/spell-eval (list hook-fn (list 'quote c)) {}))
+                        (let [r2 (eval/spell-eval (list hook-fn (list 'quote c)) {})]
+                          (if (eval/ok? r2) (:ok r2) (throw (ex-info (:err r2) {:result r2}))))
                         (hook-fn c)))))
           code
           hooks))

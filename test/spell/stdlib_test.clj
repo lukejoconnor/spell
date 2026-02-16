@@ -30,7 +30,8 @@
   "Run spell with full builtins (including stdlib) and namespaces."
   [program]
   (binding [eval/*builtins* test-builtins]
-    (first (spell-eval program test-env-with-namespaces))))
+    (let [r (spell-eval program test-env-with-namespaces)]
+      (if (eval/ok? r) (:ok r) (throw (ex-info (:err r) {:result r}))))))
 
 ;; =============================================================================
 ;; Core HOFs with spell-fns (now in core-builtins, match Clojure)

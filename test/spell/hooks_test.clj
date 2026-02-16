@@ -2,8 +2,16 @@
   (:require [clojure.test :refer [deftest is testing]]
             [spell.hooks :as hooks :refer [prepend-hooks-to-llm recurse
                                            with-env with-env-hints prefix-prompt]]
-            [spell.eval :refer [spell-eval run-spell]]
+            [spell.eval :as eval :refer [spell-eval run-spell]]
             [clojure.string :as str]))
+
+(defn- eval-ok
+  "Evaluate and return [value env] or throw on error."
+  [expr env]
+  (let [r (spell-eval expr env)]
+    (if (eval/ok? r)
+      [(:ok r) (:env r)]
+      (throw (ex-info (:err r) {:result r})))))
 
 ;; =============================================================================
 ;; prepend-hooks-to-llm tests
@@ -75,20 +83,20 @@
           inner-hook '(fn [code] (list 'do '(def injected 1) code))
           recursive-hook (recurse inner-hook)
           ;; Evaluate the recursive hook to get a function
-          [hook-fn _] (spell-eval recursive-hook {})
+          [hook-fn _] (eval-ok recursive-hook {})
           ;; Apply it to some code via spell-eval (spell-fn, not Clojure fn)
           input '(do (def x 10))
-          [result _] (spell-eval (list hook-fn (list 'quote input)) {})]
+          [result _] (eval-ok (list hook-fn (list 'quote input)) {})]
       ;; Should have injected binding
       (is (some #(= '(def injected 1) %) (tree-seq coll? seq result)))))
 
   (testing "recurse hook adds hooks to llm calls"
     (let [inner-hook '(fn [code] code)  ; identity hook
           recursive-hook (recurse inner-hook)
-          [hook-fn _] (spell-eval recursive-hook {})
+          [hook-fn _] (eval-ok recursive-hook {})
           ;; Input has an llm call
           input '(do (llm "test"))
-          [result _] (spell-eval (list hook-fn (list 'quote input)) {})]
+          [result _] (eval-ok (list hook-fn (list 'quote input)) {})]
       ;; result is (do (llm "test" [hook1 hook2]))
       (let [llm-form (second result)  ; (llm "test" [hooks])
             hooks (nth llm-form 2)]
@@ -100,10 +108,10 @@
   (testing "recurse hook preserves existing llm hooks"
     (let [inner-hook '(fn [code] code)
           recursive-hook (recurse inner-hook)
-          [hook-fn _] (spell-eval recursive-hook {})
+          [hook-fn _] (eval-ok recursive-hook {})
           ;; Input has llm with existing hook
           input '(do (llm "test" [existing-hook]))
-          [result _] (spell-eval (list hook-fn (list 'quote input)) {})]
+          [result _] (eval-ok (list hook-fn (list 'quote input)) {})]
       ;; result is (do (llm "test" [inner-hook recursive-hook existing-hook]))
       (let [llm-form (second result)
             hooks (nth llm-form 2)]

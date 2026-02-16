@@ -1,0 +1,418 @@
+(ns spell.macros
+  "Spell macro system: registry, expansion, and all macro definitions.
+
+   Macros are code→code transformers registered in the spell-macros atom.
+   The evaluator and expand call spell-macroexpand-1 to expand macro forms.")
+
+;; =============================================================================
+;; Macro system
+;; =============================================================================
+
+(def spell-macros
+  "Registry of Spell macros. Maps symbol to expansion function.
+   Each function takes the arguments of the macro form (not including the macro name)
+   and returns a new Spell form to evaluate."
+  (atom {}))
+
+(defn defspellmacro
+  "Register a Spell macro. f takes the macro form's args and returns expanded code."
+  [sym f]
+  (swap! spell-macros assoc sym f))
+
+(defn spell-macroexpand-1
+  "If form is a Spell macro call, expand it once. Otherwise return form unchanged."
+  [form]
+  (if (and (seq? form) (symbol? (first form)))
+    (if-let [macro-fn (get @spell-macros (first form))]
+      (apply macro-fn (rest form))
+      form)
+    form))
+
+;; =============================================================================
+;; Macro definitions (following Clojure's core.clj)
+;; =============================================================================
+
+;; when: (when test body...) -> (if test (do body...))
+(defspellmacro 'when
+  (fn [test & body]
+    (list 'if test (cons 'do body))))
+
+;; defn: (defn name [params...] body...) -> (def name (fn [params...] body...))
+(defspellmacro 'defn
+  (fn [name params & body]
+    (list 'def name (list* 'fn params body))))
+
+;; and: short-circuit, returns last truthy or first falsy. (and) -> true
+(defspellmacro 'and
+  (fn [& args]
+    (cond
+      (empty? args) true
+      (= 1 (count args)) (first args)
+      :else (let [sym (gensym "and__")]
+              (list 'let [sym (first args)]
+                    (list 'if sym (cons 'and (rest args)) sym))))))
+
+;; or: short-circuit, returns first truthy or last falsy. (or) -> nil
+(defspellmacro 'or
+  (fn [& args]
+    (cond
+      (empty? args) nil
+      (= 1 (count args)) (first args)
+      :else (let [sym (gensym "or__")]
+              (list 'let [sym (first args)]
+                    (list 'if sym sym (cons 'or (rest args))))))))
+
+;; cond: (cond test1 expr1 test2 expr2 ...) -> nested if
+(defspellmacro 'cond
+  (fn [& clauses]
+    (when (seq clauses)
+      (list 'if (first clauses)
+            (second clauses)
+            (cons 'cond (nnext clauses))))))
+
+;; if-let: (if-let [sym test] then else?) -> (let [temp test] (if temp (let [sym temp] then) else))
+(defspellmacro 'if-let
+  (fn
+    ([bindings then] (list 'if-let bindings then nil))
+    ([bindings then else]
+     (let [sym (first bindings)
+           tst (second bindings)
+           temp (gensym "if-let__")]
+       (list 'let [temp tst]
+             (list 'if temp
+                   (list 'let [sym temp] then)
+                   else))))))
+
+;; when-let: (when-let [sym test] body...) -> (let [temp test] (when temp (let [sym temp] body...)))
+(defspellmacro 'when-let
+  (fn [bindings & body]
+    (let [sym (first bindings)
+          tst (second bindings)
+          temp (gensym "when-let__")]
+      (list 'let [temp tst]
+            (list 'when temp
+                  (list* 'let [sym temp] body))))))
+
+;; case: (case expr val1 result1 val2 result2 ... default?) -> nested cond + =
+(defspellmacro 'case
+  (fn [test-expr & clauses]
+    (let [g (gensym "case__")
+          pairs (partition 2 clauses)
+          has-default? (odd? (count clauses))
+          default-expr (if has-default?
+                         (last clauses)
+                         (list 'throw (list 'str "No matching clause: " g)))
+          cond-clauses (mapcat (fn [[match-val result-expr]]
+                                 [(list '= g match-val) result-expr])
+                               pairs)]
+      (list 'let [g test-expr]
+            (list* 'cond (concat cond-clauses [:else default-expr]))))))
+
+;; as->: (as-> expr name form1 form2 ...) -> nested let rebinding name
+(defspellmacro 'as->
+  (fn [expr name-sym & forms]
+    (if (empty? forms)
+      expr
+      (list* 'let
+             (vec (concat [name-sym expr]
+                          (mapcat (fn [form] [name-sym form]) (butlast forms))))
+             [(if (empty? forms) name-sym (last forms))]))))
+
+;; cond->: (cond-> expr test1 form1 ...) -> chained let with (if test (-> g step) g)
+(defspellmacro 'cond->
+  (fn [expr & clauses]
+    (let [g (gensym "cond->__")
+          steps (map (fn [[test step]]
+                       (list 'if test (list '-> g step) g))
+                     (partition 2 clauses))]
+      (if (empty? steps)
+        (list 'let [g expr] g)
+        (list* 'let
+               (vec (concat [g expr]
+                            (mapcat (fn [step] [g step]) (butlast steps))))
+               [(last steps)])))))
+
+;; cond->>: like cond-> but uses ->>
+(defspellmacro 'cond->>
+  (fn [expr & clauses]
+    (let [g (gensym "cond->>__")
+          steps (map (fn [[test step]]
+                       (list 'if test (list '->> g step) g))
+                     (partition 2 clauses))]
+      (if (empty? steps)
+        (list 'let [g expr] g)
+        (list* 'let
+               (vec (concat [g expr]
+                            (mapcat (fn [step] [g step]) (butlast steps))))
+               [(last steps)])))))
+
+;; some->: (some-> expr form1 form2 ...) -> chained let with nil-checking
+(defspellmacro 'some->
+  (fn [expr & forms]
+    (let [g (gensym "some->__")
+          steps (map (fn [step]
+                       (list 'if (list 'nil? g) nil (list '-> g step)))
+                     forms)]
+      (if (empty? steps)
+        (list 'let [g expr] g)
+        (list* 'let
+               (vec (concat [g expr]
+                            (mapcat (fn [step] [g step]) (butlast steps))))
+               [(last steps)])))))
+
+;; some->>: like some-> but uses ->>
+(defspellmacro 'some->>
+  (fn [expr & forms]
+    (let [g (gensym "some->>__")
+          steps (map (fn [step]
+                       (list 'if (list 'nil? g) nil (list '->> g step)))
+                     forms)]
+      (if (empty? steps)
+        (list 'let [g expr] g)
+        (list* 'let
+               (vec (concat [g expr]
+                            (mapcat (fn [step] [g step]) (butlast steps))))
+               [(last steps)])))))
+
+;; call-now: (call-now name expr) or (call-now name expr limit)
+;;           (call-now name1 expr1 name2 expr2 ...) — multi-binding
+;; Sugar for evaluate-then-extend. No effect guard exception — respects double evaluation.
+;; Optional limit controls inline threshold for serialize (default: call-now-inline-limit).
+;; Negative limit means always inline (no out-of-band storage).
+;; Multi-binding evaluates all exprs, then extends with all bindings in one turn.
+(defspellmacro 'call-now
+  (fn [& args]
+    (cond
+      ;; Single binding: (call-now name expr)
+      (= (count args) 2)
+      (let [[name-sym val-expr] args
+            temp (gensym "call-now__")]
+        (list 'let [temp val-expr]
+              (list 'llm-self
+                    (list 'str
+                          (list 'prune-and-reopen 'completion)
+                          (str "(def " name-sym " ")
+                          (list 'serialize temp)
+                          ") "))))
+
+      ;; Single binding with limit: (call-now name expr limit)
+      (= (count args) 3)
+      (let [[name-sym val-expr limit] args
+            temp (gensym "call-now__")]
+        (list 'let [temp val-expr]
+              (list 'llm-self
+                    (list 'str
+                          (list 'prune-and-reopen 'completion)
+                          (str "(def " name-sym " ")
+                          (list 'serialize temp limit)
+                          ") "))))
+
+      ;; Multi-binding: (call-now name1 expr1 name2 expr2 ...)
+      (and (even? (count args)) (>= (count args) 4))
+      (let [pairs (partition 2 args)
+            temps (map (fn [[name-sym _]] (gensym (str "call-now-" name-sym "__"))) pairs)
+            let-bindings (vec (mapcat (fn [temp [_ val-expr]] [temp val-expr]) temps pairs))
+            str-parts (mapcat (fn [temp [name-sym _]]
+                                [(str "(def " name-sym " ")
+                                 (list 'serialize temp)
+                                 ") "])
+                              temps pairs)]
+        (list 'let let-bindings
+              (list 'llm-self
+                    (list* 'str
+                           (list 'prune-and-reopen 'completion)
+                           str-parts))))
+
+      :else
+      (throw (ex-info "call-now: expected 2 args (name expr), 3 args (name expr limit), or even >= 4 args (name1 expr1 name2 expr2 ...)"
+                      {:args-count (count args)})))))
+
+;; =============================================================================
+;; Threading helpers (used by -> and ->> macros)
+;; =============================================================================
+
+(defn- thread-first
+  "Transform (-> x (f a) (g b)) into (g (f x a) b)."
+  [initial forms]
+  (reduce (fn [acc form]
+            (let [form (if (seq? form) form (list form))]
+              (list* (first form) acc (rest form))))
+          initial forms))
+
+(defn- thread-last
+  "Transform (->> x (f a) (g b)) into (g b (f a x))."
+  [initial forms]
+  (reduce (fn [acc form]
+            (let [form (if (seq? form) form (list form))]
+              (concat form [acc])))
+          initial forms))
+
+;; future: (future expr) -> (future* (fn [] expr))
+(defspellmacro 'future
+  (fn [body]
+    (list 'future* (list 'fn [] body))))
+
+;; plet: (plet [a e1 b e2] body...) -> launch futures, await all, bind, run body
+(defspellmacro 'plet
+  (fn [bindings & body]
+    (let [pairs (partition 2 bindings)
+          fut-syms (map (fn [[sym _]] (gensym (str sym "__fut__"))) pairs)
+          ;; Build future bindings: [a__fut (future e1) b__fut (future e2)]
+          fut-bindings (vec (mapcat (fn [fut-sym [_ expr]]
+                                      [fut-sym (list 'future expr)])
+                                    fut-syms pairs))
+          ;; Build await bindings: [a (await a__fut) b (await b__fut)]
+          await-bindings (vec (mapcat (fn [[sym _] fut-sym]
+                                        [sym (list 'await fut-sym)])
+                                      pairs fut-syms))]
+      (list 'let fut-bindings
+            (list* 'let await-bindings body)))))
+
+;; print: (print expr) — evaluate expr, extend completion with bare serialized value.
+;; Like (call-now x x) but without creating a binding — the value appears as a
+;; literal in the continuation so the LLM can see it.
+(defspellmacro 'print
+  (fn
+    ([val-expr]
+     (let [temp (gensym "print__")]
+       (list 'let [temp val-expr]
+             (list 'llm-self
+                   (list 'str
+                         (list 'prune-and-reopen 'completion)
+                         (list 'serialize temp)
+                         " ")))))
+    ([val-expr limit]
+     (let [temp (gensym "print__")]
+       (list 'let [temp val-expr]
+             (list 'llm-self
+                   (list 'str
+                         (list 'prune-and-reopen 'completion)
+                         (list 'serialize temp limit)
+                         " ")))))))
+
+;; define: Scheme-style alias for def
+(defspellmacro 'define
+  (fn [name-sym val-expr]
+    (list 'def name-sym val-expr)))
+
+;; describe: produces an extension with namespace docs
+;;   (describe ns)           — guide (or docs if no guide)
+;;   (describe ns :key)      — doc for specific item
+;;   (describe ns1 ns2 ...)  — multiple namespaces in one turn
+;; Expands to (print ...) so the child LLM sees the docs as a literal.
+(defspellmacro 'describe
+  (fn [& args]
+    (cond
+      ;; (describe ns)
+      (= 1 (count args))
+      (list 'print (list 'describe-fn (first args)) -1)
+
+      ;; (describe ns :key) — keyword means key lookup
+      (and (= 2 (count args)) (keyword? (second args)))
+      (list 'print (list 'describe-fn (first args) (second args)) -1)
+
+      ;; (describe ns1 ns2 ...) — multi-namespace
+      :else
+      (let [parts (mapcat (fn [ns-sym]
+                            [(str "## " ns-sym "\n")
+                             (list 'describe-fn ns-sym)
+                             "\n\n"])
+                          args)]
+        (list 'print (list* 'cat parts) -1)))))
+
+;; ->: (-> x (f a) (g b)) -> (g (f x a) b)
+(defspellmacro '->
+  (fn [x & forms]
+    (thread-first x forms)))
+
+;; ->>: (->> x (f a) (g b)) -> (g b (f a x))
+(defspellmacro '->>
+  (fn [x & forms]
+    (thread-last x forms)))
+
+;; =============================================================================
+;; Think / Rethink / Extend — context pruning for unproductive thoughts
+;; =============================================================================
+
+(defn- rethink-form?
+  "Returns true if form is a (rethink ...) expression."
+  [form]
+  (and (seq? form) (= 'rethink (first form))))
+
+(defn- rethink-n
+  "Return the number of previous siblings to prune. Default 1.
+   (rethink \"reason\" body...) → 1
+   (rethink 2 \"reason\" body...) → 2"
+  [form]
+  (if (number? (second form))
+    (int (second form))
+    1))
+
+(defn- rethink->think
+  "Convert a rethink form to a think form, dropping the optional count.
+   (rethink \"reason\" body...) → (think \"reason\" body...)
+   (rethink 2 \"reason\" body...) → (think \"reason\" body...)"
+  [form]
+  (if (number? (second form))
+    (list* 'think (drop 2 form))
+    (list* 'think (rest form))))
+
+(defn- process-siblings
+  "Reduce over sibling forms, pruning previous siblings on rethink."
+  [forms]
+  (reduce
+    (fn [acc form]
+      (if (rethink-form? form)
+        (let [n (rethink-n form)]
+          (conj (vec (drop-last n acc))
+                (rethink->think form)))
+        (conj acc form)))
+    []
+    forms))
+
+(defn prune-rethinks
+  "Recursively walk form, processing rethink pruning at every list level.
+   Rethink prunes N previous sibling expressions (default 1) and converts
+   itself to a think. The head of each list (operator position) is preserved;
+   only argument-position elements are subject to sibling pruning."
+  [form]
+  (cond
+    (seq? form)
+    (let [head (prune-rethinks (first form))
+          tail (map prune-rethinks (rest form))
+          pruned (process-siblings tail)]
+      (apply list head pruned))
+
+    (vector? form)
+    (mapv prune-rethinks form)
+
+    (map? form)
+    (into {} (map (fn [[k v]] [k (prune-rethinks v)]) form))
+
+    :else form))
+
+;; think: (think label body...) → (do body... nil)
+;; Evaluates body for side effects (bindings, computation), returns nil.
+;; Preserved as a source marker for extend/prune-rethinks.
+(defspellmacro 'think
+  (fn [_label & body]
+    (if (seq body)
+      (list* 'do (concat body [nil]))
+      nil)))
+
+;; rethink: (rethink [n] label body...) → (do body... nil)
+;; At eval time, same as think. At source level, marks previous N siblings
+;; for pruning by extend (default N=1).
+(defspellmacro 'rethink
+  (fn [& args]
+    (let [body (cond
+                 (number? (first args)) (drop 2 args)
+                 :else (rest args))]
+      (if (seq body)
+        (list* 'do (concat body [nil]))
+        nil))))
+
+;; extend: (extend completion) — prune rethinks and continue via llm-self
+(defspellmacro 'extend
+  (fn [comp-sym]
+    (list 'llm-self (list 'prune-and-reopen comp-sym))))
