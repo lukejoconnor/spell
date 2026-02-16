@@ -21,7 +21,9 @@
   (call-llm [this prompt] [this prompt opts]
     "Send prompt to LLM, return response string.
      prompt is a string. opts may include :system for system prompt.
-     Returns the assistant's text response."))
+     Returns the assistant's text response.")
+  (supports-prefill [this]
+    "Returns true if this provider supports assistant prefill."))
 
 ;; ---------------------------------------------------------------------------
 ;; Token usage tracking
@@ -34,8 +36,15 @@
   nil)
 
 (def ^:dynamic *budget*
-  "When set to a number, throws if cumulative cost exceeds this amount (in dollars)."
-  nil)
+  "When set to a number, throws if cumulative cost exceeds this amount (in dollars).
+   Default $1.00. Override with -b flag or by binding directly."
+  1.00)
+
+(def ^:dynamic *retries*
+  "Vector of sleep durations (seconds) for API-level retries on transient failures.
+   Each element is one retry attempt; the value is how long to sleep before retrying.
+   Default [0 10] = instant retry, then retry after 10s. nil or [] = no retries."
+  [0 10])
 
 (def ^:private model-costs
   "Cost per million tokens: {model-prefix [input-cost output-cost]}"
@@ -43,7 +52,7 @@
    "claude-haiku-4-5"  [1.00 5.00]
    "claude-sonnet-5"   [3.00 15.00]
    "claude-sonnet-4"   [3.00 15.00]
-   "claude-opus-4-5"   [15.00 75.00]
+   "claude-opus-4-5"   [5.00 25.00]
    "claude-opus-4-6"   [5.00 25.00]
    ;; OpenAI models
    "gpt-4o-mini"       [0.15 0.60]
@@ -60,7 +69,17 @@
    "gpt-5"             [1.25 10.00]
    "gpt-5.1"           [1.25 10.00]
    "gpt-5.2-codex"     [1.75 14.00]
-   "gpt-5.2"           [1.75 14.00]})
+   "gpt-5.2"           [1.75 14.00]
+   ;; Moonshot Kimi models
+   "kimi-k2.5"         [0.60 3.00]
+   "kimi-k2-thinking-turbo" [1.15 8.00]
+   "kimi-k2-thinking"  [0.60 2.50]
+   "kimi-k2-turbo"     [1.15 8.00]
+   "kimi-k2-0905"      [0.60 2.50]
+   "kimi-k2-0711"      [0.60 2.50]
+   "moonshot-v1-8k"    [0.20 2.00]
+   "moonshot-v1-32k"   [1.00 3.00]
+   "moonshot-v1-128k"  [2.00 5.00]})
 
 (defn- lookup-cost
   "Find cost for a model ID by prefix matching."
@@ -93,13 +112,16 @@
   (when (and *usage* usage)
     (swap! *usage* update-in [:by-model model]
            (fn [existing]
-             {:input_tokens (+ (:input_tokens existing 0) (:input_tokens usage 0))
-              :output_tokens (+ (:output_tokens existing 0) (:output_tokens usage 0))
-              :cache_creation_input_tokens (+ (:cache_creation_input_tokens existing 0)
-                                              (:cache_creation_input_tokens usage 0))
-              :cache_read_input_tokens (+ (:cache_read_input_tokens existing 0)
-                                          (:cache_read_input_tokens usage 0))
-              :calls (inc (:calls existing 0))}))
+             (cond-> {:input_tokens (+ (:input_tokens existing 0) (:input_tokens usage 0))
+                      :output_tokens (+ (:output_tokens existing 0) (:output_tokens usage 0))
+                      :cache_creation_input_tokens (+ (:cache_creation_input_tokens existing 0)
+                                                      (:cache_creation_input_tokens usage 0))
+                      :cache_read_input_tokens (+ (:cache_read_input_tokens existing 0)
+                                                  (:cache_read_input_tokens usage 0))
+                      :calls (inc (:calls existing 0))}
+               (:reasoning_tokens usage)
+               (assoc :reasoning_tokens (+ (:reasoning_tokens existing 0)
+                                           (:reasoning_tokens usage 0))))))
     (when *budget*
       (when-let [cost (current-cost *usage*)]
         (when (> cost *budget*)
@@ -125,13 +147,15 @@
                                            (+ base-input cache-write cache-read output)))]
                               [model (cond-> stats cost (assoc :cost cost))]))
                           by-model))
-        total {:input_tokens (reduce + 0 (map #(:input_tokens % 0) (vals by-model)))
-               :output_tokens (reduce + 0 (map #(:output_tokens % 0) (vals by-model)))
-               :cache_creation_input_tokens (reduce + 0 (map #(:cache_creation_input_tokens % 0) (vals by-model)))
-               :cache_read_input_tokens (reduce + 0 (map #(:cache_read_input_tokens % 0) (vals by-model)))
-               :calls (reduce + 0 (map #(:calls % 0) (vals by-model)))
-               :cost (let [costs (keep :cost (vals with-costs))]
-                       (when (seq costs) (reduce + 0.0 costs)))}]
+        reasoning-total (reduce + 0 (keep :reasoning_tokens (vals by-model)))
+        total (cond-> {:input_tokens (reduce + 0 (map #(:input_tokens % 0) (vals by-model)))
+                       :output_tokens (reduce + 0 (map #(:output_tokens % 0) (vals by-model)))
+                       :cache_creation_input_tokens (reduce + 0 (map #(:cache_creation_input_tokens % 0) (vals by-model)))
+                       :cache_read_input_tokens (reduce + 0 (map #(:cache_read_input_tokens % 0) (vals by-model)))
+                       :calls (reduce + 0 (map #(:calls % 0) (vals by-model)))
+                       :cost (let [costs (keep :cost (vals with-costs))]
+                               (when (seq costs) (reduce + 0.0 costs)))}
+                (pos? reasoning-total) (assoc :reasoning_tokens reasoning-total))]
     {:by-model with-costs :total total}))
 
 ;; ---------------------------------------------------------------------------
@@ -142,19 +166,54 @@
   (-> (HttpClient/newBuilder)
       (.build)))
 
-(defn- anthropic-request [api-key model prompt system-prompt prefix max-tokens]
-  (let [messages (cond-> [{:role "user" :content prompt}]
-                   prefix (conj {:role "assistant" :content (str/trimr prefix)}))
-        ;; Use cache_control for system prompt to enable prompt caching
-        ;; First request pays +25% write cost, subsequent requests get -90% read discount
+(defn- cache-min-chars
+  "Minimum character count for caching to be worthwhile on a given model.
+   Based on Anthropic's minimum cacheable token thresholds (~4 chars/token):
+   - Opus 4.5/4.6, Haiku 4.5: 4096 tokens (~16K chars)
+   - Sonnet, Opus 4.0/4.1: 1024 tokens (~4K chars)
+   - Haiku 3.x: 2048 tokens (~8K chars)"
+  [model]
+  (cond
+    (or (str/includes? model "opus-4-5")
+        (str/includes? model "opus-4-6")
+        (str/includes? model "haiku-4-5")) 16000
+    (or (str/includes? model "haiku-3")
+        (str/includes? model "haiku-3-5")) 8000
+    :else 4000))
+
+(defn- anthropic-request [api-key model prompt system-prompt prefix max-tokens stream? thinking cache-prefix]
+  (let [;; When thinking is active, don't use assistant prefill (incompatible)
+        effective-prefix (when-not thinking prefix)
+        ;; Only apply cache_control when content exceeds model's minimum threshold
+        min-chars (cache-min-chars model)
+        ;; Split user message for caching: stable prefix + new content
+        user-content (if (and cache-prefix
+                              (not (str/blank? cache-prefix))
+                              (str/starts-with? prompt cache-prefix)
+                              (>= (count cache-prefix) min-chars))
+                       (let [new-content (subs prompt (count cache-prefix))]
+                         (if (str/blank? new-content)
+                           [{:type "text" :text prompt :cache_control {:type "ephemeral"}}]
+                           [{:type "text" :text cache-prefix :cache_control {:type "ephemeral"}}
+                            {:type "text" :text new-content}]))
+                       prompt)
+        messages (cond-> [{:role "user" :content user-content}]
+                   effective-prefix (conj {:role "assistant" :content (str/trimr effective-prefix)}))
+        ;; Use cache_control for system prompt when it exceeds model's minimum threshold
         cached-system (when system-prompt
-                        [{:type "text"
-                          :text system-prompt
-                          :cache_control {:type "ephemeral"}}])
+                        [(cond-> {:type "text" :text system-prompt}
+                           (>= (count system-prompt) min-chars)
+                           (assoc :cache_control {:type "ephemeral"}))])
         body (cond-> {:model model
-                      :max_tokens (or max-tokens 16384)
+                      :max_tokens (if thinking
+                                    (or max-tokens 32768)
+                                    (or max-tokens 16384))
                       :messages messages}
-               cached-system (assoc :system cached-system))
+               cached-system (assoc :system cached-system)
+               stream? (assoc :stream true)
+               thinking (assoc :thinking (if (number? thinking)
+                                          {:type "enabled" :budget_tokens thinking}
+                                          {:type "enabled" :budget_tokens 10000})))
         request (-> (HttpRequest/newBuilder)
                     (.uri (URI/create "https://api.anthropic.com/v1/messages"))
                     (.header "Content-Type" "application/json")
@@ -179,20 +238,63 @@
                  :cache_creation_input_tokens (:cache_creation_input_tokens usage 0)
                  :cache_read_input_tokens (:cache_read_input_tokens usage 0)}}))))
 
+(defn- parse-anthropic-stream
+  "Parse an Anthropic SSE stream, accumulating text and usage."
+  [response-body]
+  (let [text (StringBuilder.)
+        usage (atom {:input_tokens 0 :output_tokens 0
+                     :cache_creation_input_tokens 0 :cache_read_input_tokens 0})]
+    (doseq [line (str/split-lines response-body)]
+      (when (str/starts-with? line "data: ")
+        (let [data (subs line 6)]
+          (when (not= data "[DONE]")
+            (try
+              (let [parsed (json/read-str data :key-fn keyword)]
+                (case (:type parsed)
+                  "message_start"
+                  (let [u (get-in parsed [:message :usage])]
+                    (swap! usage merge
+                           {:input_tokens (:input_tokens u 0)
+                            :cache_creation_input_tokens (:cache_creation_input_tokens u 0)
+                            :cache_read_input_tokens (:cache_read_input_tokens u 0)}))
+
+                  "content_block_delta"
+                  (when-let [t (get-in parsed [:delta :text])]
+                    (.append text t))
+
+                  "message_delta"
+                  (when-let [u (:usage parsed)]
+                    (swap! usage assoc :output_tokens (:output_tokens u 0)))
+
+                  nil)) ; ignore other event types
+              (catch Exception _ nil))))))
+    {:text (.toString text) :usage @usage}))
+
 (defrecord AnthropicProvider [api-key model max-tokens http-client]
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt opts]
     (let [effective-model (or (:model opts) model)
-          request (anthropic-request api-key effective-model prompt (:system opts) (:prefix opts) max-tokens)
+          thinking (:thinking opts)
+          effective-max-tokens (or max-tokens (if thinking 32768 16384))
+          ;; Use streaming for large max_tokens (API requires it for >16384) or thinking
+          stream? (or thinking (> effective-max-tokens 16384))
+          cache-prefix (:cache-prefix opts)
+          request (anthropic-request api-key effective-model prompt (:system opts) (:prefix opts)
+                                    effective-max-tokens stream? thinking cache-prefix)
           response (.send http-client request (HttpResponse$BodyHandlers/ofString))
           status (.statusCode response)]
       (if (<= 200 status 299)
-        (let [{:keys [text usage]} (parse-anthropic-response (.body response))]
+        (let [{:keys [text usage]} (if stream?
+                                     (parse-anthropic-stream (.body response))
+                                     (parse-anthropic-response (.body response)))]
           (track-usage! effective-model usage)
           text)
         (throw (ex-info "Anthropic API request failed"
-                        {:status status :body (.body response)}))))))
+                        {:status status :body (.body response)})))))
+  (supports-prefill [_]
+    ;; Opus 4.6 does not support assistant prefill (returns 400 error)
+    (not (str/includes? (str model) "opus-4-6"))))
 
 (defn anthropic-provider
   "Create an Anthropic provider.
@@ -250,7 +352,8 @@
           (track-usage! effective-model usage)
           text)
         (throw (ex-info "Ollama API request failed"
-                        {:status status :body (.body response)}))))))
+                        {:status status :body (.body response)})))))
+  (supports-prefill [_] true))
 
 (defn ollama-provider
   "Create an Ollama provider for local models.
@@ -298,13 +401,14 @@
        :usage {:input_tokens (get-in parsed [:usage :input_tokens] 0)
                :output_tokens (get-in parsed [:usage :output_tokens] 0)}})))
 
-(defn- openai-request [api-key base-url model prompt system-prompt _prefix max-tokens]
+(defn- openai-request [api-key base-url model prompt system-prompt _prefix max-tokens reasoning-effort]
   (let [messages (cond-> []
                    system-prompt (conj {:role "system" :content system-prompt})
                    true (conj {:role "user" :content prompt}))
-        body {:model model
-              :messages messages
-              :max_completion_tokens (or max-tokens 16384)}
+        body (cond-> {:model model
+                      :messages messages
+                      :max_completion_tokens (or max-tokens 16384)}
+               reasoning-effort (assoc :reasoning_effort reasoning-effort))
         request (-> (HttpRequest/newBuilder)
                     (.uri (URI/create (str base-url "/chat/completions")))
                     (.header "Content-Type" "application/json")
@@ -317,9 +421,12 @@
   (let [parsed (json/read-str response-body :key-fn keyword)]
     (if-let [error (:error parsed)]
       (throw (ex-info "OpenAI API error" {:error error}))
-      {:text (get-in parsed [:choices 0 :message :content] "")
-       :usage {:input_tokens (:prompt_tokens (:usage parsed) 0)
-               :output_tokens (:completion_tokens (:usage parsed) 0)}})))
+      (let [usage (:usage parsed)
+            reasoning-tokens (get-in usage [:completion_tokens_details :reasoning_tokens])]
+        {:text (get-in parsed [:choices 0 :message :content] "")
+         :usage (cond-> {:input_tokens (:prompt_tokens usage 0)
+                         :output_tokens (:completion_tokens usage 0)}
+                  reasoning-tokens (assoc :reasoning_tokens reasoning-tokens))}))))
 
 (defrecord OpenAIProvider [api-key base-url model max-tokens http-client]
   LLMProvider
@@ -329,7 +436,8 @@
           responses? (responses-model? effective-model)
           request (if responses?
                     (openai-responses-request api-key base-url effective-model prompt (:system opts) max-tokens)
-                    (openai-request api-key base-url effective-model prompt (:system opts) (:prefix opts) max-tokens))
+                    (openai-request api-key base-url effective-model prompt (:system opts) (:prefix opts) max-tokens
+                                   (:reasoning-effort opts)))
           response (.send http-client request (HttpResponse$BodyHandlers/ofString))
           status (.statusCode response)]
       (if (<= 200 status 299)
@@ -339,7 +447,8 @@
           (track-usage! effective-model usage)
           text)
         (throw (ex-info "OpenAI API request failed"
-                        {:status status :body (.body response)}))))))
+                        {:status status :body (.body response)})))))
+  (supports-prefill [_] false))
 
 (defn openai-provider
   "Create an OpenAI provider.
@@ -361,14 +470,71 @@
      (->OpenAIProvider key url model max-tokens (make-http-client)))))
 
 ;; ---------------------------------------------------------------------------
+;; Kimi Provider (Moonshot AI)
+;; ---------------------------------------------------------------------------
+
+(defn- kimi-request [api-key base-url model prompt system-prompt prefix max-tokens]
+  (let [messages (cond-> []
+                   system-prompt (conj {:role "system" :content system-prompt})
+                   true (conj {:role "user" :content prompt})
+                   prefix (conj {:role "assistant" :content (str/trimr prefix)}))
+        body (cond-> {:model model
+                      :messages messages}
+               max-tokens (assoc :max_tokens max-tokens))
+        request (-> (HttpRequest/newBuilder)
+                    (.uri (URI/create (str base-url "/chat/completions")))
+                    (.header "Content-Type" "application/json")
+                    (.header "Authorization" (str "Bearer " api-key))
+                    (.POST (HttpRequest$BodyPublishers/ofString (json/write-str body)))
+                    (.build))]
+    request))
+
+(defrecord KimiProvider [api-key base-url model max-tokens http-client]
+  LLMProvider
+  (call-llm [this prompt] (call-llm this prompt {}))
+  (call-llm [_ prompt opts]
+    (let [effective-model (or (:model opts) model)
+          request (kimi-request api-key base-url effective-model prompt
+                                (:system opts) (:prefix opts) max-tokens)
+          response (.send http-client request (HttpResponse$BodyHandlers/ofString))
+          status (.statusCode response)]
+      (if (<= 200 status 299)
+        (let [{:keys [text usage]} (parse-openai-response (.body response))]
+          (track-usage! effective-model usage)
+          text)
+        (throw (ex-info "Kimi API request failed"
+                        {:status status :body (.body response)})))))
+  (supports-prefill [_] true))
+
+(defn kimi-provider
+  "Create a Moonshot Kimi provider.
+
+   Options:
+   - :api-key    - API key (default: MOONSHOT_API_KEY env var)
+   - :base-url   - API base URL (default: https://api.moonshot.ai/v1)
+   - :model      - Model name (default: kimi-k2.5)
+   - :max-tokens - Max tokens per response"
+  ([] (kimi-provider {}))
+  ([{:keys [api-key base-url model max-tokens]
+     :or {model "kimi-k2.5"
+          base-url "https://api.moonshot.ai/v1"}}]
+   (let [key (or api-key (System/getenv "MOONSHOT_API_KEY"))
+         url (str/replace (or base-url "https://api.moonshot.ai/v1") #"/$" "")]
+     (when-not key
+       (throw (ex-info "No API key provided. Set MOONSHOT_API_KEY or pass :api-key"
+                       {:env "MOONSHOT_API_KEY"})))
+     (->KimiProvider key url model max-tokens (make-http-client)))))
+
+;; ---------------------------------------------------------------------------
 ;; Dummy Provider (for testing)
 ;; ---------------------------------------------------------------------------
 
-(defrecord DummyProvider [response-fn]
+(defrecord DummyProvider [response-fn prefill?]
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt _opts]
-    (response-fn prompt)))
+    (response-fn prompt))
+  (supports-prefill [_] (if (some? prefill?) prefill? true)))
 
 (defn dummy-provider
   "Create a dummy provider for testing.
@@ -376,12 +542,13 @@
    Options:
    - :response - Static response string (default: \"Hello, world!\")
    - :response-fn - Function (prompt -> response) for dynamic responses
+   - :prefill? - Whether this provider supports prefill (default: true)
 
    If both provided, :response-fn takes precedence."
   ([] (dummy-provider {}))
-  ([{:keys [response response-fn]
+  ([{:keys [response response-fn prefill?]
      :or {response "Hello, world!"}}]
-   (->DummyProvider (or response-fn (constantly response)))))
+   (->DummyProvider (or response-fn (constantly response)) prefill?)))
 
 ;; ---------------------------------------------------------------------------
 ;; User Provider (interactive simulation)
@@ -390,6 +557,7 @@
 (defrecord UserProvider []
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
+  (supports-prefill [_] true)
   (call-llm [_ prompt opts]
     (let [system (:system opts)
           prefix (:prefix opts)]
@@ -453,12 +621,37 @@
           (str/replace #"\r?\n?```\s*$" ""))
       s)))
 
+(defn- retryable?
+  "Returns true if the exception looks like a transient API failure worth retrying.
+   Rate limits (429), server errors (5xx), and network errors are retryable."
+  [ex]
+  (let [data (ex-data ex)
+        status (:status data)]
+    (or (= status 429)
+        (and status (>= status 500))
+        (instance? java.net.ConnectException ex)
+        (instance? java.net.http.HttpConnectTimeoutException ex)
+        (instance? java.net.http.HttpTimeoutException ex))))
+
 (defn llm-call
   "Call the current provider with prompt. Uses *provider* or throws if unset.
-   opts may include :system for system prompt."
+   opts may include :system for system prompt.
+   Retries transient failures according to *retries*."
   ([prompt] (llm-call prompt {}))
   ([prompt opts]
    (if *provider*
-     (strip-code-fences (call-llm *provider* prompt opts))
+     (loop [retries-left (seq *retries*)]
+       (let [result (try
+                      {:ok (strip-code-fences (call-llm *provider* prompt opts))}
+                      (catch Exception e
+                        (if (and retries-left (retryable? e))
+                          {:retry e :sleep (first retries-left) :rest (next retries-left)}
+                          (throw e))))]
+         (if (:ok result)
+           (:ok result)
+           (do
+             (when (pos? (:sleep result))
+               (Thread/sleep (* 1000 (long (:sleep result)))))
+             (recur (:rest result))))))
      (throw (ex-info "No LLM provider set. Use set-provider! or with-provider."
                      {})))))

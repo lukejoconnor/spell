@@ -213,12 +213,12 @@
     (let [helper-fn (fn
                       ([prompt] "helper-result")
                       ([prompt hooks] "helper-result"))
-          ns-map {'agents {:docs {:helper "Helper agent"}
-                           :helper helper-fn}}
+          ns-map {'helpers {:docs {:helper "Helper agent"}
+                            :helper helper-fn}}
           parent-llm (spell/make-llm {:namespaces ns-map})]
       (provider/with-provider
         (provider/dummy-provider
-          {:response "(agents/helper \"do something\"))"})
+          {:response "(helpers/helper \"do something\"))"})
         (is (= "helper-result" (parent-llm "(do "))))))
 
   (testing "llm-self provides automatic self-recursion"
@@ -248,17 +248,17 @@
         (is (= "ok" (test-llm "(do ")))))))
 
 (deftest namespace-describe-test
-  (testing "describe returns namespace docs"
+  (testing "describe-fn returns namespace docs"
     (let [ns-map {'r {:docs {:a "first" :b "second"} :a identity}}
           test-llm (spell/make-llm {:namespaces ns-map})]
       (provider/with-provider
-        (provider/dummy-provider {:response "(describe r))"})
+        (provider/dummy-provider {:response "(describe-fn r))"})
         (is (= {:a "first" :b "second"} (test-llm "(do ")))))))
 
 (deftest describe-fallback-test
-  (testing "describe falls back to top-level key when :docs doesn't have it"
+  (testing "describe prefers guide over docs when both present"
     (let [ns-map {:docs {:a "doc for a"} :a identity :guide "full guide text"}]
-      (is (= {:a "doc for a"} (llm/describe ns-map)))
+      (is (= "full guide text" (llm/describe ns-map)))
       (is (= "doc for a" (llm/describe ns-map :a)))
       (is (= "full guide text" (llm/describe ns-map :guide)))))
 
@@ -270,25 +270,25 @@
     (let [ns-map {:docs {:a "doc"}}]
       (is (nil? (llm/describe ns-map :missing))))))
 
-(deftest guides-builtin-test
-  (testing "guides docs returns topic listing"
-    (let [r (spell/spell-eval '(describe guides) {})]
+(deftest builtins-namespace-test
+  (testing "builtins docs returns category listing"
+    (let [r (spell/spell-eval '(describe-fn builtins) {})]
       (is (eval/ok? r))
       (is (map? (:ok r)))
       (is (contains? (:ok r) :_))
-      (is (str/includes? (:_ (:ok r)) "communication"))))
+      (is (str/includes? (:_ (:ok r)) "Core builtins"))))
 
-  (testing "guides topic returns full text"
-    (let [r (spell/spell-eval '(describe guides :communication) {})]
+  (testing "builtins category returns string"
+    (let [r (spell/spell-eval '(describe-fn builtins :spell) {})]
       (is (eval/ok? r))
       (is (string? (:ok r)))
-      (is (str/includes? (:ok r) "COMMUNICATION"))))
+      (is (str/includes? (:ok r) "quine"))))
 
-  (testing "guides builtins topic returns string"
-    (let [r (spell/spell-eval '(describe guides :builtins) {})]
+  (testing "builtins agents category points to agents namespace"
+    (let [r (spell/spell-eval '(describe-fn builtins :agents) {})]
       (is (eval/ok? r))
       (is (string? (:ok r)))
-      (is (str/includes? (:ok r) "BUILTINS")))))
+      (is (str/includes? (:ok r) "agents/")))))
 
 (deftest namespace-guide-test
   (testing "io namespace has :guide accessible via describe"
@@ -302,22 +302,37 @@
       (is (str/includes? doc "shell command"))))
 
   (testing "math namespace has :guide via spell-eval"
-    (let [r (spell/spell-eval '(describe math :guide) {})]
+    (let [r (spell/spell-eval '(describe-fn math :guide) {})]
       (is (eval/ok? r))
       (is (string? (:ok r)))
       (is (str/includes? (:ok r) "MATH NAMESPACE"))))
 
   (testing "strings namespace has :guide via spell-eval"
-    (let [r (spell/spell-eval '(describe strings :guide) {})]
+    (let [r (spell/spell-eval '(describe-fn strings :guide) {})]
       (is (eval/ok? r))
       (is (string? (:ok r)))
       (is (str/includes? (:ok r) "STRINGS NAMESPACE"))))
 
   (testing "patterns namespace has :guide via spell-eval"
-    (let [r (spell/spell-eval '(describe patterns :guide) {})]
+    (let [r (spell/spell-eval '(describe-fn patterns :guide) {})]
       (is (eval/ok? r))
       (is (string? (:ok r)))
-      (is (str/includes? (:ok r) "PATTERNS NAMESPACE")))))
+      (is (str/includes? (:ok r) "PATTERNS NAMESPACE"))))
+
+  (testing "agents namespace has :guide"
+    (let [guide (llm/describe (deref (resolve 'spell.comm/agents-namespace)) :guide)]
+      (is (string? guide))
+      (is (str/includes? guide "AGENTS"))))
+
+  (testing "futures namespace has :guide"
+    (let [guide (llm/describe (deref (resolve 'spell.comm/futures-namespace)) :guide)]
+      (is (string? guide))
+      (is (str/includes? guide "FUTURES"))))
+
+  (testing "globals namespace has :guide"
+    (let [guide (llm/describe (deref (resolve 'spell.globals/globals-namespace)) :guide)]
+      (is (string? guide))
+      (is (str/includes? guide "GLOBALS")))))
 
 (deftest namespace-multiple-calls-test
   (testing "can use multiple items from same namespace"
@@ -333,11 +348,11 @@
   (testing "can call agent from namespace"
     (let [mock-agent (fn ([p] (str "result: " p))
                          ([p _] (str "result: " p)))
-          ns-map {'agents {:docs {:helper "helper agent"}
-                           :helper mock-agent}}
+          ns-map {'helpers {:docs {:helper "helper agent"}
+                            :helper mock-agent}}
           test-llm (spell/make-llm {:namespaces ns-map})]
       (provider/with-provider
-        (provider/dummy-provider {:response "(agents/helper \"test\"))"})
+        (provider/dummy-provider {:response "(helpers/helper \"test\"))"})
         (is (= "result: test" (test-llm "(do ")))))))
 
 ;; =============================================================================
@@ -360,8 +375,8 @@
   (testing "default prompt contains expected sections"
     (let [p (prompt/generate-system-prompt spell/all-namespaces)]
       (is (str/includes? p "INTRODUCTION"))
-      (is (str/includes? p "BUILTINS"))
       (is (str/includes? p "NAMESPACES"))
+      (is (str/includes? p "## builtins"))
       (is (str/includes? p "read-file"))
       (is (str/includes? p "sh"))
       (is (str/includes? p "CALL-NOW"))))
@@ -584,6 +599,35 @@
         (provider/dummy-provider {:response "undefined-symbol)"})
         (is (thrown? Exception (test-llm "(do ")))))))
 
+(deftest namespace-recovery-invoke-fn-wrapping-test
+  (testing "ns-recover handles 'Function call failed: Unbound symbol: X' from invoke-fn"
+    ;; When an unbound symbol occurs inside a function passed to map/reduce/filter,
+    ;; invoke-fn wraps the error: "Function call failed: Unbound symbol: X".
+    ;; ns-recover must unwrap this to find and fix the symbol.
+    (let [math-ns {:floor (fn [x] (long (Math/floor (double x))))
+                   :long long}
+          test-llm (spell/make-llm {:namespaces {'math math-ns}
+                                    :recover true})]
+      (provider/with-provider
+        ;; Code uses bare `floor` inside map — invoke-fn wraps the error
+        (provider/dummy-provider {:response "(reduce + 0 (map (fn [x] (floor (/ x 2.0))) (list 10 20 30))))"})
+        (let [result (test-llm "(do ")]
+          ;; ns-recover should fix floor -> math/floor
+          (is (= 30 result))))))
+
+  (testing "ns-recover handles wrapped Namespace lookup failed errors"
+    (let [math-ns {:floor (fn [x] (long (Math/floor (double x))))}
+          other-ns {:trim str/trim}
+          test-llm (spell/make-llm {:namespaces {'math math-ns
+                                                 'other other-ns}
+                                    :recover true})]
+      (provider/with-provider
+        ;; Code uses wrong namespace: other/floor instead of math/floor
+        (provider/dummy-provider {:response "(map (fn [x] (other/floor x)) (list 3.7 4.2)))"})
+        ;; Namespace lookup for other/floor fails, ns-recover should fix to math/floor
+        (let [result (test-llm "(do ")]
+          (is (= [3 4] result)))))))
+
 (deftest format-error-for-recovery-test
   (testing "formats error with program context"
     (let [result {:err "Unbound symbol: foo"
@@ -594,6 +638,52 @@
       (is (str/includes? formatted "Unbound symbol: foo"))
       (is (str/includes? formatted "foo"))
       (is (str/includes? formatted "(do (def x 1) foo)")))))
+
+(deftest effect-phase-recovery-gating-test
+  (testing "body error triggers recovery, effects available in re-eval"
+    ;; Program: body has bare `floor`, trailing expression uses effect via io/ namespace.
+    ;; Namespace recovery fixes floor -> math/floor in body.
+    ;; After fix, the trailing expression should execute with effects available.
+    (let [effect-called (atom false)
+          math-ns {:floor (fn [x] (long (Math/floor (double x))))}
+          io-ns {:do-effect (fn [] (reset! effect-called true) "effect-result")}
+          test-llm (spell/make-llm {:namespaces {'math math-ns 'io io-ns}
+                                    :recover true})]
+      (provider/with-provider
+        ;; Body uses bare `floor` (error), trailing expr uses io/do-effect
+        (provider/dummy-provider {:response "(def x (floor 3.7)) '(io/do-effect)))"})
+        (let [result (test-llm "(eval (do ")]
+          (is (= "effect-result" result))
+          (is @effect-called)))))
+
+  (testing "effect-phase error skips recovery entirely"
+    ;; Error occurs inside eval's second pass — recovery should NOT trigger.
+    (let [recovery-called (atom false)
+          recovery-fn (fn [result _]
+                        (reset! recovery-called true)
+                        '(+ 1 2))
+          test-llm (spell/make-llm {:namespaces {}
+                                    :recover recovery-fn})]
+      (provider/with-provider
+        ;; eval's first pass succeeds (quoted expr is data),
+        ;; second pass fails (undefined-effect is unbound).
+        (provider/dummy-provider {:response "'(undefined-effect)))"})
+        (is (thrown? Exception (test-llm "(eval (do "))))
+      ;; Recovery should never have been called
+      (is (false? @recovery-called))))
+
+  (testing "no double-execution of side effects on recovery"
+    ;; Body has a fixable error. An effect counter in io/ tracks execution.
+    ;; After recovery, the effect should run exactly once.
+    (let [effect-count (atom 0)
+          math-ns {:floor (fn [x] (long (Math/floor (double x))))}
+          io-ns {:count-effect (fn [] (swap! effect-count inc))}
+          test-llm (spell/make-llm {:namespaces {'math math-ns 'io io-ns}
+                                    :recover true})]
+      (provider/with-provider
+        (provider/dummy-provider {:response "(def x (floor 3.7)) '(io/count-effect)))"})
+        (test-llm "(eval (do ")
+        (is (= 1 @effect-count))))))
 
 ;; =============================================================================
 ;; make-form-llm tests
@@ -686,3 +776,212 @@
       (binding [eval/*builtins* (merge eval/*builtins* eval/*effect-builtins*)]
         (let [r (spell/spell-eval '(patterns/check-result "Capital of France?" "London") {})]
           (is (= {:wrong "London is the capital of the UK."} (:ok r))))))))
+
+;; =============================================================================
+;; API retry logic (#64)
+;; =============================================================================
+
+(deftest llm-call-retries-transient-errors
+  (testing "instant retry on 500 error succeeds on second attempt"
+    (let [call-count (atom 0)]
+      (provider/with-provider
+        (reify provider/LLMProvider
+          (supports-prefill [_] true)
+          (call-llm [_ prompt] (provider/call-llm _ prompt {}))
+          (call-llm [_ prompt opts]
+            (swap! call-count inc)
+            (if (= 1 @call-count)
+              (throw (ex-info "Server error" {:status 500}))
+              "success")))
+        (binding [provider/*retries* [0]]
+          (is (= "success" (provider/llm-call "test")))
+          (is (= 2 @call-count))))))
+
+  (testing "non-retryable error throws immediately"
+    (let [call-count (atom 0)]
+      (provider/with-provider
+        (reify provider/LLMProvider
+          (supports-prefill [_] true)
+          (call-llm [_ prompt] (provider/call-llm _ prompt {}))
+          (call-llm [_ prompt opts]
+            (swap! call-count inc)
+            (throw (ex-info "Bad request" {:status 400}))))
+        (binding [provider/*retries* [0 0]]
+          (is (thrown-with-msg? Exception #"Bad request"
+                                (provider/llm-call "test")))
+          (is (= 1 @call-count))))))
+
+  (testing "exhausts all retries then throws"
+    (let [call-count (atom 0)]
+      (provider/with-provider
+        (reify provider/LLMProvider
+          (supports-prefill [_] true)
+          (call-llm [_ prompt] (provider/call-llm _ prompt {}))
+          (call-llm [_ prompt opts]
+            (swap! call-count inc)
+            (throw (ex-info "Rate limited" {:status 429}))))
+        (binding [provider/*retries* [0 0]]
+          (is (thrown-with-msg? Exception #"Rate limited"
+                                (provider/llm-call "test")))
+          ;; 1 initial + 2 retries = 3 calls
+          (is (= 3 @call-count))))))
+
+  (testing "no retries when *retries* is nil"
+    (let [call-count (atom 0)]
+      (provider/with-provider
+        (reify provider/LLMProvider
+          (supports-prefill [_] true)
+          (call-llm [_ prompt] (provider/call-llm _ prompt {}))
+          (call-llm [_ prompt opts]
+            (swap! call-count inc)
+            (throw (ex-info "Server error" {:status 500}))))
+        (binding [provider/*retries* nil]
+          (is (thrown-with-msg? Exception #"Server error"
+                                (provider/llm-call "test")))
+          (is (= 1 @call-count)))))))
+
+;; =============================================================================
+;; Kimi provider (#46)
+;; =============================================================================
+
+(deftest kimi-provider-construction
+  (testing "kimi-provider requires API key"
+    (is (thrown-with-msg? Exception #"MOONSHOT_API_KEY"
+                          (provider/kimi-provider {:api-key nil}))))
+
+  (testing "kimi-provider defaults"
+    (let [p (provider/kimi-provider {:api-key "test-key"})]
+      (is (= "kimi-k2.5" (:model p)))
+      (is (= "https://api.moonshot.ai/v1" (:base-url p)))
+      (is (= "test-key" (:api-key p)))))
+
+  (testing "kimi-provider custom opts"
+    (let [p (provider/kimi-provider {:api-key "k"
+                                      :base-url "https://api.moonshot.cn/v1"
+                                      :model "kimi-k2-thinking"
+                                      :max-tokens 4096})]
+      (is (= "kimi-k2-thinking" (:model p)))
+      (is (= "https://api.moonshot.cn/v1" (:base-url p)))
+      (is (= 4096 (:max-tokens p)))))
+
+  (testing "kimi-provider strips trailing slash from base-url"
+    (let [p (provider/kimi-provider {:api-key "k" :base-url "https://api.moonshot.ai/v1/"})]
+      (is (= "https://api.moonshot.ai/v1" (:base-url p)))))
+
+  (testing "kimi model costs are recognized"
+    (let [usage-atom (atom {:by-model {}})]
+      (binding [provider/*usage* usage-atom
+                provider/*budget* nil]
+        (provider/track-usage! "kimi-k2.5" {:input_tokens 1000000 :output_tokens 1000000})
+        (let [cost (provider/current-cost usage-atom)]
+          ;; kimi-k2.5: $0.60/M in + $3.00/M out = $3.60
+          (is (some? cost))
+          (is (< 3.5 cost 3.7)))))))
+
+;; =============================================================================
+;; supports-prefill protocol tests
+;; =============================================================================
+
+(deftest supports-prefill-test
+  (testing "Anthropic provider supports prefill for Sonnet"
+    (let [p (provider/anthropic-provider {:api-key "test" :model "claude-sonnet-4-5-20250929"})]
+      (is (true? (provider/supports-prefill p)))))
+
+  (testing "Anthropic provider does NOT support prefill for Opus 4.6"
+    (let [p (provider/anthropic-provider {:api-key "test" :model "claude-opus-4-6"})]
+      (is (false? (provider/supports-prefill p)))))
+
+  (testing "Anthropic provider supports prefill for Opus 4.5"
+    (let [p (provider/anthropic-provider {:api-key "test" :model "claude-opus-4-5-20251101"})]
+      (is (true? (provider/supports-prefill p)))))
+
+  (testing "OpenAI provider does not support prefill"
+    (let [p (provider/openai-provider {:api-key "test"})]
+      (is (false? (provider/supports-prefill p)))))
+
+  (testing "Dummy provider defaults to supporting prefill"
+    (let [p (provider/dummy-provider)]
+      (is (true? (provider/supports-prefill p)))))
+
+  (testing "Dummy provider can be configured as no-prefill"
+    (let [p (provider/dummy-provider {:prefill? false})]
+      (is (false? (provider/supports-prefill p)))))
+
+  (testing "Ollama provider supports prefill"
+    (let [p (provider/ollama-provider)]
+      (is (true? (provider/supports-prefill p)))))
+
+  (testing "Kimi provider supports prefill"
+    (let [p (provider/kimi-provider {:api-key "test"})]
+      (is (true? (provider/supports-prefill p))))))
+
+;; =============================================================================
+;; strip-prefix-echo tests
+;; =============================================================================
+
+(deftest strip-prefix-echo-test
+  (testing "strips echoed prefix from response"
+    (is (= "(def x 42))"
+           (llm/strip-prefix-echo "(do " "(do (def x 42))"))))
+
+  (testing "strips with leading whitespace in response"
+    (is (= "(def x 42))"
+           (llm/strip-prefix-echo "(do " "  (do (def x 42))"))))
+
+  (testing "passes through response that doesn't echo prefix"
+    (is (= "(def x 42))"
+           (llm/strip-prefix-echo "(do " "(def x 42))"))))
+
+  (testing "handles empty response"
+    (is (= "" (llm/strip-prefix-echo "(do " ""))))
+
+  (testing "handles exact prefix match with nothing after"
+    (is (= "" (llm/strip-prefix-echo "(do " "(do "))))
+
+  (testing "strips code fences from response"
+    (is (= "(def x 42))"
+           (llm/strip-prefix-echo "(do " "```clojure\n(def x 42))\n```"))))
+
+  (testing "strips code fences with echoed prefix"
+    (is (= "(def x 42))"
+           (llm/strip-prefix-echo "(do " "```\n(do (def x 42))\n```")))))
+
+;; =============================================================================
+;; No-prefill mode integration tests
+;; =============================================================================
+
+(deftest no-prefill-mode-test
+  (testing "make-llm with prefill?=false strips prefix echo"
+    (let [test-llm (spell/make-llm {:namespaces {} :prefill? false})]
+      (provider/with-provider
+        ;; Simulate a no-prefill model that echoes the full prefix+response
+        (provider/dummy-provider {:response "(def x 42))"})
+        (is (= 42 (test-llm "(do "))))))
+
+  (testing "make-llm with prefill?=true (default) passes prefix normally"
+    (let [test-llm (spell/make-llm {:namespaces {}})]
+      (provider/with-provider
+        (provider/dummy-provider {:response "(def x 42))"})
+        (is (= 42 (test-llm "(do ")))))))
+
+;; =============================================================================
+;; Model alias tests
+;; =============================================================================
+
+(deftest model-alias-test
+  (testing "opus46 alias resolves"
+    (is (= "claude-opus-4-6" (cli/resolve-model "opus46"))))
+
+  (testing "o3 alias resolves"
+    (is (= "o3" (cli/resolve-model "o3"))))
+
+  (testing "o4-mini alias resolves"
+    (is (= "o4-mini" (cli/resolve-model "o4-mini"))))
+
+  (testing "gpt52 alias resolves"
+    (is (= "gpt-5.2" (cli/resolve-model "gpt52"))))
+
+  (testing "existing aliases still work"
+    (is (= "claude-haiku-4-5-20251001" (cli/resolve-model "haiku")))
+    (is (= "claude-sonnet-4-5-20250929" (cli/resolve-model "sonnet")))
+    (is (= "claude-opus-4-5-20251101" (cli/resolve-model "opus")))))

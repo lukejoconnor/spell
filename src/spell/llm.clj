@@ -3,6 +3,7 @@
 
    Core loop: call LLM, concatenate prefix+response, parse, apply hooks, eval."
   (:require [clojure.edn :as edn]
+            [clojure.string :as str]
             [spell.comm :as comm]
             [spell.eval :as eval]
             [spell.hooks :as hooks]
@@ -19,9 +20,9 @@
 
 (defn describe
   "Get documentation from a namespace.
-   (describe ns) — all docs
+   (describe ns) — guide if available, else docs map
    (describe ns :key) — doc for specific item"
-  ([ns] (:docs ns))
+  ([ns] (or (:guide ns) (:docs ns)))
   ([ns key] (or (get-in ns [:docs key])
                 (get ns key))))
 
@@ -69,12 +70,17 @@ No explanation, no markdown code blocks, just the raw s-expression.")
    Returns nil if no unique match found (letting the next strategy try)."
   [namespaces]
   (fn [result _recovery-call-fn]
-    (let [{:keys [err expr program]} result]
+    (let [{:keys [err expr program]} result
+          ;; Unwrap "Function call failed: " prefix from invoke-fn errors
+          ;; so we can match the inner error pattern.
+          inner-err (if (str/starts-with? err "Function call failed: ")
+                      (subs err (count "Function call failed: "))
+                      err)]
       (when-let [fix
                  (cond
                    ;; Case 1: "Unbound symbol: X" — bare symbol, search all namespaces
-                   (clojure.string/starts-with? err "Unbound symbol: ")
-                   (let [sym (symbol (subs err (count "Unbound symbol: ")))
+                   (str/starts-with? inner-err "Unbound symbol: ")
+                   (let [sym (symbol (subs inner-err (count "Unbound symbol: ")))
                          matches (find-in-namespaces sym namespaces)]
                      (when (= 1 (count matches))
                        (let [qualified (first matches)]
@@ -83,9 +89,9 @@ No explanation, no markdown code blocks, just the raw s-expression.")
                          (substitute-symbol program sym qualified))))
 
                    ;; Case 2: "Namespace lookup failed: ns/item" — wrong namespace
-                   (clojure.string/starts-with? err "Namespace lookup failed: ")
-                   (let [qualified-str (subs err (count "Namespace lookup failed: "))
-                         parts (clojure.string/split qualified-str #"/")
+                   (str/starts-with? inner-err "Namespace lookup failed: ")
+                   (let [qualified-str (subs inner-err (count "Namespace lookup failed: "))
+                         parts (str/split qualified-str #"/")
                          item-sym (symbol (last parts))
                          bad-qualified (symbol qualified-str)
                          matches (find-in-namespaces item-sym namespaces)]
@@ -97,6 +103,43 @@ No explanation, no markdown code blocks, just the raw s-expression.")
         ;; Return the fixed program for re-evaluation from scratch
         ;; (safe because spell-eval is pure).
         fix))))
+
+;; ---------------------------------------------------------------------------
+;; Prefix Echo Deduplication
+;; ---------------------------------------------------------------------------
+
+(defn- strip-code-fences
+  "Remove markdown code fences from response if present.
+   Handles ```clojure, ```lisp, ```scheme, or bare ```."
+  [response]
+  (let [trimmed (str/trim response)]
+    (if (str/starts-with? trimmed "```")
+      (let [;; Strip opening fence line
+            after-fence (subs trimmed (inc (.indexOf trimmed "\n")))
+            ;; Strip closing fence
+            last-fence (.lastIndexOf after-fence "```")]
+        (if (pos? last-fence)
+          (str/trim (subs after-fence 0 last-fence))
+          (str/trim after-fence)))
+      response)))
+
+(defn strip-prefix-echo
+  "Strip prefix echo from a no-prefill model's response.
+   Handles code fences, then checks for prefix echo.
+   Tries exact match first, then trimmed prefix."
+  [prompt-str response]
+  (let [cleaned (strip-code-fences response)
+        trimmed (str/triml cleaned)]
+    (cond
+      ;; Exact prefix match (including trailing whitespace)
+      (str/starts-with? trimmed prompt-str)
+      (subs trimmed (count prompt-str))
+      ;; Trimmed prefix match (model may drop trailing whitespace)
+      (let [prefix (str/trim prompt-str)]
+        (str/starts-with? trimmed prefix))
+      (subs trimmed (count (str/trim prompt-str)))
+      ;; No echo — return cleaned (fences stripped)
+      :else cleaned)))
 
 ;; ---------------------------------------------------------------------------
 ;; LLM Engine
@@ -120,7 +163,7 @@ No explanation, no markdown code blocks, just the raw s-expression.")
                              eval/*raw-text*       balanced]
                       (eval/spell-eval program' {}))
           final-result
-          (if (and (eval/err? result) recover-fns)
+          (if (and (eval/err? result) recover-fns (not (:effect-phase result)))
             (let [_        (when eval/*verbose*
                              (println (str indent "=== Error Recovery ==="))
                              (println (str indent "Error: " (:err result))))
@@ -128,7 +171,9 @@ No explanation, no markdown code blocks, just the raw s-expression.")
               ;; Pipeline: try each recover-fn on the current error.
               ;; If a fix is found, eval it. If eval succeeds, done.
               ;; If eval fails, continue pipeline with the new error.
-              ;; Recovery re-evaluates from scratch (safe because spell-eval is pure).
+              ;; Recovery only triggers for first-pass (body) errors.
+              ;; Effect-phase errors (from eval's second pass) skip recovery
+              ;; to prevent double-execution of side effects.
               (loop [current result-with-program
                      fns     recover-fns]
                 (if (empty? fns)
@@ -137,11 +182,12 @@ No explanation, no markdown code blocks, just the raw s-expression.")
                     (let [_     (when eval/*verbose*
                                   (println (str indent "Recovery expression: " (pr-str fix-expr))))
                           retry (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
-                                          eval/*raw-text*       nil
-                                          eval/*effect-builtins* {}]
+                                          eval/*raw-text*       nil]
                                   (eval/spell-eval fix-expr (:env current)))]
                       (if (eval/err? retry)
-                        (recur (assoc retry :program fix-expr) (rest fns))
+                        (if (:effect-phase retry)
+                          retry ;; effects may have run; stop recovery loop
+                          (recur (assoc retry :program fix-expr) (rest fns)))
                         retry))
                     (recur current (rest fns))))))
             result)]
@@ -170,7 +216,12 @@ No explanation, no markdown code blocks, just the raw s-expression.")
         trace-data (atom nil)
         eval-fn    (make-eval-pipeline config hooks trace-data)
         _          (when root? (comm/register! handle eval-fn))
-        _          (reset! (:inbox (get @comm/registry handle)) eval-fn)
+        _          (let [inbox (:inbox (get @comm/registry handle))]
+                     (if root?
+                       (reset! inbox eval-fn)
+                       ;; Inherited call: only seed if empty. Preserves any
+                       ;; function -send!'d during the current turn's eval.
+                       (compare-and-set! inbox nil eval-fn)))
         _          (when comm/*spawn-ready*
                      (deliver comm/*spawn-ready* true))
         node-id    (when trace/*trace*
@@ -229,14 +280,18 @@ No explanation, no markdown code blocks, just the raw s-expression.")
                    - true: use default LLM-based recovery
                    - false: disable recovery (errors propagate immediately)
                    - fn: custom recovery function (result-map, call-fn) -> fixed-expr
+   - :prefill?   - whether the provider supports assistant prefill (default: true).
+                   When false, prefix is sent as user message only and prefix echo is stripped.
+   - :thinking   - Anthropic adaptive thinking. When truthy, passed to provider opts.
+                   Number = budget_tokens, true = default (10000).
 
    Returns a function with the same signature as llm:
    (f prompt) or (f prompt hooks).
 
    The returned function is automatically available as 'llm-self in Spell code,
    providing self-recursion without needing to wire up var refs."
-  [{:keys [namespaces model system llm-var recover format]
-    :or {namespaces {} model nil recover true}}]
+  [{:keys [namespaces model system llm-var recover format prefill? thinking]
+    :or {namespaces {} model nil recover true prefill? true}}]
   (let [self-ref (atom nil)
         self-fn (fn llm-self
                   ([prompt] (@self-ref prompt))
@@ -245,8 +300,8 @@ No explanation, no markdown code blocks, just the raw s-expression.")
                    (when-not comm/*spawn-ready*
                      (throw (ex-info "Explicit handle requires spawn context" {:handle handle})))
                    (@self-ref prompt hooks handle)))
-        ;; Split namespace builtins: io and globals are effect-only, rest are pure
-        effect-ns-names #{'io 'globals}
+        ;; Split namespace builtins: io, globals, agents, futures are effect-only, rest are pure
+        effect-ns-names #{'io 'globals 'agents 'futures}
         ns-builtins (into {} (map (fn [[sym ns-map]] [sym ns-map]) namespaces))
         pure-ns-builtins (into {} (remove #(effect-ns-names (key %)) ns-builtins))
         effect-ns-builtins (into {} (filter #(effect-ns-names (key %)) ns-builtins))
@@ -255,22 +310,28 @@ No explanation, no markdown code blocks, just the raw s-expression.")
                        'prefix-prompt #'hooks/prefix-prompt
                        'with-env hooks/with-env
                        'with-env-hints hooks/with-env-hints}
-        effect-builtins (merge (comm/build-effect-builtins)
-                         {'llm-self self-fn
-                          'leaf-llm (make-leaf-llm {})}
+        effect-builtins (merge {'llm-self self-fn
+                               'leaf-llm (make-leaf-llm {})}
                          effect-ns-builtins
                          (when llm-var {'llm llm-var}))
         variant-builtins (merge eval/core-builtins
                                 hook-builtins
-                                {'create-msg comm/create-msg
-                                 'describe describe
-                                 'guides prompt/guides}
+                                {'describe-fn describe}
                                 pure-ns-builtins)
         sys-prompt (or system (prompt/generate-system-prompt namespaces format))
+        prev-prompt-atom (atom nil)
         call-fn  (fn [prompt-str]
-                   (provider/llm-call prompt-str
-                     (cond-> {:system sys-prompt :prefix prompt-str}
-                       model (assoc :model model))))
+                   (let [prev-prompt @prev-prompt-atom
+                         response (provider/llm-call prompt-str
+                                    (cond-> {:system sys-prompt}
+                                      prefill? (assoc :prefix prompt-str)
+                                      model (assoc :model model)
+                                      thinking (assoc :thinking thinking)
+                                      prev-prompt (assoc :cache-prefix prev-prompt)))]
+                     (reset! prev-prompt-atom prompt-str)
+                     (if prefill?
+                       response
+                       (strip-prefix-echo prompt-str response))))
         ;; Recovery call fn: text in, text out, no prefix semantics
         recovery-call-fn (fn [prompt-str]
                            (provider/llm-call prompt-str
