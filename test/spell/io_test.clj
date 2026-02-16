@@ -1,6 +1,7 @@
 (ns spell.io-test
   (:require [clojure.test :refer :all]
             [spell.io :as io]
+            [spell.comm :as comm]
             [clojure.java.io :as jio]))
 
 (def test-dir "target/test-files")
@@ -187,6 +188,40 @@
                            "replaced!")))
     (is (= "replaced!" (slurp path)))))
 
+(deftest str-replace-dollar-in-replacement
+  (testing "$ and \\ in new-str are treated as literal characters"
+    (let [path (str test-dir "/dollar.txt")]
+      (spit path "price: OLD")
+      (is (= {:ok path} (io/str-replace path "OLD" "$100\\n")))
+      (is (= "price: $100\\n" (slurp path))))))
+
+(deftest str-replace-empty-old-str
+  (testing "empty old-str returns error (not infinite loop)"
+    (let [path (str test-dir "/empty-old.txt")]
+      (spit path "content")
+      (let [result (io/str-replace path "" "new")]
+        (is (contains? result :error))
+        (is (re-find #"empty" (:error result)))))))
+
+(deftest str-replace-all
+  (let [path (str test-dir "/replace-all.txt")]
+    (spit path "foo bar foo baz foo")
+    (is (= {:ok path} (io/str-replace path "foo" "qux" {:all true})))
+    (is (= "qux bar qux baz qux" (slurp path)))))
+
+(deftest str-replace-all-single-occurrence
+  (let [path (str test-dir "/replace-all-single.txt")]
+    (spit path "one foo here")
+    (is (= {:ok path} (io/str-replace path "foo" "bar" {:all true})))
+    (is (= "one bar here" (slurp path)))))
+
+(deftest str-replace-all-not-found
+  (let [path (str test-dir "/replace-all-missing.txt")]
+    (spit path "no match here")
+    (let [result (io/str-replace path "foo" "bar" {:all true})]
+      (is (contains? result :error))
+      (is (re-find #"not found" (:error result))))))
+
 ;; =============================================================================
 ;; replace-lines tests
 ;; =============================================================================
@@ -240,6 +275,82 @@
     (spit path "aaa\nbbb\nccc")
     (is (= {:ok path} (io/replace-lines path 2 2 "BBB")))
     (is (= "aaa\nBBB\nccc" (slurp path)))))
+
+;; =============================================================================
+;; replace-lines multi-edit tests
+;; =============================================================================
+
+(deftest replace-lines-multi-basic
+  (testing "two non-adjacent edits applied atomically"
+    (let [path (str test-dir "/rl-multi.txt")]
+      (spit path "aaa\nbbb\nccc\nddd\neee\n")
+      (is (= {:ok path}
+             (io/replace-lines path [[2 2 "BBB"] [4 4 "DDD"]])))
+      (is (= "aaa\nBBB\nccc\nDDD\neee\n" (slurp path))))))
+
+(deftest replace-lines-multi-different-sizes
+  (testing "edits that change line count — line numbers are from original file"
+    (let [path (str test-dir "/rl-multi-sizes.txt")]
+      (spit path "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
+      ;; Replace lines 2-3 with one line, and lines 7-9 with four lines
+      (is (= {:ok path}
+             (io/replace-lines path [[2 3 "two-three"] [7 9 "A\nB\nC\nD"]])))
+      (is (= "1\ntwo-three\n4\n5\n6\nA\nB\nC\nD\n10\n" (slurp path))))))
+
+(deftest replace-lines-multi-delete-and-replace
+  (testing "one delete and one replace"
+    (let [path (str test-dir "/rl-multi-del.txt")]
+      (spit path "keep\ndelete\nkeep\nchange\nkeep\n")
+      (is (= {:ok path}
+             (io/replace-lines path [[2 2 ""] [4 4 "CHANGED"]])))
+      (is (= "keep\nkeep\nCHANGED\nkeep\n" (slurp path))))))
+
+(deftest replace-lines-multi-three-edits
+  (testing "three edits in unsorted order"
+    (let [path (str test-dir "/rl-multi-three.txt")]
+      (spit path "a\nb\nc\nd\ne\nf\ng\n")
+      ;; Pass out of order — should still work
+      (is (= {:ok path}
+             (io/replace-lines path [[6 6 "F"] [2 2 "B"] [4 4 "D"]])))
+      (is (= "a\nB\nc\nD\ne\nF\ng\n" (slurp path))))))
+
+(deftest replace-lines-multi-adjacent
+  (testing "adjacent but non-overlapping edits"
+    (let [path (str test-dir "/rl-multi-adj.txt")]
+      (spit path "a\nb\nc\nd\n")
+      (is (= {:ok path}
+             (io/replace-lines path [[1 2 "AB"] [3 4 "CD"]])))
+      (is (= "AB\nCD\n" (slurp path))))))
+
+(deftest replace-lines-multi-overlap-error
+  (testing "overlapping ranges return error"
+    (let [path (str test-dir "/rl-multi-overlap.txt")]
+      (spit path "a\nb\nc\nd\ne\n")
+      (let [result (io/replace-lines path [[1 3 "X"] [2 4 "Y"]])]
+        (is (contains? result :error))
+        (is (re-find #"overlap" (:error result)))))))
+
+(deftest replace-lines-multi-out-of-range
+  (testing "any edit out of range returns error"
+    (let [path (str test-dir "/rl-multi-bounds.txt")]
+      (spit path "a\nb\nc\n")
+      (is (contains? (io/replace-lines path [[1 1 "A"] [5 5 "X"]]) :error)))))
+
+(deftest replace-lines-multi-single-edit
+  (testing "vector with one edit works like the 4-arg form"
+    (let [path (str test-dir "/rl-multi-one.txt")]
+      (spit path "a\nb\nc\n")
+      (is (= {:ok path}
+             (io/replace-lines path [[2 2 "B"]])))
+      (is (= "a\nB\nc\n" (slurp path))))))
+
+(deftest replace-lines-multi-preserves-no-trailing-newline
+  (testing "multi-edit preserves absence of trailing newline"
+    (let [path (str test-dir "/rl-multi-no-nl.txt")]
+      (spit path "a\nb\nc\nd\ne")
+      (is (= {:ok path}
+             (io/replace-lines path [[2 2 "B"] [4 4 "D"]])))
+      (is (= "a\nB\nc\nD\ne" (slurp path))))))
 
 ;; =============================================================================
 ;; Directory operations tests
@@ -354,6 +465,107 @@
   (testing "get single env var"
     (is (string? (io/env "PATH")))
     (is (nil? (io/env "NONEXISTENT_VAR_12345")))))
+
+;; =============================================================================
+;; watch-dir tests
+;; =============================================================================
+
+(deftest watch-dir-timeout
+  (testing "returns {:timeout true} when nothing happens"
+    (let [dir (str test-dir "/watch-empty")]
+      (.mkdirs (jio/file dir))
+      (is (= {:timeout true} (io/watch-dir dir 100))))))
+
+(deftest watch-dir-detects-create
+  (testing "detects file creation"
+    (let [dir (str test-dir "/watch-create")]
+      (.mkdirs (jio/file dir))
+      (let [result (future
+                     (io/watch-dir dir 15000))]
+        (Thread/sleep 500)
+        (spit (str dir "/new.txt") "hello")
+        (let [r (deref result 14000 {:timeout true})]
+          (is (contains? r :ok))
+          (is (some #(= :create (:kind %)) (:ok r))))))))
+
+(deftest watch-dir-detects-modify
+  (testing "detects file modification"
+    (let [dir (str test-dir "/watch-modify")
+          file (str dir "/existing.txt")]
+      (.mkdirs (jio/file dir))
+      (spit file "original")
+      (let [result (future
+                     (io/watch-dir dir 15000))]
+        (Thread/sleep 500)
+        (spit file "modified")
+        (let [r (deref result 14000 {:timeout true})]
+          (is (contains? r :ok))
+          (is (some #(= :modify (:kind %)) (:ok r))))))))
+
+(deftest watch-dir-not-found
+  (testing "returns error for nonexistent directory"
+    (let [result (io/watch-dir (str test-dir "/nonexistent") 100)]
+      (is (contains? result :error)))))
+
+(deftest watch-dir-not-directory
+  (testing "returns error for file path"
+    (let [path (str test-dir "/watch-file.txt")]
+      (spit path "not a dir")
+      (let [result (io/watch-dir path 100)]
+        (is (contains? result :error))))))
+
+;; =============================================================================
+;; watch-send tests
+;; =============================================================================
+
+(deftest watch-send-returns-nil
+  (testing "returns nil immediately"
+    (let [dir (str test-dir "/ws-nil")]
+      (.mkdirs (jio/file dir))
+      (comm/register! :ws-test-nil identity)
+      (try
+        (is (nil? (io/watch-send dir :ws-test-nil 100)))
+        (finally
+          (comm/unregister! :ws-test-nil))))))
+
+(deftest watch-send-delivers-message
+  (testing "sends file events to handle via comm"
+    (let [dir (str test-dir "/ws-deliver")
+          received (promise)]
+      (.mkdirs (jio/file dir))
+      ;; Register with an eval-fn that captures what arrives
+      (comm/register! :ws-test-deliver
+        (fn [raw] (deliver received raw) :done))
+      (try
+        (io/watch-send dir :ws-test-deliver 15000)
+        (Thread/sleep 500)
+        (spit (str dir "/trigger.txt") "hello")
+        ;; Box blocks until inbox has a function, then applies it to raw
+        ;; Raw must end with ))) to satisfy create-msg's reopen
+        (let [result (comm/box "(quine c (eval (do 1)))" :ws-test-deliver)]
+          (is (= :done result))
+          ;; The eval-fn was called with raw extended by the file events def
+          (let [raw (deref received 1000 :timeout)]
+            (is (not= :timeout raw))
+            (is (string? raw))
+            (is (re-find #"watch-send" raw))))
+        (finally
+          (comm/unregister! :ws-test-deliver))))))
+
+(deftest watch-send-timeout-no-message
+  (testing "does not send on timeout"
+    (let [dir (str test-dir "/ws-timeout")]
+      (.mkdirs (jio/file dir))
+      (comm/register! :ws-test-timeout identity)
+      (try
+        (io/watch-send dir :ws-test-timeout 200)
+        ;; Wait for the watcher to time out
+        (Thread/sleep 500)
+        ;; Inbox should still be nil (no message sent)
+        (let [inbox (:inbox (get @comm/registry :ws-test-timeout))]
+          (is (nil? @inbox)))
+        (finally
+          (comm/unregister! :ws-test-timeout))))))
 
 ;; =============================================================================
 ;; io-namespace tests

@@ -9,9 +9,11 @@
    - Directory operations: exists?, directory?, ls, mkdir, mkdirs, cwd
    - File manipulation: delete, copy, move, stat, temp-file
    - Process execution: sh, exec, env"
-  (:require [clojure.string :as str])
+  (:require [clojure.string :as str]
+            [spell.comm :as comm])
   (:import [java.io File]
-           [java.nio.file Files Paths StandardCopyOption CopyOption]
+           [java.nio.file FileSystems Files Paths StandardCopyOption CopyOption
+                          StandardWatchEventKinds WatchEvent]
            [java.nio.file.attribute FileAttribute]
            [java.util.concurrent TimeUnit]))
 
@@ -120,68 +122,115 @@
         cnt
         (recur (+ found (count substr)) (inc cnt))))))
 
+(defn- replace-first-literal
+  "Replace first occurrence of old with new in s. Pure string ops, no regex."
+  [^String s ^String old ^String new-str]
+  (let [idx (.indexOf s old)]
+    (if (neg? idx)
+      s
+      (str (subs s 0 idx) new-str (subs s (+ idx (count old)))))))
+
 (defn str-replace
-  "Replace a unique string in a file. old-str must appear exactly once.
+  "Replace a string in a file. By default, old-str must appear exactly once.
+   With {:all true}, replaces all occurrences (must appear at least once).
    Returns {:ok path} or {:error msg}."
-  [path old-str new-str]
+  ([path old-str new-str] (str-replace path old-str new-str {}))
+  ([path old-str new-str opts]
+   (cond
+     (nil? old-str)
+     {:error "old-str cannot be nil"}
+
+     (nil? new-str)
+     {:error "new-str cannot be nil"}
+
+     (= "" old-str)
+     {:error "old-str cannot be empty"}
+
+     :else
+     (try
+       (let [content (slurp path)
+             occurrences (count-occurrences content old-str)]
+         (cond
+           (zero? occurrences)
+           {:error (str "String not found in file: " (pr-str old-str))}
+
+           (and (> occurrences 1) (not (:all opts)))
+           {:error (str "String appears " occurrences " times (must be unique): " (pr-str old-str))}
+
+           :else
+           (let [new-content (if (:all opts)
+                               (.replace ^String content ^String old-str ^String new-str)
+                               (replace-first-literal content old-str new-str))]
+             (spit path new-content)
+             {:ok path})))
+       (catch java.io.FileNotFoundException _
+         {:error (str "File not found: " path)})
+       (catch Exception e
+         {:error (str "Error: " (.getMessage e))})))))
+
+(defn- validate-edit
+  "Validate a single [start end content] edit against n lines. Returns error string or nil."
+  [n [start end _]]
   (cond
-    (nil? old-str)
-    {:error "old-str cannot be nil"}
+    (or (< start 1) (> start n))
+    (str "Start line " start " out of range (file has " n " lines)")
 
-    (nil? new-str)
-    {:error "new-str cannot be nil"}
+    (or (< end start) (> end n))
+    (str "End line " end " out of range (start=" start ", file has " n " lines)")))
 
-    :else
-    (try
-      (let [content (slurp path)
-            occurrences (count-occurrences content old-str)]
-        (cond
-          (zero? occurrences)
-          {:error (str "String not found in file: " (pr-str old-str))}
+(defn- edits-overlap?
+  "Check if any two edits in sorted seq overlap."
+  [edits]
+  (some (fn [[[_ end1 _] [start2 _ _]]]
+          (<= start2 end1))
+        (partition 2 1 edits)))
 
-          (> occurrences 1)
-          {:error (str "String appears " occurrences " times (must be unique): " (pr-str old-str))}
-
-          :else
-          (let [new-content (str/replace-first content old-str new-str)]
-            (spit path new-content)
-            {:ok path})))
-      (catch java.io.FileNotFoundException _
-        {:error (str "File not found: " path)})
-      (catch Exception e
-        {:error (str "Error: " (.getMessage e))}))))
+(defn- apply-edits
+  "Apply edits to lines vector in reverse order (highest line numbers first).
+   Each edit is [start end content]. Returns new lines vector."
+  [lines edits]
+  (reduce (fn [ls [start end new-content]]
+            (let [before (subvec ls 0 (dec start))
+                  after (subvec ls end)
+                  new-lines (if (empty? new-content)
+                              []
+                              (str/split-lines new-content))]
+              (vec (concat before new-lines after))))
+          lines
+          (reverse (sort-by first edits))))
 
 (defn replace-lines
-  "Replace lines start through end (1-indexed, inclusive) with new content.
-   Empty string deletes the lines. Returns {:ok path} or {:error msg}."
-  [path start end new-content]
-  (try
-    (let [content (slurp path)
-          lines (str/split-lines content)
-          n (count lines)
-          trailing-newline? (and (pos? (count content))
-                                 (= \newline (last content)))]
-      (cond
-        (or (< start 1) (> start n))
-        {:error (str "Start line " start " out of range (file has " n " lines)")}
+  "Replace lines in a file (1-indexed, inclusive). Two forms:
+   (replace-lines path start end content) — single edit
+   (replace-lines path [[start end content] ...]) — multiple edits, applied atomically
+   Empty content string deletes the lines. Returns {:ok path} or {:error msg}."
+  ([path edits]
+   (try
+     (let [content (slurp path)
+           lines (vec (str/split-lines content))
+           n (count lines)
+           trailing-newline? (and (pos? (count content))
+                                   (= \newline (last content)))
+           errors (keep (partial validate-edit n) edits)]
+       (cond
+         (seq errors)
+         {:error (first errors)}
 
-        (or (< end start) (> end n))
-        {:error (str "End line " end " out of range (start=" start ", file has " n " lines)")}
+         (edits-overlap? (sort-by first edits))
+         {:error "Edits have overlapping line ranges"}
 
-        :else
-        (let [before (subvec (vec lines) 0 (dec start))
-              after (subvec (vec lines) end)
-              new-lines (if (empty? new-content)
-                          []
-                          (str/split-lines new-content))
-              result (str (str/join "\n" (concat before new-lines after))
-                          (when trailing-newline? "\n"))]
-          (spit path result)
-          {:ok path})))
-    (catch java.io.FileNotFoundException _
-      {:error (str "File not found: " path)})
-    (catch Exception e
-      {:error (str "Error: " (.getMessage e))})))
+         :else
+         (let [new-lines (apply-edits lines edits)
+               result (str (str/join "\n" new-lines)
+                           (when trailing-newline? "\n"))]
+           (spit path result)
+           {:ok path})))
+     (catch java.io.FileNotFoundException _
+       {:error (str "File not found: " path)})
+     (catch Exception e
+       {:error (str "Error: " (.getMessage e))})))
+  ([path start end new-content]
+   (replace-lines path [[start end new-content]])))
 
 ;; =============================================================================
 ;; Directory operations
@@ -310,6 +359,59 @@
        {:error (str "Error creating temp file: " (.getMessage e))}))))
 
 ;; =============================================================================
+;; File watching
+;; =============================================================================
+
+(def ^:private watch-kinds
+  {StandardWatchEventKinds/ENTRY_CREATE :create
+   StandardWatchEventKinds/ENTRY_MODIFY :modify
+   StandardWatchEventKinds/ENTRY_DELETE :delete})
+
+(defn watch-dir
+  "Watch a directory for file changes. Blocks until events occur or timeout.
+   Returns {:ok [{:kind :create|:modify|:delete :name \"file.txt\"} ...]}
+   or {:timeout true} if timeout-ms elapses. Without timeout, blocks indefinitely."
+  ([path] (watch-dir path nil))
+  ([path timeout-ms]
+   (try
+     (let [dir (Paths/get path (into-array String []))]
+       (with-open [watcher (.newWatchService (FileSystems/getDefault))]
+         (.register dir watcher
+                    (into-array [StandardWatchEventKinds/ENTRY_CREATE
+                                 StandardWatchEventKinds/ENTRY_MODIFY
+                                 StandardWatchEventKinds/ENTRY_DELETE]))
+         (let [key (if timeout-ms
+                     (.poll watcher (long timeout-ms) TimeUnit/MILLISECONDS)
+                     (.take watcher))]
+           (if (nil? key)
+             {:timeout true}
+             (let [events (mapv (fn [^WatchEvent e]
+                                  {:kind (get watch-kinds (.kind e) :unknown)
+                                   :name (str (.context e))})
+                                (.pollEvents key))]
+               (.reset key)
+               {:ok events})))))
+     (catch java.nio.file.NoSuchFileException _
+       {:error (str "Directory not found: " path)})
+     (catch java.nio.file.NotDirectoryException _
+       {:error (str "Not a directory: " path)})
+     (catch Exception e
+       {:error (str "Error watching directory: " (.getMessage e))}))))
+
+(defn watch-send
+  "Watch directory in background, send events to handle when they occur.
+   Returns nil immediately. When file events arrive, sends a message to
+   handle with :from :watch-send. Does nothing on timeout or error."
+  ([path handle] (watch-send path handle nil))
+  ([path handle timeout-ms]
+   (future
+     (binding [comm/*current-handle* :watch-send]
+       (let [result (watch-dir path timeout-ms)]
+         (when (:ok result)
+           (comm/send-msg (:ok result) handle)))))
+   nil))
+
+;; =============================================================================
 ;; Process execution
 ;; =============================================================================
 
@@ -371,6 +473,9 @@
 io/read-file returns numbered lines (\"1: first line\\n2: second line\\n...\"). Edit with io/replace-lines (1-indexed, inclusive):
   (io/replace-lines \"main.py\" 42 44 \"    x = fixed_value\\n    return x\")
 
+For multiple edits, pass a vector of [start end content] triples. Line numbers refer to the original file — no drift:
+  (io/replace-lines \"main.py\" [[10 12 \"new block 1\"] [25 30 \"new block 2\"]])
+
 Use (io/read-file path start end) to extract a line range for passing a subset to a child.
 
 CONTEXT EXPLORATION
@@ -399,8 +504,8 @@ io/slurp returns raw content: (:ok (io/slurp \"file.txt\")) for the string witho
           :read-file "Read file with line numbers. Returns string \"1: line1\\n2: line2\\n...\" or {:error msg}. Optional start/end for range."
           :write-file "Write content to file. Creates parent dirs. Returns {:ok path} or {:error msg}."
           ;; String replacement
-          :str-replace "Replace unique string in file. Returns {:ok path} or {:error msg}."
-          :replace-lines "Replace line range. (replace-lines path start end new-content). Returns {:ok path} or {:error msg}."
+          :str-replace "Replace string in file. Unique by default; (str-replace path old new {:all true}) replaces all. Returns {:ok path} or {:error msg}."
+          :replace-lines "Replace lines. (replace-lines path start end content) for one edit, (replace-lines path [[s1 e1 c1] [s2 e2 c2]]) for multiple (atomic, no drift). Returns {:ok path} or {:error msg}."
           ;; Directory operations
           :exists? "Check if path exists."
           :directory? "Check if path is a directory."
@@ -414,6 +519,9 @@ io/slurp returns raw content: (:ok (io/slurp \"file.txt\")) for the string witho
           :move "Move/rename file. (move src dest). Returns {:ok dest} or {:error msg}."
           :stat "Get file info. Returns {:size :modified :readable :writable :executable :directory} or {:error msg}."
           :temp-file "Create temp file. Returns {:ok path} or {:error msg}."
+          ;; File watching
+          :watch-dir "Watch directory for changes. Blocks until events or timeout. (watch-dir path) or (watch-dir path timeout-ms). Returns {:ok [{:kind :create|:modify|:delete :name \"file.txt\"} ...]} or {:timeout true}."
+          :watch-send "Watch directory in background, send events to handle when they occur. (watch-send path handle) or (watch-send path handle timeout-ms). Returns nil immediately. Message arrives with :from :watch-send."
           ;; Process execution
           :sh "Execute shell command. Returns {:exit N :out \"...\" :err \"...\"}."
           :exec "Execute command directly (no shell). (exec [\"cmd\" \"arg1\" ...]). Returns {:exit N :out \"...\" :err \"...\"}."
@@ -440,6 +548,9 @@ io/slurp returns raw content: (:ok (io/slurp \"file.txt\")) for the string witho
    :move move
    :stat stat
    :temp-file temp-file
+   ;; File watching
+   :watch-dir watch-dir
+   :watch-send watch-send
    ;; Process execution
    :sh sh
    :exec exec
