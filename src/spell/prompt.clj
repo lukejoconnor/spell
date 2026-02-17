@@ -79,6 +79,8 @@ Minor note: your response is automatically padded with closing parentheses if ne
 
 EXTENSIONS
 
+Quote expressions that use effect functions (llm-self, call-now, describe, agents/, io/, globals/, futures/). Quoting makes them inert in the do block; the completion wrapper's double evaluation resolves them. Unquoted effect calls fail with \"Unbound symbol\".
+
 Each response ends with one quoted trailing expression. That expression fires, extends your context, and a child continues. Each line below is a separate turn:
   ;; turn 1: learn the agents API
   '(describe agents)
@@ -88,7 +90,6 @@ Each response ends with one quoted trailing expression. That expression fires, e
   worker
 
 When calling llm-self with `completion`, the child is *yourself* — same context window, continuing your own CoT.
-All effect functions go in the quoted trailing expression. Quoting makes them inert in the first pass; they resolve when double-evaluated by the completion wrapper.
 
 KEY ANTIPATTERNS
 
@@ -153,9 +154,14 @@ Use '(describe agents) to see the full communication guide.
   ;; spawn a worker and wait for its result:
   '(agents/spawn-recv llm-self \"compute 6 * 7 and send result to (agents/parent-handle)\")
 
-  ;; spawn named agents that can find each other:
-  '(do (agents/spawn llm-self \"You are researcher A. Send findings to :coordinator.\" :researcher-a)
-       (agents/spawn llm-self \"You are researcher B. Send findings to :coordinator.\" :researcher-b))
+  ;; spawn a named agent and have a conversation (ask sends + blocks, reply-ask responds + blocks):
+  '(do (agents/spawn llm-self \"You are a seller. Counter or accept offers.\" :seller)
+       (agents/ask :seller 100))
+  ;; :seller's next turn sees (def msg-0 {:from :root :value 100})
+  ;; :seller counters: '(agents/reply-ask msg-0 250)   — sends 250 back, stays blocked for next offer
+  ;; your next turn sees (def msg-1 {:from :seller :value 250})
+  ;; you counter:       '(agents/ask :seller 150)       — sends 150, blocks for reply
+  ;; ...until one side uses reply-send to end the conversation.
 
 llm-self calls are always serial — the child inherits your handle, so your entire llm-self call tree is one logical agent. For parallel LLM work, use agents/spawn (separate handles).
 
@@ -163,26 +169,18 @@ COMMUNICATION
 
 agents/ provides inter-agent communication. Use '(describe agents) for the full guide.
 
-  (agents/send-msg value handle)      — send a message to agent at handle
-  (agents/reply-send msg value)       — reply to a received message (fire-and-forget)
-  (agents/reply-ask msg value)        — reply, then block for response
-  (agents/ask target msg)             — send msg to target, block for reply
-  (agents/ask [a b c])                — multi-target ask: poke all, block until all have sent
+  (agents/ask target msg)             — send msg to target, block for reply (primary conversation mechanism)
+  (agents/reply-ask msg value)        — reply to a received message, then block for next message
+  (agents/reply-send msg value)       — reply to a received message (fire-and-forget, ends conversation)
   (agents/spawn llm-fn prompt)        — start a background agent, returns its handle
-  (agents/spawn llm-fn prompt :name)  — same, but with a fixed handle name (keyword)
-  (agents/spawn-recv llm-fn prompt)   — spawn agent, block until it sends back
-  (agents/current-handle)             — your handle (keyword like :agent-42)
-  (agents/parent-handle)              — handle of the agent that spawned you (nil if not spawned)
+  (agents/spawn llm-fn prompt :name)  — same, but with a named handle (keyword)
+  (agents/spawn-recv llm-fn prompt)   — spawn agent, block until it sends back (one-shot delegation)
+  (agents/send-msg value handle)      — low-level send (prefer ask/reply for conversations)
+  (agents/current-handle)             — your handle (:root for root agent, :spawn-N or named for spawned)
+  (agents/parent-handle)              — handle of the agent that spawned you (nil if root)
 
 Messages arrive as def bindings: (def msg-N {:from sender-handle :value val}).
-
-Named handles for multi-turn conversations: use keyword handles (self-evaluating, persist across turns).
-  '(do (agents/spawn llm-self \"...\" :seller)
-       (agents/send-msg 100 :seller) (agents/ask :seller))
-
-spawn-recv pattern (spawn + block — the primary delegation pattern):
-  '(agents/spawn-recv llm-self \"compute 42 and send result to (agents/parent-handle)\")
-  ;; child: '(agents/send-msg 42 (agents/parent-handle))
+reply-send and reply-ask extract the sender from the message automatically.
 
 GLOBALS
 
@@ -288,7 +286,13 @@ CHECK-RESULT
 
 patterns/check-result verifies an answer using leaf-llm. Returns {:ok answer} or {:wrong msg}:
   (patterns/check-result \"What is 2+2?\" 4)            ;; => {:ok 4}
-  (patterns/check-result \"Capital of France?\" \"London\") ;; => {:wrong \"London is...\"}
+  (patterns/check-result \"Capital of France?\" \"London\") ;; => {:wrong \"London is...\"
+
+CLEAN-PROMPT
+
+patterns/clean-prompt cleans up a raw prompt (voice-to-text, typos, half-sentences) via leaf-llm, then executes it:
+  '(patterns/clean-prompt \"waht is the captal of franc... like the big city\")
+Accepts a string or quine form. leaf-llm infers intent and rewrites; llm-self runs the cleaned prompt.
 
 WORKING WITH TESTS
 

@@ -188,13 +188,21 @@ call-now: Evaluates an expression, binds the result to a name, and extends to a 
 
 check-result: Verifies an answer using leaf-llm. Returns {:ok answer} or {:wrong msg}.
   (patterns/check-result \"What is 2+2?\" 4)            ;; => {:ok 4}
-  (patterns/check-result \"Capital of France?\" \"London\") ;; => {:wrong \"London is...\"}"
+  (patterns/check-result \"Capital of France?\" \"London\") ;; => {:wrong \"London is...\"
+
+clean-prompt: Cleans up a raw prompt (voice-to-text, quick notes) via leaf-llm, then runs it.
+  '(patterns/clean-prompt \"waht is the captal of franc... like the big city\")
+  leaf-llm infers intent and rewrites; llm-self executes the cleaned prompt.
+  Accepts a string or quine form (serializes non-strings automatically).\""
    :docs {:call-now "Evaluate a tool, bind the result, and extend to a child LLM that sees it.
 (patterns/call-now (tools/bash \"ls\") 'files)
 Requires the completion binding (from quine preamble in NL prompts)."
           :check-result "Verify an answer using leaf-llm. Returns {:ok answer} if correct, {:wrong msg} if not. Caller decides how to handle wrong results (retry, extend, etc.).
 (check-result \"What is 2+2?\" 4)  ; => {:ok 4}
-(check-result \"Capital of France?\" \"London\")  ; => {:wrong \"London is the capital of the UK, not France.\"}"}
+(check-result \"Capital of France?\" \"London\")  ; => {:wrong \"London is the capital of the UK, not France.\"}"
+          :clean-prompt "Clean up a raw prompt via leaf-llm and execute it. Handles voice-to-text, typos, half-sentences.
+'(patterns/clean-prompt \"waht is the captal of franc\")
+Accepts a string or quine form."}
    ;; call-now: evaluate tool, bind result in completion, extend to child
    :call-now {:spell/fn true
               :params ['result 'name]
@@ -217,7 +225,17 @@ Requires the completion binding (from quine preamble in NL prompts)."
                               {:wrong (strings/trim
                                        (if (strings/starts-with? trimmed "WRONG:")
                                          (strings/subs trimmed 6)
-                                         trimmed))})))}})
+                                         trimmed))})))}
+   ;; clean-prompt: clean up raw text via leaf-llm, then execute with llm-self
+   :clean-prompt {:spell/fn true
+                  :params ['raw]
+                  :body '((let [text (if (string? raw) raw (pr-str raw))
+                                cleaned (leaf-llm (cat "Rewrite the following as a clear, well-formed prompt. "
+                                                       "Fix typos, complete half-sentences, and infer intent. "
+                                                       "The input may be wrapped in code syntax — ignore that and focus on the natural language content. "
+                                                       "Output ONLY the rewritten prompt.\n\n"
+                                                       text))]
+                            (llm-self cleaned)))}})
 
 ;; =============================================================================
 ;; All standard library namespaces
