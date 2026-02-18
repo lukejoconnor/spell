@@ -92,7 +92,7 @@ Programs return the value of their last expression (standard Lisp semantics). No
 |------|-------------|
 | `writeup/language-design.md` | Main writeup (title: "Agent self-orchestration with Spell") |
 | `writeup/spell-literature-review.md` | Literature review positioning Spell |
-| `src/spell/macros.clj` | Macro system (registry, `defspellmacro`, 24 macros, threading helpers, think/rethink pruning) |
+| `src/spell/macros.clj` | Macro system (registry, `defspellmacro`, 26 macros incl. `defmacro` for user-defined macros, threading helpers, think/rethink pruning) |
 | `src/spell/eval.clj` | Evaluator (`spell-eval`, `expand`, builtins, dynamic scoping, effect guard) |
 | `src/spell/core.clj` | Top-level wiring (default `llm`, root builtin registration, re-exports) |
 | `src/spell/prompt.clj` | System prompt (preamble + metadata-driven generation) |
@@ -102,7 +102,7 @@ Programs return the value of their last expression (standard Lisp semantics). No
 | `src/spell/parse.clj` | S-expression parser (read-all for multi-form input) |
 | `src/spell/comm.clj` | Communication layer (box execution primitive, registry, send/sleep/spawn, ask, agents-namespace, futures-namespace) |
 | `src/spell/globals.clj` | Global shared state (globals/ namespace: get, set, update, pop) |
-| `src/spell/io.clj` | I/O operations (bash, read-file, write-file, str-replace, replace-lines, sh, watch-dir, watch-send) |
+| `src/spell/io.clj` | I/O operations (bash, read-file, write-file, str-replace, replace-lines, sh, watch-send) |
 | `src/spell/stdlib.clj` | Standard library namespaces (strings, seqs, fns, math, bits, patterns) |
 | `src/spell/cli.clj` | CLI with `-t`, `-m`, `-a`, `-v`, `-d`, `-b` flags; accepts `.spl` files and `.agent.edn` agents |
 | `src/spell/trace.clj` | Trace recording system for debugging LLM call trees |
@@ -116,10 +116,10 @@ Programs return the value of their last expression (standard Lisp semantics). No
 
 ## Current Status
 
-Core interpreter and tooling complete (410 tests, 1572 assertions):
+Core interpreter and tooling complete (429 tests, 1649 assertions):
 - `spell-eval` with environment threading
 - Special forms (13): `quote`, `def`, `do`, `if`, `let`, `fn`/`fn*`, `expand`, `quine`, `loop`, `recur`, `for`, `try`
-- Macros (24 via `defspellmacro`): `when`, `defn`, `and`, `or`, `cond`, `if-let`, `when-let`, `case`, `as->`, `cond->`, `cond->>`, `some->`, `some->>`, `call-now`, `print`, `describe`, `define`, `->`, `->>`, `future`, `plet`, `think`, `rethink`, `extend`
+- Macros (26 via `defspellmacro`): `when`, `defn`, `and`, `or`, `cond`, `if-let`, `when-let`, `case`, `as->`, `cond->`, `cond->>`, `some->`, `some->>`, `call-now`, `print`, `describe`, `define`, `defmacro`, `compact`, `->`, `->>`, `future`, `plet`, `think`, `rethink`, `extend`
 - Vector destructuring in `fn`/`defn`/`let` parameters: nested vectors, `&` rest, `:as`
 - Core builtins: arithmetic, comparison, logic, list ops (`map`, `reduce`, `filter`, etc.), string ops (`cat`, `pr-str`), `spell-eval`, `llm-self`, `describe`, `throw`, `gensym`, `serialize`, `prune-and-reopen`
 - Effect guard: `eval` builtin (agent-specific, not special form) merges effectful namespaces (`agents/`, `futures/`, `io/`, `globals/`) and per-variant fns (`llm-self`, `llm`, `leaf-llm`) with pure builtins; effects only available in trailing expression via double evaluation
@@ -131,9 +131,9 @@ Core interpreter and tooling complete (410 tests, 1572 assertions):
 - Docs-only namespace: `builtins/` (reference for core builtins by category)
 - `llm-self` for automatic self-recursion (atom-based forward ref, available in all `make-llm` variants)
 - `future`/`await`/`plet` for deterministic parallel computation (core builtins); `futures/await-all`/`futures/pmap` in effect namespace
-- Inter-agent communication via `agents/` namespace: `agents/spawn`, `agents/ask` (including multi-target `[a b c]`), `agents/send-msg`, `agents/reply-send`, `agents/reply-ask`, `agents/spawn-recv`, `agents/current-handle`, `agents/parent-handle`, keyword handles
+- Inter-agent communication via `agents/` namespace: `agents/spawn`, `agents/ask` (including multi-target `[a b c]`), `agents/send-msg`, `agents/reply-send`, `agents/reply-ask`, `agents/spawn-recv`, `agents/register` (dormant agent with stored completion), `agents/current-handle`, `agents/parent-handle`, keyword handles
 - Global shared state: `globals/` namespace (`get`, `set`, `update`, `pop`, `keys`, `wait-until`) for all-to-all coordination
-- I/O tools: `bash`, `read-file`, `write-file`, `str-replace` (with `:all` flag for replace-all), `replace-lines` (supports multi-range edits), `sh`, `watch-dir`, `watch-send` (in `io` namespace, opt-in)
+- I/O tools: `bash`, `read-file`, `write-file`, `str-replace` (with `:all` flag for replace-all), `replace-lines` (supports multi-range edits), `sh`, `watch-send` (in `io` namespace, opt-in)
 - LLM-based error recovery (opt-out by default): on evaluation failure, LLM generates fix re-evaluated from scratch
 - Four LLM providers: Anthropic (with prompt caching), OpenAI, Ollama, Kimi (Moonshot AI) — unified `-m provider:model` CLI syntax
 - No-prefill mode for OpenAI models; extended thinking support (Anthropic `extended_thinking`, OpenAI `reasoning_effort`)
@@ -174,6 +174,10 @@ Core interpreter and tooling complete (410 tests, 1572 assertions):
 ## Benchmark Reporting
 
 When reporting benchmark accuracy, the denominator is always the total number of test items, not the number that ran without errors. Errors count as wrong answers — it doesn't matter *why* you got it wrong. Report accuracy as `correct / total`, and separately note errors and wrong answers for diagnostic purposes. Example: "50% (13/30) — 4 errors, 13 wrong" not "50% (13/26)".
+
+## Scientific Neutrality
+
+The user has observed a tendency toward "good news" bias in benchmark analysis — e.g., emphasizing results that favor Spell, soft-pedaling unfavorable comparisons, or framing ambiguous findings optimistically. Maintain a neutral, skeptical stance when analyzing benchmark results. Present findings as-is, including results that are unfavorable or inconclusive, without spin.
 
 ## System Prompt Best Practices
 

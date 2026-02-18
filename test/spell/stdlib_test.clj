@@ -575,11 +575,17 @@
     (let [check-result (:check-result stdlib/patterns)]
       (is (eval/spell-fn? check-result))
       (is (= ['prompt 'answer] (:params check-result)))))
+  (testing "patterns/explore is a spell-fn"
+    (let [explore (:explore stdlib/patterns)]
+      (is (eval/spell-fn? explore))
+      (is (= ['query] (:params explore)))))
   (testing "patterns has :docs"
     (is (map? (:docs stdlib/patterns)))
-    (is (contains? (:docs stdlib/patterns) :check-result)))
+    (is (contains? (:docs stdlib/patterns) :check-result))
+    (is (contains? (:docs stdlib/patterns) :explore)))
   (testing "patterns accessible via qualified symbol"
-    (is (eval/spell-fn? (run-spell-full 'patterns/check-result)))))
+    (is (eval/spell-fn? (run-spell-full 'patterns/check-result)))
+    (is (eval/spell-fn? (run-spell-full 'patterns/explore)))))
 
 ;; =============================================================================
 ;; all-namespaces contains expected keys

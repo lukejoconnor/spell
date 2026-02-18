@@ -74,6 +74,58 @@
     (is (contains? result :error))))
 
 ;; =============================================================================
+;; read-lines tests
+;; =============================================================================
+
+(deftest read-lines-basic
+  (let [path (str test-dir "/read-lines.txt")
+        content "Hello\nWorld\nFoo"]
+    (spit path content)
+    (let [result (io/read-lines path)]
+      (is (= ["Hello" "World" "Foo"] result))
+      (is (= 1 (:spell/line-offset (meta result)))))))
+
+(deftest read-lines-range
+  (let [path (str test-dir "/read-lines-range.txt")
+        content "line1\nline2\nline3\nline4\nline5"]
+    (spit path content)
+    (let [result (io/read-lines path 2 4)]
+      (is (= ["line2" "line3" "line4"] result))
+      (is (= 2 (:spell/line-offset (meta result)))))))
+
+(deftest read-lines-empty
+  (let [path (str test-dir "/read-lines-empty.txt")]
+    (spit path "")
+    (let [result (io/read-lines path)]
+      (is (= [] result))
+      (is (= 1 (:spell/line-offset (meta result)))))))
+
+(deftest read-lines-not-found
+  (let [result (io/read-lines (str test-dir "/nonexistent.txt"))]
+    (is (contains? result :error))
+    (is (re-find #"not found" (:error result)))))
+
+(deftest read-lines-clamped
+  (let [path (str test-dir "/read-lines-clamp.txt")
+        content "line1\nline2\nline3"]
+    (spit path content)
+    (testing "end clamped to file length"
+      (let [result (io/read-lines path 2 100)]
+        (is (= ["line2" "line3"] result))
+        (is (= 2 (:spell/line-offset (meta result))))))
+    (testing "start clamped to 1"
+      (let [result (io/read-lines path 0 2)]
+        (is (= ["line1" "line2"] result))
+        (is (= 1 (:spell/line-offset (meta result))))))))
+
+(deftest read-lines-single-line
+  (let [path (str test-dir "/read-lines-single.txt")]
+    (spit path "only line")
+    (let [result (io/read-lines path)]
+      (is (= ["only line"] result))
+      (is (= 1 (:spell/line-offset (meta result)))))))
+
+;; =============================================================================
 ;; slurp/spit tests
 ;; =============================================================================
 
@@ -474,14 +526,14 @@
   (testing "returns {:timeout true} when nothing happens"
     (let [dir (str test-dir "/watch-empty")]
       (.mkdirs (jio/file dir))
-      (is (= {:timeout true} (io/watch-dir dir 100))))))
+      (is (= {:timeout true} (#'io/watch-dir dir 100))))))
 
 (deftest watch-dir-detects-create
   (testing "detects file creation"
     (let [dir (str test-dir "/watch-create")]
       (.mkdirs (jio/file dir))
       (let [result (future
-                     (io/watch-dir dir 15000))]
+                     (#'io/watch-dir dir 15000))]
         (Thread/sleep 500)
         (spit (str dir "/new.txt") "hello")
         (let [r (deref result 14000 {:timeout true})]
@@ -495,7 +547,7 @@
       (.mkdirs (jio/file dir))
       (spit file "original")
       (let [result (future
-                     (io/watch-dir dir 15000))]
+                     (#'io/watch-dir dir 15000))]
         (Thread/sleep 500)
         (spit file "modified")
         (let [r (deref result 14000 {:timeout true})]
@@ -504,14 +556,14 @@
 
 (deftest watch-dir-not-found
   (testing "returns error for nonexistent directory"
-    (let [result (io/watch-dir (str test-dir "/nonexistent") 100)]
+    (let [result (#'io/watch-dir (str test-dir "/nonexistent") 100)]
       (is (contains? result :error)))))
 
 (deftest watch-dir-not-directory
   (testing "returns error for file path"
     (let [path (str test-dir "/watch-file.txt")]
       (spit path "not a dir")
-      (let [result (io/watch-dir path 100)]
+      (let [result (#'io/watch-dir path 100)]
         (is (contains? result :error))))))
 
 ;; =============================================================================
@@ -571,6 +623,7 @@
     (is (contains? ns :slurp))
     (is (contains? ns :spit))
     (is (contains? ns :read-file))
+    (is (contains? ns :read-lines))
     (is (contains? ns :write-file))
     (is (contains? ns :sh))
     (is (contains? ns :exec))

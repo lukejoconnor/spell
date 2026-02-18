@@ -1913,7 +1913,32 @@
       (is (.startsWith ^String result "(stored "))
       (let [forms (spell.parse/read-all result)
             id (second (first forms))]
-        (is (= big-vec (eval/stored id)))))))
+        (is (= big-vec (eval/stored id))))))
+
+  (testing "serialize-for-continuation with line-offset vector produces do form"
+    (let [lines (with-meta ["line one" "line two" "line three"] {:spell/line-offset 10})
+          result (eval/serialize-for-continuation lines)]
+      (is (.startsWith ^String result "(do "))
+      (is (.contains ^String result "10: line one"))
+      (is (.contains ^String result "12: line three"))
+      ;; Round-trip: evaluating the form should yield the original vector
+      (let [parsed (first (spell.parse/read-all result))
+            evaled (run-spell parsed)]
+        (is (= ["line one" "line two" "line three"] evaled)))))
+
+  (testing "serialize-for-continuation with line-offset offset=1"
+    (let [lines (with-meta ["alpha" "beta"] {:spell/line-offset 1})
+          result (eval/serialize-for-continuation lines)]
+      (is (.contains ^String result "1: alpha"))
+      (is (.contains ^String result "2: beta"))))
+
+  (testing "serialize-for-continuation with empty line-offset vector"
+    (let [lines (with-meta [] {:spell/line-offset 5})
+          result (eval/serialize-for-continuation lines)]
+      (is (.startsWith ^String result "(do "))
+      (let [parsed (first (spell.parse/read-all result))
+            evaled (run-spell parsed)]
+        (is (= [] evaled))))))
 
 ;; =============================================================================
 ;; New special forms (from verified clojure.core audit)
@@ -2551,3 +2576,168 @@
     (let [result (spell-eval '(eval '(+ 1 2)) {})]
       (is (eval/ok? result))
       (is (= 3 (:ok result))))))
+
+;; =============================================================================
+;; deep-truncate builtin tests
+;; =============================================================================
+
+(deftest deep-truncate-builtin-test
+  (testing "short strings unchanged"
+    (is (= "hello" (run-spell '(deep-truncate "hello" 100)))))
+
+  (testing "long strings are truncated"
+    (let [long-str (apply str (repeat 200 "x"))
+          result (run-spell (list 'deep-truncate long-str 50))]
+      (is (string? result))
+      (is (< (count result) (count long-str)))
+      (is (clojure.string/includes? result "truncated"))))
+
+  (testing "maps with long string values are deep-truncated"
+    (let [long-str (apply str (repeat 200 "x"))
+          input {:a long-str :b "short"}
+          result (run-spell (list 'deep-truncate input 50))]
+      (is (map? result))
+      (is (= "short" (:b result)))
+      (is (clojure.string/includes? (:a result) "truncated"))))
+
+  (testing "nested structures are recursively truncated"
+    (let [long-str (apply str (repeat 200 "x"))
+          input [{:a long-str}]
+          result (run-spell (list 'deep-truncate input 50))]
+      (is (vector? result))
+      (is (clojure.string/includes? (:a (first result)) "truncated"))))
+
+  (testing "non-string values unchanged"
+    (is (= 42 (run-spell '(deep-truncate 42 10))))
+    (is (= {:a 1 :b 2} (run-spell '(deep-truncate {:a 1 :b 2} 10))))))
+
+;; =============================================================================
+;; compact macro expansion tests
+;; =============================================================================
+
+(deftest compact-macro-expansion-test
+  (testing "compact expands to llm-self with prune-and-reopen + compact instructions"
+    (let [expanded (macros/spell-macroexpand-1 '(compact completion))]
+      (is (= 'llm-self (first expanded)))
+      (is (seq? (second expanded)))
+      (is (= 'str (first (second expanded))))
+      (is (= '(prune-and-reopen completion) (second (second expanded))))))
+
+  (testing "compact suffix has llm-self/wrap-cat trailing expression"
+    (let [expanded (macros/spell-macroexpand-1 '(compact completion))
+          suffix-str (nth (second expanded) 2)]
+      (is (string? suffix-str))
+      (is (clojure.string/includes? suffix-str "=compact="))
+      (is (clojure.string/includes? suffix-str "deep-truncate"))
+      (is (clojure.string/includes? suffix-str "'(llm-self (wrap-cat ")))))
+
+;; =============================================================================
+;; User-defined macros (defmacro)
+;; =============================================================================
+
+(deftest defmacro-test
+  (testing "basic defmacro defines a macro in env"
+    (let [r (spell-eval '(defmacro unless [test body]
+                           (list 'if test nil body))
+                        {})]
+      (is (eval/ok? r))
+      (is (eval/spell-macro? (:ok r)))
+      (is (eval/spell-fn? (:expander (:ok r))))))
+
+  (testing "macro invocation expands and evaluates"
+    (is (= 42 (run-spell '(do (defmacro unless [test body]
+                                 (list 'if test nil body))
+                               (unless false 42)))))
+    (is (= nil (run-spell '(do (defmacro unless [test body]
+                                  (list 'if test nil body))
+                                (unless true 42))))))
+
+  (testing "macro with gensym for hygiene"
+    (is (= 99 (run-spell '(do (defmacro my-when [test body]
+                                 (let [g (gensym "t__")]
+                                   (list 'let [g test]
+                                         (list 'if g body nil))))
+                               (my-when true 99)))))
+    (is (= nil (run-spell '(do (defmacro my-when [test body]
+                                  (let [g (gensym "t__")]
+                                    (list 'let [g test]
+                                          (list 'if g body nil))))
+                                (my-when false 99))))))
+
+  (testing "macro calling another user macro"
+    (is (= 77 (run-spell '(do (defmacro unless [test body]
+                                 (list 'if test nil body))
+                               (defmacro when-not [test body]
+                                 (list 'unless test body))
+                               (when-not false 77))))))
+
+  (testing "macro with variadic args"
+    (is (= 6 (run-spell '(do (defmacro my-do [& forms]
+                                (cons 'do forms))
+                              (my-do (def x 1) (def y 2) (+ x y 3)))))))
+
+  (testing "macro sees caller env via dynamic scoping"
+    ;; tag=true in caller env, so macro body resolves it → (if true nil 5) → nil
+    (is (= nil (run-spell '(do (def tag true)
+                               (defmacro my-mac [body]
+                                 (list 'if tag nil body))
+                               (my-mac 5)))))
+    ;; tag=false → (if false nil 5) → 5
+    (is (= 5 (run-spell '(do (def tag false)
+                              (defmacro my-mac [body]
+                                (list 'if tag nil body))
+                              (my-mac 5))))))
+
+  (testing "macro expansion error propagates"
+    (let [r (spell-eval '(do (defmacro bad-macro [x]
+                               (/ 1 0))
+                             (bad-macro 5))
+                        {})]
+      (is (eval/err? r))
+      (is (clojure.string/includes? (:err r) "Macro expansion"))))
+
+  (testing "macro interacts with Clojure-side macros"
+    ;; User macro can expand to forms that use Clojure-side macros
+    (is (= 42 (run-spell '(do (defmacro my-cond [test then else]
+                                 (list 'cond test then :else else))
+                               (my-cond true 42 99))))))
+
+  (testing "macro with list construction builtins"
+    (is (= [1 2 3]
+           (run-spell '(do (defmacro make-vec [& items]
+                             (cons 'vector items))
+                           (make-vec 1 2 3)))))))
+
+(deftest defmacro-expand-test
+  (testing "expand-expr expands user macros from outer-env"
+    (let [;; First, create a proper macro value by evaluating defmacro
+          r (spell-eval '(defmacro unless [test body]
+                           (list 'if test nil body))
+                        {})
+          macro-val (get (:env r) 'unless)
+          ;; Now test expand with this macro in outer-env
+          outer-env {'unless macro-val 'x 5}
+          expanded (eval/expand-expr '(unless (= x 0) "nonzero") outer-env)]
+      (is (= 'if (first expanded)))
+      (is (= '(= 5 0) (second expanded)))))
+
+  (testing "expand-expr does not expand user macro if locally shadowed"
+    (let [r (spell-eval '(defmacro unless [test body]
+                           (list 'if test nil body))
+                        {})
+          macro-val (get (:env r) 'unless)
+          outer-env {'unless macro-val}
+          ;; (let [unless ...] (unless ...)) — unless is locally bound
+          expanded (eval/expand-expr '(let [unless 1] (unless false 42)) outer-env)]
+      ;; The inner (unless ...) should NOT be expanded because unless is locally bound
+      (is (= 'let (first expanded))))))
+
+(deftest defmacro-self-eval-test
+  (testing "macro map re-evaluates idempotently"
+    (let [r (spell-eval '(defmacro m [x] (list 'inc x)) {})
+          macro-val (get (:env r) 'm)
+          ;; Re-evaluate the macro map as a literal
+          r2 (spell-eval macro-val {})]
+      (is (eval/ok? r2))
+      (is (eval/spell-macro? (:ok r2)))
+      (is (= (:expander macro-val) (:expander (:ok r2)))))))

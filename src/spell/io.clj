@@ -5,7 +5,7 @@
    Agents that need I/O must explicitly include it in their config.
 
    Provides:
-   - File operations: slurp, spit, read-file, write-file, str-replace, replace-lines
+   - File operations: slurp, spit, read-file, read-lines, write-file, str-replace, replace-lines
    - Directory operations: exists?, directory?, ls, mkdir, mkdirs, cwd
    - File manipulation: delete, copy, move, stat, temp-file
    - Process execution: sh, exec, env"
@@ -98,6 +98,36 @@
                end (max start (min end n))]
            (format-lines (map (fn [i] [(inc i) (nth lines i)])
                               (range (dec start) end))))))
+     (catch java.io.FileNotFoundException _
+       {:error (str "File not found: " path)})
+     (catch Exception e
+       {:error (str "Error reading file: " (.getMessage e))}))))
+
+(defn read-lines
+  "Read file as a vector of raw line strings with :spell/line-offset metadata.
+   Returns (with-meta [\"line1\" \"line2\" ...] {:spell/line-offset 1}) or {:error msg}.
+   Optionally takes start and end line numbers (1-indexed, inclusive, clamped to bounds)."
+  ([path]
+   (try
+     (let [content (slurp path)]
+       (if (empty? content)
+         (with-meta [] {:spell/line-offset 1})
+         (with-meta (str/split-lines content) {:spell/line-offset 1})))
+     (catch java.io.FileNotFoundException _
+       {:error (str "File not found: " path)})
+     (catch Exception e
+       {:error (str "Error reading file: " (.getMessage e))})))
+  ([path start end]
+   (try
+     (let [content (slurp path)]
+       (if (empty? content)
+         (with-meta [] {:spell/line-offset (max 1 start)})
+         (let [lines (str/split-lines content)
+               n (count lines)
+               start (max 1 (min start n))
+               end (max start (min end n))]
+           (with-meta (subvec (vec lines) (dec start) end)
+                      {:spell/line-offset start}))))
      (catch java.io.FileNotFoundException _
        {:error (str "File not found: " path)})
      (catch Exception e
@@ -367,7 +397,7 @@
    StandardWatchEventKinds/ENTRY_MODIFY :modify
    StandardWatchEventKinds/ENTRY_DELETE :delete})
 
-(defn watch-dir
+(defn- watch-dir
   "Watch a directory for file changes. Blocks until events occur or timeout.
    Returns {:ok [{:kind :create|:modify|:delete :name \"file.txt\"} ...]}
    or {:timeout true} if timeout-ms elapses. Without timeout, blocks indefinitely."
@@ -478,6 +508,13 @@ For multiple edits, pass a vector of [start end content] triples. Line numbers r
 
 Use (io/read-file path start end) to extract a line range for passing a subset to a child.
 
+io/read-lines returns a vector of raw line strings with line-offset metadata. Displays with line numbers when serialized via call-now, but evaluates to the raw vector:
+  '(call-now code (io/read-lines \"main.py\" 40 60))
+  ;; child sees: (def code (do \" 40: ...\\n 41: ...\" [\"raw line\" ...]))
+  ;; code is the raw vector; slice with (subvec code 0 5), index with (nth code i)
+  (io/read-lines \"main.py\")       ;; whole file
+  (io/read-lines \"main.py\" 10 20) ;; line range (1-indexed, inclusive, clamped)
+
 CONTEXT EXPLORATION
 
 For large files, use grep to find relevant lines rather than reading the entire file.
@@ -502,6 +539,7 @@ io/slurp returns raw content: (:ok (io/slurp \"file.txt\")) for the string witho
           :spit "Write to file. (spit path content) or (spit path content {:append true}). Returns {:ok path} or {:error msg}."
           :slurp-bytes "Read file as byte array. Returns {:ok bytes} or {:error msg}."
           :read-file "Read file with line numbers. Returns string \"1: line1\\n2: line2\\n...\" or {:error msg}. Optional start/end for range."
+          :read-lines "Read file as vector of raw line strings with line-offset metadata. Displays with line numbers via call-now; evaluates to raw vector. Optional start/end for range."
           :write-file "Write content to file. Creates parent dirs. Returns {:ok path} or {:error msg}."
           ;; String replacement
           :str-replace "Replace string in file. Unique by default; (str-replace path old new {:all true}) replaces all. Returns {:ok path} or {:error msg}."
@@ -520,7 +558,6 @@ io/slurp returns raw content: (:ok (io/slurp \"file.txt\")) for the string witho
           :stat "Get file info. Returns {:size :modified :readable :writable :executable :directory} or {:error msg}."
           :temp-file "Create temp file. Returns {:ok path} or {:error msg}."
           ;; File watching
-          :watch-dir "Watch directory for changes. Blocks until events or timeout. (watch-dir path) or (watch-dir path timeout-ms). Returns {:ok [{:kind :create|:modify|:delete :name \"file.txt\"} ...]} or {:timeout true}."
           :watch-send "Watch directory in background, send events to handle when they occur. (watch-send path handle) or (watch-send path handle timeout-ms). Returns nil immediately. Message arrives with :from :watch-send."
           ;; Process execution
           :sh "Execute shell command. Returns {:exit N :out \"...\" :err \"...\"}."
@@ -531,6 +568,7 @@ io/slurp returns raw content: (:ok (io/slurp \"file.txt\")) for the string witho
    :spit spit-file
    :slurp-bytes slurp-bytes
    :read-file read-file
+   :read-lines read-lines
    :write-file write-file
    ;; String replacement
    :str-replace str-replace
@@ -549,7 +587,6 @@ io/slurp returns raw content: (:ok (io/slurp \"file.txt\")) for the string witho
    :stat stat
    :temp-file temp-file
    ;; File watching
-   :watch-dir watch-dir
    :watch-send watch-send
    ;; Process execution
    :sh sh

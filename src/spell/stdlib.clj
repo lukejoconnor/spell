@@ -193,7 +193,11 @@ check-result: Verifies an answer using leaf-llm. Returns {:ok answer} or {:wrong
 clean-prompt: Cleans up a raw prompt (voice-to-text, quick notes) via leaf-llm, then runs it.
   '(patterns/clean-prompt \"waht is the captal of franc... like the big city\")
   leaf-llm infers intent and rewrites; llm-self executes the cleaned prompt.
-  Accepts a string or quine form (serializes non-strings automatically).\""
+  Accepts a string or quine form (serializes non-strings automatically).
+
+explore: One-shot delegation to a child exploration agent. Spawns a child that greps, reads, and analyzes, then returns structured findings.
+  '(call-now findings (patterns/explore \"Where is authentication handled?\"))
+  Returns {:answer \"...\" :files [\"src/auth.py\" ...]}\""
    :docs {:call-now "Evaluate a tool, bind the result, and extend to a child LLM that sees it.
 (patterns/call-now (tools/bash \"ls\") 'files)
 Requires the completion binding (from quine preamble in NL prompts)."
@@ -202,7 +206,9 @@ Requires the completion binding (from quine preamble in NL prompts)."
 (check-result \"Capital of France?\" \"London\")  ; => {:wrong \"London is the capital of the UK, not France.\"}"
           :clean-prompt "Clean up a raw prompt via leaf-llm and execute it. Handles voice-to-text, typos, half-sentences.
 '(patterns/clean-prompt \"waht is the captal of franc\")
-Accepts a string or quine form."}
+Accepts a string or quine form."
+          :explore "One-shot exploration agent. Spawns a child that investigates the codebase and returns {:answer \"...\" :files [...]}.
+'(call-now findings (patterns/explore \"Where is auth?\"))"}
    ;; call-now: evaluate tool, bind result in completion, extend to child
    :call-now {:spell/fn true
               :params ['result 'name]
@@ -235,7 +241,15 @@ Accepts a string or quine form."}
                                                        "The input may be wrapped in code syntax — ignore that and focus on the natural language content. "
                                                        "Output ONLY the rewritten prompt.\n\n"
                                                        text))]
-                            (llm-self cleaned)))}})
+                            (llm-self cleaned)))}
+   ;; explore: one-shot delegation to a child exploration agent
+   :explore {:spell/fn true
+             :params ['query]
+             :body '((agents/spawn-recv llm-self
+                       (cat "You are an exploration agent. Your task is to investigate the codebase and return structured findings.\n\n"
+                            "Use io/sh with grep, find, and io/read-file or io/read-lines to explore.\n"
+                            "Return a map with :answer (string summary) and :files (vector of relevant file paths).\n\n"
+                            "Query: " query)))}})
 
 ;; =============================================================================
 ;; All standard library namespaces

@@ -15,39 +15,38 @@ worker guesses correctly or runs out of guesses.
 ## Solution
 
 ```clojure
-(do
-  (def secret "elephant")
+(def secret "elephant")
 
-  (defn make-checker-prompt [secret question]
-    (cat "You are a CHECKER in 20 questions. The secret word is: " secret
-         ". Answer ONLY 'yes' or 'no' to this question: " question))
+(defn make-checker-prompt [secret question]
+  (wrap-cat "You are a CHECKER in 20 questions. The secret word is: " secret
+       ". Answer ONLY 'yes' or 'no' to this question: " question))
 
-  (defn make-worker-prompt [history guess-num]
-    (cat "You are a WORKER in 20 questions trying to guess a secret word. "
-         "You do NOT know the word. Based on previous Q&A, ask ONE question OR make a guess. "
-         "If guessing, say 'My guess is: [word]'. "
-         "Previous Q&A: " history
-         " This is question/guess #" guess-num " of 20."))
+(defn make-worker-prompt [history guess-num]
+  (wrap-cat "You are a WORKER in 20 questions trying to guess a secret word. "
+       "You do NOT know the word. Based on previous Q&A, ask ONE question OR make a guess. "
+       "If guessing, say 'My guess is: [word]'. "
+       "Previous Q&A: " history
+       " This is question/guess #" guess-num " of 20."))
 
-  (defn check-guess [response secret]
-    (llm (cat "Does this response contain a correct guess of the word '" secret "'? "
-              "Response: '" response "' - Answer ONLY 'yes' or 'no'")))
+(defn check-guess [response secret]
+  (llm-self (wrap-cat "Does this response contain a correct guess of the word '" secret "'? "
+            "Response: '" response "' - Answer ONLY 'yes' or 'no'")))
 
-  (defn play-round [secret history round-num]
-    (if (> round-num 20)
-      (cat "Game over! The worker ran out of guesses. The secret was: " secret)
-      (do
-        (def worker-response (llm (make-worker-prompt history (str round-num))))
-        (def is-correct (check-guess worker-response secret))
-        (if (= is-correct "yes")
-          (cat "Worker guessed correctly in " (str round-num) " rounds! The secret was: " secret)
-          (do
-            (def checker-response (llm (make-checker-prompt secret worker-response)))
-            (def new-history (cat history "\nQ" (str round-num) ": " worker-response
-                                  "\nA" (str round-num) ": " checker-response))
-            (play-round secret new-history (+ round-num 1)))))))
+(defn play-round [secret history round-num]
+  (if (> round-num 20)
+    (cat "Game over! The worker ran out of guesses. The secret was: " secret)
+    (do
+      (def worker-response (llm-self (make-worker-prompt history (str round-num))))
+      (def is-correct (check-guess worker-response secret))
+      (if (= is-correct "yes")
+        (cat "Worker guessed correctly in " (str round-num) " rounds! The secret was: " secret)
+        (do
+          (def checker-response (llm-self (make-checker-prompt secret worker-response)))
+          (def new-history (cat history "\nQ" (str round-num) ": " worker-response
+                                "\nA" (str round-num) ": " checker-response))
+          (play-round secret new-history (+ round-num 1)))))))
 
-  (def return (play-round secret "None yet - this is the first question." 1)))
+(play-round secret "None yet - this is the first question." 1)
 ```
 
 ## Sample Run (Opus, 9 rounds)
@@ -84,13 +83,6 @@ Two exit conditions:
 1. Worker guesses correctly: `(= is-correct "yes")`
 2. Out of guesses: `(> round-num 20)`
 
-### Guess Verification
-A third LLM call verifies guesses:
-```clojure
-(defn check-guess [response secret]
-  (llm (cat "Does this response contain a correct guess of the word '" secret "'? ...")))
-```
-
 ## The Ralph Loop Pattern
 
 Named after the classic worker/supervisor relationship. Components:
@@ -109,5 +101,4 @@ This pattern generalizes to:
 
 - Recommended model: Opus (handles complex multi-role orchestration)
 - Sonnet may hardcode checker instead of using LLM calls
-- Requires recursive `defn` support (see spell-eval implementation)
-- Run with `-d 40` or higher for depth limit
+- Uses recursive `defn` (fn-level recur also supported)

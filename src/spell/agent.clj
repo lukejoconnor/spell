@@ -233,8 +233,8 @@
 
 (defn- merge-agent-defs
   "Merge child agent def onto parent.
-   - Scalars: child wins if present
-   - :namespaces: merge maps (child overrides parent entries)"
+   - Scalars: child wins if present (includes :llms — child replaces entirely)
+   - :namespaces: maps are merged (child overrides parent entries)"
   [parent child]
   (let [;; Start with parent, override with non-nil child scalars
         merged (reduce (fn [m k]
@@ -242,7 +242,7 @@
                            (assoc m k (get child k))
                            m))
                        parent
-                       [:name :doc :system :model :budget :recover :eval :format :max-retries :retries :thinking])
+                       [:name :doc :system :model :budget :recover :eval :format :max-retries :retries :thinking :llms])
         ;; Merge namespaces
         merged (if (or (:namespaces parent) (:namespaces child))
                  (assoc merged :namespaces
@@ -273,6 +273,140 @@
           (dissoc (merge-agent-defs resolved-base agent-def) :base))))
     ;; No base, return as-is
     agent-def))
+
+;; =============================================================================
+;; LLMs auto-discovery
+;; =============================================================================
+
+(defn- agent-name-from-file
+  "Derive agent name symbol from filename: \"opus.agent.edn\" → 'opus"
+  [filename]
+  (symbol (str/replace filename #"\.agent\.edn$" "")))
+
+(defn- discover-sibling-agents
+  "Find all .agent.edn files in base-dir. Returns {name-sym filename, ...}."
+  [base-dir]
+  (when base-dir
+    (let [dir (java.io.File. base-dir)
+          files (.listFiles dir)]
+      (when files
+        (into {}
+              (comp
+                (filter #(.isFile %))
+                (map #(.getName %))
+                (filter #(str/ends-with? % ".agent.edn"))
+                (map (fn [f] [(agent-name-from-file f) (symbol f)])))
+              files)))))
+
+(defn- normalize-llms-config
+  "Normalize raw :llms value into a map for resolve-llms, or nil.
+   - ::not-set + base-dir → discover siblings
+   - ::not-set + nil base-dir → nil
+   - [] → nil (opt-out)
+   - vector of symbols → {(agent-name sym) sym, ...}
+   - map → pass through"
+  [raw-llms base-dir]
+  (cond
+    (= raw-llms ::not-set)
+    (discover-sibling-agents base-dir)
+
+    (and (vector? raw-llms) (empty? raw-llms))
+    nil
+
+    (vector? raw-llms)
+    (into {} (map (fn [s] [(agent-name-from-file (str s)) s]) raw-llms))
+
+    (map? raw-llms)
+    raw-llms
+
+    :else nil))
+
+;; =============================================================================
+;; LLMs namespace resolution
+;; =============================================================================
+
+(defn- resolve-llm-spec
+  "Resolve an llm spec value into an agent def map.
+   - symbol ending in .agent.edn → load agent file, return its def
+   - map → treat as inline spec (mini agent def)"
+  [value base-dir]
+  (cond
+    ;; Symbol referencing a .agent.edn file
+    (and (symbol? value) (str/ends-with? (str value) ".agent.edn"))
+    (let [path (str value)
+          full-path (if (and base-dir (not (str/starts-with? path "/")))
+                      (str base-dir "/" path)
+                      path)
+          file (java.io.File. full-path)
+          file-base-dir (.getParent file)
+          raw-def (read-agent-edn full-path nil)]
+      (resolve-inheritance raw-def file-base-dir))
+
+    ;; Inline map spec
+    (map? value)
+    value
+
+    :else
+    (throw (ex-info (str "Invalid llm spec: " value ". Expected .agent.edn symbol or inline map.")
+                    {:value value}))))
+
+(defn- build-llm-from-spec
+  "Build a callable LLM function from a resolved agent spec.
+   make-llm-fn: factory for eval=true agents
+   model: parent model (inherited when spec omits :model)
+   extra-namespaces: additional namespaces to merge (e.g. shared llms/ namespace)"
+  [spec make-llm-fn model extra-namespaces base-dir]
+  (let [eval? (if (some? (:eval spec)) (:eval spec) true)
+        spec-model (or (:model spec) model)
+        system (resolve-system-prompt (:system spec) base-dir)
+        ;; Resolve spec's own namespaces if present
+        spec-namespaces (when (and eval? (:namespaces spec))
+                          (resolve-namespaces (:namespaces spec) base-dir make-llm-fn))
+        ;; Merge extra namespaces (e.g. llms/) with spec's own
+        all-namespaces (merge extra-namespaces spec-namespaces)
+        ;; Build the LLM function
+        base-llm (if eval?
+                   (make-llm-fn (cond-> {}
+                                  (seq all-namespaces) (assoc :namespaces all-namespaces)
+                                  spec-model (assoc :model spec-model)
+                                  system (assoc :system system)
+                                  (some? (:recover spec)) (assoc :recover (:recover spec))
+                                  (:format spec) (assoc :format (:format spec))
+                                  (some? (:thinking spec)) (assoc :thinking (:thinking spec))))
+                   (llm/make-leaf-llm (cond-> {}
+                                        system (assoc :system system)
+                                        spec-model (assoc :model spec-model))))]
+    ;; Wrap with format validation if specified
+    (if (:format spec)
+      (llm/wrap-with-format base-llm {:format (:format spec)
+                                       :eval? eval?
+                                       :max-retries (or (:max-retries spec) 3)})
+      base-llm)))
+
+(defn resolve-llms
+  "Resolve :llms map into an effect namespace.
+   Uses atom-based lazy init for circular references (A can call B, B can call A).
+   Returns namespace map with :docs and callable functions, or nil if no llms."
+  [llms-map make-llm-fn model base-dir]
+  (when (seq llms-map)
+    ;; Phase 1: create atoms and proxy namespace
+    (let [fn-atoms (into {} (map (fn [[k _]] [k (atom nil)]) llms-map))
+          docs (into {} (map (fn [[k v]]
+                               (let [spec (resolve-llm-spec v base-dir)
+                                     doc (or (:doc spec) (str "Sub-agent: " (name k)))]
+                                 [(keyword k) doc]))
+                             llms-map))
+          llms-ns (merge {:docs docs}
+                         (into {} (map (fn [[k _]]
+                                         [(keyword k)
+                                          (fn [& args] (apply @(get fn-atoms k) args))])
+                                       llms-map)))]
+      ;; Phase 2: resolve each spec and fill atoms
+      (doseq [[k v] llms-map]
+        (let [spec (resolve-llm-spec v base-dir)
+              llm-fn (build-llm-from-spec spec make-llm-fn model {'llms llms-ns} base-dir)]
+          (reset! (get fn-atoms k) llm-fn)))
+      llms-ns)))
 
 ;; =============================================================================
 ;; Main loader
@@ -348,10 +482,17 @@
 
         {:keys [name doc system model budget recover namespaces eval format max-retries retries thinking]} agent-def
 
+        ;; Normalize :llms — use ::not-set sentinel to distinguish absent from nil
+        raw-llms (get agent-def :llms ::not-set)
+        llms (normalize-llms-config raw-llms base-dir)
+
         ;; We need make-llm to resolve sub-agents, but we don't have it yet.
         ;; For now, return a thunk that resolves namespaces when called with make-llm-fn.
         resolve-fn (fn [make-llm-fn]
-                     (resolve-namespaces namespaces base-dir make-llm-fn))]
+                     (resolve-namespaces namespaces base-dir make-llm-fn))
+        resolve-llms-fn' (when (seq llms)
+                           (fn [make-llm-fn parent-model]
+                             (resolve-llms llms make-llm-fn parent-model base-dir)))]
 
     {:name name
      :doc doc
@@ -364,7 +505,8 @@
      :max-retries max-retries
      :retries retries     ; API retry sleep durations, e.g. [0 10]
      :thinking thinking
-     :resolve-namespaces-fn resolve-fn}))
+     :resolve-namespaces-fn resolve-fn
+     :resolve-llms-fn resolve-llms-fn'}))
 
 (defn- try-slurp
   "Slurp file, returning nil if not found."

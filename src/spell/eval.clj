@@ -101,30 +101,54 @@
 
     :else value))
 
+(defn- format-line-offset-vector
+  "Serialize a vector with :spell/line-offset metadata as (do \"numbered lines\" [raw-vec]).
+   The string literal shows numbered lines for LLM readability; the vector is the actual value.
+   Returns nil if the vector doesn't have line-offset metadata."
+  [value]
+  (when-let [offset (:spell/line-offset (meta value))]
+    (let [width (count (str (+ offset (dec (max 1 (count value))))))
+          numbered (str/join "\n"
+                    (map-indexed (fn [i line]
+                                  (str (format (str "%" width "d") (+ offset i)) ": " line))
+                                value))]
+      (str "(do " (pr-str numbered) " " (pr-str value) ")"))))
+
 (defn serialize-for-continuation
   "Serialize a value for embedding in a call-now continuation.
    Small values are inlined via pr-str. Large strings are truncated with a note.
    Large non-strings are deep-truncated (string values within maps/seqs are
    individually truncated) then inlined. Only stored out-of-band if still too large.
+   Vectors with :spell/line-offset metadata produce (do \"numbered\" [raw]) form.
    limit: max pr-str chars before truncation/storage. Negative means always inline."
   ([value] (serialize-for-continuation value call-now-inline-limit))
   ([value limit]
-   (if (neg? limit)
-     (pr-str value)
-     (let [serialized (pr-str value)]
-       (if (<= (count serialized) limit)
-         serialized
-         (if (string? value)
-           (truncate-string value limit)
-           ;; Non-string: deep-truncate string values within, then try to inline
-           (let [truncated (deep-truncate value limit)
-                 truncated-str (pr-str truncated)]
-             (if (<= (count truncated-str) (* limit 2))
-               ;; Fits after truncation (allow 2x limit since map structure has overhead)
-               truncated-str
-               ;; Still too large — store out-of-band
-               (let [id (store-value! value)]
-                 (str "(stored " (pr-str id) ")"))))))))))
+   ;; Check for line-offset metadata first
+   (if-let [formatted (and (vector? value) (meta value) (format-line-offset-vector value))]
+     (if (or (neg? limit) (<= (count formatted) (* (max 1 limit) 2)))
+       formatted
+       ;; Too large — fall through to normal serialization (truncation/storage)
+       (let [serialized (pr-str value)]
+         (if (<= (count serialized) limit)
+           serialized
+           (let [id (store-value! value)]
+             (str "(stored " (pr-str id) ")")))))
+     (if (neg? limit)
+       (pr-str value)
+       (let [serialized (pr-str value)]
+         (if (<= (count serialized) limit)
+           serialized
+           (if (string? value)
+             (truncate-string value limit)
+             ;; Non-string: deep-truncate string values within, then try to inline
+             (let [truncated (deep-truncate value limit)
+                   truncated-str (pr-str truncated)]
+               (if (<= (count truncated-str) (* limit 2))
+                 ;; Fits after truncation (allow 2x limit since map structure has overhead)
+                 truncated-str
+                 ;; Still too large — store out-of-band
+                 (let [id (store-value! value)]
+                   (str "(stored " (pr-str id) ")")))))))))))
 
 
 ;; =============================================================================
@@ -166,6 +190,11 @@
   "Returns true if v is a Spell function (dynamic-scoping function map)."
   [v]
   (and (map? v) (:spell/fn v)))
+
+(defn spell-macro?
+  "Returns true if v is a Spell macro (user-defined, env-based)."
+  [v]
+  (and (map? v) (:spell/macro v)))
 
 (defn destructure-bind
   "Given a param pattern and a value, return a flat sequence of [symbol value] pairs.
@@ -395,6 +424,7 @@
    'serialize (fn
                ([value] (serialize-for-continuation value))
                ([value limit] (serialize-for-continuation value limit))),
+   'deep-truncate (fn [value limit] (deep-truncate value (int limit))),
    ;; Eval — auto-expands free vars from caller's env, then evaluates in fresh env
    'spell-eval (fn [expr]
                  (let [r (spell-eval (expand-expr expr *spell-env*) {})]
@@ -632,8 +662,23 @@
     ;; List
     (seq? expr)
     (if (and (symbol? (first expr)) (get @macros/spell-macros (first expr)))
-      ;; Macro: expand first, then continue expanding the result
+      ;; Clojure-side macro: expand first, then continue expanding the result
       (-expand-expr (macros/spell-macroexpand-1 expr) outer-env inner)
+      ;; Check for user-defined macros in outer-env
+      (let [head (first expr)
+            head-val (when (and (symbol? head)
+                                (not (contains? inner head))
+                                (not (special-forms head)))
+                       (get outer-env head))]
+        (if (spell-macro? head-val)
+          ;; User macro: invoke expander, then continue expanding result
+          (let [expander (:expander head-val)
+                macro-env (into outer-env (destructure-bind (:params expander) (vec (rest expr))))
+                r (spell-eval (cons 'do (:body expander)) macro-env)]
+            (if (ok? r)
+              (-expand-expr (:ok r) outer-env inner)
+              (throw (ex-info (str "Macro expansion failed during expand: " (:err r))
+                              {:form expr}))))
       (let [expand1 #(first (-expand-expr % outer-env inner))]
       (case (first expr)
         nil   [expr inner]
@@ -745,7 +790,7 @@
                inner])
 
         ;; Default: recurse into all sub-expressions
-        [(apply list (map expand1 expr)) inner])))
+        [(apply list (map expand1 expr)) inner])))))
 
     :else [expr inner]))
 
@@ -845,6 +890,17 @@
     ;; Check for macro expansion first
     (if (and (symbol? (first expr)) (get @macros/spell-macros (first expr)))
       (spell-eval (macros/spell-macroexpand-1 expr) env)
+      ;; Check for user-defined macros in env
+      (let [head (first expr)
+            head-val (when (and (symbol? head) (not (special-forms head)))
+                       (or (get env head) (get (or *builtins* core-builtins) head)))]
+        (if (spell-macro? head-val)
+          (let [expander (:expander head-val)
+                macro-env (into env (destructure-bind (:params expander) (vec (rest expr))))
+                r (spell-eval (cons 'do (:body expander)) macro-env)]
+            (if (ok? r)
+              (spell-eval (:ok r) env)
+              (err (str "Macro expansion of " head " failed: " (:err r)) env expr)))
       (case (first expr)
       nil   (ok nil env)
       quote (ok (second expr) env)
@@ -1072,7 +1128,7 @@
               result
               (recur (rest remaining)
                      (conj vals (:ok result))
-                     (:env result)))))))) ;; end case + if-macro
+                     (:env result)))))))))) ;; end case + if-spell-macro + let + if-clj-macro
 
     :else (err (str "Unknown expression type: " (type expr)) env expr)))
 

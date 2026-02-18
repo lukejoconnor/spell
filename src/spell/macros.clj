@@ -295,6 +295,13 @@
   (fn [name-sym val-expr]
     (list 'def name-sym val-expr)))
 
+;; defmacro: (defmacro name [params] body...) — user-defined macro
+;; Expands to (def name {:spell/macro true :expander (fn [params] body...)})
+;; The fn receives unevaluated argument forms and returns a new form to evaluate.
+(defspellmacro 'defmacro
+  (fn [name-sym params & body]
+    (list 'def name-sym {:spell/macro true :expander (list* 'fn params body)})))
+
 ;; describe: produces an extension with namespace docs
 ;;   (describe ns)           — guide (or docs if no guide)
 ;;   (describe ns :key)      — doc for specific item
@@ -416,3 +423,18 @@
 (defspellmacro 'extend
   (fn [comp-sym]
     (list 'llm-self (list 'prune-and-reopen comp-sym))))
+
+;; compact: (compact completion) — prune rethinks, append compaction instructions, continue via llm-self
+;; Prefix ends with '(llm-self (wrap-cat — LLM writes quoted forms, balance-parens closes everything.
+(def ^:private compact-suffix
+  (str "(think \"=compact= Compact your context into the wrap-cat below. "
+       "Each argument is a QUOTED form: '(def x 1) '(think \\\"label\\\" ...) etc. "
+       "For large values: (list 'def 'x (deep-truncate x 500)). "
+       "Preserve =compact:N= markers. Drop routine thinks; keep decisions/key defs. "
+       "Just write the forms — closing parens and continuation are automatic.\" nil) "
+       "'(llm-self (wrap-cat "))
+
+(defspellmacro 'compact
+  (fn [comp-sym]
+    (list 'llm-self
+      (list 'str (list 'prune-and-reopen comp-sym) compact-suffix))))

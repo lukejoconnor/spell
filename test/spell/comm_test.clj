@@ -270,6 +270,44 @@
       (is (contains? @comm/registry handle)))))
 
 ;; =============================================================================
+;; Start-box (dormant agent) tests
+;; =============================================================================
+
+(deftest start-box-sleeps-until-message-test
+  (testing "start-box registers and sleeps — agent wakes on send"
+    (let [handle :test-dormant
+          received (atom nil)
+          eval-fn (fn [raw] (reset! received raw) raw)
+          completion "(quine completion (eval (do )))"]
+      (comm/start-box handle eval-fn completion)
+      ;; Give the orphan box time to start and block on signal
+      (Thread/sleep 100)
+      ;; Agent should be registered and sleeping
+      (is (contains? @comm/registry handle))
+      ;; Send a transform that appends to the stored raw
+      (comm/send (fn [raw] (str raw "extra")) handle)
+      ;; Give time to process
+      (Thread/sleep 200)
+      ;; eval-fn saw the stored completion with the appended message
+      (is (some? @received))
+      (is (.contains ^String @received "quine completion")
+          "stored completion is the base for message composition")
+      (is (.contains ^String @received "extra")
+          "sent transform was applied to stored completion"))))
+
+(deftest start-box-no-initial-eval-test
+  (testing "start-box does not evaluate the stored completion"
+    (let [handle :test-no-eval
+          eval-count (atom 0)
+          eval-fn (fn [raw] (swap! eval-count inc) raw)]
+      (comm/start-box handle eval-fn "(quine completion (eval (do )))")
+      ;; Give time for any async processing
+      (Thread/sleep 200)
+      ;; eval-fn should NOT have been called — agent is sleeping, not evaluating
+      (is (zero? @eval-count)
+          "dormant agent should not evaluate at registration time"))))
+
+;; =============================================================================
 ;; Handle? tests
 ;; =============================================================================
 
@@ -339,23 +377,19 @@
           ;; parent-handle should be nil for non-spawned agents
           (is (nil? (second result)))))))
 
-  (testing "spawn sets *parent-handle* to spawner's handle"
-    (let [captured (atom nil)
-          parent-h :test-parent
-          child-fn (fn [raw]
-                     (reset! captured comm/*parent-handle*)
-                     "done")
+  (testing "spawn stores parent-handle in registry"
+    (let [parent-h :test-parent
+          child-fn (fn [raw] "done")
           p (promise)]
       (comm/register! parent-h identity)
       ;; Simulate spawn from within parent context
       (binding [comm/*current-handle* parent-h]
         (let [child-h (keyword (gensym "child-"))]
-          (comm/register! child-h identity)
+          (comm/register! child-h identity parent-h)
           (reset! (:inbox (get @comm/registry child-h)) child-fn)
           (deliver p "raw")
-          (binding [comm/*parent-handle* parent-h]
-            (comm/box child-h child-h p))
-          (is (= parent-h @captured)))))))
+          (comm/box child-h child-h p)
+          (is (= parent-h (:parent-handle (get @comm/registry child-h)))))))))
 
 (deftest spawn-recv-test
   (testing "spawn-recv spawns child and blocks until child sends back"
@@ -366,13 +400,14 @@
           child-llm-fn (fn [_prompt handle]
                           ;; Simulate the-llm behavior: register is done by spawn,
                           ;; just need to seed inbox and use box to run
-                          (let [inbox-fn (fn [_raw]
-                                          (comm/send-msg 42 comm/*parent-handle*)
+                          (let [parent (:parent-handle (get @comm/registry handle))
+                                inbox-fn (fn [_raw]
+                                          (comm/send-msg 42 parent)
                                           :done)
                                 p (promise)]
                             (reset! (:inbox (get @comm/registry handle)) inbox-fn)
                             (deliver p "(quine completion (eval (do )))")
-                            (comm/box handle comm/*parent-handle* p)))]
+                            (comm/box handle parent p)))]
       (comm/register! parent-h identity)
       ;; Do NOT seed inbox — recv should block until child sends
       (let [parent-result
@@ -645,6 +680,45 @@
                             (swap! call-count inc)
                             r))})
         (is (= 99 (spell/llm "(eval (do ")))))))
+
+;; =============================================================================
+;; Spurious wake tests
+;; =============================================================================
+
+(deftest sleep-fn-ignores-spurious-wake-test
+  (testing "sleep-fn loops when signal fires but inbox is still nil"
+    (let [handle :test-spurious
+          eval-fn (fn [raw] (str "got:" raw))
+          p (promise)]
+      (comm/register! handle eval-fn)
+      ;; Set up sleep-fn in inbox, enter box
+      (reset! (:inbox (get @comm/registry handle)) (#'comm/make-sleep-fn handle))
+      (deliver p "raw")
+      (let [result (future (comm/box handle handle p))]
+        (Thread/sleep 50)
+        ;; Pre-deliver the signal (simulating a -send! that was overwritten)
+        (deliver @(:signal (get @comm/registry handle)) :spurious)
+        ;; Sleep-fn should wake, find empty inbox, and go back to sleep
+        (Thread/sleep 100)
+        (is (not (realized? result)) "should still be sleeping after spurious wake")
+        ;; Now do a real send
+        (comm/send identity handle)
+        (is (= "got:raw" (deref result 2000 :timeout)))))))
+
+(deftest lazy-default-inbox-fn-resolution-test
+  (testing "send resolves default-inbox-fn at call time, not composition time"
+    (let [handle :test-lazy
+          initial-fn (fn [raw] (str "initial:" raw))
+          updated-fn (fn [raw] (str "updated:" raw))
+          p (promise)]
+      (comm/register! handle initial-fn)
+      ;; Send when inbox is nil — composition uses lazy default-inbox-fn
+      (comm/send (fn [raw] (str "pre:" raw)) handle)
+      ;; Update default-inbox-fn (simulating what the-llm does)
+      (swap! comm/registry assoc-in [handle :default-inbox-fn] updated-fn)
+      ;; Box processes — should use the UPDATED default-inbox-fn
+      (deliver p "hello")
+      (is (= "updated:pre:hello" (comm/box handle handle p))))))
 
 ;; =============================================================================
 ;; Effect guard tests

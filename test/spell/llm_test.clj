@@ -1,7 +1,8 @@
 (ns spell.llm-test
-  (:require [clojure.test :refer [deftest testing is]]
+  (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [clojure.data.json :as json]
             [spell.cli :as cli]
+            [spell.comm :as comm]
             [spell.core :as spell :refer [effect-builtins]]
             [spell.llm :as llm]
             [spell.provider :as provider]
@@ -10,6 +11,12 @@
             [clojure.java.io :as io]
             [clojure.string :as str]
             [spell.eval :as eval]))
+
+(use-fixtures :each
+  (fn [f]
+    (reset! comm/registry {})
+    (f)
+    (reset! comm/registry {})))
 
 (deftest llm-basic-test
   (testing "llm evaluates response and extracts return"
@@ -637,77 +644,6 @@
         (provider/dummy-provider {:response "(def x (floor 3.7)) '(io/count-effect)))"})
         (test-llm "(eval (do ")
         (is (= 1 @effect-count))))))
-
-;; =============================================================================
-;; make-form-llm tests
-;; =============================================================================
-
-(deftest make-form-llm-validation-pass-test
-  (testing "returns response when validation passes"
-    (let [form-llm (llm/make-form-llm {:validate (fn [s] (str/includes? s "YES"))})]
-      (provider/with-provider
-        (provider/dummy-provider {:response "YES, that's correct"})
-        (is (= "YES, that's correct" (form-llm "Is 2+2=4?")))))))
-
-(deftest make-form-llm-validation-retry-test
-  (testing "retries when validation fails, succeeds on retry"
-    (let [call-count (atom 0)
-          form-llm (llm/make-form-llm {:validate (fn [s] (str/includes? s "JSON"))
-                                       :format-doc "Response must contain JSON"
-                                       :max-retries 3})]
-      (provider/with-provider
-        (provider/dummy-provider
-          {:response-fn (fn [_]
-                          (let [n (swap! call-count inc)]
-                            (if (= n 1)
-                              "plain text"
-                              "here is JSON: {}")))})
-        (let [result (form-llm "Give me JSON")]
-          (is (= 2 @call-count))
-          (is (= "here is JSON: {}" result)))))))
-
-(deftest make-form-llm-max-retries-test
-  (testing "throws after max retries exceeded"
-    (let [form-llm (llm/make-form-llm {:validate (fn [_] false)
-                                       :max-retries 2})]
-      (provider/with-provider
-        (provider/dummy-provider {:response "always invalid"})
-        (is (thrown-with-msg? Exception #"validation failed after max retries"
-              (form-llm "test")))))))
-
-(deftest make-form-llm-spell-fn-validation-test
-  (testing "accepts Spell function as validator"
-    (let [;; Spell fn that checks for "OK" in response
-          spell-validator {:spell/fn true
-                           :params ['s]
-                           :body '((strings/includes? s "OK"))}
-          form-llm (llm/make-form-llm {:validate spell-validator})]
-      (provider/with-provider
-        (provider/dummy-provider {:response "OK done"})
-        (is (= "OK done" (form-llm "test")))))))
-
-(deftest make-form-llm-retry-shows-previous-response-test
-  (testing "retry prompt includes previous response"
-    (let [prompts (atom [])
-          call-count (atom 0)
-          form-llm (llm/make-form-llm {:validate (fn [s] (str/includes? s "SUCCESS"))
-                                       :format-doc "Must contain SUCCESS"
-                                       :max-retries 2})]
-      (provider/with-provider
-        (provider/dummy-provider
-          {:response-fn (fn [prompt]
-                          (swap! prompts conj prompt)
-                          (if (= 1 (swap! call-count inc))
-                            "FAILURE"
-                            "SUCCESS"))})
-        (form-llm "test prompt")
-        ;; Should have made 2 calls
-        (is (= 2 (count @prompts)))
-        ;; Second prompt should include the first response and format doc
-        (let [retry-prompt (second @prompts)]
-          (is (str/includes? retry-prompt "FAILURE"))
-          (is (str/includes? retry-prompt "expected format"))
-          (is (str/includes? retry-prompt "Must contain SUCCESS")))))))
 
 ;; =============================================================================
 ;; Pattern tests

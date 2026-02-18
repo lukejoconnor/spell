@@ -72,12 +72,13 @@
 
 (defn- make-inbox-fn
   "Create inbox function: [raw] -> value.
-   Closes over eval-builtin from config. Box does balance-parens,
-   so raw is already balanced when this is called.
+   Closes over eval-builtin from config. Calls balance-parens because
+   send transforms can produce unbalanced strings (reopen strips parens).
    trace-data-atom, when non-nil, receives {:program} for tracing."
   [{:keys [variant-builtins eval-builtin recover-fns recovery-call-fn]} trace-data-atom]
   (fn [raw]
-    (let [forms     (parse/read-all raw)
+    (let [raw       (parse/balance-parens raw)
+          forms     (parse/read-all raw)
           program   (if (> (count (vec forms)) 1) (list* 'do forms) (first forms))
           indent    (apply str (repeat eval/*llm-depth* "  "))
           result    (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
@@ -121,15 +122,16 @@
         (throw (ex-info (:err final-result) {:result final-result}))))))
 
 (defn- register-agent
-  "Register a dormant agent with a minimal sleeping completion.
-   Returns handle. Agent wakes on first message.
-   config is the llm config map (from make-llm)."
-  [config handle-name]
+  "Register a dormant agent with stored completion as context.
+   Returns handle. Agent wakes on first message (no initial LLM call).
+   When woken, messages are appended to the stored completion."
+  [config handle-name completion]
   (when-not (keyword? handle-name)
     (throw (ex-info "register-agent: handle must be keyword" {:got handle-name})))
-  (let [default-inbox (make-inbox-fn config (atom nil))
-        initial-completion "(quine completion (eval (do)))"]
-    (comm/start-box handle-name default-inbox initial-completion)))
+  (when-not (string? completion)
+    (throw (ex-info "register-agent: completion must be a string" {:got (type completion)})))
+  (let [default-inbox (make-inbox-fn config (atom nil))]
+    (comm/start-box handle-name default-inbox completion)))
 
 (defn- -llm
   "Core llm engine: make API call, deliver to box.
@@ -185,9 +187,9 @@
    The eval builtin binds itself in eval/*builtins* to support recursive eval calls."
   [variant-builtins effect-builtins]
   (letfn [(eval-builtin [expr]
-            (let [expanded (eval/expand-expr expr eval/*spell-env*)]
+            (let [caller-env eval/*spell-env*]
               (binding [eval/*builtins* (merge variant-builtins effect-builtins {'eval eval-builtin})]
-                (let [result (eval/spell-eval expanded {})]
+                (let [result (eval/spell-eval expr caller-env)]
                   (if (eval/ok? result)
                     (:ok result)
                     (throw (ex-info (:err result) {:result result})))))))]
@@ -219,7 +221,7 @@
   [{:keys [namespaces model system llm-var recover format prefill? thinking]
     :or {namespaces {} model nil recover true prefill? true}}]
   (let [;; Split namespace builtins: io, globals, agents, futures are effect-only, rest are pure
-        effect-ns-names #{'io 'globals 'agents 'futures}
+        effect-ns-names #{'io 'globals 'agents 'futures 'llms}
         ns-builtins (into {} (map (fn [[sym ns-map]] [sym ns-map]) namespaces))
         pure-ns-builtins (into {} (remove #(effect-ns-names (key %)) ns-builtins))
         effect-ns-builtins (into {} (filter #(effect-ns-names (key %)) ns-builtins))
@@ -258,17 +260,17 @@
         self-fn (fn llm-self
                   ([prompt] (@self-ref prompt))
                   ([prompt handle]
-                   ;; 2-arity only valid from spawn context
-                   (when-not comm/*parent-handle*
+                   ;; 2-arity only valid from spawn context (handle pre-registered)
+                   (when-not (comm/handle? handle)
                      (throw (ex-info "Explicit handle requires spawn context" {:handle handle})))
                    (@self-ref prompt handle)))
         ;; Create effect-builtins (closes over llm-self)
         effect-builtins (merge {'llm-self self-fn
-                               'leaf-llm (make-leaf-llm {})}
+                               'leaf-llm (make-leaf-llm (cond-> {} model (assoc :model model)))}
                          effect-ns-builtins
                          (when llm-var {'llm llm-var}))
         ;; Add register-agent to agents namespace (if present)
-        register-agent-fn (fn [handle-name] (register-agent @final-config handle-name))
+        register-agent-fn (fn [handle-name completion] (register-agent @final-config handle-name completion))
         effect-builtins' (if (contains? effect-ns-builtins 'agents)
                            (assoc effect-builtins 'agents
                                   (assoc (get effect-ns-builtins 'agents)
@@ -292,11 +294,10 @@
         the-llm  (fn the-llm
                    ([prompt] (the-llm prompt nil))
                    ([prompt handle]
-                    (let [handle     (or handle comm/*current-handle* (keyword (gensym "agent-")))
-                          parent     (cond
-                                       comm/*current-handle* comm/*current-handle*  ;; llm-self (inherited)
-                                       comm/*parent-handle*  comm/*parent-handle*   ;; spawn child
-                                       :else                 nil)                   ;; top-level
+                    (let [handle     (or handle comm/*current-handle* :root)
+                          parent     (or comm/*current-handle*  ;; llm-self (inherited)
+                                       (:parent-handle (get @comm/registry handle))  ;; spawn child
+                                       )
                           root?      (not= parent handle)
                           prompt'    (if (or (seq? prompt) (list? prompt))
                                        (eval/expand-expr prompt (or eval/*spell-env* {}))
@@ -308,10 +309,14 @@
                       ;; Register if new handle
                       (when-not (comm/handle? handle)
                         (comm/register! handle default-inbox))
-                      ;; Seed inbox: root resets, inherited CAS (preserve pending sends)
-                      (if root?
-                        (reset! (:inbox (get @comm/registry handle)) inbox-fn)
-                        (compare-and-set! (:inbox (get @comm/registry handle)) nil inbox-fn))
+                      ;; Update default-inbox-fn so lazy send resolution uses
+                      ;; the eval pipeline (not make-sleep-fn from spawn)
+                      (swap! comm/registry assoc-in [handle :default-inbox-fn] default-inbox)
+                      ;; Seed inbox: top-level (no parent) resets since handle
+                      ;; may be reused; spawn uses CAS to preserve pending sends
+                      (if parent
+                        (compare-and-set! (:inbox (get @comm/registry handle)) nil inbox-fn)
+                        (reset! (:inbox (get @comm/registry handle)) inbox-fn))
                       (-llm config' handle parent prompt-str trace-data))))]
     (reset! self-ref the-llm)
     the-llm))
@@ -319,70 +324,6 @@
 ;; ---------------------------------------------------------------------------
 ;; Leaf LLM
 ;; ---------------------------------------------------------------------------
-
-(defn make-form-llm
-  "Factory: create a validated text LLM function.
-   Retries if output fails validation.
-
-   Options:
-   - :system      - system prompt string (default: generic assistant)
-   - :model       - optional model name override
-   - :validate    - validation function (string -> truthy/falsy), can be Spell fn or Clojure fn
-   - :format-doc  - description of expected format (shown on retry)
-   - :max-retries - max retry attempts (default: 3)
-
-   Returns (fn [prompt] response-string).
-   Throws if validation fails after max retries.
-
-   For Spell functions, the source is shown in retry messages automatically."
-  [{:keys [system model validate format-doc max-retries]
-    :or {system "You are a helpful assistant."
-         max-retries 3}}]
-  (let [;; Format validator source for retry message (Spell fns show source)
-        validate-src (when (eval/spell-fn? validate)
-                       (pr-str (list* 'fn (:params validate) (:body validate))))]
-    (fn [prompt]
-      (let [prompt-str (str prompt)
-            indent     (apply str (repeat eval/*llm-depth* "  "))]
-        (loop [attempt 1
-               last-response nil]
-          (let [retry-suffix (when last-response
-                               (str "\n\n[Your previous response:\n" last-response
-                                    "\n\nThis did not match the expected format."
-                                    (when format-doc (str " Expected: " format-doc))
-                                    (when validate-src (str " Validator: " validate-src))
-                                    " Please try again.]"))
-                current-prompt (str prompt-str retry-suffix)
-                node-id  (when trace/*trace*
-                           (trace/begin-node! trace/*trace-node-id*
-                                              eval/*llm-depth* :form current-prompt))
-                _        (when eval/*verbose*
-                           (Thread/sleep (rand-int 500))
-                           (locking *out*
-                             (println (str indent "=== Form LLM Call (depth " eval/*llm-depth*
-                                            ", attempt " attempt ") ==="))
-                             (println (str indent "Prompt: " (pr-str current-prompt)))))
-                response (provider/llm-call current-prompt
-                           (cond-> {:system system}
-                             model (assoc :model model)))
-                _        (when eval/*verbose*
-                           (locking *out*
-                             (println (str indent "Response: " response))))]
-            (if (eval/invoke-fn validate [response])
-              (do
-                (when node-id
-                  (trace/complete-node! node-id
-                    {:response response :raw-text response :value response}))
-                response)
-              (do
-                (when node-id
-                  (trace/complete-node! node-id
-                    {:response response :raw-text response
-                     :error (ex-info "Validation failed" {:attempt attempt})}))
-                (if (>= attempt max-retries)
-                  (throw (ex-info "Form LLM validation failed after max retries"
-                                  {:attempts attempt :last-response response}))
-                  (recur (inc attempt) response))))))))))
 
 (defn make-leaf-llm
   "Factory: create a plain text-in/text-out LLM function.

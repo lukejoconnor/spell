@@ -1,10 +1,10 @@
 (ns spell.comm
-  "Inter-agent communication: ask/recv/send primitives.
+  "Inter-agent communication: ask/send/spawn primitives.
 
    box is the universal execution primitive: it waits for a function (from
    an inbox) and applies it to a raw completion string. ask sends a message
-   and blocks for reply. recv wakes a source and blocks for its message.
-   send is low-level fire-and-forget. Every wait wakes the target,
+   and blocks for reply. spawn-recv spawns an agent and blocks for its
+   message. send is low-level fire-and-forget. Every wait wakes the target,
    preventing deadlocks."
   (:refer-clojure :exclude [send])
   (:require [spell.eval :as eval]
@@ -21,17 +21,20 @@
   (atom {}))
 
 (defn register!
-  "Register a handle with its default inbox fn."
-  [handle default-inbox-fn]
-  (when (contains? @registry handle)
-    (throw (ex-info "Handle already registered" {:handle handle})))
-  (swap! registry assoc handle
-         {:inbox             (atom nil)
-          :signal            (atom (promise))
-          :has-box           (atom false)
-          :default-inbox-fn  default-inbox-fn
-          :waiters           (atom #{})
-          :collector         (atom nil)}))
+  "Register a handle with its default inbox fn.
+   Optional parent-handle records the spawning agent."
+  ([handle default-inbox-fn] (register! handle default-inbox-fn nil))
+  ([handle default-inbox-fn parent-handle]
+   (when (contains? @registry handle)
+     (throw (ex-info "Handle already registered" {:handle handle})))
+   (swap! registry assoc handle
+          {:inbox             (atom nil)
+           :signal            (atom (promise))
+           :has-box           (atom false)
+           :default-inbox-fn  default-inbox-fn
+           :parent-handle     parent-handle
+           :waiters           (atom #{})
+           :collector         (atom nil)})))
 
 ;; =============================================================================
 ;; Dynamic vars
@@ -43,10 +46,6 @@
 
 (def ^:dynamic *current-raw*
   "Raw completion string for the currently executing agent (set inside box)."
-  nil)
-
-(def ^:dynamic *parent-handle*
-  "Handle of the agent that spawned the current agent (set by spawn)."
   nil)
 
 ;; =============================================================================
@@ -61,15 +60,20 @@
 
 (defn- make-sleep-fn
   "Create an inbox function that blocks on signal then re-enters box.
-   When woken, re-enters box as non-root (parent=self)."
+   When woken, re-enters box as non-root (parent=self).
+   Loops on spurious wakes: if signal fires but inbox is still nil
+   (e.g. from a -send! that was later overwritten), go back to sleep."
   [handle]
   (fn [_raw]
-    (let [{:keys [signal]} (get @registry handle)]
-      (deref @signal)
-      (reset! signal (promise))
-      (let [p (promise)]
-        (deliver p *current-raw*)
-        (box handle handle p)))))
+    (loop []
+      (let [{:keys [signal]} (get @registry handle)]
+        (deref @signal)
+        (reset! signal (promise))
+        (if @(:inbox (get @registry handle))
+          (let [p (promise)]
+            (deliver p *current-raw*)
+            (box handle handle p))
+          (recur))))))
 
 ;; =============================================================================
 ;; Box
@@ -148,12 +152,16 @@
         (swap! pending disj *current-handle*)
         (when (empty? @pending)
           (deliver done true))))
-    ;; Normal send: compose transform with inbox-fn (which takes [raw])
+    ;; Normal send: compose transform with inbox-fn (which takes [raw]).
+    ;; When inbox is nil, resolve default-inbox-fn lazily (at call time,
+    ;; not composition time) so the-llm can update it after spawn.
     (-send! handle
       (fn [current]
-        (let [base (or current (:default-inbox-fn (get @registry handle)))]
+        (if current
+          (fn [raw] (current (f raw)))
           (fn [raw]
-            (base (f raw)))))))
+            (let [base (:default-inbox-fn (get @registry handle))]
+              (base (f raw))))))))
   nil)
 
 ;; =============================================================================
@@ -198,7 +206,7 @@
 ;; Block-for-message (internal)
 ;; =============================================================================
 
-(defn- block-for-message
+(defn block-for-message
   "Seed inbox with sleep-fn and re-enter box as non-root.
    Must be called from within an agent context (inside box).
    has-box is already false (box releases before calling inbox fn)."
@@ -352,14 +360,12 @@
 ;; =============================================================================
 
 (defn start-box
-  "Register handle and start box with initial completion. Returns handle.
-   Used by register-agent for dormant agents."
+  "Register handle and go to sleep with initial completion as stored context.
+   Returns handle. Used by register-agent for dormant agents.
+   No initial evaluation — agent wakes on first message."
   [handle default-inbox-fn initial-completion]
   (register! handle default-inbox-fn)
-  (let [p (promise)]
-    (deliver p initial-completion)
-    (reset! (:inbox (get @registry handle)) default-inbox-fn)
-    (future (box handle nil p)))
+  (orphan-box! handle initial-completion)
   handle)
 
 ;; =============================================================================
@@ -371,7 +377,7 @@
    The handle is addressable (send to it). The child must explicitly send
    its result if needed; use ask-based patterns to collect spawn results.
    llm-fn must accept (prompt handle) — 2-arity.
-   Sets *parent-handle* so the child can find its spawner.
+   Stores parent handle in registry so the child can find its spawner.
    Registers synchronously so the handle is live before spawn returns.
    Optional handle-name (keyword) sets a fixed handle instead of auto-generating."
   ([llm-fn prompt] (spawn llm-fn prompt nil))
@@ -379,11 +385,10 @@
    (let [handle (or handle-name (keyword (gensym "spawn-")))
          parent *current-handle*]
      ;; Register synchronously — handle is live before future starts
-     (register! handle (make-sleep-fn handle))
+     (register! handle (make-sleep-fn handle) parent)
      (future
        ((bound-fn []
-          (binding [*parent-handle* parent]
-            (llm-fn prompt handle)))))
+          (llm-fn prompt handle))))
      handle)))
 
 (defn spawn-recv
@@ -404,91 +409,63 @@
   "Agent communication namespace — effect-guarded (trailing expression only)."
   {:guide "AGENTS
 
-Agents communicate by sending messages. A message extends the recipient's completion with a def binding and triggers a new LLM turn.
+All agents/ calls are effect functions — quote them as the trailing expression:
+  '(agents/current-handle)   — correct: fires via double evaluation
+  (agents/current-handle)    — WRONG: agents/ is unbound outside trailing expression
 
-  (agents/send-msg value handle)      — send a message to agent at handle (auto-tags :from with sender handle)
-  (agents/reply-send msg value)       — reply to a received message (fire-and-forget)
-  (agents/reply-ask msg value)        — reply to a received message, then block for their response
-  (agents/spawn llm-fn prompt)        — start a background agent, returns its handle (auto-generated)
-  (agents/spawn llm-fn prompt :name)  — same, but with a fixed handle name (keyword)
-  (agents/register :handle-name)      — register a dormant agent; wakes on first message (no initial LLM call)
-  (agents/current-handle)             — your handle (keyword like :agent-42); works at all levels including root
-  (agents/parent-handle)              — returns the handle of the agent that spawned you (nil if not spawned)
+Use (describe agents :fn-name) for docs on a specific function.
 
-Messages arrive as def bindings: (def msg-N {:from sender-handle :value val}).
-Access the value with (:value msg-N) and the sender with (:from msg-N). reply-send and reply-ask extract the sender automatically.
+PATTERNS
 
-Blocking primitives — these block until a message arrives, then trigger a new turn (extension) with the message binding. Code after a blocking call in the same expression is dead code; continue in the next turn instead.
-
-  (agents/ask target msg)             — send msg to target, block for reply
-  (agents/ask target)                 — poke target (wake it), block until it sends to you
-  (agents/ask [a b c])                — multi-target ask: poke all, block until all have sent (one turn for N agents)
-  (agents/spawn-recv llm-fn prompt)   — spawn agent, block until it sends back
-
-Handles are keywords, so they pass safely through wrap-cat and child code without lookup errors.
-
-Named handles for multi-turn conversations: when using send-msg+ask to exchange messages across turns, use named handles. Bindings from a quoted trailing expression (like a variable holding a spawn result) do not persist to the next turn — the previous trailing expression becomes inert data after extension. Keywords are self-evaluating, so they work in every turn.
-  ;; fragile: seller binding lost after ask triggers extension
-  '(do (def seller (agents/spawn llm-self \"...\"))
-       (agents/send-msg 100 seller) (agents/ask seller))
-  ;; robust: keyword handle works in every turn
-  '(do (agents/spawn llm-self \"...\" :seller)
-       (agents/send-msg 100 :seller) (agents/ask :seller))
-
-Message timing: a message sent to a spawned agent arrives *after* the agent completes its LLM call and evaluates its code. Everything the child needs before completion must be in the prompt.
-
-spawn-recv pattern (spawn + block — the primary delegation pattern):
+One-shot delegation (spawn + block for result):
   '(agents/spawn-recv llm-self \"compute 42 and send result to (agents/parent-handle)\")
+  ;; child sends: '(agents/send-msg 42 (agents/parent-handle))
+  ;; parent's next turn sees (def msg-N {:from child-handle :value 42})
 
-  ;; child:
-  '(agents/send-msg 42 (agents/parent-handle))
+Multi-turn conversation (spawn + ask loop):
+  ;; parent spawns a named agent, then asks it with a value:
+  '(do (agents/spawn llm-self \"You are a seller...\" :seller)
+       (agents/ask :seller 100))
+  ;; ask sends 100 to :seller and blocks until :seller replies.
+  ;; :seller's next turn sees (def msg-0 {:from :root :value 100}).
+  ;; :seller counters: '(agents/reply-ask msg-0 250)
+  ;;   reply-ask sends 250 back to :root AND blocks for the next message.
+  ;; parent's next turn sees (def msg-1 {:from :seller :value 250}).
+  ;; parent sends next offer: '(agents/ask :seller 150)
+  ;; ...repeat until one side uses reply-send (fire-and-forget) to end.
 
-  ;; parent's next turn sees (def msg-N {:from child-handle :value 42}), continues
-  ;; (:value msg-N) => 42
-
-Multi-target ask — collect from all targets in a single turn:
-  ;; turn 1: spawn agents, wait for all at once
+Fan-out / fan-in (multi-target ask):
   '(do (def a (agents/spawn llm-self \"compute bid and agents/send-msg to (agents/parent-handle)\"))
        (def b (agents/spawn llm-self \"compute bid and agents/send-msg to (agents/parent-handle)\"))
        (agents/ask [a b]))
-  ;; turn 2: both messages arrived as def bindings with {:from ... :value ...}
+  ;; next turn: both messages arrived as def bindings
 
-ask pattern (for agents that have already completed — e.g. named agents or after receiving a message):
-  ;; parent sends to worker and waits: '(agents/ask :worker \"do X next\")
-  ;; worker receives the ask as (def msg-N {:from :parent-42, :value \"do X next\"})
-  ;; (:value msg-N) => \"do X next\", (:from msg-N) => :parent-42
-  ;; worker replies: '(agents/reply-send msg-N result-value)
+IMPORTANT NOTES
 
-Named spawn pattern (agents know each other's handles):
-  '(do (agents/spawn llm-self \"You are seller. Buyer is :buyer.\" :seller)
-       (agents/spawn llm-self \"You are buyer. Seller is :seller.\" :buyer))
-  ;; Each agent can send directly to the other by name
+Messages arrive as def bindings: (def msg-N {:from sender-handle :value val}).
+Access with (:value msg-N) and (:from msg-N). reply-send and reply-ask extract the sender automatically.
 
-Deadlock prevention: ask always wakes the target. If A asks B while B asks A, both sends cross and both unblock.
+The root agent's handle is :root. Spawned agents get auto-generated handles (:spawn-42) unless you provide a named handle. Use named handles (:seller) for multi-turn conversations — keyword handles are self-evaluating and persist across turns, while bindings from quoted trailing expressions do not.
 
-Handle inheritance: llm-self calls within an agent inherit the agent's handle.
-All llm-self descendants share the same address.
+Message timing: messages sent to a spawned agent arrive after the agent completes its LLM call. Everything the child needs must be in the prompt.
 
-Agents persist after returning (orphan box state). Sending to a returned agent wakes it for another turn.
+Blocking: ask, spawn-recv block until a message arrives, then trigger a new turn. Code after a blocking call is dead code.
 
-For parallel LLM work, use agents/spawn. Each spawned agent gets its own handle and communicates via agents/ask.
+Deadlock prevention: ask always wakes the target.
 
-  ;; spawn a worker and wait for its result:
-  '(agents/spawn-recv llm-self \"compute 6 * 7 and send result to (agents/parent-handle)\")
+Handle inheritance: llm-self calls inherit your handle (serial). For parallel LLM work, use agents/spawn (separate handles).
 
-  ;; spawn named agents that can find each other:
-  '(do (agents/spawn llm-self \"You are researcher A. Send findings to :coordinator.\" :researcher-a)
-       (agents/spawn llm-self \"You are researcher B. Send findings to :coordinator.\" :researcher-b))
-
-llm-self calls are always serial — the child inherits your handle, so your entire llm-self call tree is one logical agent. For parallel LLM work, use agents/spawn (separate handles)."
+Human-in-the-loop (interactive CLI only):
+  '(agents/ask :user \"What file should I edit?\")
+  ;; next turn sees (def msg-N {:from :user :value \"report.txt\"})"
    :docs {:send-msg "Send value to handle with auto-tagged :from"
           :reply-send "Reply to received message (fire-and-forget)"
           :reply-ask "Reply to received message, then block for response"
           :ask "Send msg to target and block for reply; (ask [a b c]) for multi-target"
           :spawn "Start background agent, returns handle"
           :spawn-recv "Spawn agent, block until it sends back"
-          :register "Register dormant agent; wakes on first message (no initial LLM call)"
-          :current-handle "Your handle (keyword like :agent-42)"
+          :register "Register dormant agent with stored completion; wakes on first message"
+          :current-handle "Your handle (:root for the root agent, :spawn-N or named for spawned agents)"
           :parent-handle "Handle of agent that spawned you (nil if root)"
           :send "Low-level fire-and-forget send"}
    :send-msg send-msg
@@ -500,7 +477,7 @@ llm-self calls are always serial — the child inherits your handle, so your ent
             ([llm-fn prompt handle-name] (spawn llm-fn prompt handle-name)))
    :spawn-recv (fn [llm-fn prompt] (spawn-recv llm-fn prompt))
    :current-handle (fn [] *current-handle*)
-   :parent-handle (fn [] *parent-handle*)
+   :parent-handle (fn [] (:parent-handle (get @registry *current-handle*)))
    :send send})
 
 (def futures-namespace

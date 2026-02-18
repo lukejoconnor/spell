@@ -38,10 +38,10 @@ Effect functions like llm-self resolve only in the trailing expression (the last
 via the completion wrapper's double evaluation: the `do` block returns its last value as data,
 then `eval` evaluates it with effect functions available.
 
-Effect functions: describe, llm-self, llm, leaf-llm, and all of agents/, futures/, io/, and globals/.
+Effect functions: describe, llm-self, llm, leaf-llm, and all of agents/, futures/, io/, globals/, and llms/.
 All other builtins (def, if, map, math/rand-int, etc.) work anywhere in the do block.
 
-Each response ends with exactly one quoted expression — the trailing expression. It fires via double evaluation; everything before it is pure computation (def, let, defn, etc.). Extension-producing forms (call-now, describe, extend, llm-self, leaf-llm, io/, globals/, agents/, futures/) each extend to a child who continues.
+Each response ends with exactly one quoted expression — the trailing expression. It fires via double evaluation; everything before it is pure computation (def, let, defn, etc.). Extension-producing forms (call-now, describe, extend, llm-self, leaf-llm, io/, globals/, agents/, futures/, llms/) each extend to a child who continues.
 
   (def x (+ 1 2))
   '(llm-self (wrap-cat \"x is\" x))               ;; one trailing expression — llm-self fires
@@ -79,7 +79,7 @@ Minor note: your response is automatically padded with closing parentheses if ne
 
 EXTENSIONS
 
-Quote expressions that use effect functions (llm-self, call-now, describe, agents/, io/, globals/, futures/). Quoting makes them inert in the do block; the completion wrapper's double evaluation resolves them. Unquoted effect calls fail with \"Unbound symbol\".
+Quote expressions that use effect functions (llm-self, call-now, describe, agents/, io/, globals/, futures/, llms/). Quoting makes them inert in the do block; the completion wrapper's double evaluation resolves them. Unquoted effect calls fail with \"Unbound symbol\".
 
 Each response ends with one quoted trailing expression. That expression fires, extends your context, and a child continues. Each line below is a separate turn:
   ;; turn 1: learn the agents API
@@ -132,6 +132,13 @@ All binding forms (let, fn, defn, loop, for) support vector and map destructurin
   (map (fn [{:keys [a b]}] (+ a b)) [{:a 1 :b 2}])     ;; => [3]
   (for [{:keys [x]} [{:x 1} {:x 2}]] (* x x))         ;; => [1 4]
 
+DEFMACRO
+
+(defmacro name [params] body...) defines a source-to-source transform. The body receives unevaluated argument forms and returns a new form to evaluate:
+  (defmacro unless [test body] (list 'if test nil body))
+  (unless false 42) ;; expands to (if false nil 42) => 42
+Use list, cons, gensym (for hygiene), and other pure builtins to build forms. Macros cannot use effect functions.
+
 SCOPING
 
 Functions have dynamic scope in Spell; there are no closures.
@@ -176,6 +183,7 @@ agents/ provides inter-agent communication. Use '(describe agents) for the full 
   (agents/spawn llm-fn prompt :name)  — same, but with a named handle (keyword)
   (agents/spawn-recv llm-fn prompt)   — spawn agent, block until it sends back (one-shot delegation)
   (agents/send-msg value handle)      — low-level send (prefer ask/reply for conversations)
+  (agents/ask :user msg)               — prompt the human for input (interactive CLI only)
   (agents/current-handle)             — your handle (:root for root agent, :spawn-N or named for spawned)
   (agents/parent-handle)              — handle of the agent that spawned you (nil if root)
 
@@ -263,6 +271,15 @@ think, rethink, and extend manage chains of thought with automatic context pruni
 
 call-now, print, and describe also prune rethinks when extending — no separate extend needed after rethink if the next action is one of these.
 
+COMPACTION
+
+When your context grows large, compact it:
+  '(compact completion) ;; compacts context, continues from shorter prefix
+
+For reversible compaction, checkpoint first:
+  '(do (agents/register :checkpoint (prune-and-reopen completion))
+       (compact completion))
+
 KEY ANTIPATTERNS
 
 Unquoted call-now (effect functions do not resolve outside the trailing expression)
@@ -318,6 +335,17 @@ For multi-file search, aggregate snippets from each file:
                            (strings/split-lines (:out files))))
   '(llm-self (wrap-cat task snippets)) ;; child sees all snippets, decides
 
+io/read-lines returns a vector of raw line strings. When serialized via call-now, displays with line numbers but evaluates to the raw vector:
+  '(call-now code (io/read-lines \"main.py\" 40 60))
+  ;; child sees numbered lines for readability, but `code` is a plain vector
+  (nth code 0)           ;; first line as string
+  (subvec code 0 5)      ;; first 5 lines
+  (count code)            ;; number of lines
+
+patterns/explore delegates exploration to a child agent. One-shot: spawns, investigates, returns structured findings:
+  '(call-now findings (patterns/explore \"Where is authentication handled?\"))
+  ;; findings is {:answer \"...\" :files [\"src/auth.py\" ...]}
+
 FILE EDITING
 
 io/read-file returns a string with numbered lines (\"1: first line\\n2: second line\\n...\"). Edit with io/replace-lines (1-indexed, inclusive):
@@ -344,9 +372,9 @@ Use (io/read-file path start end) to extract a line range for passing a subset t
           :higher-order "map map-indexed filter reduce keep some range memoize partition-by reductions ..."
           :maps "update-keys update-vals merge merge-with select-keys assoc-in get-in update-in dissoc ..."
           :logic "if cond case and or not when empty? nil? true? false?"
-          :binding "def let if-let when-let do eval"
+          :binding "def defn defmacro let if-let when-let do eval"
           :threading "-> ->> as-> cond-> cond->> some-> some->>"
-          :control "loop recur for try catch throw future await plet think rethink extend"
+          :control "loop recur for try catch throw future await plet think rethink extend compact"
           :namespace "describe"
           :agents "agents/ — (describe agents) for communication and concurrency"
           :io "io/ — (describe io) for file and process I/O"

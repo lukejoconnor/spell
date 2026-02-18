@@ -199,7 +199,13 @@ LLM-written completions may throw exceptions, potentially crashing a long-runnin
 
 ## Inter-agent communication
 
-Inter-agent communication in Spell involves one core mechanism, the *inbox function*: LLM A writes an inbox function and sends it to LLM B; this function is applied to the completion of LLM B. This single mechanism enables various communication patterns.
+Inter-agent communication in Spell revolves around one core mechanism, the *inbox function*. This function takes an LLM's completion as input. In the absence of any communication, it parses and evaluates the completion. It is also able to be modified by *message functions* from other LLMs, and in particular, message functions can append text (message bodies) to the completion before evaluating it. More generally, the inbox function allows agents not only to share information but also to control their own behavior and the behavior of other agents. 
+
+Inbox functions allow two forms of coordination in particular. First, LLM A can send a message to LLM B using syntax like `(agents/send B "Hello!")`. 
+
+
+
+: LLM A writes an inbox function and sends it to LLM B; this function is applied to the completion of LLM B. This single mechanism enables various communication patterns.
 
 When `llm` is called, it creates a globally mutable reference, the *inbox*, to its inbox function. Initially, the inbox function is `make-inbox-fn` — a function that closes over `eval` and handles parsing, evaluation, and error recovery. At any later time, another LLM can send a *message function* to the inbox, modifying the inbox function via the atomic operation `swap!`. The typical pattern is composition: a message function with a message `f` inputs an inbox function `inbxfn` and returns `(comp inbxfn f)`. The function `f` is typically a macro which inputs a completion and adds an expression. The built-in `create-msg` produces such functions; for example, `(create-msg 'msg {:from :Alice :body "Hello Bob!"})` returns a function that reopens a completion, appends `(quine msg {:from :Alice :body "Hello Bob!"})`, and triggers an `llm-self` extension. This message replaces Bob's trailing expression (extending his completion). Instead of doing what he was about to do, Bob is given this extra context and re-prompted via `llm-self`.
 
@@ -207,7 +213,7 @@ The low-level primitive is `(agents/send f handle)`, which is fire-and-forget: i
 
 Because `llm-self` calls inherit the parent's handle (see *`llm` and `spell-eval`*), each handle's call tree is serial — there is no concurrent access to the same inbox. Deadlock freedom follows from two properties: same-handle trees cannot deadlock with themselves (they are serial), and cross-handle dependencies use `agents/ask` (which always wakes the target).
 
-Within `llm`, all of the logic except actually calling the LLM is packaged into a helper function, `box`, which awaits the LLM completion as a promise, then drains the inbox atomically, then applies the inbox function to the raw completion and returns the result. The reason for this separation is so that a handle can remain responsive while an agent is idle. When an agent's root box completes, it starts an *orphan box* — a non-root box with a sleep function as its inbox. The sleep function blocks on a signal; when woken by a message, it re-enters box with the new inbox function. This keeps the handle alive indefinitely. The other way an agent can enter the sleeping state is by calling `ask`, which uses the same sleep mechanism internally.
+Within `llm`, all of the logic except actually calling the LLM is packaged into a helper function, `box`, which awaits the LLM completion as a promise, then drains the inbox atomically, then applies the inbox function to the raw completion and returns the result. The reason for this separation is so that a handle can remain responsive while an agent is idle. When an agent's root box completes, its return value is sent to any agents still waiting on it; it then starts an *orphan box* — a non-root box with a sleep function as its inbox. The sleep function blocks on a signal; when woken by a message, it re-enters box with the new inbox function. This keeps the handle alive indefinitely. The other way an agent can enter the sleeping state is by calling `ask`, which uses the same sleep mechanism internally.
 
 ## KV cache
 
@@ -277,6 +283,33 @@ Functions are organized into namespaces — simple maps with a `:docs` key and f
 ```
 
 These primitives are for deterministic computation only — not for LLM calls. Parallel LLM work uses `spawn`, which creates a separate handle (see *Concurrent agents*).
+
+## Patterns
+
+### File watching
+
+An agent may need to block on an external event, such as a file change, without deadlocking. The naive approach — calling a blocking I/O function directly — prevents the agent from receiving messages, which can deadlock other agents waiting on it.
+
+The solution uses the return-and-wake lifecycle. `io/watch-send` starts a background thread that monitors a directory via the OS file-watching API and, when events occur, sends them to the agent's handle through the standard communication system. The agent then returns, which notifies any agents waiting on it. Later, when file events arrive, the agent's orphan box processes the message, waking the agent for a new turn:
+
+```clojure
+'(io/watch-send "src/" (agents/current-handle) 30000)
+;; Agent returns; waiters are notified.
+;; When files change, the orphan box wakes and the agent sees:
+;;   (def msg-N {:from :watch-send :value [{:kind :modify :name "foo.clj"} ...]})
+```
+
+This pattern generalizes to any external event source: start a background thread that waits for the event, have it send a message via the communication system, and return. The agent remains responsive to other agents while idle (via the orphan box), and deadlock freedom is preserved because returning always notifies waiters.
+
+### Prompt cleaning
+
+User prompts are often messy — voice-to-text artifacts, typos, half-sentences, or ambiguous references. `patterns/clean-prompt` is a Spell function that cleans a raw prompt via `leaf-llm` (a plain text LLM with no code execution) and then executes the cleaned version via `llm-self`:
+
+```clojure
+'(patterns/clean-prompt "um so like find all files modified in last week and delete the tmp ones")
+```
+
+This works because `patterns/clean-prompt` is a Spell function (data, not a closure), so it is portable across LLM boundaries. When called from a trailing expression, the effect guard makes `leaf-llm` and `llm-self` available. The pattern separates intent inference from execution: the leaf LLM rewrites the prompt without tools or code execution, and the resulting clean directive is passed to `llm-self` for execution with full capabilities.
 
 ## Under the hood
 The implementation of Spell involves interaction between the following four parts:

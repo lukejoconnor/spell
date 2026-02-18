@@ -7,7 +7,8 @@
             [spell.eval :as eval]
             [spell.llm :as llm]
             [spell.provider :as provider]
-            [spell.trace :as trace])
+            [spell.trace :as trace]
+            [spell.user :as user])
   (:gen-class))
 
 (def model-aliases
@@ -207,18 +208,23 @@
    - :eval false: plain text LLM (no Spell parsing/eval)
    - :format: optional format spec for output validation"
   [agent-config]
-  (let [{:keys [system model budget recover resolve-namespaces-fn eval format max-retries
+  (let [{:keys [system model budget recover resolve-namespaces-fn resolve-llms-fn eval format max-retries
                 prefill? thinking]} agent-config
         ;; :eval defaults to true if not specified
         eval? (if (nil? eval) true eval)
         ;; Resolve namespaces with make-llm available for sub-agents
         namespaces (when (and eval? resolve-namespaces-fn)
                      (resolve-namespaces-fn llm/make-llm))
+        ;; Resolve llms/ namespace if specified
+        llms-ns (when (and eval? resolve-llms-fn)
+                  (resolve-llms-fn llm/make-llm model))
+        all-namespaces (cond-> (or namespaces {})
+                         llms-ns (assoc 'llms llms-ns))
         ;; Create base LLM function based on :eval setting
         base-llm (if eval?
                    ;; Spell evaluation mode
                    (let [config (cond-> {}
-                                  namespaces (assoc :namespaces namespaces)
+                                  (seq all-namespaces) (assoc :namespaces all-namespaces)
                                   model (assoc :model model)
                                   system (assoc :system system)
                                   (some? recover) (assoc :recover recover)
@@ -261,6 +267,9 @@
                                              provider/*budget*)
                            (zero? budget) nil
                            :else budget)]
+    ;; Register :user agent for interactive CLI (terminal stdin only)
+    (when (. System console)
+      (user/register-user-agent!))
     (provider/with-provider provider
       (binding [eval/*verbose* verbose
                 eval/*max-llm-depth* max-depth
@@ -333,8 +342,14 @@
           (when trace-dir
             (binding [*out* *err*]
               (println (str "Trace: " trace-dir))))
-          (when (and (:verbose options) usage)
-            (print-usage usage))
+          (when usage
+            (if (:verbose options)
+              (print-usage usage)
+              ;; Always print cost to stderr
+              (let [{:keys [total]} (provider/usage-summary usage)]
+                (when-let [c (:cost total)]
+                  (binding [*out* *err*]
+                    (println (format "Cost: $%.4f" c)))))))
           (if error
             (do
               (when (and (= :budget-exceeded (:type error-data))
