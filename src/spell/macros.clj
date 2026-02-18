@@ -421,8 +421,9 @@
 
 ;; extend: (extend completion) — prune rethinks and continue via llm-self
 (defspellmacro 'extend
-  (fn [comp-sym]
-    (list 'llm-self (list 'prune-and-reopen comp-sym))))
+  (fn
+    ([] (list 'llm-self (list 'prune-and-reopen 'completion)))
+    ([comp-sym] (list 'llm-self (list 'prune-and-reopen comp-sym)))))
 
 ;; compact: (compact completion) — prune rethinks, append compaction instructions, continue via llm-self
 ;; Prefix ends with '(llm-self (wrap-cat — LLM writes quoted forms, balance-parens closes everything.
