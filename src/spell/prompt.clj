@@ -359,27 +359,335 @@ Use (io/read-file path start end) to extract a line range for passing a subset t
 ;; Builtins namespace (docs-only, for progressive disclosure)
 ;; =============================================================================
 
+(def ^:private builtins-guide
+  "BUILTINS REFERENCE
+
+Core builtins always available without namespace prefix.
+For namespace functions (io/, agents/, globals/, futures/, strings/, math/, patterns/), use (describe <namespace>).
+(describe builtins :category) for a category listing — e.g. (describe builtins :math).
+
+## Special Forms
+
+  quote — return expression unevaluated as data; prevents evaluation of its argument
+  def — bind a value to a symbol in the current environment
+  do — evaluate expressions sequentially; return the value of the last one
+  if — conditional branch; evaluates test, then either then-expr or else-expr
+  let — introduce local bindings scoped to the body; supports destructuring
+  fn — create a function; returns source-form data with dynamic scoping semantics
+  fn* — internal alias for fn; produced by the #() reader macro
+  expand — substitute free variables in a quoted expression from the current environment
+  quine — bind a name to the enclosing form as data, enabling self-referential programs
+  loop — establish a recursion point with initial bindings; used with recur
+  recur — jump back to the enclosing loop with new values; tail-recursive iteration
+  for — list comprehension over a collection with optional :when and :let clauses
+  try — evaluate body, catching errors in an optional (catch sym handler) clause
+
+## Macros
+
+  when — like if without an else branch; evaluates body only when test is truthy
+  defn — define a named function; shorthand for (def name (fn [params] body...))
+  and — short-circuit logical and; returns last truthy value or first falsy value
+  or — short-circuit logical or; returns first truthy value or last falsy value
+  cond — multi-branch conditional; pairs of test/expr evaluated left to right
+  if-let — bind test result; evaluate then if truthy, else otherwise
+  when-let — bind test result; evaluate body only if binding is truthy
+  case — dispatch on equality; matches expr against constant values with optional default
+  as-> — thread a value through forms, rebinding a name at each step
+  cond-> — thread-first conditionally; applies each step only when its test is truthy
+  cond->> — thread-last conditionally; applies each step only when its test is truthy
+  some-> — thread-first with nil short-circuit; stops and returns nil on nil intermediate
+  some->> — thread-last with nil short-circuit; stops and returns nil on nil intermediate
+  call-now — evaluate expr, extend completion with named binding; crosses the effect boundary
+  -> — thread-first; insert value as first argument through a chain of forms
+  ->> — thread-last; insert value as last argument through a chain of forms
+  future — wrap expr in a thunk and launch as a parallel future; returns a future handle
+  plet — parallel let; launch all bindings as futures and await all before entering body
+  print — evaluate expr, extend completion with its serialized value as a visible literal
+  define — Scheme-style alias for def; binds a symbol to a value
+  defmacro — define a user-level macro; expander receives unevaluated argument forms
+  describe — extend completion with namespace documentation; accepts ns or ns :key
+  think — label a reasoning step; evaluates body for side effects, returns nil
+  rethink — like think but prunes N previous sibling expressions from source on extend
+  extend — prune rethink forms from the completion and continue execution via llm-self
+  compact — prune rethinks and prompt the LLM to compress its context via wrap-cat
+
+## Per-Agent Effect Builtins
+
+(available in trailing expression via double evaluation)
+
+  eval — transparent evaluator; inverse of quote. Merges effect builtins with pure builtins
+  llm-self — call yourself recursively with a new prompt; child inherits your handle
+  leaf-llm — plain text-in/text-out LLM call; no Spell parsing or evaluation, returns string
+  describe-fn — retrieve documentation from a namespace: (describe-fn ns) or (describe-fn ns :key)
+  llm — reference to the current LLM function (when available via :llm-var configuration)
+
+## Math
+
+  + — add any number of numeric arguments together
+  - — subtract subsequent arguments from the first, or negate a single argument
+  * — multiply any number of numeric arguments together
+  / — divide first argument by subsequent arguments; returns ratio if exact
+  inc — add 1 to a number
+  dec — subtract 1 from a number
+  quot — integer division truncating toward zero: (quot 7 2) => 3
+  mod — modulus: (mod 10 3) => 1; result has same sign as divisor
+  rem — remainder: (rem 10 3) => 1; result has same sign as dividend
+  abs — absolute value of a number
+  max — return the largest of the given numeric arguments
+  min — return the smallest of the given numeric arguments
+  max-key — return the argument for which (f arg) is greatest
+  min-key — return the argument for which (f arg) is smallest
+  floor — round down to nearest integer: (floor 2.7) => 2
+  ceil — round up to nearest integer: (ceil 2.1) => 3
+  rand — return a random float between 0 (inclusive) and 1 (exclusive)
+  rand-int — return a random integer from 0 to n-1 inclusive
+  rand-nth — return a random element from a collection
+  random-sample — return elements from collection, each included with given probability
+  random-uuid — generate and return a random UUID as a string
+  +' — addition with automatic promotion to arbitrary precision on overflow
+  -' — subtraction with automatic promotion to arbitrary precision on overflow
+  *' — multiplication with automatic promotion to arbitrary precision on overflow
+  inc' — increment with automatic promotion to arbitrary precision on overflow
+  dec' — decrement with automatic promotion to arbitrary precision on overflow
+  parse-number — parse a numeric string to an integer or float; nil if no number found
+  even? — return true if n is divisible by 2
+  odd? — return true if n is not divisible by 2
+  pos? — return true if n is greater than zero
+  neg? — return true if n is less than zero
+  zero? — return true if n is exactly zero
+
+## Comparison & Logic
+
+  < — return true if arguments are in strictly increasing order
+  > — return true if arguments are in strictly decreasing order
+  <= — return true if arguments are in non-decreasing order
+  >= — return true if arguments are in non-increasing order
+  = — return true if all arguments are equal by value
+  not= — return true if any two arguments are not equal by value
+  compare — three-way comparison returning -1, 0, or 1
+  not — return true if argument is falsy (nil or false), false otherwise
+  nil? — return true if value is nil
+  empty? — return true if collection has no elements
+  some? — return true if value is not nil
+  true? — return true if value is exactly the boolean true
+  false? — return true if value is exactly the boolean false
+  any? — always return true; useful as a universal pass-through predicate
+  identity — return its single argument unchanged
+
+## Types & Conversion
+
+  string? — return true if value is a string
+  number? — return true if value is a number
+  list? — return true if value is a list (seq, not vector)
+  seq? — return true if value is a seq
+  vector? — return true if value is a vector
+  set? — return true if value is a set
+  map? — return true if value is a map, excluding spell functions and futures
+  fn? — return true if value is a function, including spell-defined functions
+  keyword? — return true if value is a keyword
+  symbol? — return true if value is a symbol
+  coll? — return true if value is any collection type
+  sequential? — return true if value is a list or vector (ordered sequence)
+  int? — return true if value is an integer
+  boolean? — return true if value is true or false (boolean type)
+  name — return the local name portion of a keyword or symbol as a string
+  symbol — create a symbol from a string: (symbol \"foo\") => foo
+  keyword — create a keyword from a string: (keyword \"foo\") => :foo
+  namespace — return the namespace portion of a qualified keyword or symbol, or nil
+  type — return type name as string (string, number, vector, map, set, list, function, etc.)
+  int — coerce a value to an integer
+  long — coerce a value to a long integer
+  float — coerce a value to a single-precision float
+  double — coerce a value to a double-precision float
+  bigdec — coerce a value to a BigDecimal
+  bigint — coerce a value to a BigInteger
+  rationalize — coerce a numeric value to the closest rational number
+  parse-boolean — parse the string true/false to its boolean value; nil for other input
+  boolean — coerce a value to boolean: false and nil become false, everything else true
+
+## Strings
+
+  str — concatenate any arguments into a single string; nil arguments are skipped
+  pr-str — return a readable string representation with quotes and escape sequences
+  subs — extract a substring: (subs s start) or (subs s start end)
+  cat — concatenate any arguments into a string (alias for str)
+  format — format a string with arguments using Java String.format conventions
+  read-string — parse a single Spell expression from a string and return it as data
+  re-find — return the first regex match in a string: (re-find pattern string)
+  re-matches — return the full-string regex match or nil: (re-matches pattern string)
+  re-seq — return all non-overlapping regex matches as a vector: (re-seq pattern string)
+
+## Collections
+
+  list — create a list from zero or more arguments
+  list* — create a list spreading last arg as tail: (list* 1 2 [3 4]) => (1 2 3 4)
+  vector — create a vector from zero or more arguments
+  set — create a set from a collection of values
+  first — return the first element of a collection, or nil
+  second — return the second element of a collection, or nil
+  rest — all elements after the first; returns empty list if already empty
+  next — all elements after the first; returns nil if already empty
+  last — return the last element of a collection
+  nth — element at index: (nth coll idx) or (nth coll idx not-found)
+  ffirst — first of first: (ffirst x) = (first (first x))
+  cons — prepend an element to a sequence: (cons 0 [1 2]) => (0 1 2)
+  conj — add element to collection (end for vectors, front for lists)
+  peek — efficient top access: last for vectors, first for lists
+  pop — remove the top element: last for vectors, first for lists
+  butlast — return all elements except the last, as a sequence
+  count — return the number of elements in a collection
+  reverse — reverse a collection, returning a vector
+  seq — coerce to sequence; returns nil for empty collections
+  vec — coerce a collection to a vector
+  subvec — sub-vector slice: (subvec v start) or (subvec v start end)
+  not-empty — return the collection if non-empty, nil if empty
+  get — look up key in map, vector, or set: (get m :key) or (get m :key default)
+  assoc — associate a key with a value in a map or vector
+  into — pour one collection into another: (into [] '(1 2 3))
+  concat — concatenate sequences
+  find — return [key value] map entry for key, or nil if absent
+  key — extract the key from a map entry
+  val — extract the value from a map entry
+  contains? — true if collection contains key (index for vectors, key for maps/sets)
+  disj — remove an element from a set: (disj #{1 2 3} 2) => #{1 3}
+
+## Maps
+
+  keys — return all keys of a map as a sequence
+  vals — return all values of a map as a sequence
+  merge — merge maps left to right; last value wins for duplicate keys
+  merge-with — merge maps combining duplicate values using a function
+  update — update value at key by applying a function: (update m :k f)
+  update-in — update value at a nested key path: (update-in m [:a :b] f)
+  get-in — get value at a nested key path: (get-in m [:a :b])
+  assoc-in — set value at a nested key path: (assoc-in m [:a :b] val)
+  dissoc — remove one or more keys from a map
+  select-keys — return a new map containing only the specified keys
+  reduce-kv — reduce over map entries: (reduce-kv f init m) where f takes [acc key val]
+  update-keys — transform every key in a map using a function
+  update-vals — transform every value in a map using a function
+  sorted-map — create a sorted map from alternating key-value arguments
+  sorted-map-by — create a sorted map using a custom comparator function
+  sorted-set — create a sorted set from the given values
+  sorted-set-by — create a sorted set using a custom comparator function
+
+## Sequences & Higher-Order
+
+  apply — call function with args from a collection: (apply + [1 2 3])
+  map — apply function to each element, returning a vector
+  map-indexed — like map but function receives index and element
+  filter — keep elements where predicate is truthy, returning a vector
+  reduce — fold collection with function: (reduce f init coll)
+  keep — map and remove nil results: (keep f coll) returns a vector
+  keep-indexed — like keep but function receives index and element
+  some — return first truthy result of (pred element) across collection
+  every? — true if predicate returns truthy for every element
+  not-any? — true if predicate returns truthy for no elements
+  not-every? — true if predicate returns falsy for at least one element
+  remove — keep elements where predicate is falsy, returning a vector
+  mapcat — map then concatenate results: (mapcat f coll) returns a vector
+  group-by — group elements by key function, returning map of key to vectors
+  sort — sort collection by natural ordering, returning a vector
+  sort-by — sort by key function: (sort-by keyfn coll), returning a vector
+  find-first — return first element for which predicate returns truthy
+  memoize — wrap function to cache return values by argument list
+  reduced — signal early termination from inside a reduce with a value
+  reductions — return vector of all intermediate reduce accumulator values
+  tree-seq — depth-first walk: (tree-seq branch? children root), returns vector
+  partition-by — split collection at boundaries where f changes value
+  take — return first n elements as a vector
+  drop — return all but the first n elements as a vector
+  take-last — return the last n elements as a vector
+  take-while — take elements while predicate holds, returning a vector
+  drop-while — drop elements while predicate holds, returning a vector
+  take-nth — every nth element: (take-nth 2 [0 1 2 3 4]) => [0 2 4]
+  drop-last — all but the last n elements (default 1), returning a vector
+  split-at — split at index: (split-at 2 [a b c d]) => [[a b] [c d]]
+  split-with — split by predicate, returning [took dropped] as two vectors
+  range — number range as vector: (range end), (range start end), (range start end step)
+  repeat — vector of n copies: (repeat 3 :x) => [:x :x :x]
+  repeatedly — vector of n values from calling f: (repeatedly 3 f)
+  distinct — remove duplicate elements, preserving order, returning a vector
+  flatten — recursively flatten nested collections into a single vector
+  frequencies — return map from each element to its occurrence count
+  partition — partition into groups of n: (partition n coll) or (partition n step coll)
+  partition-all — like partition but includes the incomplete final group
+  interleave — interleave elements from multiple collections into a vector
+  interpose — insert separator between elements: (interpose \",\" [\"a\" \"b\"]) => [\"a\" \",\" \"b\"]
+  zipmap — create map from parallel key and value sequences: (zipmap [:a :b] [1 2])
+  dedupe — remove consecutive duplicate elements, returning a vector
+  distinct? — true if all supplied arguments are mutually distinct values
+  shuffle — randomly reorder collection elements, returning a vector
+
+## Function Combinators
+
+  comp — compose functions right-to-left: ((comp f g) x) calls (f (g x))
+  partial — partially apply a function, returning a new fn with args pre-filled
+  juxt — apply multiple functions to same args, return vector of results
+  complement — negate a predicate function: (complement even?) returns an odd?-like fn
+  constantly — return a function that always returns the given value, ignoring args
+  every-pred — combine predicates with AND: all must return truthy for result to be true
+  some-fn — combine predicates with OR: returns first truthy result across predicates
+  fnil — wrap function to substitute default values in place of nil arguments
+
+## Bitwise
+
+  bit-and — bitwise AND of two integers
+  bit-or — bitwise OR of two integers
+  bit-xor — bitwise XOR of two integers
+  bit-not — bitwise complement (NOT) of an integer
+  bit-shift-left — shift integer bits left by n positions, filling with zeros
+  bit-shift-right — arithmetic right shift by n positions, sign-extending
+  unsigned-bit-shift-right — logical right shift by n positions, zero-filling
+  bit-set — return integer with bit at position n set to 1
+  bit-clear — return integer with bit at position n set to 0
+  bit-flip — return integer with bit at position n toggled
+  bit-test — return true if bit at position n is set, false otherwise
+  bit-and-not — bitwise AND of first arg with bitwise complement of second arg
+
+## Spell Primitives
+(these support Spell's self-orchestration model)
+
+  spell-eval — evaluate expression in fresh env, auto-expanding free variables from caller's env
+  strip-parens — strip n trailing closing parens from a string: (strip-parens 3 s)
+  reopen — strip exactly 3 trailing closing parens from a completion to allow continuation
+  wrap-cat — combine forms into an open completion wrapper prefix string for embedding
+  prune-and-reopen — destructure quine form, prune rethink-marked expressions, rebuild as open prefix
+  stored — retrieve a large value from the out-of-band store by its ID
+  serialize — serialize a value for embedding in a continuation; truncates or stores large values
+  deep-truncate — recursively truncate string values within nested maps and sequences to a limit
+
+## Concurrency
+
+  future* — run a thunk in a background thread, returning a future handle
+  await — block until a future handle completes and return its value
+
+## Error & Utility
+
+  throw — raise a catchable error: (throw value), caught by try/catch
+  gensym — generate a unique symbol, optionally with a prefix: (gensym) or (gensym \"prefix\")
+")
+
 (def builtins-namespace
-  "Docs-only namespace describing core builtins by category.
-   No functions — just :docs for (describe builtins) and (describe builtins :category)."
-  {:docs {:_ "Core builtins always available without namespace prefix. (describe builtins :category) for details."
-          :spell "quine expand spell-eval wrap-cat reopen strip-parens"
-          :math "+ - * / inc dec rem abs max min even? odd? int quot mod max-key min-key parse-number ..."
-          :compare "< > <= >= = not= compare"
-          :strings "str cat pr-str format read-string"
-          :types "string? number? keyword? symbol? type boolean? ..."
-          :collections "list first rest conj get assoc keys vals into reverse apply take drop find seq vec set ..."
-          :higher-order "map map-indexed filter reduce keep some range memoize partition-by reductions ..."
-          :maps "update-keys update-vals merge merge-with select-keys assoc-in get-in update-in dissoc ..."
-          :logic "if cond case and or not when empty? nil? true? false?"
-          :binding "def defn defmacro let if-let when-let do eval"
-          :threading "-> ->> as-> cond-> cond->> some-> some->>"
-          :control "loop recur for try catch throw future await plet think rethink extend compact"
-          :namespace "describe"
-          :agents "agents/ — (describe agents) for communication and concurrency"
-          :io "io/ — (describe io) for file and process I/O"
-          :globals "globals/ — (describe globals) for shared state"
-          :futures "futures/ — (describe futures) for parallel computation"}})
+  "Docs-only namespace for core builtins reference.
+   (describe builtins) for full guide, (describe builtins :category) for category listing."
+  {:guide builtins-guide
+   :docs {:_ "Core builtins — (describe builtins) for full reference, (describe builtins :category) for category listing."
+          :special-forms "quote def do if let fn fn* expand quine loop recur for try"
+          :macros "when defn and or cond if-let when-let case as-> cond-> cond->> some-> some->> call-now -> ->> future plet print define defmacro describe think rethink extend compact"
+          :effect "eval llm-self leaf-llm describe-fn llm"
+          :math "+ - * / inc dec quot mod rem abs max min max-key min-key floor ceil rand rand-int rand-nth random-sample random-uuid +' -' *' inc' dec' parse-number even? odd? pos? neg? zero?"
+          :comparison "< > <= >= = not= compare not nil? empty? some? true? false? any? identity"
+          :types "string? number? list? seq? vector? set? map? fn? keyword? symbol? coll? sequential? int? boolean? name symbol keyword namespace type int long float double bigdec bigint rationalize parse-boolean boolean"
+          :strings "str pr-str subs cat format read-string re-find re-matches re-seq"
+          :collections "list list* vector set first second rest next last nth ffirst cons conj peek pop butlast count reverse seq vec subvec not-empty get assoc into concat find key val contains? disj"
+          :maps "keys vals merge merge-with update update-in get-in assoc-in dissoc select-keys reduce-kv update-keys update-vals sorted-map sorted-map-by sorted-set sorted-set-by"
+          :sequences "apply map map-indexed filter reduce keep keep-indexed some every? not-any? not-every? remove mapcat group-by sort sort-by find-first memoize reduced reductions tree-seq partition-by take drop take-last take-while drop-while take-nth drop-last split-at split-with range repeat repeatedly distinct flatten frequencies partition partition-all interleave interpose zipmap dedupe distinct? shuffle"
+          :combinators "comp partial juxt complement constantly every-pred some-fn fnil"
+          :bitwise "bit-and bit-or bit-xor bit-not bit-shift-left bit-shift-right unsigned-bit-shift-right bit-set bit-clear bit-flip bit-test bit-and-not"
+          :spell "spell-eval strip-parens reopen wrap-cat prune-and-reopen stored serialize deep-truncate"
+          :concurrency "future* await"
+          :error "throw gensym"}})
 
 ;; =============================================================================
 ;; Generated sections
@@ -445,14 +753,27 @@ quality of your response.
 
 ")
 
+(defn compose-system-prompt
+  "Build a system prompt, optionally with a custom base.
+   When :base is provided, appends namespace docs and format to it.
+   When :base is nil, uses the default preamble + postamble.
+   :namespaces — map of effect namespace {symbol -> namespace-map}
+   :format — optional format spec {:required [...] :optional [...]}"
+  [{:keys [base namespaces format]}]
+  (if base
+    (str base
+         (namespaces-section namespaces)
+         (when format (format-section format)))
+    (str preamble
+         "\n"
+         (namespaces-section namespaces)
+         (when format (format-section format))
+         postamble)))
+
 (defn generate-system-prompt
   "Build a system prompt from namespaces.
    namespaces: map of {symbol -> namespace-map} where each has :docs and items
    format: optional format spec {:required [...] :optional [...]}"
   ([namespaces] (generate-system-prompt namespaces nil))
   ([namespaces format]
-   (str preamble
-        "\n"
-        (namespaces-section namespaces)
-        (when format (format-section format))
-        postamble)))
+   (compose-system-prompt {:namespaces namespaces :format format})))

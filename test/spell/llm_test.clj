@@ -151,14 +151,14 @@
 ;; =============================================================================
 
 (deftest make-llm-test
-  (testing "make-llm with custom tool via namespace"
+  (testing "make-llm with custom tool via namespace (effect)"
     (let [ns-map {'tools {:docs {:my-tool "A test tool."}
                           :my-tool (fn [] "tool-result")}}
           custom-llm (spell/make-llm {:namespaces ns-map})]
       (provider/with-provider
         (provider/dummy-provider
-          {:response "(tools/my-tool))"})
-        (is (= "tool-result" (custom-llm "(do "))))))
+          {:response "(tools/my-tool)))"})
+        (is (= "tool-result" (custom-llm "(eval (do '"))))))
 
   (testing "make-llm without namespaces has no tools"
     (let [bare-llm (spell/make-llm {:namespaces {}})]
@@ -167,7 +167,7 @@
           {:response "\"no tools here\""})
         (is (= "no tools here" (bare-llm "(do "))))))
 
-  (testing "make-llm with agent in namespace"
+  (testing "make-llm with agent in namespace (effect)"
     (let [helper-fn (fn
                       ([prompt] "helper-result")
                       ([prompt _handle] "helper-result"))
@@ -176,8 +176,8 @@
           parent-llm (spell/make-llm {:namespaces ns-map})]
       (provider/with-provider
         (provider/dummy-provider
-          {:response "(helpers/helper \"do something\"))"})
-        (is (= "helper-result" (parent-llm "(do "))))))
+          {:response "(helpers/helper \"do something\")))"})
+        (is (= "helper-result" (parent-llm "(eval (do '"))))))
 
   (testing "llm-self provides automatic self-recursion"
     ;; llm-self is an effect-builtin: accessed via eval double-evaluation.
@@ -197,21 +197,21 @@
 ;; =============================================================================
 
 (deftest namespace-qualified-test
-  (testing "model can use qualified symbol"
+  (testing "model can use qualified symbol (effect namespace)"
     (let [ns-map {'tools {:docs {:bash "run command"}
                           :bash (fn [_] {:exit 0 :out "ok" :err ""})}}
           test-llm (spell/make-llm {:namespaces ns-map})]
       (provider/with-provider
-        (provider/dummy-provider {:response "(:out (tools/bash \"test\")))"})
-        (is (= "ok" (test-llm "(do ")))))))
+        (provider/dummy-provider {:response "(:out (tools/bash \"test\"))))"})
+        (is (= "ok" (test-llm "(eval (do '")))))))
 
 (deftest namespace-describe-test
-  (testing "describe-fn returns namespace docs"
+  (testing "describe-fn returns namespace docs (effect namespace)"
     (let [ns-map {'r {:docs {:a "first" :b "second"} :a identity}}
           test-llm (spell/make-llm {:namespaces ns-map})]
       (provider/with-provider
-        (provider/dummy-provider {:response "(describe-fn r))"})
-        (is (= {:a "first" :b "second"} (test-llm "(do ")))))))
+        (provider/dummy-provider {:response "(describe-fn r)))"})
+        (is (= {:a "first" :b "second"} (test-llm "(eval (do '")))))))
 
 (deftest describe-fallback-test
   (testing "describe prefers guide over docs when both present"
@@ -229,24 +229,23 @@
       (is (nil? (llm/describe ns-map :missing))))))
 
 (deftest builtins-namespace-test
-  (testing "builtins docs returns category listing"
+  (testing "builtins guide returns full reference string"
     (let [r (spell/spell-eval '(describe-fn builtins) {})]
       (is (eval/ok? r))
-      (is (map? (:ok r)))
-      (is (contains? (:ok r) :_))
-      (is (str/includes? (:_ (:ok r)) "Core builtins"))))
+      (is (string? (:ok r)))
+      (is (str/includes? (:ok r) "BUILTINS REFERENCE"))))
 
   (testing "builtins category returns string"
     (let [r (spell/spell-eval '(describe-fn builtins :spell) {})]
       (is (eval/ok? r))
       (is (string? (:ok r)))
-      (is (str/includes? (:ok r) "quine"))))
+      (is (str/includes? (:ok r) "spell-eval"))))
 
-  (testing "builtins agents category points to agents namespace"
-    (let [r (spell/spell-eval '(describe-fn builtins :agents) {})]
+  (testing "builtins special-forms category lists all special forms"
+    (let [r (spell/spell-eval '(describe-fn builtins :special-forms) {})]
       (is (eval/ok? r))
       (is (string? (:ok r)))
-      (is (str/includes? (:ok r) "agents/")))))
+      (is (str/includes? (:ok r) "quine")))))
 
 (deftest namespace-guide-test
   (testing "io namespace has :guide accessible via describe"
