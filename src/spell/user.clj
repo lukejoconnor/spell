@@ -106,37 +106,22 @@
 
 (defn- extract-messages
   "Extract ALL messages from a raw completion string.
-   Parses the quine/eval/do structure and collects all
-   (def msg-N {:from h :value v}) and (def waiting-for h) forms.
-   Returns a vector of {:from h :value v} or {:from h} maps."
+   Walks the parsed AST to find all (def msg-N {:from h :value v})
+   and (def waiting-for h) forms. Returns a vector of maps."
   [raw]
   (try
-    (let [forms (parse/read-all (parse/balance-parens raw))]
-      (when (seq forms)
-        (let [form (first forms)]
-          ;; Unwrap (quine completion (eval (do ...)))
-          (when (and (seq? form) (= 'quine (first form)))
-            (let [eval-form (nth form 2 nil)]
-              (when (and (seq? eval-form) (= 'eval (first eval-form)))
-                (let [do-form (second eval-form)]
-                  (when (and (seq? do-form) (= 'do (first do-form)))
-                    (let [body (rest do-form)]
-                      (vec
-                        (keep (fn [f]
-                                (when (and (seq? f)
-                                           (= 'def (first f))
-                                           (>= (count f) 3))
-                                  (let [sym (second f)
-                                        val (nth f 2)]
-                                    (cond
-                                      ;; Message: (def msg-N {:from h :value v})
-                                      (and (map? val) (contains? val :from) (contains? val :value))
-                                      val
-                                      ;; Poke: (def waiting-for handle)
-                                      (= sym 'waiting-for)
-                                      {:from val}
-                                      :else nil))))
-                              body)))))))))))
+    (let [form (first (parse/read-all (parse/balance-parens raw)))
+          msgs (->> (tree-seq seq? seq form)
+                    (keep (fn [f]
+                            (when (and (seq? f) (= 'def (first f)) (>= (count f) 3))
+                              (let [sym (second f)
+                                    val (nth f 2)]
+                                (cond
+                                  (and (map? val) (contains? val :from) (contains? val :value)) val
+                                  (= sym 'waiting-for) {:from val}
+                                  :else nil)))))
+                    vec)]
+      (when (seq msgs) msgs))
     (catch Exception _e nil)))
 
 ;; =============================================================================
@@ -169,6 +154,21 @@
 ;; User call function (the "API call" equivalent)
 ;; =============================================================================
 
+(def ^:private quine-restart
+  "Close current quine and start a new one."
+  "nil))) (quine completion (eval (do ")
+
+(defn- display-messages!
+  "Print messages to stderr, updating last-sender as we go."
+  [messages]
+  (binding [*out* *err*]
+    (doseq [{:keys [from value]} messages]
+      (when from
+        (reset! last-sender from))
+      (if value
+        (println (str "[agent " from "] " value))
+        (println (str "[agent " from " is waiting for input]"))))))
+
 (defn- user-call-fn
   "The 'API call' for the user agent.
    Takes a prompt string (the reopened completion) and returns a response string
@@ -195,39 +195,22 @@
               [explicit-recipient msg] (parse-user-input input)
               target (resolve-recipient explicit-recipient @last-sender)]
           (reset! last-sender target)
-          (str (build-send-code msg target)
-               "nil))) (quine completion (eval (do ")))
+          (str (build-send-code msg target) quine-restart)))
 
       ;; Case 2: Agent asked — expects reply
       expects-reply?
       (do
-        ;; Print messages to stderr
-        (binding [*out* *err*]
-          (doseq [msg messages]
-            (let [{:keys [from value]} msg]
-              (when from
-                (reset! last-sender from))
-              (if value
-                (println (str "[agent " from "] " value))
-                (println (str "[agent " from " is waiting for input]")))))
-          (print "> ")
-          (flush))
+        (display-messages! messages)
+        (binding [*out* *err*] (print "> ") (flush))
         (let [input (take-nonempty-line!)
               send-code (apply str (map #(build-send-code input %) from-handles))]
-          (str send-code "nil))) (quine completion (eval (do ")))
+          (str send-code quine-restart)))
 
       ;; Case 3: Fire-and-forget — no stdin read needed
       :else
       (do
-        (binding [*out* *err*]
-          (doseq [msg messages]
-            (let [{:keys [from value]} msg]
-              (when from
-                (reset! last-sender from))
-              (if value
-                (println (str "[agent " from "] " value))
-                (println (str "[agent " from " is waiting for input]"))))))
-        "nil))) (quine completion (eval (do "))))
+        (display-messages! messages)
+        quine-restart))))
 
 ;; =============================================================================
 ;; User-self (box-based, analogous to -llm)
@@ -273,8 +256,7 @@
         eval-builtin (llm/make-eval variant-builtins effect-builtins)
         config {:variant-builtins variant-builtins
                 :eval-builtin eval-builtin
-                :recover-fns nil
-                :recovery-call-fn nil}
+                :recover-fn nil}
         inbox-fn (llm/make-inbox-fn config (atom nil))]
     (deliver inbox-fn-ref inbox-fn)
     inbox-fn))
@@ -293,4 +275,6 @@
            initial "(quine completion (eval (do )))"]
        (comm/register! :user inbox-fn :root)
        (comm/orphan-box! :user initial)
+       (globals/set-val :roles (assoc (or (globals/get-val :roles) {})
+                                      :user "human user — interactive terminal"))
        (start-stdin-reader! reader)))))

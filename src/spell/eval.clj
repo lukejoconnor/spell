@@ -426,11 +426,17 @@
                     " ")),
    ;; Prune rethinks and reopen as prefix string
    'prune-and-reopen (fn [quine-form]
-                       (let [pruned (macros/prune-rethinks quine-form)
-                             [_ _name-sym eval-form] (seq pruned)
-                             [_ do-form] (seq eval-form)
+                       (let [elements (vec (seq quine-form))
+                             ;; [quine, name, arg1, ..., argN]
+                             inert-args (subvec elements 2 (max 2 (dec (count elements))))
+                             last-arg (last elements)
+                             pruned-last (macros/prune-rethinks last-arg)
+                             [_ do-form] (seq pruned-last)
                              body-forms (rest do-form)]
-                         (str "(quine completion (eval (do "
+                         (str "(quine completion "
+                              (when (seq inert-args)
+                                (str (str/join " " (map pr-str inert-args)) " "))
+                              "(eval (do "
                               (str/join " " (map pr-str body-forms))
                               " "))),
    ;; Value store (for call-now out-of-band large values)
@@ -729,8 +735,10 @@
 
 
         quine (let [name-sym (second expr)
-                    [body-expanded _] (-expand-expr (nth expr 2) outer-env (conj inner name-sym))]
-                [(list 'quine name-sym body-expanded) (conj inner name-sym)])
+                    inner' (conj inner name-sym)
+                    args (drop 2 expr)
+                    expanded-args (map #(first (-expand-expr % outer-env inner')) args)]
+                [(apply list 'quine name-sym expanded-args) inner'])
 
         loop (let [pairs (partition 2 (second expr))
                    [expanded-bindings final-inner]
@@ -819,7 +827,8 @@
 
 (defn- eval-seq
   "Evaluate a sequence of expressions, threading env.
-   Returns result map with last value."
+   Returns result map with last value.
+   On error, annotates result with :containing-form (the do-body expression that failed)."
   [exprs env]
   (if (empty? exprs)
     (ok nil env)
@@ -829,8 +838,12 @@
         result
         (if (err? result)
           result
-          (recur (rest remaining)
-                 (spell-eval (first remaining) (:env result))))))))
+          (let [form (first remaining)
+                r (spell-eval form (:env result))]
+            (recur (rest remaining)
+                   (if (err? r)
+                     (assoc r :containing-form form)
+                     r))))))))
 
 (defn spell-eval
   "Evaluate expr in env. Returns result map:
@@ -967,9 +980,10 @@
                  (ok (expand-expr (:ok quoted-result) (:env quoted-result))
                      (:env quoted-result))))
 
-      ;; quine: (quine name body) — bind name to the source form (= expr), eval body
+      ;; quine: (quine name body...) — bind name to the source form, eval last arg
+      ;; Multi-arg: (quine name arg1 arg2) evaluates only arg2; earlier args are inert context.
       quine (let [name-sym (second expr)
-                  body (nth expr 2)
+                  body (last expr)
                   env' (assoc env name-sym expr)]
               (spell-eval body env'))
 

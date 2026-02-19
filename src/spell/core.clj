@@ -22,8 +22,6 @@
 ;; Re-export from spell.llm
 (def make-llm llm-engine/make-llm)
 (def make-leaf-llm llm-engine/make-leaf-llm)
-(def format-error-for-recovery llm-engine/format-error-for-recovery)
-
 ;; Re-export from spell.llm
 (def describe llm-engine/describe)
 

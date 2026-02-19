@@ -1,34 +1,21 @@
 (ns spell.recovery
   "Error recovery for Spell programs.
 
-   Two strategies:
-   1. Namespace recovery — deterministic symbol fixup (unbound or misqualified).
-   2. LLM recovery — asks the recovery LLM to rewrite the failing expression."
+   Namespace recovery — deterministic symbol fixup (unbound or misqualified).
+   Quine-extension recovery — appends error info to the quine, re-enters via extend."
   (:require [clojure.string :as str]
-            [spell.eval :as eval]
-            [spell.parse :as parse]))
+            [spell.eval :as eval]))
 
 ;; ---------------------------------------------------------------------------
-;; Recovery system prompt (for LLM-based recovery)
+;; Error message cleanup
 ;; ---------------------------------------------------------------------------
 
-(def recovery-system-prompt
-  "You are fixing a Spell program error. Return ONLY the fixed Spell s-expression.
-No explanation, no markdown code blocks, just the raw s-expression.")
-
-;; ---------------------------------------------------------------------------
-;; Error formatting
-;; ---------------------------------------------------------------------------
-
-(defn format-error-for-recovery
-  "Format an error result for the recovery LLM.
-   Shows the full program, failing expression, and error message."
-  [{:keys [err expr program]}]
-  (str "The following Spell program failed:\n\n"
-       (pr-str program)
-       "\n\nError at expression:\n"
-       (pr-str expr)
-       "\n\nError message: " err))
+(defn clean-error-message
+  "Strip wrapping noise from error messages (e.g. 'Function call failed: ')."
+  [err-str]
+  (cond-> err-str
+    (str/starts-with? err-str "Function call failed: ")
+    (subs (count "Function call failed: "))))
 
 ;; ---------------------------------------------------------------------------
 ;; Namespace recovery (deterministic)
@@ -59,13 +46,9 @@ No explanation, no markdown code blocks, just the raw s-expression.")
   "Create a recovery fn that fixes unbound/misqualified symbols by searching namespaces.
    Returns nil if no unique match found (letting the next strategy try)."
   [namespaces]
-  (fn [result _recovery-call-fn]
+  (fn [result]
     (let [{:keys [err expr program]} result
-          ;; Unwrap "Function call failed: " prefix from invoke-fn errors
-          ;; so we can match the inner error pattern.
-          inner-err (if (str/starts-with? err "Function call failed: ")
-                      (subs err (count "Function call failed: "))
-                      err)]
+          inner-err (clean-error-message err)]
       (when-let [fix
                  (cond
                    ;; Case 1: "Unbound symbol: X" — bare symbol, search all namespaces
@@ -88,17 +71,4 @@ No explanation, no markdown code blocks, just the raw s-expression.")
                        (let [correct (first matches)]
                          (eval/vlog (str "  Namespace recovery: " bad-qualified " -> " correct))
                          (substitute-symbol program bad-qualified correct)))))]
-        ;; Return the fixed program for re-evaluation from scratch
-        ;; (safe because spell-eval is pure).
         fix))))
-
-;; ---------------------------------------------------------------------------
-;; LLM-based recovery (default fallback)
-;; ---------------------------------------------------------------------------
-
-(defn default-recover-fn
-  "Default recovery function: calls recovery LLM, parses response as s-expression."
-  [result recovery-call-fn]
-  (let [prompt (format-error-for-recovery result)
-        response (recovery-call-fn prompt)]
-    (first (parse/read-all response))))

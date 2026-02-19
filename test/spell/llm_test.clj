@@ -6,6 +6,7 @@
             [spell.core :as spell :refer [effect-builtins]]
             [spell.llm :as llm]
             [spell.provider :as provider]
+            [spell.recovery]
             [spell.io :as spell-io]
             [clojure.java.io :as io]
             [clojure.string :as str]
@@ -522,7 +523,7 @@
 (deftest make-llm-with-recovery-test
   (testing "custom recovery function is called on error"
     (let [recovery-called (atom false)
-          recovery-fn (fn [result _recovery-call-fn]
+          recovery-fn (fn [result]
                         (reset! recovery-called true)
                         ;; Return a fixed expression
                         '(def return 42))
@@ -535,23 +536,33 @@
           (is @recovery-called)
           (is (= 42 result))))))
 
-  (testing "default recovery uses LLM to fix errors"
-    ;; Recovery is now on by default - test that it calls the recovery LLM
+  (testing "quine-extension recovery re-enters via extend"
+    ;; Program is a quine with an error. Quine-extension recovery appends
+    ;; a new arg with error info + (extend completion). The second LLM call
+    ;; (via extend) provides the fix.
     (let [call-count (atom 0)
-          test-llm (spell/make-llm {:namespaces {}})]  ; recover defaults to true
+          test-llm (spell/make-llm {:namespaces {}})]
       (provider/with-provider
         (provider/dummy-provider
           {:response-fn (fn [_]
                           (let [n (swap! call-count inc)]
                             (if (= n 1)
-                              "undefined-symbol)"  ; first call fails
-                              "42)")))})           ; recovery call returns fix
-        (let [result (test-llm "(do ")]
-          (is (= 2 @call-count))  ; original + recovery
+                              "undefined-symbol) '(extend completion))"  ; first call fails
+                              "(def fix 42))")))})                       ; recovery extend returns fix
+        ;; Use quine prefix so recovery can append
+        (let [result (test-llm "(quine completion (eval (do ")]
+          (is (= 2 @call-count))  ; original + recovery extend
           (is (= 42 result))))))
 
   (testing "no recovery when explicitly disabled"
     (let [test-llm (spell/make-llm {:namespaces {} :recover false})]
+      (provider/with-provider
+        (provider/dummy-provider {:response "undefined-symbol)"})
+        (is (thrown? Exception (test-llm "(do "))))))
+
+  (testing "non-quine program propagates error (no quine-extension)"
+    ;; Plain (do ...) program can't use quine-extension recovery
+    (let [test-llm (spell/make-llm {:namespaces {} :recover true})]
       (provider/with-provider
         (provider/dummy-provider {:response "undefined-symbol)"})
         (is (thrown? Exception (test-llm "(do ")))))))
@@ -581,16 +592,13 @@
         (let [result (test-llm "(do ")]
           (is (= [2.0 3.0] result)))))))
 
-(deftest format-error-for-recovery-test
-  (testing "formats error with program context"
-    (let [result {:err "Unbound symbol: foo"
-                  :expr 'foo
-                  :env {'x 1}
-                  :program '(do (def x 1) foo)}
-          formatted (llm/format-error-for-recovery result)]
-      (is (str/includes? formatted "Unbound symbol: foo"))
-      (is (str/includes? formatted "foo"))
-      (is (str/includes? formatted "(do (def x 1) foo)")))))
+(deftest clean-error-message-test
+  (testing "strips 'Function call failed: ' prefix"
+    (is (= "Unbound symbol: foo"
+           (spell.recovery/clean-error-message "Function call failed: Unbound symbol: foo"))))
+  (testing "passes through other messages unchanged"
+    (is (= "Unbound symbol: foo"
+           (spell.recovery/clean-error-message "Unbound symbol: foo")))))
 
 (deftest effect-phase-recovery-gating-test
   (testing "body error triggers recovery, effects available in re-eval"
@@ -608,24 +616,6 @@
         (let [result (test-llm "(eval (do ")]
           (is (= "effect-result" result))
           (is @effect-called)))))
-
-  ;; TODO: Re-enable after error recovery refactor
-  ;; (testing "effect-phase error skips recovery entirely"
-  ;;   ;; Error occurs inside eval's second pass — recovery should NOT trigger.
-  ;;   (let [recovery-called (atom false)
-  ;;         recovery-fn (fn [result _]
-  ;;                       (reset! recovery-called true)
-  ;;                       '(+ 1 2))
-  ;;         test-llm (spell/make-llm {:namespaces {}
-  ;;                                   :recover recovery-fn})]
-  ;;     (provider/with-provider
-  ;;       ;; eval's first pass succeeds (quoted expr is data),
-  ;;       ;; second pass fails (undefined-effect is unbound).
-  ;;       (provider/dummy-provider {:response "'(undefined-effect)))"})
-  ;;       (is (thrown? Exception (test-llm "(eval (do "))))
-  ;;     ;; Recovery should never have been called
-  ;;     (is (false? @recovery-called))))
-
 
   (testing "no double-execution of side effects on recovery"
     ;; Body has a fixable error. An effect counter in io/ tracks execution.

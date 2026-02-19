@@ -844,7 +844,44 @@
 
   (testing "expand handles quine"
     (let [[val _] (eval-ok '(do (def x 42) (expand '(quine q (+ x 1)))) {})]
-      (is (= '(quine q (+ 42 1)) val)))))
+      (is (= '(quine q (+ 42 1)) val))))
+
+  (testing "multi-arg quine evaluates only last arg"
+    ;; (quine x arg1 arg2) should evaluate arg2, ignore arg1
+    (let [[val env] (eval-ok '(quine x (+ 1 2) (+ 3 4)) {})]
+      (is (= 7 val))
+      (is (= '(quine x (+ 1 2) (+ 3 4)) (env 'x)))))
+
+  (testing "multi-arg quine: 2-arg (standard case) still works"
+    (let [[val env] (eval-ok '(quine x (+ 10 20)) {})]
+      (is (= 30 val))
+      (is (= '(quine x (+ 10 20)) (env 'x)))))
+
+  (testing "multi-arg quine: inert args are visible in binding"
+    ;; The full quine form (all args) is bound to the name
+    (let [[val _] (eval-ok '(quine self (+ 1 2) (+ 3 4) (count (pr-str self))) {})]
+      (is (> val 0))  ;; self includes all args
+      (is (number? val))))
+
+  (testing "expand handles multi-arg quine"
+    (let [[val _] (eval-ok '(do (def x 42) (expand '(quine q (+ x 1) (+ x 2)))) {})]
+      (is (= '(quine q (+ 42 1) (+ 42 2)) val)))))
+
+(deftest eval-seq-containing-form-test
+  (testing "error in do-body includes :containing-form"
+    (let [result (spell-eval '(do (def x 1) (def y (+ x undefined)) (+ 1 2)) {})]
+      (is (eval/err? result))
+      (is (= '(def y (+ x undefined)) (:containing-form result)))))
+
+  (testing "no :containing-form when do has no error"
+    (let [result (spell-eval '(do (+ 1 2) (+ 3 4)) {})]
+      (is (eval/ok? result))
+      (is (nil? (:containing-form result)))))
+
+  (testing ":containing-form on first failing expression"
+    (let [result (spell-eval '(do undefined-sym) {})]
+      (is (eval/err? result))
+      (is (= 'undefined-sym (:containing-form result))))))
 
 ;; =============================================================================
 ;; Dynamic builtins tests
@@ -2539,7 +2576,26 @@
     (let [quine-form '(quine completion (eval (do (def x 1) (def y 2))))
           result (run-spell (list 'prune-and-reopen (list 'quote quine-form)))]
       (is (.startsWith ^String result "(quine completion (eval (do "))
-      (is (.contains ^String result "(def x 1)")))))
+      (is (.contains ^String result "(def x 1)"))))
+
+  (testing "prune-and-reopen with multi-arg quine preserves inert args"
+    (let [quine-form '(quine completion
+                        (eval (do (def x 1) (quote (extend completion))))
+                        (eval (do (rethink "fix" (def y 2)) (quote (extend completion)))))
+          result (run-spell (list 'prune-and-reopen (list 'quote quine-form)))]
+      ;; Should start with quine completion
+      (is (string? result))
+      (is (.startsWith ^String result "(quine completion "))
+      ;; Should contain the first (inert) arg serialized
+      (is (.contains ^String result "(eval (do (def x 1)"))
+      ;; Should contain the pruned last arg
+      (is (.contains ^String result "(def y 2)"))))
+
+  (testing "prune-and-reopen with standard (2-arg) quine unchanged behavior"
+    (let [quine-form '(quine completion (eval (do (def a 10))))
+          result (run-spell (list 'prune-and-reopen (list 'quote quine-form)))]
+      (is (.startsWith ^String result "(quine completion (eval (do "))
+      (is (.contains ^String result "(def a 10)")))))
 
 (deftest extend-macro-expansion-test
   (testing "extend expands to llm-self with prune-and-reopen"

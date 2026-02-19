@@ -7,7 +7,8 @@
    message. send-msg-fn is low-level fire-and-forget. Every wait wakes the target,
    preventing deadlocks."
   (:refer-clojure :exclude [send])
-  (:require [spell.eval :as eval]
+  (:require [clojure.string :as str]
+            [spell.eval :as eval]
             [spell.parse :as parse]))
 
 ;; =============================================================================
@@ -70,9 +71,7 @@
         (deref @signal)
         (reset! signal (promise))
         (if @(:inbox (get @registry handle))
-          (let [p (promise)]
-            (deliver p *current-raw*)
-            (box handle handle p))
+          (box handle handle *current-raw*)
           (recur))))))
 
 ;; =============================================================================
@@ -81,16 +80,18 @@
 
 (defn box
   "Core execution primitive. Awaits completion, drains inbox, applies inbox-fn.
-   Takes handle, parent-handle, and a promise that delivers the raw completion.
-   Inbox functions take [raw] and return a value.
+   Takes handle, parent-handle, and a completion source (promise, future, or
+   raw string). Inbox functions take [raw] and return a value.
    Root detection: (not= parent-handle handle).
    Callers must seed inbox before calling box."
-  [handle parent-handle completion-promise]
+  [handle parent-handle completion-source]
   (let [{:keys [inbox has-box]} (get @registry handle)]
     (when-not inbox
       (throw (ex-info "Handle not registered" {:handle handle})))
     (let [root?    (not= parent-handle handle)
-          raw-or-ex (deref completion-promise)]
+          raw-or-ex (if (instance? clojure.lang.IDeref completion-source)
+                      (deref completion-source)
+                      completion-source)]
       (when (instance? Exception raw-or-ex)
         (when root?
           (notify-waiters! handle nil)
@@ -169,9 +170,25 @@
 ;; =============================================================================
 
 (defn- reopen
-  "Strip the 3 trailing parens of a standard completion wrapper."
+  "Reopen a completion wrapper by parsing to AST and rebuilding an open prefix.
+   Handles excess trailing parens safely (the LLM may write too many closers).
+   Falls back to string-level strip-3 for non-quine forms."
   [s]
-  (parse/strip-trailing-parens 3 s))
+  (let [balanced (parse/balance-parens s)
+        form     (first (parse/read-all balanced))]
+    (if (and (seq? form) (= 'quine (first form)))
+      (let [elements   (vec (seq form))
+            inert-args (subvec elements 2 (max 2 (dec (count elements))))
+            last-arg   (last elements)
+            [_ do-form] (seq last-arg)
+            body-forms (rest do-form)]
+        (str "(quine completion "
+             (when (seq inert-args)
+               (str (str/join " " (map pr-str inert-args)) " "))
+             "(eval (do "
+             (str/join " " (map pr-str body-forms))
+             " "))
+      (parse/strip-trailing-parens 3 s))))
 
 (defn- create-msg
   "Create a function that reopens a completion, appends (def name value),
@@ -207,17 +224,11 @@
           (send {:error (.getMessage e)} handle)))))
   nil)
 
-(defn- msg-from
-  "Extract :from handle from a message map.
-   msg is bound to {:from <handle> :value <val>}."
-  [msg]
-  (:from msg))
-
 (defn reply
   "Reply to a message (fire-and-forget).
    Extracts sender from the message map and sends value back."
   [msg value]
-  (send value (msg-from msg)))
+  (send value (:from msg)))
 
 ;; =============================================================================
 ;; Block-for-message (internal)
@@ -230,19 +241,22 @@
   []
   (let [{:keys [inbox]} (get @registry *current-handle*)]
     (compare-and-set! inbox nil (make-sleep-fn *current-handle*))
-    (let [p (promise)]
-      (deliver p *current-raw*)
-      (box *current-handle* *current-handle* p))))
+    (box *current-handle* *current-handle* *current-raw*)))
+
+(defn- assert-agent-context!
+  "Throw if not inside an agent context (box execution)."
+  [caller]
+  (when-not *current-handle*
+    (throw (ex-info (str caller ": not inside an agent context") {})))
+  (when-not *current-raw*
+    (throw (ex-info (str caller ": no raw completion available") {}))))
 
 (defn reply-ask
   "Reply to a message and block for response.
    Extracts sender from the message map, sends value, then blocks."
   [msg value]
-  (when-not *current-handle*
-    (throw (ex-info "reply-ask: not inside an agent context" {})))
-  (when-not *current-raw*
-    (throw (ex-info "reply-ask: no raw completion available" {})))
-  (let [target (msg-from msg)]
+  (assert-agent-context! "reply-ask")
+  (let [target (:from msg)]
     (when-let [{:keys [waiters]} (get @registry target)]
       (swap! waiters conj *current-handle*))
     (send value target)
@@ -258,10 +272,7 @@
    with all quine bindings available. Collector is activated BEFORE poking
    so even fast-responding targets route through the collector."
   [targets]
-  (when-not *current-handle*
-    (throw (ex-info "ask: not inside an agent context" {})))
-  (when-not *current-raw*
-    (throw (ex-info "ask: no raw completion available" {})))
+  (assert-agent-context! "ask")
   (when (empty? targets)
     (throw (ex-info "ask: empty target list" {})))
   (let [target-set      (set targets)
@@ -286,9 +297,7 @@
     ;; Re-enter box with accumulated raw (closed with 3 parens)
     (let [final-raw (str @(:raw collector-state) ")))")]
       (reset! (:inbox entry) (:default-inbox-fn entry))
-      (let [p (promise)]
-        (deliver p final-raw)
-        (box handle handle p)))))
+      (box handle handle final-raw))))
 
 (defn ask-builtin
   "Request-reply communication primitive.
@@ -302,29 +311,18 @@
   ([target]
    (if (sequential? target)
      (ask-multi target)
-     (do
-       (when-not *current-handle*
-         (throw (ex-info "ask: not inside an agent context" {})))
-       (when-not *current-raw*
-         (throw (ex-info "ask: no raw completion available" {})))
-       ;; Register as waiting for target's result (for auto-notification on return)
-       (when-let [{:keys [waiters]} (get @registry target)]
-         (swap! waiters conj *current-handle*))
-       ;; Only poke if inbox is empty (agent is sleeping).
-       ;; Non-empty inbox means agent already has pending work — poke unnecessary.
-       (let [{:keys [inbox]} (get @registry target)]
-         (when (nil? @inbox)
-           (send-msg-fn (create-msg 'waiting-for *current-handle*) target)))
-       (block-for-message))))
+     (ask-builtin target nil)))
   ([target msg]
-   (when-not *current-handle*
-     (throw (ex-info "ask: not inside an agent context" {})))
-   (when-not *current-raw*
-     (throw (ex-info "ask: no raw completion available" {})))
+   (assert-agent-context! "ask")
    ;; Register as waiting for target's result (for auto-notification on return)
    (when-let [{:keys [waiters]} (get @registry target)]
      (swap! waiters conj *current-handle*))
-   (send msg target)
+   (if msg
+     (send msg target)
+     ;; Poke: only wake if inbox is empty (agent is sleeping)
+     (let [{:keys [inbox]} (get @registry target)]
+       (when (nil? @inbox)
+         (send-msg-fn (create-msg 'waiting-for *current-handle*) target))))
    (block-for-message)))
 
 
@@ -361,9 +359,7 @@
   (let [{:keys [has-box inbox parent-handle]} (get @registry handle)]
     (when (and has-box (not @has-box))
       (compare-and-set! inbox nil (make-sleep-fn handle))
-      (let [p (promise)]
-        (deliver p raw)
-        (future (box handle (or parent-handle handle) p))))))
+      (future (box handle (or parent-handle handle) raw)))))
 
 ;; =============================================================================
 ;; Handle queries
@@ -442,12 +438,17 @@
   (agents/parent-handle)          — handle of agent that spawned you (nil if root)
   (agents/send-msg-fn f handle)   — low-level: send raw transform function to handle
 
+Special handles:
+  :user — the human operator (only present in interactive terminal sessions).
+  Check (globals/get :roles) to see if :user is available before asking.
+
 Message preemption: if another agent sends you a message while your response
 is in flight, the message is appended as an extension and your trailing
 expression becomes inert. You get a new turn with the incoming message in scope.
 
 All agents/ calls are effect functions — quote them in the trailing expression.
 Messages arrive as def bindings: (def msg-N {:from sender :value val}).
+Check (globals/get :roles) to discover available agents.
 Use (describe agents :fn-name) for detailed docs on any function."
    :docs {:ask "(agents/ask target message) — send message, block for reply; (agents/ask [a b c]) for multi-target"
           :reply-ask "(agents/reply-ask msg value) — reply to msg, block for next message"
@@ -621,12 +622,8 @@ Internal plumbing for the communication layer."}
    :reply reply
    :reply-ask reply-ask
    :ask ask-builtin
-   :spawn (fn
-            ([llm-fn prompt] (spawn llm-fn prompt))
-            ([llm-fn prompt handle-name] (spawn llm-fn prompt handle-name)))
-   :spawn-ask (fn
-               ([llm-fn prompt] (spawn-ask llm-fn prompt))
-               ([llm-fn prompt handle-name] (spawn-ask llm-fn prompt handle-name)))
+   :spawn spawn
+   :spawn-ask spawn-ask
    :current-handle (fn [] *current-handle*)
    :parent-handle (fn [] (:parent-handle (get @registry *current-handle*)))
    :send-msg-fn send-msg-fn})

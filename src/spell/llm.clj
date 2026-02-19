@@ -27,8 +27,6 @@
                 (get-in ns [:docs key])
                 (get ns key))))
 
-;; Re-export from recovery (for core.clj)
-(def format-error-for-recovery recovery/format-error-for-recovery)
 
 ;; ---------------------------------------------------------------------------
 ;; Core namespaces — always available, never need to be configured
@@ -81,12 +79,42 @@
 ;; LLM Engine
 ;; ---------------------------------------------------------------------------
 
+(defn- try-quine-recovery
+  "Attempt quine-extension recovery: append error info + extend to the quine.
+   Returns eval result (ok or err). Throws on non-quine or retry limit."
+  [program result variant-builtins eval-builtin]
+  (let [max-recovery-args 2
+        quine-arg-count (when (and (seq? program) (= 'quine (first program)))
+                          (- (count (seq program)) 2))]
+    (if (and quine-arg-count (< quine-arg-count (+ 1 max-recovery-args)))
+      ;; Construct recovery quine: append new eval block with error info
+      (let [error-map (cond-> {:error (recovery/clean-error-message (:err result))
+                               :expr (list 'quote (:expr result))}
+                        (:containing-form result)
+                        (assoc :in (list 'quote (:containing-form result))))
+            recovery-arg (list 'eval
+                           (list 'do
+                             (list 'def '_error error-map)
+                             (list 'quote (list 'extend 'completion))))
+            recovery-quine (apply list (concat (seq program) [recovery-arg]))
+            indent (apply str (repeat eval/*llm-depth* "  "))
+            _     (eval/vlog (str indent "Recovery quine: " (pr-str recovery-quine)))
+            retry (binding [eval/*llm-depth* (inc eval/*llm-depth*)
+                            eval/*raw-text*  nil
+                            eval/*builtins*  variant-builtins]
+                    (eval/spell-eval recovery-quine {'eval eval-builtin}))]
+        (if (eval/ok? retry)
+          retry
+          (throw (ex-info (:err result) {:result result}))))
+      ;; Not a quine or retry limit reached — propagate error
+      (throw (ex-info (:err result) {:result result})))))
+
 (defn make-inbox-fn
   "Create inbox function: [raw] -> value.
    Closes over eval-builtin from config. Calls balance-parens because
    send transforms can produce unbalanced strings (reopen strips parens).
    trace-data-atom, when non-nil, receives {:program} for tracing."
-  [{:keys [variant-builtins eval-builtin recover-fns recovery-call-fn]} trace-data-atom]
+  [{:keys [variant-builtins eval-builtin recover-fn]} trace-data-atom]
   (fn [raw]
     (let [raw       (parse/balance-parens raw)
           forms     (parse/read-all raw)
@@ -97,32 +125,23 @@
                              eval/*builtins*       variant-builtins]
                       (eval/spell-eval program {'eval eval-builtin}))
           final-result
-          (if (and (eval/err? result) recover-fns (not (:effect-phase result)))
+          (if (and (eval/err? result) recover-fn (not (:effect-phase result)))
             (let [_        (do (eval/vlog (str indent "=== Error Recovery ==="))
                              (eval/vlog (str indent "Error: " (:err result))))
                   result-with-program (assoc result :program program)]
-              ;; Pipeline: try each recover-fn on the current error.
-              ;; If a fix is found, eval it. If eval succeeds, done.
-              ;; If eval fails, continue pipeline with the new error.
-              ;; Recovery only triggers for first-pass (body) errors.
-              ;; Effect-phase errors (from eval's second pass) skip recovery
-              ;; to prevent double-execution of side effects.
-              (loop [current result-with-program
-                     fns     recover-fns]
-                (if (empty? fns)
-                  current
-                  (if-let [fix-expr ((first fns) current recovery-call-fn)]
-                    (let [_     (eval/vlog (str indent "Recovery expression: " (pr-str fix-expr)))
-                          retry (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
-                                          eval/*raw-text*       nil
-                                          eval/*builtins*       variant-builtins]
-                                  (eval/spell-eval fix-expr (merge (:env current) {'eval eval-builtin})))]
-                      (if (eval/err? retry)
-                        (if (:effect-phase retry)
-                          retry ;; effects may have run; stop recovery loop
-                          (recur (assoc retry :program fix-expr) (rest fns)))
-                        retry))
-                    (recur current (rest fns))))))
+              ;; Try namespace recovery first (fast, deterministic)
+              (if-let [fix-expr (recover-fn result-with-program)]
+                (let [_     (eval/vlog (str indent "Namespace recovery: " (pr-str fix-expr)))
+                      retry (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
+                                      eval/*raw-text*       nil
+                                      eval/*builtins*       variant-builtins]
+                              (eval/spell-eval fix-expr (merge (:env result) {'eval eval-builtin})))]
+                  (if (eval/ok? retry)
+                    retry
+                    ;; Namespace fix didn't work, try quine-extension
+                    (try-quine-recovery program result variant-builtins eval-builtin)))
+                ;; No namespace fix, try quine-extension
+                (try-quine-recovery program result variant-builtins eval-builtin)))
             result)]
       (when trace-data-atom
         (reset! trace-data-atom {:program program}))
@@ -270,9 +289,9 @@
    - :system           - optional system prompt string override (nil uses generated prompt)
    - :llm-var          - optional var ref to bind as 'llm for self-recursion (e.g., #'llm)
    - :recover          - error recovery setting (default: true = enabled).
-                         - true: use default LLM-based recovery
+                         - true: namespace recovery + quine-extension recovery
                          - false: disable recovery (errors propagate immediately)
-                         - fn: custom recovery function (result-map, call-fn) -> fixed-expr
+                         - fn: custom namespace recovery function (result-map) -> fixed-expr
    - :prefill?         - whether the provider supports assistant prefill (default: true).
                          When false, prefix is sent as user message only and prefix echo is stripped.
    - :thinking         - Anthropic adaptive thinking. When truthy, passed to provider opts.
@@ -313,17 +332,12 @@
                      (if prefill?
                        response
                        (strip-prefix-echo prompt-str response))))
-        ;; Recovery call fn: text in, text out, no prefix semantics
-        recovery-call-fn (fn [prompt-str]
-                           (provider/llm-call prompt-str
-                             (cond-> {:system recovery/recovery-system-prompt}
-                               model (assoc :model model))))
-        ;; Resolve recovery setting into a chain of strategies
+        ;; Resolve recovery: namespace recovery fn (quine-extension is separate)
         ns-recover (recovery/make-namespace-recover-fn (merge core-namespaces ns-builtins))
-        recover-fns (cond
-                      (false? recover) nil
-                      (fn? recover) [ns-recover recover]
-                      :else [ns-recover recovery/default-recover-fn ns-recover])
+        recover-fn (cond
+                     (false? recover) nil
+                     (fn? recover) recover
+                     :else ns-recover)
         ;; Create a promise for the final config (to break circular dependency)
         final-config (promise)
         ;; Create llm-self that closes over api-config, gets eval dynamically
@@ -353,8 +367,7 @@
         config'  {:call-fn call-fn
                   :variant-builtins variant-builtins
                   :eval-builtin eval-builtin
-                  :recover-fns recover-fns
-                  :recovery-call-fn recovery-call-fn}
+                  :recover-fn recover-fn}
         _        (deliver final-config config')
         wrap-nl  (fn [p]
                    (let [s (if (or (seq? p) (list? p)) (pr-str p) (str p))]
