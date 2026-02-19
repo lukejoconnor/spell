@@ -74,8 +74,7 @@ No explanation, no markdown code blocks, just the raw s-expression.")
                          matches (find-in-namespaces sym namespaces)]
                      (when (= 1 (count matches))
                        (let [qualified (first matches)]
-                         (when eval/*verbose*
-                           (println (str "  Namespace recovery: " sym " -> " qualified)))
+                         (eval/vlog (str "  Namespace recovery: " sym " -> " qualified))
                          (substitute-symbol program sym qualified))))
 
                    ;; Case 2: "Namespace lookup failed: ns/item" — wrong namespace
@@ -87,8 +86,7 @@ No explanation, no markdown code blocks, just the raw s-expression.")
                          matches (find-in-namespaces item-sym namespaces)]
                      (when (= 1 (count matches))
                        (let [correct (first matches)]
-                         (when eval/*verbose*
-                           (println (str "  Namespace recovery: " bad-qualified " -> " correct)))
+                         (eval/vlog (str "  Namespace recovery: " bad-qualified " -> " correct))
                          (substitute-symbol program bad-qualified correct)))))]
         ;; Return the fixed program for re-evaluation from scratch
         ;; (safe because spell-eval is pure).

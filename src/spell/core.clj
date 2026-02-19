@@ -1,11 +1,10 @@
 (ns spell.core
   "Spell — wiring layer.
-   Assembles components (eval, llm, prompt) into the default configuration.
+   Assembles components (eval, llm, stdlib) into the default configuration.
    Re-exports key vars for public API."
   (:require [spell.comm :as comm]
             [spell.globals :as globals]
             [spell.llm :as llm-engine]
-            [spell.prompt :as prompt]
             [spell.eval :as eval]
             [spell.io :as io]
             [spell.stdlib :as stdlib]))
@@ -41,15 +40,14 @@
 ;; =============================================================================
 
 (def all-namespaces
-  "All available namespaces: io + stdlib + agents + futures + builtins.
-   Note: io/ is included here for the default llm (REPL/test use).
-   Agent configs control which namespaces are available."
-  (merge {'io io/io-namespace
-          'globals globals/globals-namespace
-          'agents comm/agents-namespace
-          'futures comm/futures-namespace
-          'builtins prompt/builtins-namespace}
-         stdlib/all-namespaces))
+  "Default effect namespaces for the root llm.
+   Core namespaces (strings, math, builtins) are always available via make-llm
+   and don't need to be listed here."
+  {'io io/io-namespace
+   'globals globals/globals-namespace
+   'agents comm/agents-namespace
+   'futures comm/futures-namespace
+   'patterns stdlib/patterns})
 
 ;; =============================================================================
 ;; Default llm function
@@ -62,24 +60,24 @@
 
 ;; Effect builtins map - exposed for testing
 (def effect-builtins
-  "Effect namespaces and functions (io, globals, agents, futures, llm, leaf-llm).
+  "Effect namespaces and functions (io, globals, agents, futures, patterns, llm, leaf-llm).
    Used by the eval builtin to merge effects in the second pass."
   {'llm #'llm
    'leaf-llm leaf-llm
    'io io/io-namespace
    'globals globals/globals-namespace
    'agents comm/agents-namespace
-   'futures comm/futures-namespace})
+   'futures comm/futures-namespace
+   'patterns stdlib/patterns})
 
 ;; Set root binding for eval/*builtins* — used by direct spell-eval/run-spell calls
 ;; (tests, REPL) that don't go through an llm function.
 ;; Note: seqs, fns, and bit- ops are in core-builtins (matching Clojure).
 (let [pure-builtins (merge eval/core-builtins
-                           {;; Pure namespaces
+                           {;; Core namespaces (always available)
                             'strings stdlib/strings
                             'math stdlib/math
-                            'patterns stdlib/patterns
-                            'builtins prompt/builtins-namespace
+                            'builtins stdlib/builtins-namespace
                             'describe-fn describe})
       ;; Create eval builtin using make-eval (requires llm-engine loaded)
       eval-builtin (llm-engine/make-eval pure-builtins effect-builtins)

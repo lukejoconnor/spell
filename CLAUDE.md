@@ -44,34 +44,51 @@ Pruning is recursive (walks the full AST) and respects list structure: only argu
 The `prune-and-reopen` builtin destructures a quine form, runs `prune-rethinks` on its AST, and rebuilds an open prefix string. Unlike `reopen` (which strips exactly 3 trailing parens), `prune-and-reopen` rebuilds the prefix from the pruned AST directly.
 
 ### Namespaces (Qualified Symbol Access)
-Functions are organized into namespaces. Access them directly with qualified symbols — no import needed:
+Functions are organized into namespaces with two categories:
+
+**Core namespaces** (always available, hardcoded in variant-builtins):
+- `strings` — string manipulation and regex (matches clojure.string)
+- `math` — mathematical functions (matches Java's Math/)
+- `builtins` — docs-only reference for core builtins by category
+
+**Effect namespaces** (optional, gated through eval's double evaluation):
+- `io` — file/process I/O (bash, read-file, write-file, etc.)
+- `globals` — shared state across agents
+- `agents` — inter-agent communication (spawn, ask, send)
+- `futures` — parallel computation (pmap, await-all)
+- `patterns` — reusable orchestration patterns (check-result, clean-prompt, explore)
+
+Core namespaces are always resolved — no configuration needed. Effect namespaces are passed via `:namespaces` in `make-llm` and are only available inside the `eval` builtin (trailing expression). `make-llm` filters core namespace names from the `:namespaces` input automatically.
+
+Access with qualified symbols — no import needed:
 
 ```clojure
-(io/bash "ls -la")
-(strings/trim "  hello  ")
-(seqs/range 10)
+(strings/trim "  hello  ")   ; core — always available
+(io/bash "ls -la")           ; effect — only in trailing expression
 ```
 
-Namespace structure (simple maps with `:docs` and items):
+Namespace structure (simple maps with `:guide`, `:docs`, optional `:detail`, and items):
 ```clojure
-{:docs {:bash "Execute shell command. Returns {:exit N :out \"...\" :err \"...\"}."
-        :leaf-llm "Plain text LLM — no code execution."}
- :bash run-bash
- :leaf-llm leaf-llm}
+{:guide "MYNS — terse overview for (describe myns)"
+ :docs {:bash "Short one-liner for system prompt listing"}
+ :detail {:bash "Detailed multi-line doc with usage examples for (describe myns :bash)"}
+ :bash run-bash}
 ```
 
-`make-llm` accepts a `:namespaces` map:
+`describe` lookup: `(describe ns)` returns `:guide` (terse overview). `(describe ns :key)` checks `:detail` first, then `:docs`, then raw key. The `:docs` one-liners are used by `namespaces-section` for the system prompt listing; `:detail` provides expanded per-function documentation.
+
+`make-llm` accepts a `:namespaces` map (effect namespaces only — core namespaces are automatic):
 ```clojure
-(make-llm {:namespaces {'io io-ns 'strings strings-ns}
+(make-llm {:namespaces {'io io-ns 'patterns patterns-ns}
            :llm-var #'llm
            :model "..."})
 ```
 
 `describe` is a Spell macro that produces an extension (like `call-now`). The child LLM sees the docs as a literal in its continuation:
 ```clojure
-'(describe io)           ; extension: child sees {:bash "..." :leaf-llm "..."}
-'(describe io :bash)     ; extension: child sees "Execute shell command..."
-'(describe io :guide)    ; extension: child sees full guide text
+'(describe io)           ; extension: child sees terse namespace overview
+'(describe io :bash)     ; extension: child sees detailed function doc
+'(describe io :guide)    ; extension: child sees guide text (same as describe io)
 ```
 `describe-fn` is the pure function underneath (available in builtins for direct access).
 
@@ -81,7 +98,7 @@ Qualified symbols work recursively: `outer/inner/item` looks up `:inner` in `out
 Two concurrency patterns: **serial llm-self** (child inherits your handle, entire call tree is one logical agent) and **agents/spawn** (new handle, independent agent, communicates via `agents/ask`). `plet`/`futures/pmap`/`future` are for deterministic parallel computation only — never for LLM calls (they'd share the parent handle and contend over the box). This invariant guarantees deadlock freedom: same-handle trees are serial (can't self-deadlock), and cross-handle dependencies use `agents/ask` (which always wakes the target).
 
 ### Communication (agents/ namespace)
-`agents/ask` enables request-reply message passing between concurrent agents. `(agents/ask target msg)` sends a message and blocks for reply; `(agents/ask target)` pokes target and blocks (no message); `(agents/ask [a b c])` multi-target ask — pokes all targets and blocks until all have sent, triggering a single extension with all quine bindings (reduces N turns to 1 for fan-out/fan-in). Every form of ask wakes the target, preventing deadlocks. `agents/send` is low-level fire-and-forget. `agents/spawn` starts an agent in a background future. Handles are keywords (`:agent-42`) — self-evaluating, safe through serialization. `agents/parent-handle` lets spawned children find their parent automatically. `globals/` provides shared state visible to all agents (pre-initialized with `:roles` and `:tasks`).
+`agents/ask` enables request-reply message passing between concurrent agents. `(agents/ask target msg)` sends a message and blocks for reply; `(agents/ask target)` pokes target and blocks (no message); `(agents/ask [a b c])` multi-target ask — pokes all targets and blocks until all have sent, triggering a single extension with all quine bindings (reduces N turns to 1 for fan-out/fan-in). Every form of ask wakes the target, preventing deadlocks. `agents/send` sends a value to a target with auto-tagged sender. `agents/send-msg-fn` is low-level fire-and-forget. `agents/spawn` starts an agent in a background future. Handles are keywords (`:agent-42`) — self-evaluating, safe through serialization. `agents/parent-handle` lets spawned children find their parent automatically. `globals/` provides shared state visible to all agents (pre-initialized with `:roles` and `:tasks`).
 
 ### Implicit Returns
 Programs return the value of their last expression (standard Lisp semantics). No explicit `(def return ...)` needed.
@@ -95,15 +112,15 @@ Programs return the value of their last expression (standard Lisp semantics). No
 | `src/spell/macros.clj` | Macro system (registry, `defspellmacro`, 26 macros incl. `defmacro` for user-defined macros, threading helpers, think/rethink pruning) |
 | `src/spell/eval.clj` | Evaluator (`spell-eval`, `expand`, builtins, dynamic scoping, effect guard) |
 | `src/spell/core.clj` | Top-level wiring (default `llm`, root builtin registration, re-exports) |
-| `src/spell/prompt.clj` | System prompt (preamble + metadata-driven generation) |
 | `src/spell/provider.clj` | LLM providers (Anthropic, OpenAI, Ollama, Kimi, Dummy), `*provider*`, `llm-call`, token/cost/budget/retry tracking |
-| `src/spell/llm.clj` | LLM engine (`-llm` API call, `make-llm` factory, `make-inbox-fn` eval pipeline) |
+| `src/spell/llm.clj` | LLM engine (`-llm` API call, `make-llm` factory, `make-inbox-fn` eval pipeline, `compose-system-prompt`) |
+| `prompts/minimal.txt` | Default system prompt for Spell agents |
 | `src/spell/recovery.clj` | Error recovery (namespace symbol fixup, LLM-based recovery) |
 | `src/spell/parse.clj` | S-expression parser (read-all for multi-form input) |
 | `src/spell/comm.clj` | Communication layer (box execution primitive, registry, send/sleep/spawn, ask, agents-namespace, futures-namespace) |
 | `src/spell/globals.clj` | Global shared state (globals/ namespace: get, set, update, pop) |
 | `src/spell/io.clj` | I/O operations (bash, read-file, write-file, str-replace, replace-lines, sh, watch-send) |
-| `src/spell/stdlib.clj` | Standard library namespaces (strings, seqs, fns, math, bits, patterns) |
+| `src/spell/stdlib.clj` | Standard library namespaces (strings, math) and patterns definition |
 | `src/spell/cli.clj` | CLI with `-t`, `-m`, `-a`, `-v`, `-d`, `-b` flags; accepts `.spl` files and `.agent.edn` agents |
 | `src/spell/trace.clj` | Trace recording system for debugging LLM call trees |
 | `test/spell/*_test.clj` | 8 test files (core, eval, llm, parse, stdlib, io, comm, globals, trace) |
@@ -116,22 +133,22 @@ Programs return the value of their last expression (standard Lisp semantics). No
 
 ## Current Status
 
-Core interpreter and tooling complete (429 tests, 1649 assertions):
+Core interpreter and tooling complete (446 tests, 1713 assertions):
 - `spell-eval` with environment threading
 - Special forms (13): `quote`, `def`, `do`, `if`, `let`, `fn`/`fn*`, `expand`, `quine`, `loop`, `recur`, `for`, `try`
 - Macros (26 via `defspellmacro`): `when`, `defn`, `and`, `or`, `cond`, `if-let`, `when-let`, `case`, `as->`, `cond->`, `cond->>`, `some->`, `some->>`, `call-now`, `print`, `describe`, `define`, `defmacro`, `compact`, `->`, `->>`, `future`, `plet`, `think`, `rethink`, `extend`
 - Vector destructuring in `fn`/`defn`/`let` parameters: nested vectors, `&` rest, `:as`
 - Core builtins: arithmetic, comparison, logic, list ops (`map`, `reduce`, `filter`, etc.), string ops (`cat`, `pr-str`), `spell-eval`, `llm-self`, `describe`, `throw`, `gensym`, `serialize`, `prune-and-reopen`
-- Effect guard: `eval` builtin (agent-specific, not special form) merges effectful namespaces (`agents/`, `futures/`, `io/`, `globals/`) and per-variant fns (`llm-self`, `llm`, `leaf-llm`) with pure builtins; effects only available in trailing expression via double evaluation
+- Two-category namespace system: core namespaces (strings, math, builtins) always in variant-builtins; effect namespaces (io, globals, agents, futures, patterns) gated through eval's double evaluation
+- Effect guard: `eval` builtin (agent-specific, not special form) merges effect namespaces and per-variant fns (`llm-self`, `llm`, `leaf-llm`) with pure builtins; effects only available in trailing expression via double evaluation
 - `llm` with prompt-as-prefix semantics
-- `make-llm` factory with namespace-based configuration
+- `make-llm` factory with namespace-based configuration; `compose-system-prompt` dynamically appends effect namespace docs to any system prompt (custom or default)
 - Namespace system: qualified symbol access (`io/bash`, `strings/trim`) with recursive lookup
-- Standard library namespaces: `io`, `strings`, `seqs`, `fns`, `math`, `bits`, `patterns`
-- Effect namespaces: `agents/` (communication), `futures/` (parallel computation), `io/` (file/process), `globals/` (shared state)
-- Docs-only namespace: `builtins/` (reference for core builtins by category)
+- Core namespaces: `strings` (string/regex), `math` (arithmetic/trig/number theory), `builtins` (docs-only reference)
+- Effect namespaces: `io` (file/process), `agents/` (communication), `futures/` (parallel computation), `globals/` (shared state), `patterns` (orchestration patterns)
 - `llm-self` for automatic self-recursion (atom-based forward ref, available in all `make-llm` variants)
 - `future`/`await`/`plet` for deterministic parallel computation (core builtins); `futures/await-all`/`futures/pmap` in effect namespace
-- Inter-agent communication via `agents/` namespace: `agents/spawn`, `agents/ask` (including multi-target `[a b c]`), `agents/send-msg`, `agents/reply-send`, `agents/reply-ask`, `agents/spawn-recv`, `agents/register` (dormant agent with stored completion), `agents/current-handle`, `agents/parent-handle`, keyword handles
+- Inter-agent communication via `agents/` namespace: `agents/spawn`, `agents/ask` (including multi-target `[a b c]`), `agents/send`, `agents/reply`, `agents/reply-ask`, `agents/spawn-ask`, `agents/register` (dormant agent with stored completion), `agents/current-handle`, `agents/parent-handle`, keyword handles
 - Global shared state: `globals/` namespace (`get`, `set`, `update`, `pop`, `keys`, `wait-until`) for all-to-all coordination
 - I/O tools: `bash`, `read-file`, `write-file`, `str-replace` (with `:all` flag for replace-all), `replace-lines` (supports multi-range edits), `sh`, `watch-send` (in `io` namespace, opt-in)
 - LLM-based error recovery (opt-out by default): on evaluation failure, LLM generates fix re-evaluated from scratch
@@ -155,7 +172,7 @@ Core interpreter and tooling complete (429 tests, 1649 assertions):
 
 **Key insight:** The `llm` function uses prompt-as-prefix semantics — the prompt string is sent as both the user message and the assistant prefix, so the response continues the prompt as code. Natural-language prompts are wrapped in the completion wrapper `(quine completion (spell-eval (do ...)))`, giving the program access to its own source as data via the `completion` binding. The `spell-eval` builtin auto-expands free variables from the caller's env before evaluating in a fresh env `{}`.
 
-**Architecture:** 4-component design: (1) `spell-eval` — pure evaluator, (2) `eval` builtin — per-agent effectful evaluator via `make-inbox-fn` (closes over dangerous tools), (3) `box` — universal execution primitive in `comm.clj`; single point of interaction between local and global state, handles root detection via `(not= parent-handle handle)`, balance-parens, inbox drain, and lifecycle (notify-waiters, orphan-box), (4) `-llm` — thin wrapper that makes the API call and delivers to box. `make-llm` constructs the configuration and returns the `llm` function.
+**Architecture:** 4-component design: (1) `spell-eval` — pure evaluator, (2) `eval` builtin — per-agent effectful evaluator via `make-inbox-fn` (closes over dangerous tools), (3) `box` — universal execution primitive in `comm.clj`; single point of interaction between local and global state, handles root detection via `(not= parent-handle handle)`, balance-parens, inbox drain, and lifecycle (notify-waiters, orphan-box), (4) `-llm` — thin wrapper that makes the API call and delivers to box. `make-llm` constructs the configuration and returns the `llm` function. Core namespaces (strings, math, builtins) are defined in `llm.clj` as `core-namespaces` and always merged into variant-builtins. Effect namespaces are passed via `:namespaces` and documented dynamically via `compose-system-prompt`.
 
 ## Development Principles
 
@@ -181,13 +198,13 @@ The user has observed a tendency toward "good news" bias in benchmark analysis �
 
 ## System Prompt Best Practices
 
-When editing `src/spell/prompt.clj`:
+When editing `prompts/minimal.txt` or namespace docs:
 - Use positive instructions ("the value of your program is the last expression") over negative ("don't use println")
 - Show examples of correct behavior rather than warning against mistakes
 - Avoid emphatic language (IMPORTANT, DO NOT, NEVER, MUST)
 - State facts plainly; trust the model to follow clear instructions
 
-When adding a feature the AI can use (builtins, tools, etc.), always update the system prompt to document it. The LLM can only use what it knows about. The system prompt is now metadata-driven via `generate-system-prompt` — tool docs come from `:doc` fields in tool metadata maps.
+When adding a feature the AI can use (builtins, tools, etc.), always update the system prompt to document it. The LLM can only use what it knows about. The system prompt is metadata-driven via `compose-system-prompt` in `llm.clj` — effect namespace docs are dynamically appended to the base prompt from `prompts/minimal.txt`. Tool docs come from `:docs` fields in namespace maps. The `builtins-namespace` (docs-only, in `stdlib.clj`) provides progressive disclosure for core builtins.
 
 ## Notebook
 

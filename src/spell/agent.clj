@@ -24,7 +24,6 @@
             [spell.comm :as comm]
             [spell.globals :as globals]
             [spell.llm :as llm]
-            [spell.prompt :as prompt]
             [spell.stdlib :as stdlib]
             [spell.io :as io]))
 
@@ -40,23 +39,21 @@
    'globals globals/globals-namespace
    'agents comm/agents-namespace
    'futures comm/futures-namespace
-   'builtins prompt/builtins-namespace
+   'builtins stdlib/builtins-namespace
    'strings stdlib/strings
    'math stdlib/math
    'patterns stdlib/patterns})
 
 (def default-agent-def
-  "Built-in default agent definition (equivalent to agents/with-io-minimal.agent.edn).
-   Available as :base spell:default or via load-default-agent-config."
+  "Built-in default agent definition.
+   Core namespaces (strings, math, builtins) are always available via make-llm.
+   Only effect namespaces need to be listed here."
   {:name 'default
-   :doc "Default agent with standard library and I/O"
+   :doc "Default agent with standard tools"
    :namespaces {'io 'stdlib/io
                 'globals 'stdlib/globals
                 'agents 'stdlib/agents
                 'futures 'stdlib/futures
-                'builtins 'stdlib/builtins
-                'strings 'stdlib/strings
-                'math 'stdlib/math
                 'patterns 'stdlib/patterns}})
 
 (defn- resolve-stdlib-path
@@ -242,7 +239,8 @@
                            (assoc m k (get child k))
                            m))
                        parent
-                       [:name :doc :system :model :budget :recover :eval :format :max-retries :retries :thinking :llms])
+                       [:name :doc :system :model :budget :recover :eval :format :max-retries :retries
+                        :thinking :reasoning-effort :verbosity :api :llms])
         ;; Merge namespaces
         merged (if (or (:namespaces parent) (:namespaces child))
                  (assoc merged :namespaces
@@ -372,7 +370,9 @@
                                   system (assoc :system system)
                                   (some? (:recover spec)) (assoc :recover (:recover spec))
                                   (:format spec) (assoc :format (:format spec))
-                                  (some? (:thinking spec)) (assoc :thinking (:thinking spec))))
+                                  (some? (:thinking spec)) (assoc :thinking (:thinking spec))
+                                  (:reasoning-effort spec) (assoc :reasoning-effort (:reasoning-effort spec))
+                                  (:verbosity spec) (assoc :verbosity (:verbosity spec))))
                    (llm/make-leaf-llm (cond-> {}
                                         system (assoc :system system)
                                         spec-model (assoc :model spec-model))))]
@@ -480,7 +480,8 @@
         raw-def (read-agent-edn path nil)
         agent-def (resolve-inheritance raw-def base-dir)
 
-        {:keys [name doc system model budget recover namespaces eval format max-retries retries thinking]} agent-def
+        {:keys [name doc system model budget recover namespaces eval format max-retries retries
+                thinking reasoning-effort verbosity api]} agent-def
 
         ;; Normalize :llms — use ::not-set sentinel to distinguish absent from nil
         raw-llms (get agent-def :llms ::not-set)
@@ -505,6 +506,9 @@
      :max-retries max-retries
      :retries retries     ; API retry sleep durations, e.g. [0 10]
      :thinking thinking
+     :reasoning-effort reasoning-effort  ; OpenAI reasoning effort ("low", "medium", "high")
+     :verbosity verbosity               ; OpenAI verbosity ("low", "auto")
+     :api api                           ; :responses or :chat (default: auto-detect)
      :resolve-namespaces-fn resolve-fn
      :resolve-llms-fn resolve-llms-fn'}))
 

@@ -44,6 +44,6 @@ spell -v -m opus "Your prompt here"
 | `negotiate.spl` | Multi-turn negotiation with ask/reply | Opus |
 | `auction.spl` | Sealed-bid auction with parallel bidders | Opus |
 | `globals-basic.spl` | Store/read global shared state | Sonnet |
-| `globals-roles.spl` | Role registration + spawn-recv | Opus |
+| `globals-roles.spl` | Role registration + spawn-ask | Opus |
 
 Some examples have companion `.md` files with detailed writeups and expected output.

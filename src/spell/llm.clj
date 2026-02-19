@@ -7,9 +7,9 @@
             [spell.comm :as comm]
             [spell.eval :as eval]
             [spell.parse :as parse]
-            [spell.prompt :as prompt]
             [spell.provider :as provider]
             [spell.recovery :as recovery]
+            [spell.stdlib :as stdlib]
             [spell.trace :as trace]))
 
 (declare make-leaf-llm)
@@ -21,13 +21,24 @@
 (defn describe
   "Get documentation from a namespace.
    (describe ns) — guide if available, else docs map
-   (describe ns :key) — doc for specific item"
+   (describe ns :key) — detailed doc for specific item (checks :detail, then :docs)"
   ([ns] (or (:guide ns) (:docs ns)))
-  ([ns key] (or (get-in ns [:docs key])
+  ([ns key] (or (get-in ns [:detail key])
+                (get-in ns [:docs key])
                 (get ns key))))
 
 ;; Re-export from recovery (for core.clj)
 (def format-error-for-recovery recovery/format-error-for-recovery)
+
+;; ---------------------------------------------------------------------------
+;; Core namespaces — always available, never need to be configured
+;; ---------------------------------------------------------------------------
+
+(def core-namespaces
+  "Namespaces always merged into variant-builtins (available everywhere)."
+  {'strings stdlib/strings
+   'math stdlib/math
+   'builtins stdlib/builtins-namespace})
 
 ;; ---------------------------------------------------------------------------
 ;; Prefix Echo Deduplication
@@ -70,7 +81,7 @@
 ;; LLM Engine
 ;; ---------------------------------------------------------------------------
 
-(defn- make-inbox-fn
+(defn make-inbox-fn
   "Create inbox function: [raw] -> value.
    Closes over eval-builtin from config. Calls balance-parens because
    send transforms can produce unbalanced strings (reopen strips parens).
@@ -87,9 +98,8 @@
                       (eval/spell-eval program {'eval eval-builtin}))
           final-result
           (if (and (eval/err? result) recover-fns (not (:effect-phase result)))
-            (let [_        (when eval/*verbose*
-                             (println (str indent "=== Error Recovery ==="))
-                             (println (str indent "Error: " (:err result))))
+            (let [_        (do (eval/vlog (str indent "=== Error Recovery ==="))
+                             (eval/vlog (str indent "Error: " (:err result))))
                   result-with-program (assoc result :program program)]
               ;; Pipeline: try each recover-fn on the current error.
               ;; If a fix is found, eval it. If eval succeeds, done.
@@ -102,8 +112,7 @@
                 (if (empty? fns)
                   current
                   (if-let [fix-expr ((first fns) current recovery-call-fn)]
-                    (let [_     (when eval/*verbose*
-                                  (println (str indent "Recovery expression: " (pr-str fix-expr))))
+                    (let [_     (eval/vlog (str indent "Recovery expression: " (pr-str fix-expr)))
                           retry (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
                                           eval/*raw-text*       nil
                                           eval/*builtins*       variant-builtins]
@@ -147,18 +156,15 @@
                                             eval/*llm-depth* :default prompt-str))
         _              (when eval/*verbose*
                          (Thread/sleep (rand-int 500))
-                         (locking *out*
-                           (println (str indent "=== LLM Call (depth " eval/*llm-depth* ") ==="))
-                           (println (str indent "Prompt: " (pr-str prompt-str)))))
+                         (eval/vlog (str indent "=== LLM Call (depth " eval/*llm-depth* ") ==="))
+                         (eval/vlog (str indent "Prompt: " (pr-str prompt-str))))
         response-atom  (atom nil)
         completion     (promise)]
     (future
       (try
         (let [response (call-fn prompt-str)]
           (reset! response-atom response)
-          (when eval/*verbose*
-            (locking *out*
-              (println (str indent "Response: " response))))
+          (eval/vlog (str indent "Response: " response))
           (deliver completion (str prompt-str response)))
         (catch Exception e
           (deliver completion e))))
@@ -195,40 +201,103 @@
                     (throw (ex-info (:err result) {:result result})))))))]
     eval-builtin))
 
+;; ---------------------------------------------------------------------------
+;; System prompt composition
+;; ---------------------------------------------------------------------------
+
+(defn- namespaces-section
+  "Generate the NAMESPACES section from namespace metadata."
+  [namespaces]
+  (when (seq namespaces)
+    (str "\nNAMESPACES\n\n"
+         "Access functions with qualified symbols: namespace/item\n\n"
+         (str/join "\n\n"
+           (map (fn [[ns-sym ns-map]]
+                  (str "## " ns-sym "\n"
+                       (str/join "\n"
+                         (map (fn [[k desc]]
+                                (str "  " (name k) ": " desc))
+                              (:docs ns-map)))))
+                namespaces))
+         "\n\n"
+         "Usage:\n"
+         "  (io/sh \"ls\")              — call function directly\n"
+         "  '(describe io)              — namespace overview\n"
+         "  '(describe io :sh)          — detailed doc for specific function\n"
+         "  '(describe agents globals)  — multiple namespaces in one describe\n"
+         "\n"
+         "describe is an extension — it fires as the trailing expression for that turn.\n"
+         "Use it before calling an unfamiliar namespace.\n")))
+
+(defn- format-section
+  "Generate RETURN VALUE section when a format spec is provided."
+  [{:keys [required optional]}]
+  (str "\nRETURN VALUE\n\n"
+       "Your program's last expression must be a map with "
+       (if (= 1 (count required))
+         (str "key " (first required))
+         (str "keys " (pr-str required)))
+       ".\n"
+       "Example: {:answer 42}\n"
+       (when optional
+         (str "Optional keys: " (pr-str optional) "\n"))))
+
+(defn compose-system-prompt
+  "Build a system prompt from a base prompt plus namespace docs and format.
+   :base       — system prompt text (required; nil yields namespace docs only)
+   :namespaces — map of effect namespace {symbol -> namespace-map}
+   :format     — optional format spec {:required [...] :optional [...]}"
+  [{:keys [base namespaces format]}]
+  (str (or base "")
+       (namespaces-section namespaces)
+       (when format (format-section format))))
+
+(defn generate-system-prompt
+  "Build a system prompt from namespaces (convenience wrapper).
+   namespaces: map of {symbol -> namespace-map}
+   format: optional format spec"
+  ([namespaces] (generate-system-prompt namespaces nil))
+  ([namespaces format]
+   (compose-system-prompt {:namespaces namespaces :format format})))
+
 (defn make-llm
   "Factory: create an llm function with namespaces.
 
    Options:
-   - :namespaces - map of {symbol -> namespace-map}. Each namespace has :docs and items.
-                   Namespaces are bound under their symbol in the builtins.
-   - :model      - optional model name override (nil uses provider default)
-   - :system     - optional system prompt string override (nil uses generated prompt)
-   - :llm-var    - optional var ref to bind as 'llm for self-recursion (e.g., #'llm)
-   - :recover    - error recovery setting (default: true = enabled).
-                   - true: use default LLM-based recovery
-                   - false: disable recovery (errors propagate immediately)
-                   - fn: custom recovery function (result-map, call-fn) -> fixed-expr
-   - :prefill?   - whether the provider supports assistant prefill (default: true).
-                   When false, prefix is sent as user message only and prefix echo is stripped.
-   - :thinking   - Anthropic adaptive thinking. When truthy, passed to provider opts.
-                   Number = budget_tokens, true = default (10000).
+   - :namespaces       - map of {symbol -> namespace-map}. Each namespace has :docs and items.
+                         Namespaces are bound under their symbol in the builtins.
+   - :model            - optional model name override (nil uses provider default)
+   - :system           - optional system prompt string override (nil uses generated prompt)
+   - :llm-var          - optional var ref to bind as 'llm for self-recursion (e.g., #'llm)
+   - :recover          - error recovery setting (default: true = enabled).
+                         - true: use default LLM-based recovery
+                         - false: disable recovery (errors propagate immediately)
+                         - fn: custom recovery function (result-map, call-fn) -> fixed-expr
+   - :prefill?         - whether the provider supports assistant prefill (default: true).
+                         When false, prefix is sent as user message only and prefix echo is stripped.
+   - :thinking         - Anthropic adaptive thinking. When truthy, passed to provider opts.
+                         Number = budget_tokens, true = default (10000).
+   - :reasoning-effort - OpenAI reasoning effort (\"low\", \"medium\", \"high\").
+   - :verbosity        - OpenAI verbosity (\"low\", \"auto\").
 
    Returns a function with the same signature as llm:
    (f prompt) or (f prompt handle).
 
    The returned function is automatically available as 'llm-self in Spell code,
    providing self-recursion without needing to wire up var refs."
-  [{:keys [namespaces model system llm-var recover format prefill? thinking]
+  [{:keys [namespaces model system llm-var recover format prefill? thinking reasoning-effort verbosity]
     :or {namespaces {} model nil recover true prefill? true}}]
-  (let [;; Split namespace builtins: io, globals, agents, futures are effect-only, rest are pure
-        effect-ns-names #{'io 'globals 'agents 'futures 'llms}
+  (let [;; Core namespaces are always available; everything in :namespaces is effect
+        core-ns-names (set (keys core-namespaces))
         ns-builtins (into {} (map (fn [[sym ns-map]] [sym ns-map]) namespaces))
-        pure-ns-builtins (into {} (remove #(effect-ns-names (key %)) ns-builtins))
-        effect-ns-builtins (into {} (filter #(effect-ns-names (key %)) ns-builtins))
+        effect-ns-builtins (into {} (remove #(core-ns-names (key %)) ns-builtins))
         variant-builtins (merge eval/core-builtins
                                 {'describe-fn describe}
-                                pure-ns-builtins)
-        sys-prompt (or system (prompt/generate-system-prompt namespaces format))
+                                core-namespaces)
+        sys-prompt (compose-system-prompt
+                     {:base system
+                      :namespaces effect-ns-builtins
+                      :format format})
         prev-prompt-atom (atom nil)
         call-fn  (fn [prompt-str]
                    (let [prev-prompt @prev-prompt-atom
@@ -237,6 +306,8 @@
                                       prefill? (assoc :prefix prompt-str)
                                       model (assoc :model model)
                                       thinking (assoc :thinking thinking)
+                                      reasoning-effort (assoc :reasoning-effort reasoning-effort)
+                                      verbosity (assoc :verbosity verbosity)
                                       prev-prompt (assoc :cache-prefix prev-prompt)))]
                      (reset! prev-prompt-atom prompt-str)
                      (if prefill?
@@ -248,7 +319,7 @@
                              (cond-> {:system recovery/recovery-system-prompt}
                                model (assoc :model model))))
         ;; Resolve recovery setting into a chain of strategies
-        ns-recover (recovery/make-namespace-recover-fn namespaces)
+        ns-recover (recovery/make-namespace-recover-fn (merge core-namespaces ns-builtins))
         recover-fns (cond
                       (false? recover) nil
                       (fn? recover) [ns-recover recover]
@@ -345,15 +416,12 @@
            indent   (apply str (repeat eval/*llm-depth* "  "))
            _        (when eval/*verbose*
                       (Thread/sleep (rand-int 500))
-                      (locking *out*
-                        (println (str indent "=== Leaf LLM Call (depth " eval/*llm-depth* ") ==="))
-                        (println (str indent "Prompt: " (pr-str prompt)))))
+                      (eval/vlog (str indent "=== Leaf LLM Call (depth " eval/*llm-depth* ") ==="))
+                      (eval/vlog (str indent "Prompt: " (pr-str prompt))))
            response (provider/llm-call prompt-str
                       (cond-> {:system system}
                         model (assoc :model model)))
-           _        (when eval/*verbose*
-                      (locking *out*
-                        (println (str indent "Response: " response))))
+           _        (eval/vlog (str indent "Response: " response))
            _        (when node-id
                       (trace/complete-node! node-id
                         {:response response :raw-text response :value response}))]

@@ -1,1 +1,1 @@
-Register yourself as "orchestrator" in the global roles map. Use spawn-recv to start a worker that registers itself as "worker" in roles, looks up the orchestrator's handle from globals, and sends the number 42 to its parent. Return what you receive.
+Register yourself as "orchestrator" in the global roles map. Use spawn-ask to start a worker that registers itself as "worker" in roles, looks up the orchestrator's handle from globals, and sends the number 42 to its parent. Return what you receive.

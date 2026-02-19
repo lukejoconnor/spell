@@ -94,7 +94,13 @@
    ["-K" "--thinking BUDGET" "Enable Anthropic adaptive thinking (budget_tokens, e.g. 10000)"
     :parse-fn #(Integer/parseInt %)
     :validate [pos? "Must be positive"]]
+   ["-R" "--reasoning-effort EFFORT" "OpenAI reasoning effort (low, medium, high)"
+    :validate [#(contains? #{"low" "medium" "high"} %) "Must be low, medium, or high"]]
+   [nil "--verbosity LEVEL" "OpenAI verbosity (low, auto)"
+    :validate [#(contains? #{"low" "auto"} %) "Must be low or auto"]]
+   [nil "--responses-api" "Force OpenAI Responses API instead of Chat Completions"]
    ["-T" "--trace" "Record execution trace to traces/"]
+   ["-l" "--log FILE" "Log verbose output to FILE (implies -v)"]
    ["-v" "--verbose" "Show raw LLM response"]
    ["-S" "--setup CMD" "Shell command to run before spell execution"]
    ["-C" "--cleanup CMD" "Shell command to run after spell execution"]
@@ -166,7 +172,7 @@
       :else
       {:exit-message (usage summary) :ok? false})))
 
-(defn- make-provider [{:keys [test model max-tokens]}]
+(defn- make-provider [{:keys [test model max-tokens responses-api]}]
   (cond
     test
     (provider/dummy-provider {:response "\"hello world\""})
@@ -187,7 +193,8 @@
         (provider/ollama-provider base-opts)
 
         ("chatgpt" "openai")
-        (provider/openai-provider base-opts)
+        (provider/openai-provider (cond-> base-opts
+                                    responses-api (assoc :use-responses-api true)))
 
         ("kimi" "moonshot")
         (provider/kimi-provider base-opts)
@@ -209,7 +216,7 @@
    - :format: optional format spec for output validation"
   [agent-config]
   (let [{:keys [system model budget recover resolve-namespaces-fn resolve-llms-fn eval format max-retries
-                prefill? thinking]} agent-config
+                prefill? thinking reasoning-effort verbosity]} agent-config
         ;; :eval defaults to true if not specified
         eval? (if (nil? eval) true eval)
         ;; Resolve namespaces with make-llm available for sub-agents
@@ -230,7 +237,9 @@
                                   (some? recover) (assoc :recover recover)
                                   format (assoc :format format)
                                   (some? prefill?) (assoc :prefill? prefill?)
-                                  thinking (assoc :thinking thinking))]
+                                  thinking (assoc :thinking thinking)
+                                  reasoning-effort (assoc :reasoning-effort reasoning-effort)
+                                  verbosity (assoc :verbosity verbosity))]
                      (llm/make-llm config))
                    ;; Leaf mode (no eval)
                    (llm/make-leaf-llm (cond-> {}
@@ -243,7 +252,7 @@
                                        :max-retries (or max-retries 3)})
       base-llm)))
 
-(defn run-prompt [prompt {:keys [depth verbose budget trace agent thinking] :as opts}]
+(defn run-prompt [prompt {:keys [depth verbose log budget trace agent thinking reasoning-effort verbosity] :as opts}]
   (let [max-depth (cond
                     (nil? depth) nil    ; default: no depth limit
                     (zero? depth) nil   ; 0 also means unlimited
@@ -254,11 +263,14 @@
         ;; Determine prefill support: provider capability minus thinking override
         prefill? (and (provider/supports-prefill provider) (not thinking))
         ;; Load agent if specified, otherwise use default agent
+        ;; CLI flags override agent config values
         agent-config (cond-> (if agent
                                (agent/load-agent-config agent)
                                (agent/default-agent-config))
                        (some? prefill?) (assoc :prefill? prefill?)
-                       thinking (assoc :thinking thinking))
+                       thinking (assoc :thinking thinking)
+                       reasoning-effort (assoc :reasoning-effort reasoning-effort)
+                       verbosity (assoc :verbosity verbosity))
         llm-fn (make-agent-llm agent-config)
         ;; Budget: CLI flag > agent config > dynamic var default
         ;; -b 0 means unlimited (nil)
@@ -266,27 +278,35 @@
                            (nil? budget) (or (:budget agent-config)
                                              provider/*budget*)
                            (zero? budget) nil
-                           :else budget)]
+                           :else budget)
+        ;; --log implies -v
+        effective-verbose (or verbose (some? log))
+        log-writer (when log (io/writer (io/file log) :append true))]
     ;; Register :user agent for interactive CLI (terminal stdin only)
     (when (. System console)
       (user/register-user-agent!))
-    (provider/with-provider provider
-      (binding [eval/*verbose* verbose
-                eval/*max-llm-depth* max-depth
-                provider/*usage* usage-atom
-                provider/*budget* effective-budget
-                provider/*retries* (or (:retries agent-config) provider/*retries*)
-                trace/*trace* trace-atom]
-        (let [result (try
-                       {:result (llm-fn prompt) :usage usage-atom}
-                       (catch Exception e
-                         {:error (.getMessage e)
-                          :error-data (ex-data e)
-                          :usage usage-atom}))]
-          (if trace-atom
-            (let [dir (trace/write-trace! @trace-atom (trace-dir-name))]
-              (assoc result :trace-dir dir))
-            result))))))
+    (try
+      (provider/with-provider provider
+        (binding [eval/*verbose* effective-verbose
+                  eval/*log-writer* log-writer
+                  eval/*max-llm-depth* max-depth
+                  provider/*usage* usage-atom
+                  provider/*budget* effective-budget
+                  provider/*retries* (or (:retries agent-config) provider/*retries*)
+                  trace/*trace* trace-atom]
+          (let [result (try
+                         {:result (llm-fn prompt) :usage usage-atom}
+                         (catch Exception e
+                           {:error (.getMessage e)
+                            :error-data (ex-data e)
+                            :usage usage-atom}))]
+            (if trace-atom
+              (let [dir (trace/write-trace! @trace-atom (trace-dir-name))]
+                (assoc result :trace-dir dir))
+              result))))
+      (finally
+        (when log-writer
+          (.close ^java.io.Writer log-writer))))))
 
 (defn- format-cache-stats [stats]
   (let [cache-write (:cache_creation_input_tokens stats 0)

@@ -434,12 +434,7 @@
    handle with :from :watch-send. Does nothing on timeout or error."
   ([path handle] (watch-send path handle nil))
   ([path handle timeout-ms]
-   (future
-     (binding [comm/*current-handle* :watch-send]
-       (let [result (watch-dir path timeout-ms)]
-         (when (:ok result)
-           (comm/send-msg (:ok result) handle)))))
-   nil))
+   (comm/event-send #(watch-dir path timeout-ms) handle :watch-send)))
 
 ;; =============================================================================
 ;; Process execution
@@ -498,42 +493,32 @@
 
 (def io-namespace
   "The io/ namespace map for Spell agents."
-  {:guide "FILE EDITING
+  {:guide "IO — File operations, process execution, and file watching (effect namespace).
 
-io/read-file returns numbered lines (\"1: first line\\n2: second line\\n...\"). Edit with io/replace-lines (1-indexed, inclusive):
-  (io/replace-lines \"main.py\" 42 44 \"    x = fixed_value\\n    return x\")
+  (io/read-file path)              — read file with line numbers as string
+  (io/read-lines path)             — read file as vector of line strings
+  (io/slurp path)                  — read entire file as string
+  (io/write-file path content)     — write content to file (creates dirs)
+  (io/spit path content)           — write to file; opts {:append true}
+  (io/str-replace path old new)    — replace string in file; opts {:all true}
+  (io/replace-lines path start end content) — replace line range
+  (io/sh command)                  — execute shell command, returns {:exit :out :err}
+  (io/exec [cmd arg1 ...])         — execute command directly (no shell)
+  (io/ls path)                     — list directory contents
+  (io/exists? path)                — check if path exists
+  (io/stat path)                   — get file info map
+  (io/delete path)                 — delete file or empty directory
+  (io/copy src dest)               — copy file
+  (io/move src dest)               — move/rename file
+  (io/mkdir path)                  — create directory
+  (io/mkdirs path)                 — create directory tree
+  (io/cwd)                         — get current working directory
+  (io/env)                         — get all env vars; (io/env \"PATH\") for one
+  (io/temp-file)                   — create temp file
+  (io/watch-send path handle)      — watch directory, send events to handle
 
-For multiple edits, pass a vector of [start end content] triples. Line numbers refer to the original file — no drift:
-  (io/replace-lines \"main.py\" [[10 12 \"new block 1\"] [25 30 \"new block 2\"]])
-
-Use (io/read-file path start end) to extract a line range for passing a subset to a child.
-
-io/read-lines returns a vector of raw line strings with line-offset metadata. Displays with line numbers when serialized via call-now, but evaluates to the raw vector:
-  '(call-now code (io/read-lines \"main.py\" 40 60))
-  ;; child sees: (def code (do \" 40: ...\\n 41: ...\" [\"raw line\" ...]))
-  ;; code is the raw vector; slice with (subvec code 0 5), index with (nth code i)
-  (io/read-lines \"main.py\")       ;; whole file
-  (io/read-lines \"main.py\" 10 20) ;; line range (1-indexed, inclusive, clamped)
-
-CONTEXT EXPLORATION
-
-For large files, use grep to find relevant lines rather than reading the entire file.
-Pattern: search with grep, collect ALL matches, examine ALL of them, then decide.
-  '(call-now matches (io/sh \"grep -n 'keyword' path/to/file\"))
-  ;; grep output is \"42: line content\". The number is the LINE NUMBER, not the answer.
-  ;; Read ALL matches before answering. For temporal/location questions, the LAST match is usually the answer.
-
-io/sh takes a single string argument. Concatenate arguments with str:
-  (io/sh (str \"grep -n 'pattern' \" path))  ;; correct: one string
-  (io/sh \"grep\" path)                       ;; wrong: multiple args
-
-For multi-file search, aggregate snippets from each file:
-  '(call-now files (io/sh \"grep -rln 'error' src/\"))
-  '(call-now snippets (map (fn [f] {:path f :lines (io/read-file f 1 30)})
-                           (strings/split-lines (:out files))))
-  '(llm-self (wrap-cat task snippets)) ;; child sees all snippets, decides
-
-io/slurp returns raw content: (:ok (io/slurp \"file.txt\")) for the string without line numbers."
+All io/ calls are effect functions — quote them in the trailing expression.
+Use (describe io :fn-name) for detailed docs on any function."
    :docs {;; File reading/writing
           :slurp "Read entire file as string. Returns {:ok content} or {:error msg}."
           :spit "Write to file. (spit path content) or (spit path content {:append true}). Returns {:ok path} or {:error msg}."
@@ -563,6 +548,125 @@ io/slurp returns raw content: (:ok (io/slurp \"file.txt\")) for the string witho
           :sh "Execute shell command. Returns {:exit N :out \"...\" :err \"...\"}."
           :exec "Execute command directly (no shell). (exec [\"cmd\" \"arg1\" ...]). Returns {:exit N :out \"...\" :err \"...\"}."
           :env "Get env var(s). (env) returns all as map. (env \"PATH\") returns value or nil."}
+   :detail
+   {:read-file
+    "Read file with line numbers. Returns a formatted string or {:error msg}.
+
+(io/read-file path)
+(io/read-file path start end)
+  path: file path
+  start, end: 1-indexed, inclusive line range (clamped to file bounds)
+
+Returns a string with numbered lines: \"1: first line\\n2: second line\\n...\"
+Returns {:error msg} on failure.
+
+Use the range form to extract a subset for a child:
+  '(call-now code (io/read-file \"main.py\" 40 60))
+
+For raw content without line numbers, use io/slurp:
+  (:ok (io/slurp \"file.txt\"))"
+
+    :read-lines
+    "Read file as a vector of raw line strings with line-offset metadata.
+
+(io/read-lines path)
+(io/read-lines path start end)
+  path: file path
+  start, end: 1-indexed, inclusive (clamped to file bounds)
+
+Returns a vector of raw strings with metadata {:spell/line-offset N}.
+When serialized via call-now, displays with line numbers for readability,
+but the binding evaluates to the raw vector.
+
+  '(call-now code (io/read-lines \"main.py\" 40 60))
+  ;; child sees numbered display, but code is a plain vector
+  (nth code 0)           ;; first line as string
+  (subvec code 0 5)      ;; first 5 lines
+  (count code)            ;; number of lines"
+
+    :replace-lines
+    "Replace lines in a file (1-indexed, inclusive). Two forms:
+
+(io/replace-lines path start end content)
+  Single edit. Replaces lines start through end with content string.
+
+(io/replace-lines path [[start end content] ...])
+  Multiple edits, applied atomically. Line numbers refer to the ORIGINAL file —
+  no drift between edits. Edits must not have overlapping ranges.
+
+Empty content string deletes the lines. Returns {:ok path} or {:error msg}.
+
+Example — single edit:
+  (io/replace-lines \"main.py\" 42 44 \"    x = fixed_value\\n    return x\")
+
+Example — multiple edits (no drift):
+  (io/replace-lines \"main.py\" [[10 12 \"new block 1\"] [25 30 \"new block 2\"]])"
+
+    :str-replace
+    "Replace a string in a file. By default, old-str must appear exactly once.
+
+(io/str-replace path old-str new-str)
+(io/str-replace path old-str new-str {:all true})
+
+Without :all, errors if old-str appears 0 or >1 times (uniqueness check).
+With {:all true}, replaces all occurrences (must appear at least once).
+Returns {:ok path} or {:error msg}.
+
+Example:
+  (io/str-replace \"config.json\" \"localhost\" \"production.example.com\")"
+
+    :sh
+    "Execute a shell command. Returns {:exit N :out \"...\" :err \"...\"}.
+
+(io/sh command)
+(io/sh part1 part2 ...)
+
+command: a string passed to the shell via `sh -c`.
+Multiple arguments are concatenated into a single string:
+  (io/sh \"grep -n 'pattern' \" path)  ;; args joined: \"grep -n 'pattern' /tmp/foo\"
+
+Times out after 30 seconds by default. Timeout returns {:exit -1 :err \"...timed out...\"}."
+
+    :exec
+    "Execute command directly without a shell. Takes a vector of strings.
+
+(io/exec [\"cmd\" \"arg1\" \"arg2\"])
+
+Returns {:exit N :out \"...\" :err \"...\"}.
+Use when you need precise argument handling without shell interpretation."
+
+    :watch-send
+    "Watch a directory in the background and send file events to an agent handle.
+
+(io/watch-send path handle)
+(io/watch-send path handle timeout-ms)
+
+Returns nil immediately. When file events occur in the watched directory,
+sends a message to handle with :from :watch-send. The message value is a
+vector of {:kind :create|:modify|:delete :name \"filename\"} maps.
+
+Does nothing on timeout or error.
+
+Example:
+  '(do (io/watch-send \"./src\" (agents/current-handle) 10000)
+       (agents/ask (agents/current-handle)))
+  ;; next turn: message with file change events"
+
+    :spit
+    "Write to file with options. Creates parent directories if needed.
+
+(io/spit path content)
+(io/spit path content {:append true})
+
+Returns {:ok path} or {:error msg}. Use :append to add to existing file."
+
+    :slurp
+    "Read entire file as raw string (no line numbers).
+
+(io/slurp path)
+
+Returns {:ok content} or {:error msg}.
+The content is the raw file contents. For numbered lines, use io/read-file."}
    ;; File reading/writing
    :slurp slurp-file
    :spit spit-file

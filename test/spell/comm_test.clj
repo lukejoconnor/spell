@@ -52,7 +52,7 @@
         (Thread/sleep 50)
         (is (not (realized? result)))
         ;; Send identity — compose with default-inbox-fn (eval-fn)
-        (comm/send identity handle)
+        (comm/send-msg-fn identity handle)
         (is (= "got:raw" (deref result 2000 :timeout)))))))
 
 (deftest has-box-invariant-test
@@ -66,15 +66,15 @@
       (comm/box handle handle p)
       (is (false? @(:has-box (get @comm/registry handle)))))))
 
-(deftest send-composes-correctly-test
-  (testing "send composes f before default-inbox-fn"
+(deftest send-msg-fn-composes-correctly-test
+  (testing "send-msg-fn composes f before default-inbox-fn"
     (let [handle :test-compose
           ;; default-inbox-fn uppercases
           eval-fn (fn [raw] (.toUpperCase ^String raw))
           p (promise)]
       (comm/register! handle eval-fn)
       ;; Send f that prepends "pre:" — composition: eval-fn(f(raw))
-      (comm/send (fn [raw] (str "pre:" raw)) handle)
+      (comm/send-msg-fn (fn [raw] (str "pre:" raw)) handle)
       (deliver p "hello")
       ;; f("hello") = "pre:hello", eval-fn("pre:hello") = "PRE:HELLO"
       (is (= "PRE:HELLO" (comm/box handle handle p))))))
@@ -86,8 +86,8 @@
           p (promise)]
       (comm/register! handle eval-fn)
       ;; Send two transforms: first adds "a:", then second adds "b:"
-      (comm/send (fn [raw] (str "a:" raw)) handle)
-      (comm/send (fn [raw] (str "b:" raw)) handle)
+      (comm/send-msg-fn (fn [raw] (str "a:" raw)) handle)
+      (comm/send-msg-fn (fn [raw] (str "b:" raw)) handle)
       ;; Composition: eval-fn(a:(b:raw)) = "A:B:HELLO"
       (deliver p "hello")
       (is (= "A:B:HELLO" (comm/box handle handle p))))))
@@ -100,8 +100,8 @@
     (is (thrown-with-msg? Exception #"not inside an agent context"
           (comm/ask-builtin :some-target)))))
 
-(deftest send-msg-test
-  (testing "send-msg sends def message with :from and :value to target"
+(deftest send-test
+  (testing "send sends def message with :from and :value to target"
     (let [h-sender :test-sender
           h-target :test-target
           received (atom nil)
@@ -111,7 +111,7 @@
       (comm/register! h-target eval-fn)
       (reset! (:inbox (get @comm/registry h-target)) eval-fn)
       (binding [comm/*current-handle* h-sender]
-        (comm/send-msg 42 h-target))
+        (comm/send 42 h-target))
       ;; Process the message through box
       (deliver p "(quine completion (eval (do )))")
       (comm/box h-target h-target p)
@@ -120,8 +120,8 @@
       (is (.contains ^String @received ":value 42"))
       (is (.contains ^String @received "(def msg-")))))
 
-(deftest reply-send-test
-  (testing "reply-send extracts :from from message map and sends back"
+(deftest reply-test
+  (testing "reply extracts :from from message map and sends back"
     (let [h-a :reply-a
           h-b :reply-b
           b-received (atom nil)
@@ -133,7 +133,7 @@
       ;; Simulate a message map that h-a would have received from h-b
       (let [fake-msg {:from :reply-b :value "hello"}]
         (binding [comm/*current-handle* h-a]
-          (comm/reply-send fake-msg "reply-value")))
+          (comm/reply fake-msg "reply-value")))
       ;; Process the message at h-b
       (deliver p "(quine completion (eval (do )))")
       (comm/box h-b h-b p)
@@ -263,7 +263,7 @@
       ;; Give orphan a moment to start and block
       (Thread/sleep 50)
       ;; Send to orphan
-      (comm/send identity handle)
+      (comm/send-msg-fn identity handle)
       ;; Give orphan time to process
       (Thread/sleep 100)
       ;; The orphan ran; we can verify no exceptions and handle still valid
@@ -285,7 +285,7 @@
       ;; Agent should be registered and sleeping
       (is (contains? @comm/registry handle))
       ;; Send a transform that appends to the stored raw
-      (comm/send (fn [raw] (str raw "extra")) handle)
+      (comm/send-msg-fn (fn [raw] (str raw "extra")) handle)
       ;; Give time to process
       (Thread/sleep 200)
       ;; eval-fn saw the stored completion with the appended message
@@ -391,8 +391,8 @@
           (comm/box child-h child-h p)
           (is (= parent-h (:parent-handle (get @comm/registry child-h)))))))))
 
-(deftest spawn-recv-test
-  (testing "spawn-recv spawns child and blocks until child sends back"
+(deftest spawn-ask-test
+  (testing "spawn-ask spawns child and blocks until child sends back"
     (let [parent-h :sr-parent
           ;; Mock child llm-fn: send 42 to parent
           ;; In the new design, spawn registers synchronously,
@@ -402,7 +402,7 @@
                           ;; just need to seed inbox and use box to run
                           (let [parent (:parent-handle (get @comm/registry handle))
                                 inbox-fn (fn [_raw]
-                                          (comm/send-msg 42 parent)
+                                          (comm/send 42 parent)
                                           :done)
                                 p (promise)]
                             (reset! (:inbox (get @comm/registry handle)) inbox-fn)
@@ -414,8 +414,8 @@
             (future
               (binding [comm/*current-handle* parent-h
                         comm/*current-raw* "(quine completion (eval (do )))"]
-                (comm/spawn-recv child-llm-fn "test")))]
-        ;; spawn-recv blocks until child sends; child runs in a future
+                (comm/spawn-ask child-llm-fn "test")))]
+        ;; spawn-ask blocks until child sends; child runs in a future
         (let [result (deref parent-result 5000 :timeout)]
           (is (string? result))
           (is (.contains ^String result ":value 42")))))))
@@ -545,10 +545,10 @@
         (Thread/sleep 50)
         ;; Child A sends to parent
         (binding [comm/*current-handle* h-a]
-          (comm/send-msg 42 h-parent))
+          (comm/send 42 h-parent))
         ;; Child B sends to parent
         (binding [comm/*current-handle* h-b]
-          (comm/send-msg 99 h-parent))
+          (comm/send 99 h-parent))
         ;; Parent should unblock with accumulated raw containing both messages
         (let [result (deref result-future 5000 :timeout)]
           (is (string? result))
@@ -569,7 +569,7 @@
                 (comm/ask-builtin [h-child])))]
         (Thread/sleep 50)
         (binding [comm/*current-handle* h-child]
-          (comm/send-msg 7 h-parent))
+          (comm/send 7 h-parent))
         (let [result (deref result-future 5000 :timeout)]
           (is (string? result))
           (is (.contains ^String result ":value 7")))))))
@@ -592,7 +592,7 @@
               (mapv (fn [t]
                       (future
                         (binding [comm/*current-handle* t]
-                          (comm/send-msg (name t) h-parent))))
+                          (comm/send (name t) h-parent))))
                     targets)]
           (doseq [sf send-futures] (deref sf 2000 :timeout)))
         ;; Parent should have all 5 messages
@@ -633,7 +633,7 @@
           p (promise)]
       (comm/register! handle eval-fn)
       ;; Simulate: box drained inbox (nil), then a send happened during eval
-      (comm/send sent-fn handle)
+      (comm/send-msg-fn sent-fn handle)
       ;; Now inbox has composition from the send
       (let [inbox-before @(:inbox (get @comm/registry handle))]
         (is (some? inbox-before) "inbox should have the sent function")
@@ -702,23 +702,70 @@
         (Thread/sleep 100)
         (is (not (realized? result)) "should still be sleeping after spurious wake")
         ;; Now do a real send
-        (comm/send identity handle)
+        (comm/send-msg-fn identity handle)
         (is (= "got:raw" (deref result 2000 :timeout)))))))
 
 (deftest lazy-default-inbox-fn-resolution-test
-  (testing "send resolves default-inbox-fn at call time, not composition time"
+  (testing "send-msg-fn resolves default-inbox-fn at call time, not composition time"
     (let [handle :test-lazy
           initial-fn (fn [raw] (str "initial:" raw))
           updated-fn (fn [raw] (str "updated:" raw))
           p (promise)]
       (comm/register! handle initial-fn)
       ;; Send when inbox is nil — composition uses lazy default-inbox-fn
-      (comm/send (fn [raw] (str "pre:" raw)) handle)
+      (comm/send-msg-fn (fn [raw] (str "pre:" raw)) handle)
       ;; Update default-inbox-fn (simulating what the-llm does)
       (swap! comm/registry assoc-in [handle :default-inbox-fn] updated-fn)
       ;; Box processes — should use the UPDATED default-inbox-fn
       (deliver p "hello")
       (is (= "updated:pre:hello" (comm/box handle handle p))))))
+
+;; =============================================================================
+;; Event-send tests
+;; =============================================================================
+
+(deftest event-send-returns-nil-test
+  (testing "event-send returns nil immediately"
+    (comm/register! :es-nil identity)
+    (is (nil? (comm/event-send (fn [] {:ok "data"}) :es-nil :test-sender)))))
+
+(deftest event-send-sends-on-ok-test
+  (testing "event-send sends message when event-fn returns {:ok val}"
+    (let [handle :es-ok
+          received (promise)
+          eval-fn (fn [raw] (deliver received raw) :done)]
+      (comm/register! handle eval-fn)
+      ;; Seed inbox with sleep-fn so box blocks until event fires
+      (reset! (:inbox (get @comm/registry handle))
+              (#'comm/make-sleep-fn handle))
+      (comm/event-send (fn [] {:ok "event-data"}) handle :test-event)
+      (let [p (promise)]
+        (deliver p "(quine c (eval (do 1)))")
+        (let [result (comm/box handle handle p)]
+          (is (= :done result))
+          (let [raw (deref received 2000 :timeout)]
+            (is (not= :timeout raw))
+            (is (string? raw))
+            (is (.contains ^String raw ":from :test-event"))
+            (is (.contains ^String raw ":value \"event-data\""))))))))
+
+(deftest event-send-silent-on-non-ok-test
+  (testing "event-send does not send when event-fn returns non-:ok"
+    (let [handle :es-silent]
+      (comm/register! handle identity)
+      (comm/event-send (fn [] {:timeout true}) handle :test-event)
+      ;; Wait for the future to complete
+      (Thread/sleep 200)
+      ;; Inbox should still be nil (no message sent)
+      (is (nil? @(:inbox (get @comm/registry handle)))))))
+
+(deftest event-send-silent-on-exception-test
+  (testing "event-send does not send when event-fn throws"
+    (let [handle :es-ex]
+      (comm/register! handle identity)
+      (comm/event-send (fn [] (throw (ex-info "boom" {}))) handle :test-event)
+      (Thread/sleep 200)
+      (is (nil? @(:inbox (get @comm/registry handle)))))))
 
 ;; =============================================================================
 ;; Effect guard tests
@@ -728,7 +775,7 @@
   (testing "effect builtins are unbound in eval's first pass (do block)"
     ;; agents/ — communication effects (namespace-qualified)
     (is (thrown-with-msg? Exception #"Unbound symbol: agents"
-          (eval/run-spell '(agents/send-msg 42 :nobody))))
+          (eval/run-spell '(agents/send 42 :nobody))))
     (is (thrown-with-msg? Exception #"Unbound symbol: agents"
           (eval/run-spell '(agents/spawn identity "test"))))
     (is (thrown-with-msg? Exception #"Unbound symbol: agents"

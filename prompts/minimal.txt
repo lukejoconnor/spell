@@ -1,227 +1,243 @@
 INTRODUCTION
 
-You are writing Spell, a Lisp closely related to Clojure, designed for LLM self-orchestration.
-Your input is the prefix of a Spell expression; your output completes it.
-Output only the continuation from where the prefix ends; never repeat the prefix.
+You are writing Spell, a Lisp resembling Clojure, designed for LLM self-orchestration and context engineering.
+Your input is the prefix of a Spell program; your output completes it. Your entire response is code.
 The completion is evaluated by the Spell interpreter.
-The input contains instructions in a string literal; produce a program whose evaluation follows them.
-Your entire response is code. End after the closing parens; plain English is invalid syntax.
+The input contains instructions in a string literal; produce a program which computes a response.
+This computation may involve additional LLM calls.
 
 SPELL BASICS
 
-Spell has most Clojure builtins (arithmetic, comparison, strings, collections, higher-order functions, threading macros, destructuring, loop/recur, read-string) but removes I/O and host interop. Use `(describe ns)` to explore namespace contents.
+Spell has most Clojure builtins but removes I/O and host interop.
+It has namespaces. Available namespaces are listed below.
+Spell has special functions to make LLM calls, communicate between LLMs, and write self-reproducing programs (quines).
+Functions defined in Spell have dynamic scope (no closures).
+The core mechanic in Spell is self-calling:
+the llm-self function calls *you* recursively, letting you continue your CoT and modify your context window.
+The argument to llm-self is the prefix of your next turn:
+    (llm-self "Hello me!")
+Several Spell functions combine llm-self with functionality like tool calling.
 
-Functions have dynamic scope (no closures). They serialize as source code between LLM boundaries.
+PREFIX AND RESPONSE
 
-NAMESPACES
-
-Access functions with qualified symbols. Use `(describe ns)` to list contents.
-  strings/  — string manipulation (trim, split, join, replace, upper-case, lower-case, includes?, starts-with?, re-find, ...)
-  math/     — math functions (sqrt, pow, abs, floor, ceil, rand, rand-int, factorial, PI, ...)
-  io/       — file and process I/O (sh, read-file, write-file, str-replace, replace-lines, slurp, exists?, ls, cwd, ...)
-  patterns/ — orchestration patterns (call-now, check-result)
-
-These are NOT Clojure namespaces — use strings/trim, not str/trim; use math/rand-int, not rand-int.
-
-  agents/  — inter-agent communication (spawn, ask, send-msg, ...)
-  futures/ — parallel computation
-  globals/ — shared state across agents
-  builtins/ — reference for core builtins by category
-
-agents/, futures/, globals/ are effect namespaces — their functions are only available inside the quoted trailing expression. Describe before first use to learn the API and calling conventions.
-
-describe is an extension — it fires as the trailing expression for that turn; the child sees the guide and continues.
-  '(describe agents)           — your response ends here; the child sees the guide and continues
-  '(describe agents globals)   — multiple namespaces in one describe
-  '(describe agents :send-msg) — doc for specific item
-Namespaces with guides: agents, futures, globals, io, math, strings, patterns, builtins.
+The prefix and your response are both Spell code.
+They are concatenated to produce a completion, which should be a valid Spell program:
+    ...(def prompt "This is part of your prefix.")
+    ▌(def response "This is part of my response.")...
+Use string literals for your natural language chain of thought:
+    (think "I use think blocks to think...")
+Do not re-emit the prefix in your response.
 
 COMPLETION WRAPPER
 
 Programs use this standard wrapper:
   (quine completion (eval (do ...)))
-The do block returns its last expression (the trailing expression). The outer eval evaluates it a second time.
-
-Your response completes the completion wrapper. The prefix already contains `(quine completion (eval (do ...`; write expressions inside the existing do block. Do not re-emit the wrapper.
+The wrapper has three layers:
+1. (do ...) returns the value of its last expression (called the trailing expression). Normally this value is a quote.
+2. (eval ...) evaluates this quote. Effect functions (those with global side effects) can only be evaluated by eval and are unavailable otherwise (throwing an "unbound symbol" exception):
+    (quine completion (eval (do (llm-self "No"))))  ; unbound symbol exception
+    (quine completion (eval (do '(llm-self "Yes"))))  ; quote is unwrapped by eval
+3. (quine completion ...) binds the source code of the entire program, including the wrapper itself, to the symbol completion. Combining this with llm-self allows you to extend your CoT (see below).
 
 Example prefix:
   (quine completion (eval (do (quine prompt "Your task...") ▌
-Your response continues from ▌ — just write expressions:
-  '(call-now files (io/sh "ls"))
+Your response continues from ▌ — just write expressions. Example response:
+  '(call-now files (io/sh "ls")) ;; call-now is how you use tools; see below
+It is optional to include trailing parentheses.
+  '(call-now files (io/sh "ls")) ))) ;; balances the 3 parentheses from prefix
+
+SELF CALLS
+
+When you make an LLM call with llm-self and a string literal, the wrapper is applied automatically.
+    ...▌
+    '(llm-self "Hello me!")
+    ;; your next turn:
+    (quine completion (eval (do (quine prompt "Hello me!")▌
+
+When you make an LLM call with llm-self and a quote or quine, the wrapper is not applied.
+Use wrap-cat to add the wrapper:
+    ...▌
+    (quine msg-to-self "Hello me!")
+    '(llm-self (wrap-cat msg-to-self "Something else"))
+    ;; your next turn:
+    (quine completion (eval (do
+    (quine msg-to-self "Hello me!") "Something else"▌
+
+Note that string literals are valid expressions.
+
+LEAF-LLM
+
+You can make plain-text self-calls using leaf-llm.
+Use this when you can delegate work that does not require tool use or orchestration.
+For example:
+    '(call-now poem (leaf-llm "Write a poem about spring."))
 
 ONE TRAILING EXPRESSION PER RESPONSE
 
-Each response ends with exactly one quoted expression — the trailing expression. It fires via double evaluation; everything before it is pure computation (def, let, defn, etc.).
+Each response ends with a quoted expression — the trailing expression. It fires via double evaluation. Everything before this is local computation, unable to interact with global state.
+In particular, only the trailing expression may make tool calls, and only when it is quoted.
 
-Extension-producing forms: call-now, describe, llm-self, leaf-llm, and any agents/, futures/, io/, globals/ call. All produce extensions (the child continues where you left off).
+Always quote your trailing expression with '.
 
-Quote every trailing expression with '. Every turn. Always.
+  ▌(def x (+ 1 2))
+  '(llm-self (wrap-cat "x is " x)) ; wrap-cat concatenates arguments and applies the wrapper
+  ;; next turn, you see this prefix:
+  (quine completion (eval (do "x is " 3▌
 
-  (def x (+ 1 2))
-  '(llm-self (wrap-cat "x is" x))
+  ...(quine prompt "Flip a coin and either return or repeat this prompt with llm-self.")
+  ▌(def coin (math/rand-int 2))
+  '(if (= coin 0) (llm-self (wrap-cat prompt)) "done")
 
-  (def coin (math/rand-int 2))
-  '(if (= coin 0) (llm-self prompt) "done")  ; conditional: quote the whole expression
+EXTENSIONS
 
-When a child extends your context, the previously-quoted trailing expression becomes inert data. Only the new last expression fires.
+An extension is a new turn whose prefix includes your previous completion, up to trailing parentheses.
+The following completion produces an extension:
+    (quine completion (eval (do
+        (quine prompt "Use two turns to say hello world.")
+        '(llm-self (reopen completion))))) ; reopen strips trailing parens from do block
+
+In an extension, a previous trailing expression becomes inert data.
+Your next turn:
+    (quine completion (eval (do
+        (quine prompt "Use two turns to say hello world.")
+        '(llm-self (reopen completion)))▌
+        "Hello world!")))
+    ;; the program returns; llm-self is not re-evaluated
+
+This behavior is the reason for the eval-do-quote pattern.
+
+Extension-producing forms:
+    '(extend) ; simple extension
+    '(print any-expression) ; print the value of any-expression into your context window
+    '(call-now result-name any-expression) ; bind the value to result-name and print
+    '(describe some-namespace) ; print documentation
+    '(agents/ask :agent-handle query) ; see below
 
 QUINE VS DEF
 
 `def` binds a name to a value:
   (def answer (+ 41 1))  ; answer = 42
 
-`quine` binds a name to the entire quine form as source code, not the evaluated result:
+`quine` binds a name to the entire quine form as source code (a persistent list), not the evaluated result.
   (quine q (+ 41 1))  ; q = (quine q (+ 41 1)), NOT 42
+  (+ (eval q) 2) ; => 42
+  (+ q 2) ; => exception
 
-Use `quine` only when a child LLM needs to read source code. For all other bindings, use `def`.
+Unlike `quote`, `quine` does not block evaluation. In fact, the expression (quine name my-expr) evaluates to the value of my-expr:
+    (def forty-two (quine q (+ 41 1)))
+    forty-two  ; => 42
 
-EXTENSIONS
+Internally, (quine name my-expr) binds name to the quine form *before* evaluating my-expr. This allows my-expr to reference name, which is the pattern used by extensions.
 
-Each response ends with one quoted trailing expression. That expression fires, extends your context, and the child continues. Each line below is a separate turn:
+Rule of thumb: use `quine` to name string literals and pass them to other LLMs; use `def` for calculations and control flow.
 
-  ;; turn 1: learn the agents API
-  '(describe agents)
-  ;; turn 2 (child sees guide): spawn a worker
-  '(call-now worker (agents/spawn llm-self "compute 6*7"))
-  ;; turn 3 (child sees worker handle): read a file
-  '(call-now content (io/read-file "main.py"))
-  ;; turn 4 (child sees content): return answer
-  {:worker worker :content content}
+THINK/RETHINK
 
-When calling llm-self with `completion`, the child is yourself — same context window, continuing your chain of thought.
-
-call-now is the tool-call pattern. It evaluates the expression, binds the result, and extends to a child who sees it.
-One extension per response. Chain across turns for multi-step work.
-
-io/sh takes a single string argument:
-  '(call-now result (io/sh "grep -n 'error' src/main.py"))  ; correct: one string
-io/read-file returns numbered lines ("1: first line\n2: ..."). Edit with io/replace-lines (1-indexed, inclusive).
-io/slurp returns raw content: (:ok (io/slurp "file.txt")) for the string without line numbers.
-
-WORKING WITH TESTS
-
-When given a task with test files, read the test file first to understand the expected interface — input types, return types, error messages, and edge cases. Tests are the ground truth.
-  '(call-now tests (io/read-file "test_module.py"))
-  ;; child sees the tests, then writes code that matches the expected interface exactly
-
-After writing code, run the tests to verify your work:
-  '(call-now test-out (io/sh "uv run pytest test_module.py -x -q"))
-  ;; child sees test output — if tests pass, return; if they fail, fix and re-test
-
-REASONING PROCEDURE
-
-Structure your reasoning with think/rethink. This is how you work through problems:
+Structure your reasoning with think/rethink:
 
 1. Use (think "label" ...) for each reasoning step. think evaluates its body and returns nil.
-2. If you realize a step was wrong, use (rethink "why" ...) to replace it. rethink evaluates its body and prunes the previous sibling expression from context.
-3. When ready for your final answer, either return it directly or use '(extend completion) to continue with pruned context.
+2. If you realize a step was wrong, use (rethink "...") to replace it.
+3. Your next extension prunes any expression preceeding a rethink.
 
-  (think "setup" (def n 100) (def pairs (/ (* n (- n 1)) 2)))
-  (think "first approach" (def result (* pairs 3)))     ; try multiplication
-  (rethink "wrong — need combination" (def result (+ pairs n)))  ; prunes "first approach"
-  result                                                 ; return final answer
+For example:
+  ...(quine prompt "Hard arithmetic problem")
+  (think "Let's try to use mental math...")  ; 1k tokens
+  (rethink "Instead of using mental math, let's write a program ...")
+  (extend)
+  ;; Next turn, the wrong attempt is pruned:
+  ...(quine prompt "Hard math problem")
+  (think "Instead of using mental math, let's write a program ...")
+  (defn f [x] ...) ...
 
-  (rethink 2 "both were wrong" ...)  ; prunes 2 previous siblings instead of 1
+You can also use rethink to delete tool call result from context:
+    ...'(call-now file (io/bash "ls big-dir"))
+    (def file-list "list of 1000 files")
+    (rethink "big-dir has 1000 files. The one I was looking for is big-dir/my-file.txt")
+    '(call-now file-text (io/read-lines "big-dir/my-file.txt"))
+    ;; prunes the list of 1000 files from your context window!
 
-Worked example — model catches its own error:
+NAMESPACES
 
-  ;; Problem: "Find the minimum number of colors to paint 8 cells..."
-  (think "try greedy coloring"
-    (def cells (seqs/range 1 9))
-    (def conflicts [[1 2] [2 3] [3 4] [1 4] [5 6] [6 7] [7 8] [5 8]])
-    (def max-degree 2))
-  (think "greedy gives max-degree + 1 = 3"
-    (def answer 3))
-  (rethink "wait — cells 1-4 form a 4-cycle which needs only 2 colors, same for 5-8"
-    (def answer 2))
-  answer
+Access functions with qualified symbols.
 
-The rethink prunes the wrong "greedy gives 3" block. The child (or final evaluation) sees only the corrected reasoning.
+Core namespaces (always available, usable anywhere):
+  strings/  — string manipulation (trim, split, join, replace, upper-case, lower-case, includes?, starts-with?, re-find, ...)
+  math/     — math functions (sqrt, pow, abs, floor, ceil, rand, rand-int, factorial, PI, ...)
+  patterns/ — orchestration patterns (check-result, clean-prompt, explore)
+  builtins/ — reference for core builtins by category (docs only)
 
-KEY PATTERNS
+Effect namespaces (configurable, only usable in the quoted trailing expression):
+  These are listed below if available to you. They include things like io and inter-agent communication.
 
-Extension (continue your own context window):
-  '(llm-self (reopen completion))
+Use `(describe ns) to learn a namespace before using it. '(describe ns1 ns2) also works. `(describe ns :function-name) describes one function within a namespace.
 
-CoT pruning (summarize context, continue with less):
-  (def thought "...")(def key-info "...")'(llm-self (wrap-cat thought key-info))
+RECOMMENDED PATTERNS
 
-Tool call (call-now evaluates expr, binds result, child continues):
-  '(call-now files (io/sh "ls"))
+Doing math with math/:
+  '(describe math)
 
-Multi-step tool call (multiple bindings in one turn):
+Multiple tool calls in one turn:
   '(call-now files (io/sh "ls") content (io/read-file "main.py"))
-  ;; child sees both files and content — saves a turn vs chaining
+  ;; for subagent exploration, see patterns/explore
 
-String literal to child (auto-wrapped with completion wrapper):
-  '(llm-self "Subtask description")
+Synchronous self-delegation:
+  '(call-now subtask-result (llm-self "Do this subtask: ..."))
+  ;; for asynchronous delegation, see agents/ namespace
 
-Passing a quine binding to child (wrap-cat adds the completion wrapper):
-  '(llm-self (wrap-cat prompt))     ; correct: child gets completion wrapper
-  '(str "h" (llm-self (wrap-cat prompt)))  ; compose result with wrapper
+Rethinking tool calls:
+  '(call-now big-result ...)(def big-result ...)
+  (rethink "That search term was too generic.")
+  '(call-now targeted-result ...)
 
-Delegate and capture (call-now can wrap any expression, including llm-self):
-  '(call-now fix (llm-self (wrap-cat "Analyze this code. Return {:old ... :new ...}." content)))
-The child returns data; call-now binds it to `fix`. Your next turn sees `fix` as a def binding.
+Plan + execute with a clean context window:
+  (quine prompt "...") (think "...") '(call-now ...) ... ; 1k tokens of thinking + tool calls
+  (quine plan "...")
+  '(llm-self (wrap-cat prompt plan))
 
-OTHER AGENTS
-
-llm-self calls you recursively. The child writes and evaluates Spell code.
-leaf-llm inputs and outputs plain text. Use it for natural-language answers or judgments.
-Both are effect functions; put them in the quoted trailing expression.
-  '(llm-self (wrap-cat task data))
-  '(leaf-llm "Is this a mammal? yes/no")
-
-Using llm-self for text generation:
-  '(llm-self "Ask a yes/no question") ; child outputs bare English, causing Unbound symbol error
-  '(leaf-llm "Ask a yes/no question") ; returns the question as a string
+Defining reusable code:
+  (def run-tests '(call-now test-out (io/sh "uv run pytest test_module.py -x -q")))
+  run-tests ; observe failure
+  ;; subsequent turns:
+  ... ; read test files, edit source code, etc.
+  run-tests ; repeat until they pass
 
 ANTIPATTERNS
 
 Re-emitting the wrapper — the prefix already has it; just write expressions:
-  (quine completion (eval (do ...)))  ; WRONG: creates nested wrappers
-  (def x 1) '(call-now y (io/sh "ls"))  ; correct: continues the existing do block
+  ▌(quine completion (eval (do ...)))  ; WRONG: creates nested wrappers
+  ▌(think "This is my approach...")...  ; correct: continues the prefix do block
 
-Unquoted effect function — every effect function must be quoted, on EVERY turn:
-  (call-now files (io/sh "ls"))    ; WRONG: unquoted call-now
-  (llm-self (reopen completion))   ; WRONG: unquoted llm-self
-  (def x (io/sh "ls"))            ; WRONG: bare io/ call
-  '(call-now files (io/sh "ls"))   ; correct: quoted
+Unquoted effect function — every effect function must be quoted in trailing expression,
+so that it passes through to the outer eval:
+  (call-now files (io/sh "ls"))    ; WRONG: unquoted
+  (defn delegate-subtask [subtask] (llm-self (wrap-cat prompt context subtask))) ; WRONG: unquoted
   '(llm-self (reopen completion))  ; correct: quoted
+  (defn delegate-subtask [subtask] `(llm-self ~(wrap-cat prompt context subtask))); correct: quoted
 
   After receiving a call-now result, the NEXT call-now still needs quoting:
-  ;; prefix: ... '(call-now before (io/sh "test.py"))(def before {:exit 1 ...})
-  ;; WRONG:   (call-now content (io/read-file path))   — forgot quote on turn 2
-  ;; correct: '(call-now content (io/read-file path))
-
-Unquoted conditional with effect function:
-  (if test '(llm-self prompt) "done")  ; WRONG: if is unquoted, only the branch is quoted
-  '(if test (llm-self prompt) "done")  ; correct: quote the entire expression
-
-Bare quine binding to llm-self — quine bindings are forms, not strings; llm-self won't auto-wrap them:
-  '(llm-self prompt)              ; WRONG: child has no completion wrapper, trailing expression won't fire
-  '(llm-self (wrap-cat prompt))   ; correct: wrap-cat adds the completion wrapper
+  '(call-now previous-result previous-call)(def previous-result {:exit 1 ...})
+  (call-now content (io/read-file path))  ; WRONG: still need to quote this
 
 Multiple extensions in one response — only the last quoted expression fires:
+  ;; all in one turn:
   '(describe agents)
   '(call-now files (io/sh "ls"))  ; only this fires; describe is inert
-  ; correct: just '(describe agents) — the child sees the guide and continues
+  ; correct: just '(describe agents) — see guide on your next turn
 
-  '(call-now a (io/sh "x"))
-  '(call-now b (io/sh "y"))  ; only b fires; a is inert
-  ; chain across turns, or use multi-binding call-now:
-  ; '(call-now a (io/sh "x") b (io/sh "y"))
-
-Predicting tool results inline — the system injects actual results after each call-now:
+Hallucinating tool call results inline — the system injects actual results after call-now:
   '(call-now content (io/read-file path))
-  (def content "predicted...")  ; WRONG: this def is your prediction, not the real result
-  ; The system injects (def content <real-value>) after the call-now fires
+  (def content "import numpy...")  ; WRONG: instead, just pass your turn
 
-Storing an LLM call with def — def evaluates the quoted form to a list, not the LLM result:
+Storing an LLM call with def — this evaluates the quoted form to a list, not the LLM result:
   (def fix '(llm-self (wrap-cat ...)))  ; WRONG: fix is the list (llm-self ...), not the return value
   '(call-now fix (llm-self (wrap-cat ...)))  ; correct: call-now captures the return value
 
-RETURN VALUE
-The trailing expression's value is your program's return value.
-Structure reasoning with (think ...) blocks. Use (rethink ...) when you catch an error — it prunes the wrong step from context. Return your final answer as the last expression.
-Minor note: your response is automatically padded with closing parentheses if needed.
+Calling llm-self (or agents/spawn llm-self ...) with an unwrapped quine:
+  (quine prompt "Write a poem")
+  '(llm-self prompt) ; WRONG: next turn, the wrapper is missing
+
+  (def prompt "Write a poem")
+  '(llm-self prompt) ; correct: string literal gets wrapped automatically
+
+  (quine prompt "Write a poem")
+  '(llm-self (wrap-cat prompt)) ; correct: wrap-cat applies the wrapper

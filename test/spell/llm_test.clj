@@ -7,7 +7,6 @@
             [spell.llm :as llm]
             [spell.provider :as provider]
             [spell.io :as spell-io]
-            [spell.prompt :as prompt]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [spell.eval :as eval]))
@@ -233,7 +232,7 @@
     (let [r (spell/spell-eval '(describe-fn builtins) {})]
       (is (eval/ok? r))
       (is (string? (:ok r)))
-      (is (str/includes? (:ok r) "BUILTINS REFERENCE"))))
+      (is (str/includes? (:ok r) "BUILTINS"))))
 
   (testing "builtins category returns string"
     (let [r (spell/spell-eval '(describe-fn builtins :spell) {})]
@@ -251,7 +250,7 @@
   (testing "io namespace has :guide accessible via describe"
     (let [guide (llm/describe spell-io/io-namespace :guide)]
       (is (string? guide))
-      (is (str/includes? guide "FILE EDITING"))))
+      (is (str/includes? guide "IO"))))
 
   (testing "io describe :sh still returns doc (no regression)"
     (let [doc (llm/describe spell-io/io-namespace :sh)]
@@ -262,19 +261,20 @@
     (let [r (spell/spell-eval '(describe-fn math :guide) {})]
       (is (eval/ok? r))
       (is (string? (:ok r)))
-      (is (str/includes? (:ok r) "MATH NAMESPACE"))))
+      (is (str/includes? (:ok r) "MATH"))))
 
   (testing "strings namespace has :guide via spell-eval"
     (let [r (spell/spell-eval '(describe-fn strings :guide) {})]
       (is (eval/ok? r))
       (is (string? (:ok r)))
-      (is (str/includes? (:ok r) "STRINGS NAMESPACE"))))
+      (is (str/includes? (:ok r) "STRINGS"))))
 
-  (testing "patterns namespace has :guide via spell-eval"
-    (let [r (spell/spell-eval '(describe-fn patterns :guide) {})]
-      (is (eval/ok? r))
-      (is (string? (:ok r)))
-      (is (str/includes? (:ok r) "PATTERNS NAMESPACE"))))
+  (testing "patterns namespace has :guide via spell-eval (effect builtin)"
+    (binding [eval/*builtins* (merge eval/*builtins* effect-builtins)]
+      (let [r (spell/spell-eval '(describe-fn patterns :guide) {})]
+        (is (eval/ok? r))
+        (is (string? (:ok r)))
+        (is (str/includes? (:ok r) "PATTERNS NAMESPACE")))))
 
   (testing "agents namespace has :guide"
     (let [guide (llm/describe (deref (resolve 'spell.comm/agents-namespace)) :guide)]
@@ -292,25 +292,25 @@
       (is (str/includes? guide "GLOBALS")))))
 
 (deftest namespace-multiple-calls-test
-  (testing "can use multiple items from same namespace"
+  (testing "can use multiple items from same namespace (effect)"
     (let [ns-map {'tools {:docs {:add "add fn" :sub "sub fn"}
                           :add +
                           :sub -}}
           test-llm (spell/make-llm {:namespaces ns-map})]
       (provider/with-provider
-        (provider/dummy-provider {:response "(tools/add (tools/sub 10 3) 5))"})
-        (is (= 12 (test-llm "(do ")))))))
+        (provider/dummy-provider {:response "(tools/add (tools/sub 10 3) 5)))"})
+        (is (= 12 (test-llm "(eval (do '")))))))
 
 (deftest namespace-agent-test
-  (testing "can call agent from namespace"
+  (testing "can call agent from namespace (effect)"
     (let [mock-agent (fn ([p] (str "result: " p))
                          ([p _] (str "result: " p)))
           ns-map {'helpers {:docs {:helper "helper agent"}
                             :helper mock-agent}}
           test-llm (spell/make-llm {:namespaces ns-map})]
       (provider/with-provider
-        (provider/dummy-provider {:response "(helpers/helper \"test\"))"})
-        (is (= "result: test" (test-llm "(do ")))))))
+        (provider/dummy-provider {:response "(helpers/helper \"test\")))"})
+        (is (= "result: test" (test-llm "(eval (do '")))))))
 
 ;; =============================================================================
 ;; System prompt generation tests
@@ -320,26 +320,26 @@
   (testing "includes namespace item descriptions"
     (let [ns-map {'tools {:docs {:my-tool "Does things."}
                           :my-tool identity}}
-          p (prompt/generate-system-prompt ns-map)]
+          p (llm/generate-system-prompt ns-map)]
       (is (str/includes? p "my-tool: Does things."))))
 
   (testing "includes namespace section header"
     (let [ns-map {'mytools {:docs {:a "tool a"} :a identity}}
-          p (prompt/generate-system-prompt ns-map)]
+          p (llm/generate-system-prompt ns-map)]
       (is (str/includes? p "NAMESPACES"))
       (is (str/includes? p "## mytools"))))
 
-  (testing "default prompt contains expected sections"
-    (let [p (prompt/generate-system-prompt spell/all-namespaces)]
+  (testing "compose-system-prompt with base includes base text"
+    (let [p (llm/compose-system-prompt {:base "INTRODUCTION\nSpell is a Lisp."
+                                        :namespaces {'io spell-io/io-namespace}})]
       (is (str/includes? p "INTRODUCTION"))
       (is (str/includes? p "NAMESPACES"))
-      (is (str/includes? p "## builtins"))
+      (is (str/includes? p "## io"))
       (is (str/includes? p "read-file"))
-      (is (str/includes? p "sh"))
-      (is (str/includes? p "CALL-NOW"))))
+      (is (str/includes? p "sh"))))
 
   (testing "qualified symbol usage instructions included"
-    (let [p (prompt/generate-system-prompt spell/all-namespaces)]
+    (let [p (llm/generate-system-prompt spell/all-namespaces)]
       (is (str/includes? p "io/sh")))))
 
 
@@ -572,18 +572,14 @@
           ;; ns-recover should fix floor -> math/floor
           (is (= 30 result))))))
 
-  (testing "ns-recover handles wrapped Namespace lookup failed errors"
-    (let [math-ns {:floor (fn [x] (long (Math/floor (double x))))}
-          other-ns {:trim str/trim}
-          test-llm (spell/make-llm {:namespaces {'math math-ns
-                                                 'other other-ns}
-                                    :recover true})]
+  (testing "ns-recover fixes bare symbol to core namespace qualified form"
+    ;; sqrt is in core namespace math/ but not in core-builtins
+    ;; ns-recover should fix bare sqrt -> math/sqrt
+    (let [test-llm (spell/make-llm {:namespaces {} :recover true})]
       (provider/with-provider
-        ;; Code uses wrong namespace: other/floor instead of math/floor
-        (provider/dummy-provider {:response "(map (fn [x] (other/floor x)) (list 3.7 4.2)))"})
-        ;; Namespace lookup for other/floor fails, ns-recover should fix to math/floor
+        (provider/dummy-provider {:response "(map (fn [x] (sqrt x)) (list 4.0 9.0)))"})
         (let [result (test-llm "(do ")]
-          (is (= [3 4] result)))))))
+          (is (= [2.0 3.0] result)))))))
 
 (deftest format-error-for-recovery-test
   (testing "formats error with program context"

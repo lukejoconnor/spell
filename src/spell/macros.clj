@@ -268,27 +268,19 @@
       (list 'let fut-bindings
             (list* 'let await-bindings body)))))
 
-;; print: (print expr) — evaluate expr, extend completion with bare serialized value.
-;; Like (call-now x x) but without creating a binding — the value appears as a
-;; literal in the continuation so the LLM can see it.
+;; print: (print expr...) — evaluate exprs, extend completion with bare serialized values.
+;; Like (call-now x x) but without creating a binding — values appear as
+;; literals in the continuation so the LLM can see them.
 (defspellmacro 'print
-  (fn
-    ([val-expr]
-     (let [temp (gensym "print__")]
-       (list 'let [temp val-expr]
-             (list 'llm-self
-                   (list 'str
+  (fn [& val-exprs]
+    (let [temps (mapv (fn [_] (gensym "print__")) val-exprs)
+          bindings (vec (mapcat vector temps val-exprs))
+          serialized (map (fn [t] (list 'serialize t)) temps)]
+      (list 'let bindings
+            (list 'llm-self
+                  (list* 'str
                          (list 'prune-and-reopen 'completion)
-                         (list 'serialize temp)
-                         " ")))))
-    ([val-expr limit]
-     (let [temp (gensym "print__")]
-       (list 'let [temp val-expr]
-             (list 'llm-self
-                   (list 'str
-                         (list 'prune-and-reopen 'completion)
-                         (list 'serialize temp limit)
-                         " ")))))))
+                         (concat (interpose " " serialized) [" "])))))))
 
 ;; define: Scheme-style alias for def
 (defspellmacro 'define
@@ -312,11 +304,11 @@
     (cond
       ;; (describe ns)
       (= 1 (count args))
-      (list 'print (list 'describe-fn (first args)) -1)
+      (list 'print (list 'describe-fn (first args)))
 
       ;; (describe ns :key) — keyword means key lookup
       (and (= 2 (count args)) (keyword? (second args)))
-      (list 'print (list 'describe-fn (first args) (second args)) -1)
+      (list 'print (list 'describe-fn (first args) (second args)))
 
       ;; (describe ns1 ns2 ...) — multi-namespace
       :else
@@ -325,7 +317,7 @@
                              (list 'describe-fn ns-sym)
                              "\n\n"])
                           args)]
-        (list 'print (list* 'cat parts) -1)))))
+        (list 'print (list* 'cat parts))))))
 
 ;; ->: (-> x (f a) (g b)) -> (g (f x a) b)
 (defspellmacro '->

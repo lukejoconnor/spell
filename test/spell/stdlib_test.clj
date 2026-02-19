@@ -592,18 +592,18 @@
 ;; =============================================================================
 
 (deftest all-namespaces-test
-  (testing "all-namespaces has expected keys"
+  (testing "all-namespaces has core namespaces"
     (is (contains? stdlib/all-namespaces 'strings))
-    (is (contains? stdlib/all-namespaces 'math))
-    (is (contains? stdlib/all-namespaces 'patterns)))
+    (is (contains? stdlib/all-namespaces 'math)))
+  (testing "patterns NOT in all-namespaces (moved to effect)"
+    (is (not (contains? stdlib/all-namespaces 'patterns))))
   (testing "seqs, fns, bits NOT in all-namespaces (moved to core)"
     (is (not (contains? stdlib/all-namespaces 'seqs)))
     (is (not (contains? stdlib/all-namespaces 'fns)))
     (is (not (contains? stdlib/all-namespaces 'bits))))
   (testing "all-namespaces values are the actual namespace maps"
     (is (= stdlib/strings (get stdlib/all-namespaces 'strings)))
-    (is (= stdlib/math (get stdlib/all-namespaces 'math)))
-    (is (= stdlib/patterns (get stdlib/all-namespaces 'patterns))))
+    (is (= stdlib/math (get stdlib/all-namespaces 'math))))
   (testing "each namespace has :docs"
     (doseq [[ns-name ns-map] stdlib/all-namespaces]
       (is (map? (:docs ns-map))

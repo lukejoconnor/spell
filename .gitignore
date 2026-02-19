@@ -13,6 +13,7 @@ target/
 bin/
 dev/
 traces/
+logs/
 
 # Benchmarking (separate repo)
 benchmarking/

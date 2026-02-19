@@ -2415,14 +2415,13 @@
       (let [body (nth expanded 2)]
         (is (= 'llm-self (first body))))))
 
-  (testing "print macro 2-arity with limit"
-    (let [expanded (macros/spell-macroexpand-1 '(print (+ 1 2) -1))]
+  (testing "print macro multi-arity"
+    (let [expanded (macros/spell-macroexpand-1 '(print a b c))]
       (is (= 'let (first expanded)))
-      (let [body (nth expanded 2)
-            str-form (second body)]
-        ;; str form should contain (serialize temp -1)
-        (is (some #(and (seq? %) (= 'serialize (first %)) (= -1 (last %)))
-                   (rest str-form)))))))
+      ;; bindings should have 6 elements (3 pairs)
+      (is (= 6 (count (second expanded))))
+      (let [body (nth expanded 2)]
+        (is (= 'llm-self (first body)))))))
 
 ;; =============================================================================
 ;; Think / Rethink / Extend

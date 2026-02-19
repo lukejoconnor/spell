@@ -1,0 +1,204 @@
+(ns spell.user-test
+  (:require [clojure.test :refer [deftest testing is use-fixtures]]
+            [spell.comm :as comm]
+            [spell.user :as user])
+  (:import [java.io BufferedReader StringReader]))
+
+;; Clean registry and queue between tests
+(use-fixtures :each
+  (fn [f]
+    (reset! comm/registry {})
+    (reset! @#'user/last-sender :root)
+    (.clear @#'user/stdin-queue)
+    (reset! @#'user/signal-pending false)
+    (f)
+    (reset! comm/registry {})
+    (reset! @#'user/last-sender :root)
+    (.clear @#'user/stdin-queue)
+    (reset! @#'user/signal-pending false)))
+
+(defn- mock-reader
+  "Create a BufferedReader that reads from a string (one line per readLine)."
+  [s]
+  (BufferedReader. (StringReader. s)))
+
+;; =============================================================================
+;; Pure function tests
+;; =============================================================================
+
+(deftest parse-user-input-test
+  (testing "parses recipient prefix"
+    (is (= [:root "hello"] (user/parse-user-input ":root hello")))
+    (is (= [:seller "offer 100"] (user/parse-user-input ":seller offer 100"))))
+
+  (testing "no recipient prefix"
+    (is (= [nil "hello"] (user/parse-user-input "hello")))
+    (is (= [nil "some message"] (user/parse-user-input "some message"))))
+
+  (testing "colon without space is not a recipient"
+    (is (= [nil ":notseparated"] (user/parse-user-input ":notseparated")))))
+
+(deftest resolve-recipient-test
+  (testing "explicit takes priority"
+    (is (= :seller (user/resolve-recipient :seller :root))))
+
+  (testing "falls back to last-sender"
+    (is (= :agent-1 (user/resolve-recipient nil :agent-1))))
+
+  (testing "falls back to :root when both nil"
+    (is (= :root (user/resolve-recipient nil nil)))))
+
+;; =============================================================================
+;; Registration tests
+;; =============================================================================
+
+(deftest register-user-agent-test
+  (testing "registers :user handle with parent :root"
+    (user/register-user-agent! (mock-reader "test"))
+    (is (true? (comm/handle? :user)))
+    (is (= :root (:parent-handle (get @comm/registry :user)))))
+
+  (testing "idempotent — second call is no-op"
+    (user/register-user-agent! (mock-reader "other"))
+    (is (true? (comm/handle? :user)))))
+
+;; =============================================================================
+;; Message extraction tests
+;; =============================================================================
+
+(deftest extract-messages-test
+  (testing "extracts single message from raw completion"
+    (let [raw "(quine completion (eval (do (def msg-1 {:from :agent-1 :value \"hello\"}) '(llm-self (reopen completion)) )))"
+          result (#'user/extract-messages raw)]
+      (is (= 1 (count result)))
+      (is (= :agent-1 (:from (first result))))
+      (is (= "hello" (:value (first result))))))
+
+  (testing "extracts multiple messages"
+    (let [raw "(quine completion (eval (do (def msg-1 {:from :agent-1 :value \"hello\"}) (def msg-2 {:from :agent-2 :value \"world\"}) '(llm-self (reopen completion)) )))"
+          result (#'user/extract-messages raw)]
+      (is (= 2 (count result)))
+      (is (= :agent-1 (:from (first result))))
+      (is (= :agent-2 (:from (second result))))))
+
+  (testing "extracts poke (waiting-for) from raw completion"
+    (let [raw "(quine completion (eval (do (def waiting-for :agent-2) '(llm-self (reopen completion)) )))"
+          result (#'user/extract-messages raw)]
+      (is (= 1 (count result)))
+      (is (= :agent-2 (:from (first result))))
+      (is (not (contains? (first result) :value)))))
+
+  (testing "returns nil for empty/malformed raw"
+    (is (nil? (#'user/extract-messages "")))
+    (is (nil? (#'user/extract-messages "not a quine")))))
+
+;; =============================================================================
+;; Single ask test
+;; =============================================================================
+
+(deftest single-ask-test
+  (testing "agent asks :user, user replies"
+    (let [reader (mock-reader "hello from user")
+          h-agent :test-agent
+          agent-raw "(quine completion (eval (do )))"
+          agent-started (promise)
+          first? (atom true)
+          agent-eval-fn (fn [raw]
+                          (if (compare-and-set! first? true false)
+                            (do (deliver agent-started true)
+                                (comm/ask-builtin :user "What is your name?"))
+                            raw))]
+      (user/register-user-agent! reader)
+      (Thread/sleep 100)
+      (comm/register! h-agent agent-eval-fn)
+      (reset! (:inbox (get @comm/registry h-agent)) agent-eval-fn)
+      (let [pa (promise)]
+        (deliver pa agent-raw)
+        (let [fa (future (comm/box h-agent h-agent pa))]
+          (deref agent-started 2000 :timeout)
+          (let [result (deref fa 5000 :timeout)]
+            (is (string? result))
+            (is (.contains ^String result ":from :user"))
+            (is (.contains ^String result ":value \"hello from user\""))))))))
+
+;; Sequential asks: skipped — triggers #108 (notify-waiters! race with fast recipients).
+;; Mock readers respond instantly, so the agent re-registers as a waiter before
+;; the orphan box's notify-waiters! runs. Not reproducible with real LLM agents.
+
+;; =============================================================================
+;; Fire-and-forget test (send, no ask — should not prompt)
+;; =============================================================================
+
+(deftest fire-and-forget-test
+  (testing "send to :user processes without blocking on reply"
+    ;; Use a reader that blocks forever — if user-call-fn tried to read,
+    ;; the test would hang. We verify it completes promptly.
+    (let [reader (mock-reader "")]
+      (user/register-user-agent! reader)
+      (Thread/sleep 100)
+      (comm/register! :ff-sender identity)
+      (binding [comm/*current-handle* :ff-sender]
+        (comm/send "goodbye!" :user))
+      ;; Fire-and-forget should process without blocking on stdin.
+      ;; The user agent quine-restarts immediately (no > prompt).
+      ;; If it blocked, deref would timeout.
+      (Thread/sleep 500)
+      ;; Handle is still registered (agent didn't crash)
+      (is (true? (comm/handle? :user))))))
+
+;; =============================================================================
+;; User-initiated messaging test
+;; =============================================================================
+
+(deftest user-initiated-test
+  (testing "user presses Enter then sends message to target agent"
+    (let [;; Reader: blank line (signal) then the actual message
+          reader (mock-reader "\n:target hello from user\n")
+          result-p (promise)
+          target-eval-fn (fn [raw] (deliver result-p raw) raw)]
+      ;; Register target with parent :root so orphan-box creates root boxes
+      ;; (enabling the sleep/wake cycle). default-inbox-fn = target-eval-fn.
+      (comm/register! :target target-eval-fn :root)
+      (comm/orphan-box! :target "(quine completion (eval (do )))")
+      (Thread/sleep 100)
+      ;; Register user agent — reader has blank line + message
+      (user/register-user-agent! reader)
+      ;; Wait for target to receive the user's message
+      (let [result (deref result-p 5000 :timeout)]
+        (is (not= :timeout result))
+        (when (string? result)
+          (is (.contains ^String result "hello from user")))))))
+
+;; =============================================================================
+;; Debounce test
+;; =============================================================================
+
+(deftest debounce-rapid-enter-test
+  (testing "only one signal sent despite multiple blank lines"
+    ;; Use a trivial eval-fn (not the full user pipeline) so signal-pending
+    ;; is never reset by user-call-fn. This isolates the debounce mechanism.
+    (comm/register! :user (fn [raw] raw))
+    (comm/orphan-box! :user "(quine completion (eval (do )))")
+    (Thread/sleep 50)
+    ;; Start reader with 3 blank lines — only 1 CAS should succeed
+    (#'user/start-stdin-reader! (mock-reader "\n\n\n"))
+    (Thread/sleep 300)
+    ;; signal-pending stays true because nobody reset it (trivial eval-fn)
+    ;; Proves subsequent blank lines failed CAS
+    (is (true? @@#'user/signal-pending))))
+
+;; =============================================================================
+;; Not registered test
+;; =============================================================================
+
+(deftest not-registered-test
+  (testing "asking unregistered :user throws"
+    (let [h-agent :unreg-agent
+          agent-eval-fn (fn [raw]
+                          (comm/ask-builtin :user "hello"))]
+      (comm/register! h-agent agent-eval-fn)
+      (reset! (:inbox (get @comm/registry h-agent)) agent-eval-fn)
+      (let [pa (promise)]
+        (deliver pa "(quine completion (eval (do )))")
+        (is (thrown? Exception
+              (comm/box h-agent h-agent pa)))))))

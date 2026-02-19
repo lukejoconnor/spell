@@ -17,6 +17,20 @@
   "When true, print LLM prompts and responses."
   false)
 
+(def ^:dynamic *log-writer*
+  "Writer for verbose log output. Defaults to *err*."
+  nil)
+
+(defn vlog
+  "Print verbose log message when *verbose* is true.
+   Writes to *log-writer* if set, otherwise *err*."
+  [& args]
+  (when *verbose*
+    (let [w (or *log-writer* *err*)]
+      (locking w
+        (binding [*out* w]
+          (apply println args))))))
+
 (def ^:dynamic *llm-depth*
   "Current depth of nested LLM calls (for indentation)."
   0)

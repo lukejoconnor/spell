@@ -380,11 +380,15 @@
   [model]
   (some #(str/includes? model %) ["codex"]))
 
-(defn- openai-responses-request [api-key base-url model prompt system-prompt max-tokens]
-  (let [body (cond-> {:model model
+(defn- openai-responses-request [api-key base-url model prompt system-prompt max-tokens reasoning-effort verbosity]
+  (let [reasoning (when reasoning-effort
+                    {:effort reasoning-effort})
+        body (cond-> {:model model
                       :input prompt}
                system-prompt (assoc :instructions system-prompt)
-               max-tokens (assoc :max_output_tokens max-tokens))
+               max-tokens (assoc :max_output_tokens max-tokens)
+               reasoning (assoc :reasoning reasoning)
+               verbosity (assoc :verbosity verbosity))
         request (-> (HttpRequest/newBuilder)
                     (.uri (URI/create (str base-url "/responses")))
                     (.header "Content-Type" "application/json")
@@ -397,18 +401,22 @@
   (let [parsed (json/read-str response-body :key-fn keyword)]
     (if-let [error (:error parsed)]
       (throw (ex-info "OpenAI Responses API error" {:error error}))
-      {:text (:output_text parsed "")
-       :usage {:input_tokens (get-in parsed [:usage :input_tokens] 0)
-               :output_tokens (get-in parsed [:usage :output_tokens] 0)}})))
+      (let [usage (:usage parsed)
+            reasoning-tokens (get-in usage [:output_tokens_details :reasoning_tokens])]
+        {:text (:output_text parsed "")
+         :usage (cond-> {:input_tokens (get-in parsed [:usage :input_tokens] 0)
+                         :output_tokens (get-in parsed [:usage :output_tokens] 0)}
+                  reasoning-tokens (assoc :reasoning_tokens reasoning-tokens))}))))
 
-(defn- openai-request [api-key base-url model prompt system-prompt _prefix max-tokens reasoning-effort]
+(defn- openai-request [api-key base-url model prompt system-prompt _prefix max-tokens reasoning-effort verbosity]
   (let [messages (cond-> []
                    system-prompt (conj {:role "system" :content system-prompt})
                    true (conj {:role "user" :content prompt}))
         body (cond-> {:model model
                       :messages messages
                       :max_completion_tokens (or max-tokens 16384)}
-               reasoning-effort (assoc :reasoning_effort reasoning-effort))
+               reasoning-effort (assoc :reasoning_effort reasoning-effort)
+               verbosity (assoc :verbosity verbosity))
         request (-> (HttpRequest/newBuilder)
                     (.uri (URI/create (str base-url "/chat/completions")))
                     (.header "Content-Type" "application/json")
@@ -428,16 +436,19 @@
                          :output_tokens (:completion_tokens usage 0)}
                   reasoning-tokens (assoc :reasoning_tokens reasoning-tokens))}))))
 
-(defrecord OpenAIProvider [api-key base-url model max-tokens http-client]
+(defrecord OpenAIProvider [api-key base-url model max-tokens http-client use-responses-api]
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt opts]
     (let [effective-model (or (:model opts) model)
-          responses? (responses-model? effective-model)
+          responses? (or use-responses-api (responses-model? effective-model))
+          reasoning-effort (:reasoning-effort opts)
+          verbosity (:verbosity opts)
           request (if responses?
-                    (openai-responses-request api-key base-url effective-model prompt (:system opts) max-tokens)
-                    (openai-request api-key base-url effective-model prompt (:system opts) (:prefix opts) max-tokens
-                                   (:reasoning-effort opts)))
+                    (openai-responses-request api-key base-url effective-model prompt (:system opts)
+                                             max-tokens reasoning-effort verbosity)
+                    (openai-request api-key base-url effective-model prompt (:system opts) (:prefix opts)
+                                   max-tokens reasoning-effort verbosity))
           response (.send http-client request (HttpResponse$BodyHandlers/ofString))
           status (.statusCode response)]
       (if (<= 200 status 299)
@@ -454,12 +465,13 @@
   "Create an OpenAI provider.
 
    Options:
-   - :api-key    - API key (default: OPENAI_API_KEY env var)
-   - :base-url   - API base URL (default: https://api.openai.com/v1)
-   - :model      - Model name (default: gpt-4o)
-   - :max-tokens - Max tokens per response (default: 16384)"
+   - :api-key              - API key (default: OPENAI_API_KEY env var)
+   - :base-url             - API base URL (default: https://api.openai.com/v1)
+   - :model                - Model name (default: gpt-4o)
+   - :max-tokens           - Max tokens per response (default: 16384)
+   - :use-responses-api    - Force Responses API instead of Chat Completions (default: false)"
   ([] (openai-provider {}))
-  ([{:keys [api-key base-url model max-tokens]
+  ([{:keys [api-key base-url model max-tokens use-responses-api]
      :or {model "gpt-4o"
           base-url "https://api.openai.com/v1"}}]
    (let [key (or api-key (System/getenv "OPENAI_API_KEY"))
@@ -467,7 +479,7 @@
      (when-not key
        (throw (ex-info "No API key provided. Set OPENAI_API_KEY or pass :api-key"
                        {:env "OPENAI_API_KEY"})))
-     (->OpenAIProvider key url model max-tokens (make-http-client)))))
+     (->OpenAIProvider key url model max-tokens (make-http-client) use-responses-api))))
 
 ;; ---------------------------------------------------------------------------
 ;; Kimi Provider (Moonshot AI)
@@ -554,6 +566,15 @@
 ;; User Provider (interactive simulation)
 ;; ---------------------------------------------------------------------------
 
+(defn- unescape-for-display
+  "Unescape \\n and \\t for readable display, preserving \\\\ as \\."
+  [s]
+  (-> s
+      (str/replace "\\\\" "\u0000")
+      (str/replace "\\n" "\n")
+      (str/replace "\\t" "\t")
+      (str/replace "\u0000" "\\")))
+
 (defrecord UserProvider []
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
@@ -570,7 +591,7 @@
           (println system)
           (println))
         (println (str "=== " (if prefix "PROMPT (prefix)" "PROMPT") " ==="))
-        (println prompt)
+        (println (unescape-for-display prompt))
         (println)
         (println "=== YOUR COMPLETION (Ctrl-D to submit) ===")
         (flush))
@@ -583,7 +604,6 @@
               (do (.append sb line)
                   (.append sb "\n")
                   (recur)))))))))
-
 (defn user-provider
   "Create an interactive user provider for simulation/debugging.
    Displays the full LLM context (system prompt, user message, prefix)
