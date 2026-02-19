@@ -759,13 +759,24 @@
       ;; Inbox should still be nil (no message sent)
       (is (nil? @(:inbox (get @comm/registry handle)))))))
 
-(deftest event-send-silent-on-exception-test
-  (testing "event-send does not send when event-fn throws"
-    (let [handle :es-ex]
-      (comm/register! handle identity)
+(deftest event-send-notifies-on-exception-test
+  (testing "event-send sends {:error msg} when event-fn throws"
+    (let [handle :es-ex
+          received (promise)
+          eval-fn (fn [raw] (deliver received raw) :done)]
+      (comm/register! handle eval-fn)
+      (reset! (:inbox (get @comm/registry handle))
+              (#'comm/make-sleep-fn handle))
       (comm/event-send (fn [] (throw (ex-info "boom" {}))) handle :test-event)
-      (Thread/sleep 200)
-      (is (nil? @(:inbox (get @comm/registry handle)))))))
+      (let [p (promise)]
+        (deliver p "(quine c (eval (do 1)))")
+        (let [result (comm/box handle handle p)]
+          (is (= :done result))
+          (let [raw (deref received 2000 :timeout)]
+            (is (not= :timeout raw))
+            (is (string? raw))
+            (is (.contains ^String raw ":from :test-event"))
+            (is (.contains ^String raw ":error"))))))))
 
 ;; =============================================================================
 ;; Effect guard tests

@@ -192,13 +192,19 @@
 
 (defn event-send
   "Run blocking event-fn in background future. When it returns {:ok val},
-   send val to handle with from-tag as sender. Returns nil immediately."
+   send val to handle with from-tag as sender. On exception, sends
+   {:error msg} to handle and logs to stderr. Returns nil immediately."
   [event-fn handle from-tag]
   (future
     (binding [*current-handle* from-tag]
-      (let [result (event-fn)]
-        (when (:ok result)
-          (send (:ok result) handle)))))
+      (try
+        (let [result (event-fn)]
+          (when (:ok result)
+            (send (:ok result) handle)))
+        (catch Exception e
+          (binding [*out* *err*]
+            (println (str "event-send error for " handle ": " (.getMessage e))))
+          (send {:error (.getMessage e)} handle)))))
   nil)
 
 (defn- msg-from
