@@ -1,9 +1,9 @@
 (ns spell.comm
   "Inter-agent communication: ask/send/spawn primitives.
 
-   box is the universal execution primitive: it waits for a function (from
-   an inbox) and applies it to a raw completion string. ask sends a message
-   and blocks for reply. spawn-ask spawns an agent and blocks for its
+   box is the universal execution primitive: it waits for a completion source,
+   drains inbox transforms, and passes the result to an inside-fn. ask sends a
+   message and blocks for reply. spawn-ask spawns an agent and blocks for its
    message. send-msg-fn is low-level fire-and-forget. Every wait wakes the target,
    preventing deadlocks."
   (:refer-clojure :exclude [send])
@@ -17,25 +17,25 @@
 
 (def registry
   "Global registry: handle -> {:inbox (atom nil), :signal (atom (promise)),
-                                :has-box (atom false), :default-inbox-fn fn,
-                                :waiters (atom #{}), :collector (atom nil)}"
+                                :has-box (atom false),
+                                :completed (atom (promise)),
+                                :parent-handle kw-or-nil}"
   (atom {}))
 
+
 (defn register!
-  "Register a handle with its default inbox fn.
+  "Register a handle in the registry.
    Optional parent-handle records the spawning agent."
-  ([handle default-inbox-fn] (register! handle default-inbox-fn nil))
-  ([handle default-inbox-fn parent-handle]
+  ([handle] (register! handle nil))
+  ([handle parent-handle]
    (when (contains? @registry handle)
      (throw (ex-info "Handle already registered" {:handle handle})))
    (swap! registry assoc handle
           {:inbox             (atom nil)
            :signal            (atom (promise))
            :has-box           (atom false)
-           :default-inbox-fn  default-inbox-fn
            :parent-handle     parent-handle
-           :waiters           (atom #{})
-           :collector         (atom nil)})))
+           :completed         (atom (promise))})))
 
 ;; =============================================================================
 ;; Dynamic vars
@@ -49,121 +49,135 @@
   "Raw completion string for the currently executing agent (set inside box)."
   nil)
 
+(def ^:dynamic *current-eval-fn*
+  "Eval function for the currently executing agent (set by make-awake-fn).
+   Used by block-for-message and spawn to break circular dependencies."
+  nil)
+
 ;; =============================================================================
 ;; Forward declarations
 ;; =============================================================================
 
-(declare box notify-waiters! orphan-box!)
+(declare box)
 
 ;; =============================================================================
-;; Sleep
+;; Inside-fn constructors
 ;; =============================================================================
 
-(defn- make-sleep-fn
-  "Create an inbox function that blocks on signal then re-enters box.
-   When woken, re-enters box as non-root (parent=self).
-   Loops on spurious wakes: if signal fires but inbox is still nil
-   (e.g. from a -send! that was later overwritten), go back to sleep."
-  [handle]
-  (fn [_raw]
-    (loop []
-      (let [{:keys [signal]} (get @registry handle)]
-        (deref @signal)
-        (reset! signal (promise))
-        (if @(:inbox (get @registry handle))
-          (box handle handle *current-raw*)
-          (recur))))))
+(defn make-awake-fn
+  "Create an inside-fn that binds *current-eval-fn* and calls eval-fn.
+   Used when an agent is actively processing (not sleeping)."
+  [eval-fn]
+  (fn [raw]
+    (binding [*current-eval-fn* eval-fn]
+      (eval-fn raw))))
+
+(defn- make-asleep-fn
+  "Create an inside-fn that blocks on signal, then re-enters box awake.
+   Uses the raw parameter (not *current-raw*) so that transforms applied
+   by the enclosing box before sleep are preserved on fast-reply paths."
+  [handle eval-fn]
+  (fn [raw]
+    (let [{:keys [signal]} (get @registry handle)]
+      (deref @signal)
+      (reset! signal (promise))
+      (box handle raw (make-awake-fn eval-fn)))))
+
+(defn- make-root-fn
+  "Wrap an inside-fn with root lifecycle: completed delivery + orphan creation.
+   After inside-fn returns (or throws), delivers completed and starts an
+   asleep orphan box for the next lifecycle round."
+  [handle eval-fn inside-fn]
+  (fn [raw]
+    (try
+      (let [result (inside-fn raw)]
+        (deliver @(:completed (get @registry handle)) result)
+        (reset! (:completed (get @registry handle)) (promise))
+        (future (box handle *current-raw*
+                  (make-root-fn handle eval-fn (make-asleep-fn handle eval-fn))))
+        result)
+      (catch Exception e
+        (deliver @(:completed (get @registry handle)) nil)
+        (reset! (:completed (get @registry handle)) (promise))
+        (future (box handle *current-raw*
+                  (make-root-fn handle eval-fn (make-asleep-fn handle eval-fn))))
+        (throw e)))))
+
+(defn run-root-box
+  "Public entry point for root lifecycle. Wraps box with make-root-fn and
+   handles completion-source exceptions (before inside-fn ran)."
+  [handle completion-source inside-fn eval-fn]
+  (let [root-fn (make-root-fn handle eval-fn inside-fn)]
+    (try
+      (box handle completion-source root-fn)
+      (catch Exception e
+        ;; completion-source exception (before inside-fn ran) — make-root-fn didn't fire
+        (when-not (realized? @(:completed (get @registry handle)))
+          (deliver @(:completed (get @registry handle)) nil)
+          (reset! (:completed (get @registry handle)) (promise))
+          (future (box handle ""
+                    (make-root-fn handle eval-fn (make-asleep-fn handle eval-fn)))))
+        (throw e)))))
 
 ;; =============================================================================
 ;; Box
 ;; =============================================================================
 
 (defn box
-  "Core execution primitive. Awaits completion, drains inbox, applies inbox-fn.
-   Takes handle, parent-handle, and a completion source (promise, future, or
-   raw string). Inbox functions take [raw] and return a value.
-   Root detection: (not= parent-handle handle).
-   Callers must seed inbox before calling box."
-  [handle parent-handle completion-source]
+  "Core execution primitive. Awaits completion, drains inbox transforms,
+   applies inside-fn to the (possibly transformed) raw string.
+   Takes handle, a completion source (promise, future, or raw string),
+   and an inside-fn that processes the raw string."
+  [handle completion-source inside-fn]
   (let [{:keys [inbox has-box]} (get @registry handle)]
     (when-not inbox
       (throw (ex-info "Handle not registered" {:handle handle})))
-    (let [root?    (not= parent-handle handle)
-          raw-or-ex (if (instance? clojure.lang.IDeref completion-source)
+    (let [raw-or-ex (if (instance? clojure.lang.IDeref completion-source)
                       (deref completion-source)
                       completion-source)]
       (when (instance? Exception raw-or-ex)
-        (when root?
-          (notify-waiters! handle nil)
-          (orphan-box! handle ""))
         (throw raw-or-ex))
       (let [raw (parse/balance-parens raw-or-ex)]
         (when-not (compare-and-set! has-box false true)
           (throw (ex-info "Box already active for handle" {:handle handle})))
-        (let [[f _] (reset-vals! inbox nil)]
-          (when-not f
-            (reset! has-box false)
-            (throw (ex-info "Box entered with empty inbox" {:handle handle})))
+        (let [[transform _] (reset-vals! inbox nil)]
           (reset! has-box false)
-          (let [result (try
-                         (binding [*current-handle* handle
-                                   *current-raw*    raw]
-                           (f raw))
-                         (catch Exception e
-                           (when root?
-                             (notify-waiters! handle nil)
-                             (orphan-box! handle raw))
-                           (throw e)))]
-            (when root?
-              (notify-waiters! handle result)
-              (orphan-box! handle raw))
-            result))))))
+          (let [transformed (if transform (transform raw) raw)]
+            (binding [*current-handle* handle
+                      *current-raw*    raw]
+              (inside-fn transformed))))))))
 
 ;; =============================================================================
 ;; Send
 ;; =============================================================================
 
 (defn -send!
-  "Low-level send: swap inbox with transform-fn, then deliver signal."
+  "Low-level send: compose transform-fn into inbox with FIFO ordering,
+   then deliver signal."
   [handle transform-fn]
   (let [{:keys [inbox signal]} (get @registry handle)]
     (when-not inbox
       (throw (ex-info "Handle not registered" {:handle handle})))
-    (swap! inbox transform-fn)
+    (swap! inbox (fn [cur] (if cur (comp transform-fn cur) transform-fn)))
     (deliver @signal :wake)))
 
 (defn send-msg-fn
   "Send function f to agent at handle.
    f takes a raw completion string and returns a modified raw string.
-   The result is then passed through the agent's eval pipeline.
    Returns nil."
   [f handle]
-  ;; Remove recipient from sender's waiters — they got their message
-  (when *current-handle*
-    (when-let [{:keys [waiters]} (get @registry *current-handle*)]
-      (swap! waiters disj handle)))
-  (if-let [{:keys [pending raw done]}
-           (some-> (get @registry handle) :collector deref)]
-    ;; Multi-ask collector active: accumulate transform in collector raw.
-    ;; Each transform expects a properly-closed raw (3 trailing parens).
-    ;; We add ))) before applying f, and f's reopen strips them back off.
-    (do
-      (swap! raw (fn [r] (f (str r ")))"))))
-      (when (and *current-handle* (contains? @pending *current-handle*))
-        (swap! pending disj *current-handle*)
-        (when (empty? @pending)
-          (deliver done true))))
-    ;; Normal send: compose transform with inbox-fn (which takes [raw]).
-    ;; When inbox is nil, resolve default-inbox-fn lazily (at call time,
-    ;; not composition time) so the-llm can update it after spawn.
-    (-send! handle
-      (fn [current]
-        (if current
-          (fn [raw] (current (f raw)))
-          (fn [raw]
-            (let [base (:default-inbox-fn (get @registry handle))]
-              (base (f raw))))))))
+  (-send! handle f)
   nil)
+
+(defn deliver-msg-fn
+  "Like send-msg-fn but delivers to a specific signal promise.
+   No-op if the promise was already delivered (agent woke from
+   something else)."
+  [handle signal-promise msg-fn]
+  (when-not (realized? signal-promise)
+    (let [{:keys [inbox]} (get @registry handle)]
+      (swap! inbox (fn [cur] (if cur (comp msg-fn cur) msg-fn)))
+      (deliver signal-promise :wake))))
 
 ;; =============================================================================
 ;; Create-msg helper
@@ -200,29 +214,63 @@
 
 (defn send
   "Send a message to target with auto-tagged sender handle.
-   Injects (def <gensym> {:from sender :value val}) into recipient's completion.
+   Injects (def <gensym> {:from sender :body val}) into recipient's completion.
    The recipient sees the def binding with the message map."
   [value target]
   (let [name (symbol (gensym "msg-"))
         from *current-handle*]
-    (send-msg-fn (create-msg name {:from from :value value}) target)))
+    (send-msg-fn (create-msg name {:from from :body value}) target)))
 
 (defn event-send
   "Run blocking event-fn in background future. When it returns {:ok val},
-   send val to handle with from-tag as sender. On exception, sends
-   {:error msg} to handle and logs to stderr. Returns nil immediately."
+   send val to handle with from-tag as sender. When it returns {:abort ...},
+   do nothing (silently discard). On exception, sends {:error msg} to handle
+   and logs to stderr. Returns nil immediately."
   [event-fn handle from-tag]
   (future
     (binding [*current-handle* from-tag]
       (try
         (let [result (event-fn)]
-          (when (:ok result)
-            (send (:ok result) handle)))
+          (cond
+            (:ok result) (send (:ok result) handle)
+            (:abort result) nil))
         (catch Exception e
           (binding [*out* *err*]
             (println (str "event-send error for " handle ": " (.getMessage e))))
           (send {:error (.getMessage e)} handle)))))
   nil)
+
+(defn- install-notifier
+  "Watch target's :completed promise. When delivered, call
+   (signal-fn handle result). signal-fn determines stale vs persistent."
+  [signal-fn target]
+  (let [completed-p @(:completed (get @registry target))
+        handle *current-handle*]
+    (future
+      (let [result @completed-p]
+        (signal-fn handle result)))))
+
+(defn- install-completion-notifier
+  "Install stale notifier: sends target's completion result to self.
+   Captures current :signal at install time; no-ops if self wakes first."
+  [target]
+  (let [my-signal @(:signal (get @registry *current-handle*))]
+    (install-notifier
+      (fn [handle result]
+        (deliver-msg-fn handle my-signal
+          (create-msg (symbol (gensym "msg-")) {:from target :body result})))
+      target)))
+
+(defn- install-persistent-notifier
+  "Install persistent notifier: sends target's completion result to self
+   regardless of whether self has already woken. Used by event-based
+   patterns where the notification should always arrive."
+  [target]
+  (install-notifier
+    (fn [handle result]
+      (send-msg-fn (create-msg (symbol (gensym "msg-")) {:from target :body result})
+                   handle))
+    target))
 
 (defn reply
   "Reply to a message (fire-and-forget).
@@ -235,13 +283,11 @@
 ;; =============================================================================
 
 (defn block-for-message
-  "Seed inbox with sleep-fn and re-enter box as non-root.
-   Must be called from within an agent context (inside box).
-   has-box is already false (box releases before calling inbox fn)."
+  "Re-enter box with asleep inside-fn. Must be called from within an agent
+   context (inside box). Uses *current-eval-fn* to construct the asleep fn."
   []
-  (let [{:keys [inbox]} (get @registry *current-handle*)]
-    (compare-and-set! inbox nil (make-sleep-fn *current-handle*))
-    (box *current-handle* *current-handle* *current-raw*)))
+  (box *current-handle* *current-raw*
+    (make-asleep-fn *current-handle* *current-eval-fn*)))
 
 (defn- assert-agent-context!
   "Throw if not inside an agent context (box execution)."
@@ -257,9 +303,8 @@
   [msg value]
   (assert-agent-context! "reply-ask")
   (let [target (:from msg)]
-    (when-let [{:keys [waiters]} (get @registry target)]
-      (swap! waiters conj *current-handle*))
     (send value target)
+    (install-completion-notifier target)
     (block-for-message)))
 
 ;; =============================================================================
@@ -267,37 +312,18 @@
 ;; =============================================================================
 
 (defn- ask-multi
-  "Multi-target ask: poke all targets, block until all have sent.
-   Collects messages into a single raw string, then triggers one extension
-   with all quine bindings available. Collector is activated BEFORE poking
-   so even fast-responding targets route through the collector."
+  "Multi-target ask: poke all targets, wake on first reply.
+   Installs completion notifiers for all targets — first reply wins."
   [targets]
   (assert-agent-context! "ask")
   (when (empty? targets)
     (throw (ex-info "ask: empty target list" {})))
-  (let [target-set      (set targets)
-        collector-state  {:pending (atom target-set)
-                          :raw     (atom (reopen *current-raw*))
-                          :done    (promise)}
-        handle           *current-handle*
-        entry            (get @registry handle)]
-    ;; Activate collector BEFORE poking targets
-    (reset! (:collector entry) collector-state)
-    ;; Register as waiter and poke sleeping targets
-    (doseq [target targets]
-      (when-let [{:keys [waiters]} (get @registry target)]
-        (swap! waiters conj handle))
-      (let [{:keys [inbox]} (get @registry target)]
-        (when (nil? @inbox)
-          (send-msg-fn (create-msg 'waiting-for handle) target))))
-    ;; Wait for all targets to respond
-    @(:done collector-state)
-    ;; Deactivate collector
-    (reset! (:collector entry) nil)
-    ;; Re-enter box with accumulated raw (closed with 3 parens)
-    (let [final-raw (str @(:raw collector-state) ")))")]
-      (reset! (:inbox entry) (:default-inbox-fn entry))
-      (box handle handle final-raw))))
+  (doseq [target targets]
+    (let [name (symbol (gensym "msg-"))
+          ask-msg {:from *current-handle* :expects-response true}]
+      (send-msg-fn (create-msg name ask-msg) target))
+    (install-completion-notifier target))
+  (block-for-message))
 
 (defn ask-builtin
   "Request-reply communication primitive.
@@ -305,8 +331,7 @@
      includes the sender's handle so the target knows who to reply to.
    (ask target) — poke target (wake it) and wait for a message. Use when
      woken by the wrong agent and you need to go back to sleep for a specific one.
-   (ask [targets]) — multi-target ask. Poke all targets and block until all
-     have sent. Triggers a single extension with all quine bindings.
+   (ask [targets]) — multi-target ask. Poke all targets, wake on first reply.
    Every form of ask wakes the target, preventing deadlocks."
   ([target]
    (if (sequential? target)
@@ -314,52 +339,13 @@
      (ask-builtin target nil)))
   ([target msg]
    (assert-agent-context! "ask")
-   ;; Register as waiting for target's result (for auto-notification on return)
-   (when-let [{:keys [waiters]} (get @registry target)]
-     (swap! waiters conj *current-handle*))
-   (if msg
-     (send msg target)
-     ;; Poke: only wake if inbox is empty (agent is sleeping)
-     (let [{:keys [inbox]} (get @registry target)]
-       (when (nil? @inbox)
-         (send-msg-fn (create-msg 'waiting-for *current-handle*) target))))
+   (let [name (symbol (gensym "msg-"))
+         ask-msg (cond-> {:from *current-handle* :expects-response true}
+                   msg (assoc :body msg))]
+     (send-msg-fn (create-msg name ask-msg) target))
+   (install-completion-notifier target)
    (block-for-message)))
 
-
-;; =============================================================================
-;; Waiter notification
-;; =============================================================================
-
-(defn notify-waiters!
-  "Send return value to agents still waiting on this handle.
-   Called when root box completes. Agents that already received an
-   explicit send were removed from :waiters, so only genuinely blocked
-   agents get the fallback notification.
-   Binds *current-handle* to the completing handle so multi-ask
-   collectors can identify the sender."
-  [handle result]
-  (when-let [{:keys [waiters]} (get @registry handle)]
-    (doseq [waiter @waiters]
-      (when (contains? @registry waiter)
-        (binding [*current-handle* handle]
-          (send-msg-fn (create-msg 'spawn-result result) waiter))))
-    (reset! waiters #{})))
-
-;; =============================================================================
-;; Orphan box
-;; =============================================================================
-
-(defn orphan-box!
-  "If no box is active for handle, seed inbox with sleep-fn and start a
-   box in a future. Root detection uses stored parent-handle: agents with
-   a parent get root boxes (enabling self-sustaining sleep cycles), while
-   the root agent (:root) gets non-root boxes.
-   No-op if box is already active. Best-effort: races are acceptable."
-  [handle raw]
-  (let [{:keys [has-box inbox parent-handle]} (get @registry handle)]
-    (when (and has-box (not @has-box))
-      (compare-and-set! inbox nil (make-sleep-fn handle))
-      (future (box handle (or parent-handle handle) raw)))))
 
 ;; =============================================================================
 ;; Handle queries
@@ -375,13 +361,16 @@
 ;; =============================================================================
 
 (defn start-box
-  "Register handle and go to sleep with initial completion as stored context.
+  "Register handle and start a root box that sleeps until first message.
    Returns handle. Used by register-agent for dormant agents.
    No initial evaluation — agent wakes on first message."
-  [handle default-inbox-fn initial-completion]
-  (register! handle default-inbox-fn)
-  (orphan-box! handle initial-completion)
-  handle)
+  ([handle eval-fn initial-completion]
+   (start-box handle eval-fn initial-completion nil))
+  ([handle eval-fn initial-completion parent-handle]
+   (register! handle parent-handle)
+   (future (run-root-box handle initial-completion
+             (make-asleep-fn handle eval-fn) eval-fn))
+   handle))
 
 ;; =============================================================================
 ;; Spawn
@@ -400,7 +389,7 @@
    (let [handle (or handle-name (keyword (gensym "spawn-")))
          parent *current-handle*]
      ;; Register synchronously — handle is live before future starts
-     (register! handle (make-sleep-fn handle) parent)
+     (register! handle parent)
      (future
        ((bound-fn []
           (llm-fn prompt handle))))
@@ -411,12 +400,12 @@
    Combines spawn + block for safe use as a quoted trailing expression:
      '(spawn-ask llm-self \"do X and send result to (parent-handle)\")
    The child must send its result via (send value (parent-handle)).
-   Registers parent as waiter on child so child's death wakes the parent."
+   Installs completion notifier so child's death wakes the parent."
   ([llm-fn prompt] (spawn-ask llm-fn prompt nil))
   ([llm-fn prompt handle-name]
+   (assert-agent-context! "spawn-ask")
    (let [child (spawn llm-fn prompt handle-name)]
-     (when-let [{:keys [waiters]} (get @registry child)]
-       (swap! waiters conj *current-handle*))
+     (install-completion-notifier child)
      (block-for-message))))
 
 ;; =============================================================================
@@ -428,17 +417,18 @@
   {:guide "AGENTS — Inter-agent communication (effect namespace).
 
   (agents/ask target message)     — send message to target, block for reply
-  (agents/ask [a b c])            — multi-target: poke all, block until all reply
+  (agents/ask [a b c])            — multi-target: poke all, wake on first reply
   (agents/reply-ask msg value)    — reply to msg, block for next message
   (agents/reply msg value)        — reply to msg (fire-and-forget, ends conversation)
   (agents/send value target)      — send value to target with auto-tagged :from
   (agents/spawn llm-fn prompt :name) — start background agent, returns handle
   (agents/spawn-ask llm-fn prompt :name) — spawn agent, block until it sends back
-  (agents/current-handle)         — your handle (:root, :spawn-N, or named keyword)
-  (agents/parent-handle)          — handle of agent that spawned you (nil if root)
+  (agents/current-handle)         — your handle (:main, :spawn-N, or named keyword)
+  (agents/parent-handle)          — handle of agent that spawned you (nil if main)
   (agents/send-msg-fn f handle)   — low-level: send raw transform function to handle
 
 Special handles:
+  :main — the initial agent (entry point). Always present.
   :user — the human operator (only present in interactive terminal sessions).
   Check (globals/get :roles) to see if :user is available before asking.
 
@@ -447,36 +437,35 @@ is in flight, the message is appended as an extension and your trailing
 expression becomes inert. You get a new turn with the incoming message in scope.
 
 All agents/ calls are effect functions — quote them in the trailing expression.
-Messages arrive as def bindings: (def msg-N {:from sender :value val}).
+Messages arrive as def bindings: (def msg-N {:from sender :body val}).
 Check (globals/get :roles) to discover available agents.
 Use (describe agents :fn-name) for detailed docs on any function."
-   :docs {:ask "(agents/ask target message) — send message, block for reply; (agents/ask [a b c]) for multi-target"
+   :docs {:ask "(agents/ask target message) — send message, block for reply; (agents/ask [a b c]) pokes all, first reply wins"
           :reply-ask "(agents/reply-ask msg value) — reply to msg, block for next message"
           :reply "(agents/reply msg value) — reply to msg, fire-and-forget"
           :send "(agents/send value target) — send value with auto-tagged :from"
           :spawn "(agents/spawn llm-fn prompt :name) — start background agent, returns handle"
           :spawn-ask "(agents/spawn-ask llm-fn prompt :name) — spawn agent, block until it sends back"
-          :current-handle "(agents/current-handle) — your handle (:root, :spawn-N, or named keyword)"
-          :parent-handle "(agents/parent-handle) — handle of spawning agent (nil if root)"
+          :current-handle "(agents/current-handle) — your handle (:main, :spawn-N, or named keyword)"
+          :parent-handle "(agents/parent-handle) — handle of spawning agent (nil if main)"
           :send-msg-fn "(agents/send-msg-fn f handle) — low-level: send raw transform function"}
    :detail
    {:ask
     "Request-reply communication primitive. Three forms:
 
 (agents/ask target msg) — send msg to target, block for reply.
-  target: keyword handle (:seller, :spawn-42, :root)
+  target: keyword handle (:seller, :spawn-42, :main)
   msg: any value
-  Recipient sees (def msg-N {:from your-handle :value msg}).
+  Recipient sees (def msg-N {:from your-handle :body msg :expects-response true}).
   Your next turn receives the reply as a def binding.
 
 (agents/ask target) — poke target (wake it) and block.
-  Sends a wake signal but no user-level message value.
+  Sends (def msg-N {:from your-handle :expects-response true}) — no :body.
   Use to wait for a specific agent to respond.
 
 (agents/ask [a b c]) — multi-target ask.
-  Pokes all targets, blocks until all have sent.
-  Triggers a single extension with all message bindings.
-  Reduces N round-trips to 1 for fan-out/fan-in.
+  Pokes all targets, wakes on first reply.
+  Use for fan-out where the first response is sufficient.
 
 Every form wakes the target, preventing deadlocks.
 Code after ask is dead code — ask blocks and triggers a new turn.
@@ -484,15 +473,15 @@ Code after ask is dead code — ask blocks and triggers a new turn.
 Example — multi-turn conversation:
   '(do (agents/spawn llm-self \"You are a seller.\" :seller)
        (agents/ask :seller 100))
-  ;; next turn: (def msg-0 {:from :seller :value 250})
+  ;; next turn: (def msg-0 {:from :seller :body 250})
   '(agents/ask :seller 150)
   ;; ...until one side uses reply to end
 
-Example — fan-out/fan-in:
+Example — fan-out, first reply wins:
   '(do (def a (agents/spawn llm-self \"compute X, send to parent-handle\"))
        (def b (agents/spawn llm-self \"compute Y, send to parent-handle\"))
        (agents/ask [a b]))
-  ;; next turn: both results as def bindings
+  ;; next turn: first reply as def binding (or completion notification)
 
 Message preemption: if another agent sends you a message while your response
 is in flight, the message is appended as an extension. Your trailing expression
@@ -502,7 +491,7 @@ incoming message in scope. Re-evaluate and re-issue if still appropriate.
   ...▌
   '(agents/ask :B \"hello\")
   ;; agent C sends a message before your ask fires; your completion becomes:
-  ...'(agents/ask :B \"hello\") (def msg-0 {:from :C :value \"urgent\"})
+  ...'(agents/ask :B \"hello\") (def msg-0 {:from :C :body \"urgent\"})
   '(llm-self (reopen completion))  ;; ask became inert data — it did not fire"
 
     :reply-ask
@@ -513,14 +502,14 @@ Keeps the conversation open — sender gets your reply, you wait for theirs.
   msg: the received message map (e.g. msg-0)
   value: your reply (any value)
 
-The sender's next turn sees (def msg-N {:from your-handle :value value}).
+The sender's next turn sees (def msg-N {:from your-handle :body value}).
 Your next turn receives the sender's next message as a new def binding.
 
 Example (from a spawned agent's perspective):
-  ;; received (def msg-0 {:from :root :value 100})
+  ;; received (def msg-0 {:from :main :body 100 :expects-response true})
   '(agents/reply-ask msg-0 250)
-  ;; sends 250 back to :root, blocks for next message
-  ;; next turn: (def msg-1 {:from :root :value 150})"
+  ;; sends 250 back to :main, blocks for next message
+  ;; next turn: (def msg-1 {:from :main :body 150 :expects-response true})"
 
     :reply
     "Reply to a received message (fire-and-forget). Ends the conversation from your side.
@@ -533,13 +522,13 @@ Does not block. Use as the final message in a conversation.
 Use reply-ask instead when you want to continue back-and-forth.
 
 Example:
-  ;; received (def msg-0 {:from :root :value \"final offer: 200\"})
+  ;; received (def msg-0 {:from :main :body \"final offer: 200\" :expects-response true})
   '(agents/reply msg-0 \"accepted\")
-  ;; :root's next turn sees (def msg-N {:from :seller :value \"accepted\"})"
+  ;; :main's next turn sees (def msg-N {:from :seller :body \"accepted\"})"
 
     :send
     "Send a value to a target handle with auto-tagged sender.
-The recipient sees (def msg-N {:from your-handle :value val}).
+The recipient sees (def msg-N {:from your-handle :body val}).
 
 (agents/send value target)
   value: any value
@@ -588,22 +577,22 @@ Combines spawn + block. One-shot delegation pattern.
   :name: optional keyword handle (like agents/spawn)
   (see agents/spawn docs for why the prompt must not be a bare quine)
 
-Your next turn sees (def msg-N {:from child-handle :value result}).
+Your next turn sees (def msg-N {:from child-handle :body result}).
 
 Example:
   '(agents/spawn-ask llm-self \"Compute 6*7 and (agents/send result (agents/parent-handle))\")
-  ;; next turn: (def msg-0 {:from :spawn-42 :value 42})"
+  ;; next turn: (def msg-0 {:from :spawn-42 :body 42})"
 
     :current-handle
     "Returns your handle as a keyword.
 
 (agents/current-handle)
 
-:root for the root agent, :spawn-N for auto-named spawned agents,
+:main for the initial agent, :spawn-N for auto-named spawned agents,
 or the keyword you specified when spawned (e.g. :seller)."
 
     :parent-handle
-    "Returns the handle of the agent that spawned you, or nil if root.
+    "Returns the handle of the agent that spawned you, or nil if main.
 
 (agents/parent-handle)
 
