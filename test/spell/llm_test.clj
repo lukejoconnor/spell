@@ -461,6 +461,12 @@
     (is (= {:provider "openai" :model "gpt-4o"}
            (cli/parse-model-spec "openai:gpt-4o"))))
 
+  (testing "gemini provider prefix"
+    (is (= {:provider "gemini" :model "gemini-2.5-flash"}
+           (cli/parse-model-spec "gemini:gemini-2.5-flash")))
+    (is (= {:provider "google" :model "gemini-2.5-pro"}
+           (cli/parse-model-spec "google:gemini-2.5-pro"))))
+
   (testing "unknown prefix treated as plain model name"
     (is (= {:provider nil :model "custom:some-model"}
            (cli/parse-model-spec "custom:some-model")))))
@@ -763,6 +769,75 @@
           (is (< 3.5 cost 3.7)))))))
 
 ;; =============================================================================
+;; Gemini provider tests
+;; =============================================================================
+
+(deftest gemini-provider-construction
+  (testing "gemini-provider requires API key"
+    (is (thrown-with-msg? Exception #"GEMINI_API_KEY"
+                          (provider/gemini-provider {:api-key nil}))))
+
+  (testing "gemini-provider defaults"
+    (let [p (provider/gemini-provider {:api-key "test-key"})]
+      (is (= "gemini-2.5-flash" (:model p)))
+      (is (= "test-key" (:api-key p)))))
+
+  (testing "gemini-provider custom opts"
+    (let [p (provider/gemini-provider {:api-key "k"
+                                        :model "gemini-2.5-pro"
+                                        :max-tokens 8192})]
+      (is (= "gemini-2.5-pro" (:model p)))
+      (is (= 8192 (:max-tokens p)))))
+
+  (testing "gemini model costs are recognized"
+    (let [usage-atom (atom {:by-model {}})]
+      (binding [provider/*usage* usage-atom
+                provider/*budget* nil]
+        (provider/track-usage! "gemini-2.5-flash" {:input_tokens 1000000 :output_tokens 1000000})
+        (let [cost (provider/current-cost usage-atom)]
+          ;; gemini-2.5-flash: $0.30/M in + $2.50/M out = $2.80
+          (is (some? cost))
+          (is (< 2.7 cost 2.9)))))))
+
+(deftest gemini-parse-response-test
+  (testing "parses successful generateContent response"
+    (let [response-body (json/write-str {:candidates [{:content {:parts [{:text "(def return 42))"}]
+                                                                  :role "model"}
+                                                        :finishReason "STOP"}]
+                                         :usageMetadata {:promptTokenCount 100
+                                                         :candidatesTokenCount 30
+                                                         :totalTokenCount 130}})
+          result (#'provider/parse-gemini-response response-body)]
+      (is (= "(def return 42))" (:text result)))
+      (is (= 100 (get-in result [:usage :input_tokens])))
+      (is (= 30 (get-in result [:usage :output_tokens])))))
+
+  (testing "throws on error response"
+    (let [response-body (json/write-str {:error {:code 400
+                                                  :message "Invalid API key"
+                                                  :status "INVALID_ARGUMENT"}})]
+      (is (thrown-with-msg? Exception #"Gemini API error"
+            (#'provider/parse-gemini-response response-body)))))
+
+  (testing "handles missing usage gracefully"
+    (let [response-body (json/write-str {:candidates [{:content {:parts [{:text "hello"}]
+                                                                  :role "model"}}]})
+          result (#'provider/parse-gemini-response response-body)]
+      (is (= "hello" (:text result)))
+      (is (= 0 (get-in result [:usage :input_tokens])))
+      (is (= 0 (get-in result [:usage :output_tokens])))))
+
+  (testing "handles multiple text parts"
+    (let [response-body (json/write-str {:candidates [{:content {:parts [{:text "hello "}
+                                                                          {:text "world"}]
+                                                                  :role "model"}}]
+                                         :usageMetadata {:promptTokenCount 10
+                                                         :candidatesTokenCount 5
+                                                         :totalTokenCount 15}})
+          result (#'provider/parse-gemini-response response-body)]
+      (is (= "hello world" (:text result))))))
+
+;; =============================================================================
 ;; supports-prefill protocol tests
 ;; =============================================================================
 
@@ -797,7 +872,11 @@
 
   (testing "Kimi provider supports prefill"
     (let [p (provider/kimi-provider {:api-key "test"})]
-      (is (true? (provider/supports-prefill p))))))
+      (is (true? (provider/supports-prefill p)))))
+
+  (testing "Gemini provider does not support prefill"
+    (let [p (provider/gemini-provider {:api-key "test"})]
+      (is (false? (provider/supports-prefill p))))))
 
 ;; =============================================================================
 ;; strip-prefix-echo tests

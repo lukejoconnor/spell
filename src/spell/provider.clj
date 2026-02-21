@@ -5,6 +5,8 @@
    - anthropic-provider: Calls Claude API
    - openai-provider: Calls OpenAI API
    - ollama-provider: Calls local Ollama API
+   - kimi-provider: Calls Moonshot Kimi API
+   - gemini-provider: Calls Google Gemini API
    - dummy-provider: Returns canned responses for testing"
   (:require [clojure.data.json :as json]
             [clojure.string :as str])
@@ -79,7 +81,14 @@
    "kimi-k2-0711"      [0.60 2.50]
    "moonshot-v1-8k"    [0.20 2.00]
    "moonshot-v1-32k"   [1.00 3.00]
-   "moonshot-v1-128k"  [2.00 5.00]})
+   "moonshot-v1-128k"  [2.00 5.00]
+   ;; Google Gemini models
+   "gemini-2.0-flash"  [0.10 0.40]
+   "gemini-2.5-flash-lite" [0.10 0.40]
+   "gemini-2.5-flash"  [0.30 2.50]
+   "gemini-2.5-pro"    [1.25 10.00]
+   "gemini-3-flash"    [0.50 3.00]
+   "gemini-3-pro"      [2.00 12.00]})
 
 (defn- lookup-cost
   "Find cost for a model ID by prefix matching."
@@ -536,6 +545,76 @@
        (throw (ex-info "No API key provided. Set MOONSHOT_API_KEY or pass :api-key"
                        {:env "MOONSHOT_API_KEY"})))
      (->KimiProvider key url model max-tokens (make-http-client)))))
+
+;; ---------------------------------------------------------------------------
+;; Gemini Provider (Google)
+;; ---------------------------------------------------------------------------
+
+(defn- gemini-request [api-key model prompt system-prompt max-tokens]
+  (let [contents [{:role "user"
+                   :parts [{:text prompt}]}]
+        body (cond-> {:contents contents}
+               system-prompt (assoc :system_instruction
+                                    {:parts [{:text system-prompt}]})
+               max-tokens (assoc :generationConfig
+                                 {:maxOutputTokens max-tokens}))
+        url (str "https://generativelanguage.googleapis.com/v1beta/models/"
+                 model ":generateContent")
+        request (-> (HttpRequest/newBuilder)
+                    (.uri (URI/create url))
+                    (.header "Content-Type" "application/json")
+                    (.header "x-goog-api-key" api-key)
+                    (.POST (HttpRequest$BodyPublishers/ofString (json/write-str body)))
+                    (.build))]
+    request))
+
+(defn- parse-gemini-response [response-body]
+  (let [parsed (json/read-str response-body :key-fn keyword)]
+    (if-let [error (:error parsed)]
+      (throw (ex-info "Gemini API error"
+                      {:error error :status (:code error)}))
+      (let [usage (:usageMetadata parsed)
+            text (->> (get-in parsed [:candidates 0 :content :parts])
+                      (filter #(contains? % :text))
+                      (map :text)
+                      (str/join ""))]
+        {:text text
+         :usage {:input_tokens (:promptTokenCount usage 0)
+                 :output_tokens (:candidatesTokenCount usage 0)}}))))
+
+(defrecord GeminiProvider [api-key model max-tokens http-client]
+  LLMProvider
+  (call-llm [this prompt] (call-llm this prompt {}))
+  (call-llm [_ prompt opts]
+    (let [effective-model (or (:model opts) model)
+          request (gemini-request api-key effective-model prompt (:system opts) max-tokens)
+          response (.send http-client request (HttpResponse$BodyHandlers/ofString))
+          status (.statusCode response)]
+      (if (<= 200 status 299)
+        (let [{:keys [text usage]} (parse-gemini-response (.body response))]
+          (track-usage! effective-model usage)
+          text)
+        (throw (ex-info "Gemini API request failed"
+                        {:status status :body (.body response)})))))
+  (supports-prefill [_] false))
+
+(defn gemini-provider
+  "Create a Google Gemini provider.
+
+   Options:
+   - :api-key    - API key (default: GEMINI_API_KEY or GOOGLE_API_KEY env var)
+   - :model      - Model name (default: gemini-2.5-flash)
+   - :max-tokens - Max tokens per response"
+  ([] (gemini-provider {}))
+  ([{:keys [api-key model max-tokens]
+     :or {model "gemini-2.5-flash"}}]
+   (let [key (or api-key
+                 (System/getenv "GEMINI_API_KEY")
+                 (System/getenv "GOOGLE_API_KEY"))]
+     (when-not key
+       (throw (ex-info "No API key provided. Set GEMINI_API_KEY or GOOGLE_API_KEY or pass :api-key"
+                       {:env "GEMINI_API_KEY"})))
+     (->GeminiProvider key model max-tokens (make-http-client)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Dummy Provider (for testing)

@@ -152,7 +152,7 @@ Core interpreter and tooling complete (446 tests, 1713 assertions):
 - Global shared state: `globals/` namespace (`get`, `set`, `update`, `pop`, `keys`, `wait-until`) for all-to-all coordination
 - I/O tools: `bash`, `read-file`, `write-file`, `str-replace` (with `:all` flag for replace-all), `replace-lines` (supports multi-range edits), `sh`, `watch-send` (in `io` namespace, opt-in)
 - LLM-based error recovery (opt-out by default): on evaluation failure, LLM generates fix re-evaluated from scratch
-- Four LLM providers: Anthropic (with prompt caching), OpenAI, Ollama, Kimi (Moonshot AI) — unified `-m provider:model` CLI syntax
+- Five LLM providers: Anthropic (with prompt caching), OpenAI, Ollama, Kimi (Moonshot AI), Gemini (Google) — unified `-m provider:model` CLI syntax
 - No-prefill mode for OpenAI models; extended thinking support (Anthropic `extended_thinking`, OpenAI `reasoning_effort`)
 - CLI with `-t` (test), `-m provider:model`, `-v` (verbose), `-d` (depth limit), `-b` (budget) flags; accepts `.spl` files and `.agent.edn` agents
 - CLI auto-wraps natural-language prompts into code prefixes

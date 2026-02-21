@@ -18,10 +18,12 @@
    "opus46"  "claude-opus-4-6"
    "o3"      "o3"
    "o4-mini" "o4-mini"
-   "gpt52"   "gpt-5.2"})
+   "gpt52"   "gpt-5.2"
+   "flash"   "gemini-2.5-flash"
+   "gemini-pro" "gemini-2.5-pro"})
 
 (def provider-prefixes
-  #{"ollama" "chatgpt" "openai" "anthropic" "kimi" "moonshot"})
+  #{"ollama" "chatgpt" "openai" "anthropic" "kimi" "moonshot" "gemini" "google"})
 
 (defn parse-model-spec
   "Parse 'provider:model' into {:provider str :model str}.
@@ -198,6 +200,9 @@
 
         ("kimi" "moonshot")
         (provider/kimi-provider base-opts)
+
+        ("gemini" "google")
+        (provider/gemini-provider base-opts)
 
         ;; anthropic (explicit or default)
         ("anthropic" nil)
