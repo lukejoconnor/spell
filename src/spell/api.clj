@@ -13,8 +13,8 @@
 (defn run
   "Run a Spell agent. Returns {:result val :usage atom} or {:error msg ...}.
 
-   Required:
-     :provider — LLM provider instance
+   Required (one of):
+     :provider — LLM provider instance (can be omitted if agent .edn specifies :provider)
 
    Prompt (mutually exclusive):
      :prompt — NL prompt (auto-wrapped into init program)
@@ -42,8 +42,6 @@
     (throw (ex-info "Specify exactly one of :prompt or :init, not both" {})))
   (when-not (or prompt init)
     (throw (ex-info "Must specify :prompt or :init" {})))
-  (when-not provider
-    (throw (ex-info "Must specify :provider" {})))
   (let [;; Load agent config
         agent-config (cond-> (if agent
                                (agent/load-agent-config agent)
@@ -54,6 +52,9 @@
                        thinking (assoc :thinking thinking)
                        reasoning-effort (assoc :reasoning-effort reasoning-effort)
                        verbosity (assoc :verbosity verbosity))
+        ;; Validate: provider must come from somewhere
+        _ (when-not (:provider agent-config)
+            (throw (ex-info "Must specify :provider (via argument or agent .edn)" {})))
         ;; Build llm+run from agent config
         llm-map (agent/make-agent-llm agent-config)
         _ (when-not (:run llm-map)
