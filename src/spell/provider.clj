@@ -10,7 +10,7 @@
             [clojure.edn :as edn]
             [clojure.string :as str])
   (:import [java.net URI]
-           [java.net.http HttpClient HttpRequest HttpRequest$BodyPublishers
+           [java.net.http HttpClient HttpClient$Version HttpRequest HttpRequest$BodyPublishers
                           HttpResponse$BodyHandlers]))
 
 ;; ---------------------------------------------------------------------------
@@ -169,9 +169,13 @@
 ;; Anthropic Provider
 ;; ---------------------------------------------------------------------------
 
-(defn- make-http-client []
-  (-> (HttpClient/newBuilder)
-      (.build)))
+(defn- make-http-client
+  ([] (make-http-client nil))
+  ([{:keys [http-version]}]
+   (let [builder (HttpClient/newBuilder)]
+     (when http-version
+       (.version builder http-version))
+     (.build builder))))
 
 (defn- cache-min-chars
   "Minimum character count for caching to be worthwhile on a given model.
@@ -489,7 +493,12 @@
      (when-not key
        (throw (ex-info "No API key provided. Set OPENAI_API_KEY or pass :api-key"
                        {:env "OPENAI_API_KEY"})))
-     (->OpenAIProvider key url model max-tokens (make-http-client) use-responses-api costs))))
+     (let [local? (or (str/starts-with? url "http://127.0.0.1")
+                      (str/starts-with? url "http://localhost"))
+           client (if local?
+                    (make-http-client {:http-version HttpClient$Version/HTTP_1_1})
+                    (make-http-client))]
+       (->OpenAIProvider key url model max-tokens client use-responses-api costs)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Kimi Provider (Moonshot AI)
@@ -670,12 +679,13 @@
 (defn load-provider
   "Load provider from a .provider.edn file path."
   [path]
-  (let [{:keys [type api-key-env base-url max-tokens costs use-responses-api]}
+  (let [{:keys [type api-key-env base-url model max-tokens costs use-responses-api]}
         (edn/read-string (slurp path))
         api-key (when api-key-env (System/getenv api-key-env))
         opts (cond-> {:costs (or costs {})}
                api-key (assoc :api-key api-key)
                base-url (assoc :base-url base-url)
+               model (assoc :model model)
                max-tokens (assoc :max-tokens max-tokens)
                use-responses-api (assoc :use-responses-api true))]
     (case type
@@ -687,11 +697,12 @@
 
 (defn- load-provider-from-map
   "Create a provider from an inline config map (same keys as .provider.edn)."
-  [{:keys [type api-key-env base-url max-tokens costs use-responses-api] :as spec}]
+  [{:keys [type api-key-env base-url model max-tokens costs use-responses-api] :as spec}]
   (let [api-key (when api-key-env (System/getenv api-key-env))
         opts (cond-> {:costs (or costs {})}
                api-key (assoc :api-key api-key)
                base-url (assoc :base-url base-url)
+               model (assoc :model model)
                max-tokens (assoc :max-tokens max-tokens)
                use-responses-api (assoc :use-responses-api true))]
     (case type
@@ -716,4 +727,3 @@
     (string? spec) (load-provider (resolve-path spec base-dir))
     (map? spec) (load-provider-from-map spec)
     :else (throw (ex-info "Invalid provider spec" {:spec spec}))))
-

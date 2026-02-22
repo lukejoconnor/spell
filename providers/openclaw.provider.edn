@@ -1,0 +1,11 @@
+{:type :openai
+ :base-url "http://127.0.0.1:18789/v1"
+ :api-key-env "OPENCLAW_GATEWAY_TOKEN"
+ :max-tokens 16384
+ :costs {"gpt-5.3-codex"  [0.00 0.00]
+         "gpt-5.3"        [0.00 0.00]
+         "gpt-5.2-codex"  [0.00 0.00]
+         "gpt-5.2"        [0.00 0.00]
+         "gpt-5.1"        [0.00 0.00]
+         "gpt-5"          [0.00 0.00]
+         "gpt-4.1"        [0.00 0.00]}}

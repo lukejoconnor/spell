@@ -14,10 +14,11 @@
    "opus46"  "claude-opus-4-6"
    "o3"      "o3"
    "o4-mini" "o4-mini"
-   "gpt52"   "gpt-5.2"})
+   "gpt52"   "gpt-5.2"
+   "gpt53"   "gpt-5.3"})
 
 (def provider-prefixes
-  #{"ollama" "chatgpt" "openai" "anthropic" "kimi" "moonshot"})
+  #{"ollama" "chatgpt" "openclaw" "openai" "anthropic" "kimi" "moonshot"})
 
 (defn parse-model-spec
   "Parse 'provider:model' into {:provider str :model str}.
@@ -77,7 +78,7 @@
   [["-t" "--test" "Use dummy LLM provider (returns 'hello world')"]
    ["-e" "--example NAME" "Run a named example from examples/"]
    ["-a" "--agent FILE" "Use agent definition from .agent.edn file"]
-   ["-m" "--model MODEL" "Model spec: haiku, sonnet, opus, ollama:<model>, openai:<model>, user (default: openai:gpt-5.2)"]
+   ["-m" "--model MODEL" "Model spec: haiku, sonnet, opus, ollama:<model>, openai:<model>, openclaw:<model>, user (default: openclaw:gpt-5.3)"]
    ["-d" "--depth DEPTH" "Max recursion depth (default: unlimited, 0 = unlimited)"
     :parse-fn #(Integer/parseInt %)
     :validate [#(>= % 0) "Must be non-negative"]]
@@ -179,7 +180,7 @@
     :else
     (let [{:keys [provider model]} (if model
                                      (parse-model-spec model)
-                                     {:provider "openai" :model "gpt-5.2"})
+                                     {:provider "openclaw" :model "gpt-5.3"})
           resolved-model (when model (resolve-model model))
           base-opts (cond-> {:costs provider/default-costs}
                       resolved-model (assoc :model resolved-model)
@@ -194,6 +195,9 @@
 
         ("kimi" "moonshot")
         (provider/kimi-provider base-opts)
+
+        "openclaw"
+        (provider/load-provider "providers/openclaw.provider.edn")
 
         ;; anthropic (explicit or default)
         ("anthropic" nil)
