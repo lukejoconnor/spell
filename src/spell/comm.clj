@@ -327,17 +327,27 @@
 ;; =============================================================================
 
 (defn- ask-multi
-  "Multi-target ask: poke all targets, wake on first reply.
-   Installs completion notifiers for all targets — first reply wins."
+  "Multi-target ask: poke all targets, wake when all have completed.
+   Installs a single notifier that derefs each target's :completed promise
+   in series, then delivers a combined result message."
   [targets]
   (assert-agent-context! "ask")
   (when (empty? targets)
     (throw (ex-info "ask: empty target list" {})))
+  ;; Send poke messages to all targets
   (doseq [target targets]
     (let [name (symbol (gensym "msg-"))
           ask-msg {:from *current-handle* :expects-response true}]
-      (send-msg-fn (create-msg name ask-msg) target))
-    (install-completion-notifier target))
+      (send-msg-fn (create-msg name ask-msg) target)))
+  ;; Install a single notifier that waits for all targets to complete
+  (let [handle *current-handle*
+        my-signal @(:signal (get @registry handle))
+        completed-promises (mapv #(-> @registry (get %) :completed deref) targets)]
+    (future
+      (let [results (mapv (fn [target cp] {:from target :body @cp})
+                          targets completed-promises)]
+        (deliver-msg-fn handle my-signal
+          (create-msg (symbol (gensym "msg-")) {:from targets :body results})))))
   (block-for-message))
 
 (defn ask-builtin
@@ -346,7 +356,7 @@
      includes the sender's handle so the target knows who to reply to.
    (ask target) — poke target (wake it) and wait for a message. Use when
      woken by the wrong agent and you need to go back to sleep for a specific one.
-   (ask [targets]) — multi-target ask. Poke all targets, wake on first reply.
+   (ask [targets]) — multi-target ask. Poke all targets, wake when all complete.
    Every form of ask wakes the target, preventing deadlocks."
   ([target]
    (if (sequential? target)
@@ -432,7 +442,7 @@
   {:guide "AGENTS — Inter-agent communication (effect namespace).
 
   (agents/ask target message)     — send message to target, block for reply
-  (agents/ask [a b c])            — multi-target: poke all, wake on first reply
+  (agents/ask [a b c])            — multi-target: poke all, wake when all complete
   (agents/reply-ask msg value)    — reply to msg, block for next message
   (agents/reply msg value)        — reply to msg (fire-and-forget, ends conversation)
   (agents/send value target)      — send value to target with auto-tagged :from
@@ -455,7 +465,7 @@ All agents/ calls are effect functions — quote them in the trailing expression
 Messages arrive as def bindings: (def msg-N {:from sender :body val}).
 Check (globals/get :roles) to discover available agents.
 Use (describe agents :fn-name) for detailed docs on any function."
-   :docs {:ask "(agents/ask target message) — send message, block for reply; (agents/ask [a b c]) pokes all, first reply wins"
+   :docs {:ask "(agents/ask target message) — send message, block for reply; (agents/ask [a b c]) pokes all, waits for all to complete"
           :reply-ask "(agents/reply-ask msg value) — reply to msg, block for next message"
           :reply "(agents/reply msg value) — reply to msg, fire-and-forget"
           :send "(agents/send value target) — send value with auto-tagged :from"
@@ -479,8 +489,8 @@ Use (describe agents :fn-name) for detailed docs on any function."
   Use to wait for a specific agent to respond.
 
 (agents/ask [a b c]) — multi-target ask.
-  Pokes all targets, wakes on first reply.
-  Use for fan-out where the first response is sufficient.
+  Pokes all targets, wakes when all have completed.
+  Use for fan-out where you need all results.
 
 Every form wakes the target, preventing deadlocks.
 Code after ask is dead code — ask blocks and triggers a new turn.
@@ -492,11 +502,11 @@ Example — multi-turn conversation:
   '(agents/ask :seller 150)
   ;; ...until one side uses reply to end
 
-Example — fan-out, first reply wins:
-  '(do (def a (agents/spawn llm-self \"compute X, send to parent-handle\"))
-       (def b (agents/spawn llm-self \"compute Y, send to parent-handle\"))
+Example — fan-out, wait for all:
+  '(do (def a (agents/spawn llm-self \"compute X\"))
+       (def b (agents/spawn llm-self \"compute Y\"))
        (agents/ask [a b]))
-  ;; next turn: first reply as def binding (or completion notification)
+  ;; next turn: msg with :body [{:from a :body result-a} {:from b :body result-b}]
 
 Message preemption: if another agent sends you a message while your response
 is in flight, the message is appended as an extension. Your trailing expression

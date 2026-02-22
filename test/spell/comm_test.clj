@@ -498,90 +498,53 @@
       (is (thrown-with-msg? Exception #"empty target list"
             (comm/ask-builtin []))))))
 
-(deftest ask-multi-first-reply-wins-test
-  (testing "multi-target ask wakes on first reply"
+(deftest ask-multi-waits-for-all-test
+  (testing "multi-target ask waits for all targets to complete"
     (let [h-parent :multi-parent
           h-a :multi-child-a
           h-b :multi-child-b
-          parent-raw "(quine completion (eval (do)))"]
+          parent-raw "(quine completion (eval (do)))"
+          child-raw  "(quine completion (eval (do)))"
+          eval-a (fn [raw] :result-a)
+          eval-b (fn [raw] :result-b)]
       (comm/register! h-parent)
-      (comm/register! h-a)
-      (comm/register! h-b)
-      ;; Start ask-multi in a future with the parent's context
-      (let [result-future
-            (future
-              (binding [comm/*current-handle* h-parent
-                        comm/*current-raw*    parent-raw
-                        comm/*current-eval-fn* identity]
-                (comm/ask-builtin [h-a h-b])))]
-        (Thread/sleep 50)
-        ;; Only child A sends — parent should wake immediately
-        (binding [comm/*current-handle* h-a]
-          (comm/send 42 h-parent))
-        ;; Parent should unblock with A's reply (first reply wins)
-        (let [result (deref result-future 5000 :timeout)]
-          (is (string? result))
-          (is (.contains ^String result ":body 42")))))))
+      (comm/register! h-a :some-spawner)
+      (comm/register! h-b :some-spawner)
+      (let [cp-a (promise)
+            cp-b (promise)]
+        (deliver cp-a child-raw)
+        (deliver cp-b child-raw)
+        (let [result-future
+              (future
+                (binding [comm/*current-handle* h-parent
+                          comm/*current-raw*    parent-raw
+                          comm/*current-eval-fn* identity]
+                  (comm/ask-builtin [h-a h-b])))]
+          (Thread/sleep 50)
+          ;; Only child A completes — parent should NOT wake yet
+          (future (comm/run-root-box h-a cp-a
+                    (comm/make-awake-fn eval-a) eval-a))
+          (Thread/sleep 100)
+          (is (not (realized? result-future)) "parent should still be blocked")
+          ;; Now child B completes — parent should wake with combined results
+          (comm/run-root-box h-b cp-b
+            (comm/make-awake-fn eval-b) eval-b)
+          (let [result (deref result-future 5000 :timeout)]
+            (is (string? result))
+            (is (.contains ^String result ":result-a"))
+            (is (.contains ^String result ":result-b"))))))))
 
 (deftest ask-multi-single-target-test
   (testing "ask with single-element vector works"
     (let [h-parent :multi-single-parent
           h-child :multi-single-child
-          parent-raw "(quine completion (eval (do)))"]
-      (comm/register! h-parent)
-      (comm/register! h-child)
-      (let [result-future
-            (future
-              (binding [comm/*current-handle* h-parent
-                        comm/*current-raw*    parent-raw
-                        comm/*current-eval-fn* identity]
-                (comm/ask-builtin [h-child])))]
-        (Thread/sleep 50)
-        (binding [comm/*current-handle* h-child]
-          (comm/send 7 h-parent))
-        (let [result (deref result-future 5000 :timeout)]
-          (is (string? result))
-          (is (.contains ^String result ":body 7")))))))
-
-(deftest ask-multi-concurrent-sends-test
-  (testing "first of concurrent sends from multiple targets wakes parent"
-    (let [h-parent :multi-conc-parent
-          targets (mapv #(keyword (str "multi-conc-child-" %)) (range 5))
-          parent-raw "(quine completion (eval (do)))"]
-      (comm/register! h-parent)
-      (doseq [t targets] (comm/register! t))
-      (let [result-future
-            (future
-              (binding [comm/*current-handle* h-parent
-                        comm/*current-raw*    parent-raw
-                        comm/*current-eval-fn* identity]
-                (comm/ask-builtin targets)))]
-        (Thread/sleep 50)
-        ;; All children send concurrently — first one wakes parent
-        (let [send-futures
-              (mapv (fn [t]
-                      (future
-                        (binding [comm/*current-handle* t]
-                          (comm/send (name t) h-parent))))
-                    targets)]
-          (doseq [sf send-futures] (deref sf 2000 :timeout)))
-        ;; Parent wakes with at least one message
-        (let [result (deref result-future 5000 :timeout)]
-          (is (string? result)))))))
-
-(deftest ask-multi-completion-notifier-test
-  (testing "completion notifier fires when target root box completes"
-    (let [h-parent :multi-cn-parent
-          h-child :multi-cn-child
           parent-raw "(quine completion (eval (do)))"
           child-raw  "(quine completion (eval (do)))"
-          child-eval-fn (fn [raw] :child-returned)]
+          child-eval-fn (fn [raw] :child-done)]
       (comm/register! h-parent)
       (comm/register! h-child :some-spawner)
-      ;; Start the child's root box
       (let [cp (promise)]
         (deliver cp child-raw)
-        ;; Start parent ask-multi, then let child complete
         (let [result-future
               (future
                 (binding [comm/*current-handle* h-parent
@@ -589,13 +552,78 @@
                           comm/*current-eval-fn* identity]
                   (comm/ask-builtin [h-child])))]
           (Thread/sleep 50)
-          ;; Child's root box completes — delivers :completed
           (comm/run-root-box h-child cp
             (comm/make-awake-fn child-eval-fn) child-eval-fn)
-          ;; Parent should wake via completion notifier
           (let [result (deref result-future 5000 :timeout)]
             (is (string? result))
-            (is (.contains ^String result ":body :child-returned"))))))))
+            (is (.contains ^String result ":child-done"))))))))
+
+(deftest ask-multi-concurrent-completions-test
+  (testing "concurrent target completions all contribute to result"
+    (let [h-parent :multi-conc-parent
+          targets (mapv #(keyword (str "multi-conc-child-" %)) (range 5))
+          parent-raw "(quine completion (eval (do)))"
+          child-raw  "(quine completion (eval (do)))"]
+      (comm/register! h-parent)
+      (doseq [t targets] (comm/register! t :some-spawner))
+      (let [result-future
+            (future
+              (binding [comm/*current-handle* h-parent
+                        comm/*current-raw*    parent-raw
+                        comm/*current-eval-fn* identity]
+                (comm/ask-builtin targets)))]
+        (Thread/sleep 50)
+        ;; All children complete concurrently
+        (let [box-futures
+              (mapv (fn [t]
+                      (let [cp (promise)]
+                        (deliver cp child-raw)
+                        (future
+                          (comm/run-root-box t cp
+                            (comm/make-awake-fn (fn [_] (name t)))
+                            (fn [_] (name t))))))
+                    targets)]
+          (doseq [bf box-futures] (deref bf 2000 :timeout)))
+        ;; Parent wakes with all results
+        (let [result (deref result-future 5000 :timeout)]
+          (is (string? result))
+          ;; All target names should appear in the combined result
+          (doseq [t targets]
+            (is (.contains ^String result (name t)))))))))
+
+(deftest ask-multi-completion-notifier-test
+  (testing "completion notifier fires when all target root boxes complete"
+    (let [h-parent :multi-cn-parent
+          h-child-a :multi-cn-child-a
+          h-child-b :multi-cn-child-b
+          parent-raw "(quine completion (eval (do)))"
+          child-raw  "(quine completion (eval (do)))"
+          eval-a (fn [raw] :returned-a)
+          eval-b (fn [raw] :returned-b)]
+      (comm/register! h-parent)
+      (comm/register! h-child-a :some-spawner)
+      (comm/register! h-child-b :some-spawner)
+      (let [cp-a (promise)
+            cp-b (promise)]
+        (deliver cp-a child-raw)
+        (deliver cp-b child-raw)
+        (let [result-future
+              (future
+                (binding [comm/*current-handle* h-parent
+                          comm/*current-raw*    parent-raw
+                          comm/*current-eval-fn* identity]
+                  (comm/ask-builtin [h-child-a h-child-b])))]
+          (Thread/sleep 50)
+          ;; Both children complete
+          (future (comm/run-root-box h-child-a cp-a
+                    (comm/make-awake-fn eval-a) eval-a))
+          (comm/run-root-box h-child-b cp-b
+            (comm/make-awake-fn eval-b) eval-b)
+          ;; Parent should wake via completion notifier with both results
+          (let [result (deref result-future 5000 :timeout)]
+            (is (string? result))
+            (is (.contains ^String result ":returned-a"))
+            (is (.contains ^String result ":returned-b"))))))))
 
 ;; =============================================================================
 ;; Inbox preservation tests (#89)
