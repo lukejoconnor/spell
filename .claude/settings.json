@@ -1,5 +1,6 @@
 {
   "permissions": {
+    "additionalDirectories": [".claude/worktrees"],
     "allow": [
       "Read(/**)",
       "Read(/notebook/**)",

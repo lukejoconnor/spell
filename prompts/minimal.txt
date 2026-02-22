@@ -71,6 +71,7 @@ You can make plain-text self-calls using leaf-llm.
 Use this when you can delegate work that does not require tool use or orchestration.
 For example:
     '(call-now poem (leaf-llm "Write a poem about spring."))
+leaf-llm is text-in/text-out only. It cannot be used with agents/spawn or agents/spawn-ask (use llm-self for spawning agents).
 
 ONE TRAILING EXPRESSION PER RESPONSE
 

@@ -625,3 +625,71 @@
     (is (contains? ns :env))
     (is (contains? ns :exists?))
     (is (contains? ns :ls))))
+
+;; =============================================================================
+;; Event-send tests
+;; =============================================================================
+
+(use-fixtures :once
+  (fn [f]
+    (setup-test-dir)
+    (try (f) (finally (cleanup-test-dir)))))
+
+(deftest event-send-returns-nil-test
+  (testing "event-send returns nil immediately"
+    (comm/register! :es-io-nil)
+    (try
+      (is (nil? (io/event-send (fn [] {:ok "data"}) :es-io-nil :test-sender)))
+      (finally (swap! comm/registry dissoc :es-io-nil)))))
+
+(deftest event-send-sends-on-ok-test
+  (testing "event-send sends message when event-fn returns {:ok val}"
+    (let [handle :es-io-ok
+          received (promise)
+          eval-fn (fn [raw] (deliver received raw) :done)]
+      (comm/start-box handle eval-fn "(quine c (eval (do 1)))")
+      (Thread/sleep 50)
+      (try
+        (io/event-send (fn [] {:ok "event-data"}) handle :test-event)
+        (let [raw (deref received 5000 :timeout)]
+          (is (not= :timeout raw))
+          (is (string? raw))
+          (is (.contains ^String raw ":from :test-event"))
+          (is (.contains ^String raw ":body \"event-data\"")))
+        (finally (swap! comm/registry dissoc handle))))))
+
+(deftest event-send-silent-on-non-ok-test
+  (testing "event-send does not send when event-fn returns non-:ok"
+    (let [handle :es-io-silent]
+      (comm/register! handle)
+      (try
+        (io/event-send (fn [] {:timeout true}) handle :test-event)
+        (Thread/sleep 50)
+        (is (= identity @(:inbox (get @comm/registry handle))))
+        (finally (swap! comm/registry dissoc handle))))))
+
+(deftest event-send-notifies-on-exception-test
+  (testing "event-send sends {:error msg} when event-fn throws"
+    (let [handle :es-io-ex
+          received (promise)
+          eval-fn (fn [raw] (deliver received raw) :done)]
+      (comm/start-box handle eval-fn "(quine c (eval (do 1)))")
+      (Thread/sleep 50)
+      (try
+        (io/event-send (fn [] (throw (ex-info "boom" {}))) handle :test-event)
+        (let [raw (deref received 5000 :timeout)]
+          (is (not= :timeout raw))
+          (is (string? raw))
+          (is (.contains ^String raw ":from :test-event"))
+          (is (.contains ^String raw ":error")))
+        (finally (swap! comm/registry dissoc handle))))))
+
+(deftest event-send-abort-test
+  (testing "event-send does not send when event-fn returns {:abort ...}"
+    (let [handle :es-io-abort]
+      (comm/register! handle)
+      (try
+        (io/event-send (fn [] {:abort :reason}) handle :test-event)
+        (Thread/sleep 50)
+        (is (= identity @(:inbox (get @comm/registry handle))))
+        (finally (swap! comm/registry dissoc handle))))))

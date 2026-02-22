@@ -19,8 +19,8 @@
 ;; Re-export from spell.llm
 (def make-llm llm-engine/make-llm)
 (def make-leaf-llm llm-engine/make-leaf-llm)
-;; Re-export from spell.llm
-(def describe llm-engine/describe)
+;; Re-export from spell.stdlib
+(def describe stdlib/describe)
 
 ;; =============================================================================
 ;; All namespaces (for system prompt generation)
@@ -31,7 +31,7 @@
 (alter-var-root #'eval/*builtins*
   (fn [builtins]
     (merge builtins
-           {'describe-fn llm-engine/describe}
+           {'describe-fn stdlib/describe}
            llm-engine/core-namespaces)))
 
 (def all-namespaces
@@ -41,5 +41,5 @@
   {'io io/io-namespace
    'globals globals/globals-namespace
    'agents comm/agents-namespace
-   'futures comm/futures-namespace
+   'futures stdlib/futures-namespace
    'patterns stdlib/patterns})

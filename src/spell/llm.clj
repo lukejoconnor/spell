@@ -2,31 +2,17 @@
   "LLM orchestration engine for Spell.
 
    Core loop: call LLM, concatenate prefix+response, parse, eval."
-  (:require [clojure.edn :as edn]
-            [clojure.string :as str]
+  (:require [clojure.string :as str]
             [spell.comm :as comm]
             [spell.eval :as eval]
             [spell.parse :as parse]
+            [spell.prompt :as prompt]
             [spell.provider :as provider]
             [spell.recovery :as recovery]
             [spell.stdlib :as stdlib]
             [spell.trace :as trace]))
 
 (declare make-leaf-llm)
-
-;; ---------------------------------------------------------------------------
-;; Describe builtin (defined here to avoid circular deps with core)
-;; ---------------------------------------------------------------------------
-
-(defn describe
-  "Get documentation from a namespace.
-   (describe ns) — guide if available, else docs map
-   (describe ns :key) — detailed doc for specific item (checks :detail, then :docs)"
-  ([ns] (or (:guide ns) (:docs ns)))
-  ([ns key] (or (get-in ns [:detail key])
-                (get-in ns [:docs key])
-                (get ns key))))
-
 
 ;; ---------------------------------------------------------------------------
 ;; Core namespaces — always available, never need to be configured
@@ -262,64 +248,16 @@
                     (throw (ex-info (:err result) {:result result})))))))]
     eval-builtin))
 
-;; ---------------------------------------------------------------------------
-;; System prompt composition
-;; ---------------------------------------------------------------------------
-
-(defn- namespaces-section
-  "Generate the NAMESPACES section from namespace metadata."
-  [namespaces]
-  (when (seq namespaces)
-    (str "\nNAMESPACES\n\n"
-         "Access functions with qualified symbols: namespace/item\n\n"
-         (str/join "\n\n"
-           (map (fn [[ns-sym ns-map]]
-                  (str "## " ns-sym "\n"
-                       (str/join "\n"
-                         (map (fn [[k desc]]
-                                (str "  " (name k) ": " desc))
-                              (:docs ns-map)))))
-                namespaces))
-         "\n\n"
-         "Usage:\n"
-         "  (io/sh \"ls\")              — call function directly\n"
-         "  '(describe io)              — namespace overview\n"
-         "  '(describe io :sh)          — detailed doc for specific function\n"
-         "  '(describe agents globals)  — multiple namespaces in one describe\n"
-         "\n"
-         "describe is an extension — it fires as the trailing expression for that turn.\n"
-         "Use it before calling an unfamiliar namespace.\n")))
-
-(defn- format-section
-  "Generate RETURN VALUE section when a format spec is provided."
-  [{:keys [required optional]}]
-  (str "\nRETURN VALUE\n\n"
-       "Your program's last expression must be a map with "
-       (if (= 1 (count required))
-         (str "key " (first required))
-         (str "keys " (pr-str required)))
-       ".\n"
-       "Example: {:answer 42}\n"
-       (when optional
-         (str "Optional keys: " (pr-str optional) "\n"))))
-
-(defn compose-system-prompt
-  "Build a system prompt from a base prompt plus namespace docs and format.
-   :base       — system prompt text (required; nil yields namespace docs only)
-   :namespaces — map of effect namespace {symbol -> namespace-map}
-   :format     — optional format spec {:required [...] :optional [...]}"
-  [{:keys [base namespaces format]}]
-  (str (or base "")
-       (namespaces-section namespaces)
-       (when format (format-section format))))
-
-(defn generate-system-prompt
-  "Build a system prompt from namespaces (convenience wrapper).
-   namespaces: map of {symbol -> namespace-map}
-   format: optional format spec"
-  ([namespaces] (generate-system-prompt namespaces nil))
-  ([namespaces format]
-   (compose-system-prompt {:namespaces namespaces :format format})))
+(defn- wrap-nl
+  "Wrap a prompt value for LLM consumption.
+   If it starts with '(' it's already code — pass through as string.
+   Otherwise, wrap in the standard NL completion prefix."
+  [p]
+  (let [s (if (or (seq? p) (list? p)) (pr-str p) (str p))]
+    (if (.startsWith (.trim ^String s) "(")
+      (str p)
+      (str "(quine completion (eval (do "
+           "(quine prompt \"" (parse/escape-string s) "\") "))))
 
 (defn make-llm
   "Factory: create an llm function with namespaces.
@@ -352,9 +290,9 @@
         ns-builtins (into {} (map (fn [[sym ns-map]] [sym ns-map]) namespaces))
         effect-ns-builtins (into {} (remove #(core-ns-names (key %)) ns-builtins))
         variant-builtins (merge eval/core-builtins
-                                {'describe-fn describe}
+                                {'describe-fn stdlib/describe}
                                 core-namespaces)
-        sys-prompt (compose-system-prompt
+        sys-prompt (prompt/compose-system-prompt
                      {:base system
                       :namespaces effect-ns-builtins
                       :format format})
@@ -415,12 +353,6 @@
                   :eval-builtin eval-builtin
                   :recover-fn recover-fn}
         _        (deliver final-config config')
-        wrap-nl  (fn [p]
-                   (let [s (if (or (seq? p) (list? p)) (pr-str p) (str p))]
-                     (if (.startsWith (.trim ^String s) "(")
-                       (str p)
-                       (str "(quine completion (eval (do "
-                            "(quine prompt \"" (parse/escape-string s) "\") "))))
         the-llm  (fn the-llm
                    ([prompt] (the-llm prompt nil))
                    ([prompt handle]
@@ -476,92 +408,27 @@
   ([] (make-leaf-llm {}))
   ([{:keys [provider system model]
      :or {system "You are a helpful assistant. Respond concisely."}}]
-   (fn [prompt]
-     (let [prompt-str (str prompt)
-           node-id  (when trace/*trace*
-                      (trace/begin-node! trace/*trace-node-id*
-                                         eval/*llm-depth* :leaf prompt-str))
-           indent   (apply str (repeat eval/*llm-depth* "  "))
-           _        (when eval/*verbose*
-                      (Thread/sleep (rand-int 500))
-                      (eval/vlog (str indent "=== Leaf LLM Call (depth " eval/*llm-depth* ") ==="))
-                      (eval/vlog (str indent "Prompt: " (pr-str prompt))))
-           opts     (cond-> {:system system}
-                      model (assoc :model model))
-           response (provider/call-with-retries
-                      #(provider/strip-code-fences
-                         (provider/call-llm provider prompt-str opts))
-                      provider/*retries*)
-           _        (eval/vlog (str indent "Response: " response))
-           _        (when node-id
-                      (trace/complete-node! node-id
-                        {:response response :raw-text response :value response}))]
-       response))))
+   (with-meta
+     (fn [prompt]
+       (let [prompt-str (str prompt)
+             node-id  (when trace/*trace*
+                        (trace/begin-node! trace/*trace-node-id*
+                                           eval/*llm-depth* :leaf prompt-str))
+             indent   (apply str (repeat eval/*llm-depth* "  "))
+             _        (when eval/*verbose*
+                        (Thread/sleep (rand-int 500))
+                        (eval/vlog (str indent "=== Leaf LLM Call (depth " eval/*llm-depth* ") ==="))
+                        (eval/vlog (str indent "Prompt: " (pr-str prompt))))
+             opts     (cond-> {:system system}
+                        model (assoc :model model))
+             response (provider/call-with-retries
+                        #(provider/strip-code-fences
+                           (provider/call-llm provider prompt-str opts))
+                        provider/*retries*)
+             _        (eval/vlog (str indent "Response: " response))
+             _        (when node-id
+                        (trace/complete-node! node-id
+                          {:response response :raw-text response :value response}))]
+         response))
+     {:spell/leaf true})))
 
-;; ---------------------------------------------------------------------------
-;; Format Validation
-;; ---------------------------------------------------------------------------
-
-(defn- validate-format
-  "Validate value against format spec. Returns {:valid true} or {:valid false :error msg}."
-  [value {:keys [required optional]}]
-  (cond
-    (not (map? value))
-    {:valid false :error (str "Expected map, got " (type value))}
-
-    (not-empty (remove #(contains? value %) required))
-    {:valid false :error (str "Missing required keys: "
-                              (vec (remove #(contains? value %) required)))}
-
-    :else
-    {:valid true}))
-
-(defn wrap-with-format
-  "Wrap an LLM function with format validation and retry.
-
-   For eval=false (leaf LLM): parses response as EDN, validates against format.
-   For eval=true (Spell LLM): validates the evaluated result against format.
-
-   Options:
-   - :format      - format spec with :required and :optional keys
-   - :eval?       - true if wrapped fn returns evaluated result (vs raw string)
-   - :max-retries - max retry attempts (default 3)"
-  [llm-fn {:keys [format eval? max-retries] :or {max-retries 3}}]
-  (fn [prompt & args]
-    (loop [attempt 1
-           last-response nil
-           last-error nil]
-      (let [;; Add retry context to prompt if retrying
-            prompt' (if last-error
-                      (str prompt "\n\n[Previous attempt returned:\n"
-                           (pr-str last-response)
-                           "\n\nError: " last-error
-                           "\n\nExpected format: map with keys " (:required format)
-                           (when (:optional format)
-                             (str " (optional: " (:optional format) ")"))
-                           "\nPlease return valid EDN matching this format.]")
-                      prompt)
-            ;; Call the underlying LLM
-            response (apply llm-fn prompt' args)
-            ;; For eval?=false, parse response as EDN
-            ;; For eval?=true, response is already the evaluated result
-            value (if eval?
-                    response
-                    (try
-                      (edn/read-string response)
-                      (catch Exception e
-                        {:__parse-error (.getMessage e)})))
-            validation (if (:__parse-error value)
-                         {:valid false :error (str "Failed to parse as EDN: " (:__parse-error value))}
-                         (validate-format value format))]
-        (if (:valid validation)
-          value  ; Return the validated value (parsed EDN or Spell result)
-          (if (>= attempt max-retries)
-            (throw (ex-info "Format validation failed after max retries"
-                            {:attempts attempt
-                             :last-response response
-                             :last-value value
-                             :error (:error validation)}))
-            (recur (inc attempt)
-                   (if eval? value response)
-                   (:error validation))))))))

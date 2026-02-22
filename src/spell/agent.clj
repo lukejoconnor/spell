@@ -22,6 +22,7 @@
   (:require [clojure.edn :as edn]
             [clojure.string :as str]
             [spell.comm :as comm]
+            [spell.format :as format]
             [spell.globals :as globals]
             [spell.llm :as llm]
             [spell.provider :as provider]
@@ -39,7 +40,7 @@
   {'io io/io-namespace
    'globals globals/globals-namespace
    'agents comm/agents-namespace
-   'futures comm/futures-namespace
+   'futures stdlib/futures-namespace
    'builtins stdlib/builtins-namespace
    'strings stdlib/strings
    'math stdlib/math
@@ -386,7 +387,7 @@
                                         spec-provider (assoc :provider spec-provider))))]
     ;; Wrap with format validation if specified
     (if (:format spec)
-      (llm/wrap-with-format base-llm {:format (:format spec)
+      (format/wrap-with-format base-llm {:format (:format spec)
                                        :eval? eval?
                                        :max-retries (or (:max-retries spec) 3)})
       base-llm)))
@@ -586,7 +587,7 @@
                                             model (assoc :model model)
                                             provider (assoc :provider provider)))})]
     (if format
-      (update result :llm llm/wrap-with-format {:format format
+      (update result :llm format/wrap-with-format {:format format
                                                  :eval? eval?
                                                  :max-retries (or max-retries 3)})
       result)))

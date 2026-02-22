@@ -142,37 +142,19 @@ Programs return the value of their last expression (standard Lisp semantics). No
 
 ## Current Status
 
-Core interpreter and tooling complete (461 tests, 1772 assertions):
-- `spell-eval` with environment threading
-- Special forms (13): `quote`, `def`, `do`, `if`, `let`, `fn`/`fn*`, `expand`, `quine`, `loop`, `recur`, `for`, `try`
-- Macros (26 via `defspellmacro`): `when`, `defn`, `and`, `or`, `cond`, `if-let`, `when-let`, `case`, `as->`, `cond->`, `cond->>`, `some->`, `some->>`, `call-now`, `print`, `describe`, `define`, `defmacro`, `compact`, `->`, `->>`, `future`, `plet`, `think`, `rethink`, `extend`. User-defined macros via `defmacro` at Spell level
-- Vector destructuring in `fn`/`defn`/`let` parameters: nested vectors, `&` rest, `:as`
-- Core builtins: arithmetic, comparison, logic, list ops (`map`, `reduce`, `filter`, etc.), string ops (`cat`, `pr-str`), `spell-eval`, `llm-self`, `describe`, `throw`, `gensym`, `serialize`, `prune-and-reopen`, `deep-truncate`
-- Two-category namespace system: core namespaces (strings, math, builtins) always in variant-builtins; effect namespaces (io, globals, agents, futures, patterns) gated through eval's double evaluation
-- Effect guard: `eval` builtin (agent-specific, not special form) merges effect namespaces and per-variant fns (`llm-self`, `llm`, `leaf-llm`) with pure builtins; effects only available in trailing expression via double evaluation
-- `llm` with prompt-as-prefix semantics
-- `make-llm` factory with namespace-based configuration; `compose-system-prompt` dynamically appends effect namespace docs to any system prompt (custom or default)
-- Namespace system: qualified symbol access (`io/bash`, `strings/trim`) with recursive lookup
-- Core namespaces: `strings` (string/regex), `math` (arithmetic/trig/number theory), `builtins` (docs-only reference)
-- Effect namespaces: `io` (file/process), `agents/` (communication), `futures/` (parallel computation), `globals/` (shared state), `patterns` (orchestration patterns), `llms/` (named sub-LLM variants via `:llms` in .agent.edn)
-- `llm-self` for automatic self-recursion (atom-based forward ref, available in all `make-llm` variants)
-- `future`/`await`/`plet` for deterministic parallel computation (core builtins); `futures/await-all`/`futures/pmap` in effect namespace
-- Inter-agent communication via `agents/` namespace: `agents/spawn`, `agents/ask` (including multi-target `[a b c]`, first reply wins), `agents/send`, `agents/reply`, `agents/reply-ask`, `agents/spawn-ask`, `agents/current-handle`, `agents/parent-handle`, `agents/send-msg-fn`, keyword handles
-- Global shared state: `globals/` namespace (`get`, `set`, `update`, `pop`, `keys`, `wait-until`) for all-to-all coordination
-- I/O tools: `bash`, `read-file`, `write-file`, `str-replace` (with `:all` flag for replace-all), `replace-lines` (supports multi-range edits), `sh`, `watch-send` (in `io` namespace, opt-in)
-- LLM-based error recovery (opt-out by default): on evaluation failure, LLM generates fix re-evaluated from scratch
-- Four LLM providers: Anthropic (with prompt caching), OpenAI, Ollama, Kimi (Moonshot AI) — unified `-m provider:model` CLI syntax. Provider-in-closure architecture: each `make-llm` closes over its provider instance, enabling multi-provider sub-agents. Declarative `.provider.edn` files define providers (type, API key env var, costs)
-- No-prefill mode for OpenAI models; extended thinking support (Anthropic `extended_thinking`, OpenAI `reasoning_effort`)
-- CLI with `-t` (test), `-m provider:model`, `-v` (verbose), `-d` (depth limit), `-b` (budget), `-R` (reasoning-effort), `-e` (example), `-M` (max-tokens), `-K` (thinking), `-T` (trace), `-l` (log), `-S` (setup), `-C` (cleanup) flags; accepts `.spl` files and `.agent.edn` agents
-- CLI auto-wraps natural-language prompts into code prefixes
-- `api/run` — single programmatic entry point; accepts `:prompt` (NL, auto-wrapped into init program) or `:init` (complete Spell program); handles agent config, user agent, trace, budget. Provider injected into agent config, flows to `make-llm` via closure
-- Init program: `build-init` wraps NL prompt into `(quine completion (eval (do (quine prompt "...") '(extend))))` — first pass evaluates without LLM call, `extend` triggers the first API call
-- Agent `:init` field in `.agent.edn` — preamble expressions spliced before trailing `'(extend)` in init program
-- Implicit return values (last expression)
-- API retry logic: `*retries*` dynamic var (default `[0 10]` — instant retry + 10s retry) for transient API failures (429, 5xx, network). Configurable per-agent via `:retries` in .agent.edn
-- Token/cost tracking via `*usage*` dynamic var (accumulated across recursive calls, printed with `-v`)
-- Budget limit via `*budget*` dynamic var (default $1.00, halts execution when cumulative cost exceeds threshold; `-b 0` for unlimited)
-- Orchestration benchmark harness (`dev/benchmark.clj`) with pilot results in `docs/`
+Core interpreter and tooling complete (461 tests, 1772 assertions). 13 special forms, 26 macros (via `defspellmacro`), user-defined macros via `defmacro`.
+
+**Language features:** Vector destructuring (`&` rest, `:as`), dynamic scoping, `try`/`catch`/`throw`, `future`/`await`/`plet`, `loop`/`recur` (including fn-level), `think`/`rethink`/`extend` (context pruning), `compact` (context compaction), `quine` (self-referential code).
+
+**Two-category namespace system:** Core namespaces (strings, math, builtins) always available; effect namespaces (io, globals, agents, futures, patterns, llms) gated through `eval` builtin's double evaluation. The `eval` builtin is per-agent (not a special form) — merges effect namespaces with pure builtins; effects only available in trailing expression.
+
+**Inter-agent communication:** `agents/spawn`, `agents/ask` (single, multi-target, and ask-all), `agents/send`, `agents/reply`, `agents/reply-ask`, `agents/spawn-ask`, `agents/register`. Keyword handles, message preemption, `globals/` namespace for shared state with `wait-until`.
+
+**Providers:** Anthropic (with prompt caching), OpenAI (with Responses API), Ollama, Kimi — unified `-m provider:model` CLI syntax. Provider-in-closure architecture; declarative `.provider.edn` files. No-prefill mode for OpenAI; extended thinking support.
+
+**CLI:** `-t` (test), `-m` (model), `-a` (agent), `-v` (verbose), `-d` (depth), `-b` (budget), `-R` (reasoning-effort), `-e` (example), `-M` (max-tokens), `-K` (thinking), `-T` (trace), `-l` (log), `-S` (setup), `-C` (cleanup). Accepts `.spl` files and `.agent.edn` agents. Auto-wraps NL prompts into code prefixes.
+
+**Entry point:** `api/run` accepts `:prompt` (NL) or `:init` (Spell program). `build-init` wraps prompts into `(quine completion (eval (do (quine prompt "...") '(extend))))`. Agent `.edn` files support `:init` preamble, `:llms` sub-agent variants, `:provider` threading, `:retries`. Budget limit default $1.00 (`-b 0` for unlimited).
 
 **Next priorities** (see `notebook/TODO.md`):
 - MCP support (#30)

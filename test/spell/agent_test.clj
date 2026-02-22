@@ -3,7 +3,8 @@
             [spell.agent :as agent]
             [spell.comm :as comm]
             [spell.llm :as llm]
-            [spell.provider :as provider]))
+            [spell.provider :as provider]
+            [spell.stdlib :as stdlib]))
 
 (use-fixtures :each
   (fn [f]
@@ -160,9 +161,9 @@
       ;; describe returns docs map (no :guide)
       (is (= {:researcher "Researches topics"
               :writer "Writes content"}
-             (llm/describe llms-ns)))
+             (stdlib/describe llms-ns)))
       ;; describe with key returns specific doc
-      (is (= "Researches topics" (llm/describe llms-ns :researcher))))))
+      (is (= "Researches topics" (stdlib/describe llms-ns :researcher))))))
 
 ;; =============================================================================
 ;; leaf-llm model inheritance (in make-llm)

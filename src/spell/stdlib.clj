@@ -5,8 +5,10 @@
    Namespaces here match Clojure's namespace structure:
    - strings: matches clojure.string
    - math: matches Java's Math (since Clojure uses Math/ interop)
-   - patterns: Spell-specific orchestration patterns"
-  (:require [clojure.string :as str]))
+   - patterns: Spell-specific orchestration patterns
+   - futures: parallel computation utilities"
+  (:require [clojure.string :as str]
+            [spell.eval :as eval]))
 
 ;; =============================================================================
 ;; strings namespace (matches clojure.string)
@@ -825,6 +827,54 @@ Macros cannot use effect functions.
 Example:
   (defmacro unless [test body] (list 'if test nil body))
   (unless false 42) ;; expands to (if false nil 42) => 42"}})
+
+;; =============================================================================
+;; describe
+;; =============================================================================
+
+(defn describe
+  "Get documentation from a namespace.
+   (describe ns) — guide if available, else docs map
+   (describe ns :key) — detailed doc for specific item (checks :detail, then :docs)"
+  ([ns] (or (:guide ns) (:docs ns)))
+  ([ns key] (or (get-in ns [:detail key])
+                (get-in ns [:docs key])
+                (get ns key))))
+
+;; =============================================================================
+;; futures namespace (parallel computation)
+;; =============================================================================
+
+(def futures-namespace
+  "Parallel computation namespace — effect-guarded (trailing expression only)."
+  {:guide "FUTURES
+
+future/await/plet for deterministic parallel computation. These are for pure computation only — never use them for LLM calls (they'd share the parent handle and contend over the box).
+
+  (future expr)          — run expr in background, returns a future
+  (await f)              — block until future f completes, returns value
+  (futures/await-all [f1 f2 ...])  — await multiple futures, returns vector of results
+  (plet [a expr1 b expr2] body)   — parallel let: compute bindings concurrently
+  (futures/pmap f coll)            — parallel map: applies f to each element concurrently
+
+Note: future, await, and plet are core builtins (no namespace prefix needed).
+Only await-all and pmap are in the futures/ namespace."
+   :docs {:await-all "(futures/await-all [f1 f2 ...]) — await multiple futures, returns vector of results"
+          :pmap "(futures/pmap f coll) — parallel map, applies f to each element concurrently"}
+   :await-all (fn [futures]
+                (when-not (sequential? futures)
+                  (throw (ex-info "await-all: argument must be a collection" {:got futures})))
+                (mapv (fn [f]
+                        (when-not (eval/spell-future? f)
+                          (throw (ex-info "await-all: all elements must be futures" {:got f})))
+                        (deref (:ref f)))
+                      futures))
+   :pmap (fn [f coll]
+           (let [futures (mapv (fn [item]
+                                 {:spell/future true
+                                  :ref (clojure.core/future ((bound-fn [] (eval/invoke-fn f [item]))))})
+                               coll)]
+             (mapv #(deref (:ref %)) futures)))})
 
 ;; =============================================================================
 ;; All standard library namespaces

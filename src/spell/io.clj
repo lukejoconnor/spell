@@ -430,13 +430,32 @@
      (catch Exception e
        {:error (str "Error watching directory: " (.getMessage e))}))))
 
+(defn event-send
+  "Run blocking event-fn in background future. When it returns {:ok val},
+   send val to handle with from-tag as sender. When it returns {:abort ...},
+   do nothing (silently discard). On exception, sends {:error msg} to handle
+   and logs to stderr. Returns nil immediately."
+  [event-fn handle from-tag]
+  (future
+    (binding [comm/*current-handle* from-tag]
+      (try
+        (let [result (event-fn)]
+          (cond
+            (:ok result) (comm/send (:ok result) handle)
+            (:abort result) nil))
+        (catch Exception e
+          (binding [*out* *err*]
+            (println (str "event-send error for " handle ": " (.getMessage e))))
+          (comm/send {:error (.getMessage e)} handle)))))
+  nil)
+
 (defn watch-send
   "Watch directory in background, send events to handle when they occur.
    Returns nil immediately. When file events arrive, sends a message to
    handle with :from :watch-send. Does nothing on timeout or error."
   ([path handle] (watch-send path handle nil))
   ([path handle timeout-ms]
-   (comm/event-send #(watch-dir path timeout-ms) handle :watch-send)))
+   (event-send #(watch-dir path timeout-ms) handle :watch-send)))
 
 ;; =============================================================================
 ;; Process execution

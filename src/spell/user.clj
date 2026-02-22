@@ -10,7 +10,8 @@
             [spell.eval :as eval]
             [spell.globals :as globals]
             [spell.llm :as llm]
-            [spell.parse :as parse])
+            [spell.parse :as parse]
+            [spell.stdlib :as stdlib])
   (:import [java.io BufferedReader InputStreamReader]
            [java.util.concurrent LinkedBlockingQueue]))
 
@@ -236,7 +237,7 @@
   "Build the inbox function for :user using the standard eval pipeline."
   []
   (let [variant-builtins (merge eval/core-builtins
-                                {'describe-fn llm/describe}
+                                {'describe-fn stdlib/describe}
                                 llm/core-namespaces)
         ;; user-self-fn reads eval-fn dynamically via *current-eval-fn*
         user-self-fn (fn [prompt-str]

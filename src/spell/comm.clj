@@ -236,25 +236,6 @@
         from *current-handle*]
     (send-msg-fn (create-msg name {:from from :body value}) target)))
 
-(defn event-send
-  "Run blocking event-fn in background future. When it returns {:ok val},
-   send val to handle with from-tag as sender. When it returns {:abort ...},
-   do nothing (silently discard). On exception, sends {:error msg} to handle
-   and logs to stderr. Returns nil immediately."
-  [event-fn handle from-tag]
-  (future
-    (binding [*current-handle* from-tag]
-      (try
-        (let [result (event-fn)]
-          (cond
-            (:ok result) (send (:ok result) handle)
-            (:abort result) nil))
-        (catch Exception e
-          (binding [*out* *err*]
-            (println (str "event-send error for " handle ": " (.getMessage e))))
-          (send {:error (.getMessage e)} handle)))))
-  nil)
-
 (defn- install-notifier
   "Watch target's :completed promise. When delivered, call
    (signal-fn handle result). signal-fn determines stale vs persistent."
@@ -405,19 +386,39 @@
   "Start an agent in a background future. Returns its handle immediately.
    The handle is addressable. The child must explicitly send
    its result if needed; use ask-based patterns to collect spawn results.
-   llm-fn must accept (prompt handle) — 2-arity.
+   llm-fn must accept (prompt handle) — 2-arity. leaf-llm is not compatible
+   (it has no agent lifecycle); use llm-self instead.
    Stores parent handle in registry so the child can find its spawner.
    Registers synchronously so the handle is live before spawn returns.
    Optional handle-name (keyword) sets a fixed handle instead of auto-generating."
   ([llm-fn prompt] (spawn llm-fn prompt nil))
   ([llm-fn prompt handle-name]
+   (when (:spell/leaf (meta llm-fn))
+     (throw (ex-info "leaf-llm cannot be used with agents/spawn (no agent lifecycle) — use llm-self instead"
+                     {:handle handle-name})))
    (let [handle (or handle-name (keyword (gensym "spawn-")))
          parent *current-handle*]
      ;; Register synchronously — handle is live before future starts
      (register! handle parent)
-     (future
-       ((bound-fn []
-          (llm-fn prompt handle))))
+     (let [initial-completed @(:completed (get @registry handle))]
+       (future
+         ((bound-fn []
+            (try
+              (let [result (llm-fn prompt handle)]
+                ;; If llm-fn returned without delivering :completed (non-agent fn),
+                ;; deliver now so notifiers fire and waiting agents don't deadlock.
+                ;; Check that :completed atom still holds the same promise (run-root-box
+                ;; resets it), so we don't interfere with the orphan lifecycle.
+                (when (identical? @(:completed (get @registry handle)) initial-completed)
+                  (when-not (realized? initial-completed)
+                    (deliver initial-completed result)))
+                result)
+              (catch Exception e
+                ;; Ensure :completed is delivered so notifiers fire (prevents deadlock)
+                (when (identical? @(:completed (get @registry handle)) initial-completed)
+                  (when-not (realized? initial-completed)
+                    (deliver initial-completed nil)))
+                (throw e)))))))
      handle)))
 
 (defn spawn-ask
@@ -469,8 +470,8 @@ Use (describe agents :fn-name) for detailed docs on any function."
           :reply-ask "(agents/reply-ask msg value) — reply to msg, block for next message"
           :reply "(agents/reply msg value) — reply to msg, fire-and-forget"
           :send "(agents/send value target) — send value with auto-tagged :from"
-          :spawn "(agents/spawn llm-fn prompt :name) — start background agent, returns handle"
-          :spawn-ask "(agents/spawn-ask llm-fn prompt :name) — spawn agent, block until it sends back"
+          :spawn "(agents/spawn llm-fn prompt :name) — start background agent, returns handle. llm-fn must be llm-self (not leaf-llm)"
+          :spawn-ask "(agents/spawn-ask llm-fn prompt :name) — spawn agent, block until it sends back. llm-fn must be llm-self (not leaf-llm)"
           :current-handle "(agents/current-handle) — your handle (:main, :spawn-N, or named keyword)"
           :parent-handle "(agents/parent-handle) — handle of spawning agent (nil if main)"
           :send-msg-fn "(agents/send-msg-fn f handle) — low-level: send raw transform function"}
@@ -570,7 +571,7 @@ Example (from a spawned child):
 
 (agents/spawn llm-fn prompt)
 (agents/spawn llm-fn prompt :name)
-  llm-fn: usually llm-self
+  llm-fn: llm-self (not leaf-llm — leaf-llm has no agent lifecycle and will error)
   prompt: string prompt for the child agent
   :name: optional keyword handle (e.g. :seller). Default: auto-generated :spawn-N.
 
@@ -597,7 +598,7 @@ Example:
 Combines spawn + block. One-shot delegation pattern.
 
 (agents/spawn-ask llm-fn prompt :name)
-  llm-fn: usually llm-self
+  llm-fn: llm-self (not leaf-llm — leaf-llm has no agent lifecycle and will error)
   prompt: string or wrap-cat — must instruct child to send to (agents/parent-handle)
   :name: optional keyword handle (like agents/spawn)
   (see agents/spawn docs for why the prompt must not be a bare quine)
@@ -642,33 +643,3 @@ Internal plumbing for the communication layer."}
    :parent-handle (fn [] (:parent-handle (get @registry *current-handle*)))
    :send-msg-fn send-msg-fn})
 
-(def futures-namespace
-  "Parallel computation namespace — effect-guarded (trailing expression only)."
-  {:guide "FUTURES
-
-future/await/plet for deterministic parallel computation. These are for pure computation only — never use them for LLM calls (they'd share the parent handle and contend over the box).
-
-  (future expr)          — run expr in background, returns a future
-  (await f)              — block until future f completes, returns value
-  (futures/await-all [f1 f2 ...])  — await multiple futures, returns vector of results
-  (plet [a expr1 b expr2] body)   — parallel let: compute bindings concurrently
-  (futures/pmap f coll)            — parallel map: applies f to each element concurrently
-
-Note: future, await, and plet are core builtins (no namespace prefix needed).
-Only await-all and pmap are in the futures/ namespace."
-   :docs {:await-all "(futures/await-all [f1 f2 ...]) — await multiple futures, returns vector of results"
-          :pmap "(futures/pmap f coll) — parallel map, applies f to each element concurrently"}
-   :await-all (fn [futures]
-                (when-not (sequential? futures)
-                  (throw (ex-info "await-all: argument must be a collection" {:got futures})))
-                (mapv (fn [f]
-                        (when-not (eval/spell-future? f)
-                          (throw (ex-info "await-all: all elements must be futures" {:got f})))
-                        (deref (:ref f)))
-                      futures))
-   :pmap (fn [f coll]
-           (let [futures (mapv (fn [item]
-                                 {:spell/future true
-                                  :ref (clojure.core/future ((bound-fn [] (eval/invoke-fn f [item]))))})
-                               coll)]
-             (mapv #(deref (:ref %)) futures)))})

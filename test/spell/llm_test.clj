@@ -11,7 +11,9 @@
             [spell.io :as spell-io]
             [clojure.java.io :as io]
             [clojure.string :as str]
-            [spell.eval :as eval]))
+            [spell.eval :as eval]
+            [spell.prompt :as prompt]
+            [spell.stdlib :as stdlib]))
 
 (use-fixtures :each
   (fn [f]
@@ -203,17 +205,17 @@
 (deftest describe-fallback-test
   (testing "describe prefers guide over docs when both present"
     (let [ns-map {:docs {:a "doc for a"} :a identity :guide "full guide text"}]
-      (is (= "full guide text" (llm/describe ns-map)))
-      (is (= "doc for a" (llm/describe ns-map :a)))
-      (is (= "full guide text" (llm/describe ns-map :guide)))))
+      (is (= "full guide text" (stdlib/describe ns-map)))
+      (is (= "doc for a" (stdlib/describe ns-map :a)))
+      (is (= "full guide text" (stdlib/describe ns-map :guide)))))
 
   (testing "describe prefers :docs over top-level"
     (let [ns-map {:docs {:x "from docs"} :x "from top"}]
-      (is (= "from docs" (llm/describe ns-map :x)))))
+      (is (= "from docs" (stdlib/describe ns-map :x)))))
 
   (testing "describe returns nil for missing key"
     (let [ns-map {:docs {:a "doc"}}]
-      (is (nil? (llm/describe ns-map :missing))))))
+      (is (nil? (stdlib/describe ns-map :missing))))))
 
 (deftest builtins-namespace-test
   (testing "builtins guide returns full reference string"
@@ -236,12 +238,12 @@
 
 (deftest namespace-guide-test
   (testing "io namespace has :guide accessible via describe"
-    (let [guide (llm/describe spell-io/io-namespace :guide)]
+    (let [guide (stdlib/describe spell-io/io-namespace :guide)]
       (is (string? guide))
       (is (str/includes? guide "IO"))))
 
   (testing "io describe :sh still returns doc (no regression)"
-    (let [doc (llm/describe spell-io/io-namespace :sh)]
+    (let [doc (stdlib/describe spell-io/io-namespace :sh)]
       (is (string? doc))
       (is (str/includes? doc "shell command"))))
 
@@ -265,17 +267,17 @@
         (is (str/includes? result "PATTERNS NAMESPACE")))))
 
   (testing "agents namespace has :guide"
-    (let [guide (llm/describe (deref (resolve 'spell.comm/agents-namespace)) :guide)]
+    (let [guide (stdlib/describe (deref (resolve 'spell.comm/agents-namespace)) :guide)]
       (is (string? guide))
       (is (str/includes? guide "AGENTS"))))
 
   (testing "futures namespace has :guide"
-    (let [guide (llm/describe (deref (resolve 'spell.comm/futures-namespace)) :guide)]
+    (let [guide (stdlib/describe (deref (resolve 'spell.stdlib/futures-namespace)) :guide)]
       (is (string? guide))
       (is (str/includes? guide "FUTURES"))))
 
   (testing "globals namespace has :guide"
-    (let [guide (llm/describe (deref (resolve 'spell.globals/globals-namespace)) :guide)]
+    (let [guide (stdlib/describe (deref (resolve 'spell.globals/globals-namespace)) :guide)]
       (is (string? guide))
       (is (str/includes? guide "GLOBALS")))))
 
@@ -306,17 +308,17 @@
   (testing "includes namespace item descriptions"
     (let [ns-map {'tools {:docs {:my-tool "Does things."}
                           :my-tool identity}}
-          p (llm/generate-system-prompt ns-map)]
+          p (prompt/generate-system-prompt ns-map)]
       (is (str/includes? p "my-tool: Does things."))))
 
   (testing "includes namespace section header"
     (let [ns-map {'mytools {:docs {:a "tool a"} :a identity}}
-          p (llm/generate-system-prompt ns-map)]
+          p (prompt/generate-system-prompt ns-map)]
       (is (str/includes? p "NAMESPACES"))
       (is (str/includes? p "## mytools"))))
 
   (testing "compose-system-prompt with base includes base text"
-    (let [p (llm/compose-system-prompt {:base "INTRODUCTION\nSpell is a Lisp."
+    (let [p (prompt/compose-system-prompt {:base "INTRODUCTION\nSpell is a Lisp."
                                         :namespaces {'io spell-io/io-namespace}})]
       (is (str/includes? p "INTRODUCTION"))
       (is (str/includes? p "NAMESPACES"))
@@ -325,7 +327,7 @@
       (is (str/includes? p "sh"))))
 
   (testing "qualified symbol usage instructions included"
-    (let [p (llm/generate-system-prompt spell/all-namespaces)]
+    (let [p (prompt/generate-system-prompt spell/all-namespaces)]
       (is (str/includes? p "io/sh")))))
 
 
@@ -863,6 +865,39 @@
     (let [{:keys [llm]} (th/make-test-llm {:response "(def x 42))" :prefill? true}
                           :namespaces {})]
       (is (= 42 (llm "(do "))))))
+
+;; =============================================================================
+;; Leaf-llm async via future/plet (not spawn)
+;; =============================================================================
+
+(deftest leaf-llm-via-plet-test
+  (testing "leaf-llm works in parallel via plet (the correct async pattern)"
+    (let [call-count (atom 0)
+          {:keys [llm]} (th/make-test-llm
+                          {:response-fn (fn [prompt]
+                                          (let [n (swap! call-count inc)]
+                                            (cond
+                                              ;; Main LLM: return code that uses plet with leaf-llm
+                                              (= n 1) "'(plet [a (leaf-llm \"p1\") b (leaf-llm \"p2\")] (cat a b))))"
+                                              ;; Leaf-llm calls
+                                              (str/includes? prompt "p1") "hello"
+                                              (str/includes? prompt "p2") "world"
+                                              :else "???")))})]
+      (is (= "helloworld" (llm "(eval (do "))))))
+
+(deftest leaf-llm-via-future-await-test
+  (testing "leaf-llm works with explicit future/await in trailing expression"
+    (let [call-count (atom 0)
+          {:keys [llm]} (th/make-test-llm
+                          {:response-fn (fn [prompt]
+                                          (let [n (swap! call-count inc)]
+                                            (cond
+                                              ;; Main LLM: trailing expression with future/await
+                                              (= n 1) "'(let [f1 (future (leaf-llm \"task-a\")) f2 (future (leaf-llm \"task-b\"))] (list (await f1) (await f2))))"
+                                              (str/includes? prompt "task-a") "result-a"
+                                              (str/includes? prompt "task-b") "result-b"
+                                              :else "???")))})]
+      (is (= ["result-a" "result-b"] (llm "(eval (do "))))))
 
 ;; =============================================================================
 ;; Model alias tests

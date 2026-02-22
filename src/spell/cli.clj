@@ -199,7 +199,7 @@
         ("anthropic" nil)
         (provider/anthropic-provider base-opts)))))
 
-(defn run-prompt [prompt {:keys [depth verbose log budget trace agent thinking reasoning-effort verbosity] :as opts}]
+(defn run-prompt [prompt {:keys [depth verbose log budget trace agent thinking reasoning-effort verbosity] :as opts} usage-atom]
   (let [max-depth (cond
                     (nil? depth) nil    ; default: no depth limit
                     (zero? depth) nil   ; 0 also means unlimited
@@ -222,7 +222,8 @@
               :prefill? prefill?
               :thinking thinking
               :reasoning-effort reasoning-effort
-              :verbosity verbosity})))
+              :verbosity verbosity
+              :usage usage-atom})))
 
 (defn- format-cache-stats [stats]
   (let [cache-write (:cache_creation_input_tokens stats 0)
@@ -271,9 +272,18 @@
       (do
         (println exit-message)
         (System/exit (if ok? 0 1)))
-      (do
+      (let [usage-atom (atom {:by-model {}})
+            cost-printed? (atom false)
+            shutdown-hook (Thread.
+                            (fn []
+                              (when-not @cost-printed?
+                                (let [{:keys [total]} (provider/usage-summary usage-atom)]
+                                  (when-let [c (:cost total)]
+                                    (binding [*out* *err*]
+                                      (println (format "\nCost: $%.4f" c))))))))]
+        (.addShutdownHook (Runtime/getRuntime) shutdown-hook)
         (run-shell (:setup options))
-        (let [{:keys [result error error-data usage trace-dir]} (run-prompt prompt options)]
+        (let [{:keys [result error error-data usage trace-dir]} (run-prompt prompt options usage-atom)]
           (run-shell (:cleanup options))
           (when trace-dir
             (binding [*out* *err*]
@@ -286,6 +296,7 @@
                 (when-let [c (:cost total)]
                   (binding [*out* *err*]
                     (println (format "Cost: $%.4f" c)))))))
+          (reset! cost-printed? true)
           (if error
             (do
               (when (and (= :budget-exceeded (:type error-data))

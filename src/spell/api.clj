@@ -33,10 +33,11 @@
      :thinking — Anthropic adaptive thinking budget
      :reasoning-effort — OpenAI reasoning effort
      :verbosity — OpenAI verbosity
-     :retries  — API retry sleep durations"
+     :retries  — API retry sleep durations
+     :usage    — pre-created usage atom (default: fresh atom)"
   [{:keys [prompt init agent provider user? user-reader
            verbose log-writer budget depth trace
-           prefill? thinking reasoning-effort verbosity retries]}]
+           prefill? thinking reasoning-effort verbosity retries usage]}]
   ;; Validate inputs
   (when (and prompt init)
     (throw (ex-info "Specify exactly one of :prompt or :init, not both" {})))
@@ -67,7 +68,7 @@
                            :else budget)
         effective-verbose (or verbose (some? log-writer))
         trace-atom (when trace (trace/new-trace))
-        usage-atom (atom {:by-model {}})]
+        usage-atom (or usage (atom {:by-model {}}))]
     ;; Reset comm registry and globals for fresh run
     (reset! comm/registry {})
     (globals/reset-globals!)

@@ -672,68 +672,6 @@
         (is (= 99 (llm "(eval (do ")))))))
 
 ;; =============================================================================
-;; Event-send tests
-;; =============================================================================
-
-(deftest event-send-returns-nil-test
-  (testing "event-send returns nil immediately"
-    (comm/register! :es-nil)
-    (is (nil? (comm/event-send (fn [] {:ok "data"}) :es-nil :test-sender)))))
-
-(deftest event-send-sends-on-ok-test
-  (testing "event-send sends message when event-fn returns {:ok val}"
-    (let [handle :es-ok
-          received (promise)
-          eval-fn (fn [raw] (deliver received raw) :done)]
-      (comm/start-box handle eval-fn "(quine c (eval (do 1)))")
-      (Thread/sleep 50)
-      (comm/event-send (fn [] {:ok "event-data"}) handle :test-event)
-      ;; Wait for the event to fire and the agent to process it
-      (let [raw (deref received 5000 :timeout)]
-        (is (not= :timeout raw))
-        (is (string? raw))
-        (is (.contains ^String raw ":from :test-event"))
-        (is (.contains ^String raw ":body \"event-data\""))))))
-
-(deftest event-send-silent-on-non-ok-test
-  (testing "event-send does not send when event-fn returns non-:ok"
-    (let [handle :es-silent]
-      (comm/register! handle)
-      (comm/event-send (fn [] {:timeout true}) handle :test-event)
-      ;; Wait for the future to complete
-      (Thread/sleep 50)
-      ;; Inbox should still be identity (no message sent)
-      (is (= identity @(:inbox (get @comm/registry handle)))))))
-
-(deftest event-send-notifies-on-exception-test
-  (testing "event-send sends {:error msg} when event-fn throws"
-    (let [handle :es-ex
-          received (promise)
-          eval-fn (fn [raw] (deliver received raw) :done)]
-      (comm/start-box handle eval-fn "(quine c (eval (do 1)))")
-      (Thread/sleep 50)
-      (comm/event-send (fn [] (throw (ex-info "boom" {}))) handle :test-event)
-      (let [raw (deref received 5000 :timeout)]
-        (is (not= :timeout raw))
-        (is (string? raw))
-        (is (.contains ^String raw ":from :test-event"))
-        (is (.contains ^String raw ":error"))))))
-
-;; =============================================================================
-;; Event-send abort tests
-;; =============================================================================
-
-(deftest event-send-abort-test
-  (testing "event-send does not send when event-fn returns {:abort ...}"
-    (let [handle :es-abort]
-      (comm/register! handle)
-      (comm/event-send (fn [] {:abort :reason}) handle :test-event)
-      ;; Wait for the future to complete
-      (Thread/sleep 50)
-      ;; Inbox should still be identity (no message sent)
-      (is (= identity @(:inbox (get @comm/registry handle)))))))
-
-;; =============================================================================
 ;; Completion notifier tests
 ;; =============================================================================
 
@@ -853,6 +791,50 @@
           (eval/run-spell '(io/sh "echo hi"))))
     (is (thrown-with-msg? Exception #"Unbound symbol: globals"
           (eval/run-spell '(globals/get :roles))))))
+
+;; =============================================================================
+;; Leaf-llm spawn rejection tests
+;; =============================================================================
+
+(deftest spawn-rejects-leaf-llm-test
+  (testing "spawn throws when given a leaf-llm function"
+    (let [leaf-fn (with-meta (fn [prompt] "response") {:spell/leaf true})]
+      (comm/register! :leaf-parent)
+      (binding [comm/*current-handle* :leaf-parent]
+        (is (thrown-with-msg? Exception #"leaf-llm cannot be used with agents/spawn"
+              (comm/spawn leaf-fn "test prompt" :leaf-child))))))
+
+  (testing "spawn-ask also rejects leaf-llm"
+    (let [leaf-fn (with-meta (fn [prompt] "response") {:spell/leaf true})]
+      (comm/register! :leaf-parent-2)
+      (binding [comm/*current-handle* :leaf-parent-2
+                comm/*current-raw* "(quine completion (eval (do )))"
+                comm/*current-eval-fn* identity]
+        (is (thrown-with-msg? Exception #"leaf-llm cannot be used with agents/spawn"
+              (comm/spawn-ask leaf-fn "test prompt" :leaf-child-2)))))))
+
+(deftest spawn-future-exception-delivers-completed-test
+  (testing "spawn future exception delivers :completed (prevents deadlock)"
+    (let [bad-fn (fn [prompt handle] (throw (ex-info "boom" {})))]
+      (comm/register! :boom-parent)
+      (binding [comm/*current-handle* :boom-parent]
+        (let [child-h (comm/spawn bad-fn "test")]
+          ;; Give the future time to run and fail
+          (Thread/sleep 200)
+          ;; :completed should have been delivered (with nil)
+          (is (realized? @(:completed (get @comm/registry child-h)))))))))
+
+(deftest spawn-non-agent-fn-delivers-completed-test
+  (testing "spawn with non-agent fn that returns normally delivers :completed"
+    (let [simple-fn (fn [prompt handle] (str "done:" prompt))]
+      (comm/register! :simple-parent)
+      (binding [comm/*current-handle* :simple-parent]
+        (let [child-h (comm/spawn simple-fn "test")]
+          ;; Give the future time to complete
+          (Thread/sleep 200)
+          ;; :completed should have been delivered with the return value
+          (let [completed-val (deref @(:completed (get @comm/registry child-h)) 100 :timeout)]
+            (is (= "done:test" completed-val))))))))
 
 (deftest effect-guard-allows-in-second-pass-test
   (testing "dangerous fns work through double-evaluation (eval special form)"
