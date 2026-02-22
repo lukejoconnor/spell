@@ -352,6 +352,22 @@
     (let [provider (provider/ollama-provider {:base-url "http://localhost:11434/"})]
       (is (= "http://localhost:11434" (:base-url provider))))))
 
+(deftest provider-spec-model-resolution-test
+  (testing "load-provider honors :model in .provider.edn"
+    (let [tmp (java.io.File/createTempFile "provider-model-" ".provider.edn")]
+      (try
+        (spit tmp (pr-str {:type :ollama
+                           :model "mistral:latest"}))
+        (let [p (provider/load-provider (.getAbsolutePath tmp))]
+          (is (= "mistral:latest" (:model p))))
+        (finally
+          (.delete tmp)))))
+
+  (testing "resolve-provider honors :model in inline map"
+    (let [p (provider/resolve-provider {:type :ollama
+                                        :model "qwen2.5:32b"} nil)]
+      (is (= "qwen2.5:32b" (:model p))))))
+
 (deftest ollama-parse-response-test
   (testing "parses successful chat response"
     (let [response-body (json/write-str {:message {:role "assistant"

@@ -35,7 +35,7 @@
 
 (def stdlib-namespaces
   "All stdlib namespaces available via stdlib/ prefix.
-   Note: io/ is opt-in (not in default agent) for safety.
+   Note: io/ is effectful and can be omitted in custom agent profiles.
    Seqs, fns, and bit- ops are in core-builtins (matching Clojure)."
   {'io io/io-namespace
    'globals globals/globals-namespace
@@ -443,27 +443,46 @@
          agent-def (resolve-inheritance raw-def base-dir')
 
          ;; Extract fields (from merged def)
-         {:keys [name doc system model budget recover namespaces]} agent-def
+         {:keys [name doc system model budget recover namespaces eval format max-retries
+                 retries thinking reasoning-effort verbosity api init provider]} agent-def
+         eval? (if (nil? eval) true eval)
 
          ;; Resolve system prompt
          resolved-system (resolve-system-prompt system base-dir')
+         resolved-provider (when provider
+                             (provider/resolve-provider provider base-dir'))
 
          ;; Resolve namespaces
-         resolved-namespaces (when namespaces
+         resolved-namespaces (when (and eval? namespaces)
                                (resolve-namespaces namespaces base-dir' make-llm-fn))
 
          ;; Build make-llm config
          config (cond-> {}
                   resolved-namespaces (assoc :namespaces resolved-namespaces)
                   model (assoc :model model)
-                  (some? recover) (assoc :recover recover))]
+                  resolved-system (assoc :system resolved-system)
+                  resolved-provider (assoc :provider resolved-provider)
+                  (some? recover) (assoc :recover recover)
+                  format (assoc :format format)
+                  (some? max-retries) (assoc :max-retries max-retries)
+                  (some? retries) (assoc :retries retries)
+                  (some? thinking) (assoc :thinking thinking)
+                  reasoning-effort (assoc :reasoning-effort reasoning-effort)
+                  verbosity (assoc :verbosity verbosity)
+                  (some? api) (assoc :api api)
+                  (some? init) (assoc :init init))]
 
      ;; Create the llm function
      (if make-llm-fn
-       (:llm (make-llm-fn config))
+       (if eval?
+         (:llm (make-llm-fn config))
+         (llm/make-leaf-llm (cond-> {}
+                              resolved-system (assoc :system resolved-system)
+                              model (assoc :model model)
+                              resolved-provider (assoc :provider resolved-provider))))
        ;; Return config if no make-llm-fn provided (for testing)
        {:agent-def agent-def
-        :config config
+        :config (assoc config :eval eval?)
         :system resolved-system}))))
 
 (defn load-agent-config

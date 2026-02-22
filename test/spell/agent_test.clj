@@ -226,6 +226,22 @@
         (finally
           (.delete child-file))))))
 
+(deftest resolve-namespace-value-agent-file-honors-eval-test
+  (testing ".agent.edn namespace value with :eval false loads as leaf function"
+    (let [dir (System/getProperty "java.io.tmpdir")
+          child-file (java.io.File. dir "ns-child-test.agent.edn")]
+      (try
+        (spit child-file (pr-str {:name 'ns-child
+                                  :eval false
+                                  :system "Leaf system prompt"
+                                  :provider {:type :ollama :model "mistral"}}))
+        (let [v (#'agent/resolve-namespace-value (symbol "ns-child-test.agent.edn")
+                                                 dir (atom {}) llm/make-llm)]
+          (is (fn? v))
+          (is (true? (:spell/leaf (meta v)))))
+        (finally
+          (.delete child-file))))))
+
 ;; =============================================================================
 ;; effect-ns-names includes 'llms
 ;; =============================================================================

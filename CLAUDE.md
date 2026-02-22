@@ -98,7 +98,7 @@ Qualified symbols work recursively: `outer/inner/item` looks up `:inner` in `out
 Two concurrency patterns: **serial llm-self** (child inherits your handle, entire call tree is one logical agent) and **agents/spawn** (new handle, independent agent, communicates via `agents/ask`). `plet`/`futures/pmap`/`future` are for deterministic parallel computation only — never for LLM calls (they'd share the parent handle and contend over the box). This invariant guarantees deadlock freedom: same-handle trees are serial (can't self-deadlock), and cross-handle dependencies use `agents/ask` (which always wakes the target).
 
 ### Communication (agents/ namespace)
-`agents/ask` enables request-reply message passing between concurrent agents. `(agents/ask target msg)` sends a message and blocks for reply; `(agents/ask target)` pokes target and blocks (no message); `(agents/ask [a b c])` multi-target ask — pokes all targets, first reply wins. Every form of ask wakes the target, preventing deadlocks. `agents/send` sends a value to a target with auto-tagged sender. `agents/send-msg-fn` is low-level fire-and-forget. `agents/spawn` starts an agent in a background future. Handles are keywords (`:agent-42`) — self-evaluating, safe through serialization. `agents/parent-handle` lets spawned children find their parent automatically. `globals/` provides shared state visible to all agents (pre-initialized with `:roles` and `:tasks`).
+`agents/ask` enables request-reply message passing between concurrent agents. `(agents/ask target msg)` sends a message and blocks for reply; `(agents/ask target)` pokes target and blocks (no message); `(agents/ask [a b c])` multi-target ask — pokes all targets and wakes when all have completed (returns combined results). Every form of ask wakes the target, preventing deadlocks. `agents/send` sends a value to a target with auto-tagged sender. `agents/send-msg-fn` is low-level fire-and-forget. `agents/spawn` starts an agent in a background future. Handles are keywords (`:agent-42`) — self-evaluating, safe through serialization. `agents/parent-handle` lets spawned children find their parent automatically. `globals/` provides shared state visible to all agents (pre-initialized with `:roles` and `:tasks`).
 
 Messages arrive as def bindings: `(def msg-N {:from sender :body val})`. Special handles: `:main` (initial agent), `:user` (human operator in interactive sessions — check `(globals/get :roles)` for availability).
 
@@ -114,7 +114,7 @@ Programs return the value of their last expression (standard Lisp semantics). No
 | `writeup/language-design.md` | Main writeup (title: "Agent self-orchestration with Spell") |
 | `writeup/spell-literature-review.md` | Literature review positioning Spell |
 | `writeup/paper.md` | Paper draft (Introduction + Spell + Orchestration Patterns + Benchmarks) |
-| `src/spell/macros.clj` | Macro system (registry, `defspellmacro`, 27 macros incl. `defmacro` for user-defined macros, threading helpers, think/rethink pruning) |
+| `src/spell/macros.clj` | Macro system (registry, `defspellmacro`, 26 macros incl. `defmacro` for user-defined macros, threading helpers, think/rethink pruning) |
 | `src/spell/eval.clj` | Evaluator (`spell-eval`, `expand`, builtins, dynamic scoping, effect guard) |
 | `src/spell/core.clj` | Top-level wiring (core builtin registration, re-exports, `all-namespaces`) |
 | `src/spell/provider.clj` | LLM providers (Anthropic, OpenAI, Ollama, Kimi, Dummy), provider-in-closure, `.provider.edn` loading, token/cost/budget/retry tracking |
@@ -142,13 +142,13 @@ Programs return the value of their last expression (standard Lisp semantics). No
 
 ## Current Status
 
-Core interpreter and tooling complete (461 tests, 1772 assertions). 13 special forms, 26 macros (via `defspellmacro`), user-defined macros via `defmacro`.
+Core interpreter and tooling complete (see `clojure -M:test` for current totals). 13 special forms, 26 macros (via `defspellmacro`), user-defined macros via `defmacro`.
 
 **Language features:** Vector destructuring (`&` rest, `:as`), dynamic scoping, `try`/`catch`/`throw`, `future`/`await`/`plet`, `loop`/`recur` (including fn-level), `think`/`rethink`/`extend` (context pruning), `compact` (context compaction), `quine` (self-referential code).
 
 **Two-category namespace system:** Core namespaces (strings, math, builtins) always available; effect namespaces (io, globals, agents, futures, patterns, llms) gated through `eval` builtin's double evaluation. The `eval` builtin is per-agent (not a special form) — merges effect namespaces with pure builtins; effects only available in trailing expression.
 
-**Inter-agent communication:** `agents/spawn`, `agents/ask` (single, multi-target, and ask-all), `agents/send`, `agents/reply`, `agents/reply-ask`, `agents/spawn-ask`, `agents/register`. Keyword handles, message preemption, `globals/` namespace for shared state with `wait-until`.
+**Inter-agent communication:** `agents/spawn`, `agents/ask` (single and multi-target), `agents/send`, `agents/reply`, `agents/reply-ask`, `agents/spawn-ask`. Keyword handles, message preemption, `globals/` namespace for shared state with `wait-until`.
 
 **Providers:** Anthropic (with prompt caching), OpenAI (with Responses API), Ollama, Kimi — unified `-m provider:model` CLI syntax. Provider-in-closure architecture; declarative `.provider.edn` files. No-prefill mode for OpenAI; extended thinking support.
 

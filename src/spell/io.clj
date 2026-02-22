@@ -1,8 +1,8 @@
 (ns spell.io
   "I/O namespace for Spell agents.
 
-   This namespace is OPT-IN — not included in the default agent.
-   Agents that need I/O must explicitly include it in their config.
+   This namespace is effectful and security-sensitive.
+   The built-in default agent includes it; stricter agent profiles can omit it.
 
    Provides:
    - File operations: slurp, spit, read-file, read-lines, write-file, str-replace, replace-lines
