@@ -33,6 +33,12 @@
    rapid Enter presses — only one signal is sent until processed."
   (atom false))
 
+(def ^:private seen-msg-names
+  "Set of message def symbol names already displayed/processed.
+   Prevents re-display when reopen rebuilds the AST including
+   historical message defs from inert quine args."
+  (atom #{}))
+
 ;; =============================================================================
 ;; Stdin reader thread
 ;; =============================================================================
@@ -108,16 +114,17 @@
 (defn- extract-messages
   "Extract ALL messages from a raw completion string.
    Walks the parsed AST to find all (def msg-N {:from h ...}) forms.
-   Returns a vector of maps."
+   Returns a vector of {:name sym :msg map}."
   [raw]
   (try
     (let [form (first (parse/read-all (parse/balance-parens raw)))
           msgs (->> (tree-seq seq? seq form)
                     (keep (fn [f]
                             (when (and (seq? f) (= 'def (first f)) (>= (count f) 3))
-                              (let [val (nth f 2)]
+                              (let [sym (second f)
+                                    val (nth f 2)]
                                 (when (and (map? val) (contains? val :from))
-                                  val)))))
+                                  {:name sym :msg val})))))
                     vec)]
       (when (seq msgs) msgs))
     (catch Exception _e nil)))
@@ -127,10 +134,12 @@
 ;; =============================================================================
 
 (defn- build-send-code
-  "Build the code string for sending a message to a target.
-   Uses eval/serialize-for-continuation for safe value embedding."
+  "Build a trailing expression for sending a message to a target.
+   Placed after quine-restart, it becomes the trailing expression of the
+   new quine — fires via double-eval on first pass, becomes inert data
+   when the next expression is appended."
   [value target]
-  (str "(eval '(agents/send " (eval/serialize-for-continuation value) " " target ")) "))
+  (str "'(agents/send " (eval/serialize-for-continuation value) " " target ") "))
 
 ;; =============================================================================
 ;; IO helpers
@@ -153,8 +162,10 @@
 ;; =============================================================================
 
 (def ^:private quine-restart
-  "Close current quine and start a new one."
-  "nil))) (quine completion (eval (do ")
+  "Close current eval/do and open a new one within the same quine.
+   Creates a new inert arg: (quine completion (eval (do ...old...)) (eval (do ...new...))).
+   Quine evaluates only the last arg — old evals become inert context (visible but not executed)."
+  ")) (eval (do ")
 
 (defn- display-messages!
   "Print messages to stderr, updating last-sender as we go."
@@ -172,43 +183,59 @@
    Takes a prompt string (the reopened completion) and returns a response string
    (code to append). Analogous to call-fn in make-llm.
 
-   Three cases, checked in order:
-   1. stdin-signal present: user pressed Enter → prompt for message, parse recipient, send
-   2. expects-reply? (agent asked): print messages, read reply, send to waiters
+   Send code goes after quine-restart, landing in the new eval as a trailing
+   expression — fires via double-eval on first pass, becomes inert when the
+   next expression is appended.
+
+   Three cases, checked in order (using only NEW messages):
+   1. stdin-signal present: user pressed Enter → prompt for message, send
+   2. expects-reply? (agent asked): print messages, read reply, send
    3. fire-and-forget: print messages, quine-restart (no stdin read)"
   [prompt-str]
-  (let [balanced (parse/balance-parens prompt-str)
-        messages (extract-messages balanced)
-        from-handles (vec (distinct (keep :from messages)))
-        expects-reply? (some :expects-response messages)
-        ;; Check if this wake was from stdin-signal
-        stdin-signal? (some #(= :stdin-watch (:from %)) messages)]
+  (let [balanced    (parse/balance-parens prompt-str)
+        all-entries (or (extract-messages balanced) [])
+        new-entries (remove #(@seen-msg-names (:name %)) all-entries)
+        new-msgs    (mapv :msg new-entries)
+        agent-msgs    (vec (remove #(= :stdin-watch (:from %)) new-msgs))
+        from-handles  (->> agent-msgs (keep :from) distinct vec)
+        expects-reply? (some :expects-response new-msgs)
+        stdin-signal?  (some #(= :stdin-watch (:from %)) new-msgs)
+        result
+        (cond
+          ;; No new messages — nothing to do
+          (empty? new-entries)
+          "nil "
 
-    (cond
-      ;; Case 1: User-initiated (stdin signal)
-      stdin-signal?
-      (do
-        (reset! signal-pending false)
-        (let [input (prompt-and-read)
-              [explicit-recipient msg] (parse-user-input input)
-              target (resolve-recipient explicit-recipient @last-sender)]
-          (reset! last-sender target)
-          (str (build-send-code msg target) quine-restart)))
+          ;; Case 1: User-initiated (stdin signal)
+          stdin-signal?
+          (do
+            (reset! signal-pending false)
+            (when (seq agent-msgs)
+              (display-messages! agent-msgs))
+            (let [input (prompt-and-read)
+                  [explicit-recipient msg] (parse-user-input input)
+                  target (resolve-recipient explicit-recipient @last-sender)]
+              (reset! last-sender target)
+              (str quine-restart (build-send-code msg target))))
 
-      ;; Case 2: Agent asked — expects reply
-      expects-reply?
-      (do
-        (display-messages! messages)
-        (binding [*out* *err*] (print "> ") (flush))
-        (let [input (take-nonempty-line!)
-              send-code (apply str (map #(build-send-code input %) from-handles))]
-          (str send-code quine-restart)))
+          ;; Case 2: Agent asked — expects reply
+          expects-reply?
+          (do
+            (display-messages! new-msgs)
+            (binding [*out* *err*] (print "> ") (flush))
+            (let [input (take-nonempty-line!)
+                  send-code (apply str (map #(build-send-code input %) from-handles))]
+              (str quine-restart send-code)))
 
-      ;; Case 3: Fire-and-forget — no stdin read needed
-      :else
-      (do
-        (display-messages! messages)
-        quine-restart))))
+          ;; Case 3: Fire-and-forget — no stdin read needed
+          :else
+          (do
+            (display-messages! new-msgs)
+            quine-restart))]
+
+    ;; Mark all new messages as seen
+    (swap! seen-msg-names into (map :name new-entries))
+    result))
 
 ;; =============================================================================
 ;; User-self (box-based, analogous to -llm)
@@ -262,6 +289,7 @@
    (register-user-agent! (BufferedReader. (InputStreamReader. System/in))))
   ([^BufferedReader reader]
    (when-not (comm/handle? :user)
+     (reset! seen-msg-names #{})
      (let [eval-fn (make-user-inbox-fn*)
            initial "(quine completion (eval (do )))"]
        (comm/start-box :user eval-fn initial :main)
