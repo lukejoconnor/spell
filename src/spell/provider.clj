@@ -5,7 +5,7 @@
    - anthropic-provider: Calls Claude API
    - openai-provider: Calls OpenAI API
    - ollama-provider: Calls local Ollama API
-   - dummy-provider: Returns canned responses for testing"
+   - test-provider: Declarative test provider with flexible response matching"
   (:require [clojure.data.json :as json]
             [clojure.edn :as edn]
             [clojure.string :as str])
@@ -549,29 +549,67 @@
      (->KimiProvider key url model max-tokens (make-http-client) costs))))
 
 ;; ---------------------------------------------------------------------------
-;; Dummy Provider (for testing)
+;; Test Provider (declarative testing)
 ;; ---------------------------------------------------------------------------
 
-(defrecord DummyProvider [response-fn prefill?]
+(defn- match-rule
+  "Check if a prompt matches a response rule.
+   Rule format: {:includes [strs...] :excludes [strs...] :response str-or-map}"
+  [prompt {:keys [includes excludes]}]
+  (and (every? #(str/includes? prompt %) includes)
+       (not-any? #(str/includes? prompt %) (or excludes []))))
+
+(defrecord TestProvider [responses response-fn response-rules prefill?]
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt _opts]
-    (response-fn prompt))
+    (let [entry (or (get responses prompt)
+                    (when response-fn (response-fn prompt))
+                    (some (fn [rule]
+                            (when (match-rule prompt rule)
+                              (or (:response rule) rule)))
+                          response-rules))]
+      (when-not entry
+        (throw (ex-info (str "TestProvider: no response for prompt")
+                        {:prompt prompt
+                         :available-keys (vec (keys responses))})))
+      (let [{:keys [response latency]} (if (string? entry)
+                                         {:response entry}
+                                         entry)]
+        (when (and latency (pos? latency))
+          (Thread/sleep (long latency)))
+        response)))
   (supports-prefill [_] (if (some? prefill?) prefill? true)))
 
-(defn dummy-provider
-  "Create a dummy provider for testing.
+(defn test-provider
+  "Create a declarative test provider.
 
    Options:
-   - :response - Static response string (default: \"Hello, world!\")
-   - :response-fn - Function (prompt -> response) for dynamic responses
-   - :prefill? - Whether this provider supports prefill (default: true)
+   - :response — static response string (catch-all fallback for any prompt).
+   - :responses — map of prompt-string to response.
+     Values are either a plain string or {:response str :latency ms}.
+     When a prompt doesn't match any key, throws with the full prompt
+     text (copy-paste into the map to build test fixtures).
+   - :response-fn — optional fallback (fn [prompt] -> response-or-nil).
+     Tried when :responses has no exact match. Useful for prompts
+     containing gensym'd names (multi-agent scenarios).
+   - :response-rules — vector of rules checked in order when exact match
+     and response-fn both miss. Each rule:
+       {:includes [\"sub1\" \"sub2\"]  ;; all must be present in prompt
+        :excludes [\"exc\"]            ;; none may be present (optional)
+        :response \"the response\"}    ;; string or {:response str :latency ms}
+   - :prefill? — whether this provider supports prefill (default: true).
 
-   If both provided, :response-fn takes precedence."
-  ([] (dummy-provider {}))
-  ([{:keys [response response-fn prefill?]
-     :or {response "Hello, world!"}}]
-   (->DummyProvider (or response-fn (constantly response)) prefill?)))
+   Usage:
+     (test-provider {:response \"42)\"})
+     (test-provider {:responses {\"(quine completion (eval (do \" \"42)))\"}})
+     (test-provider {:response-fn (fn [p] (when (.contains p \"foo\") \"bar\"))})
+     (test-provider {:response-rules [{:includes [\"hello\"] :response \"world\"}]})"
+  [{:keys [responses response-fn response-rules response prefill?]}]
+  (->TestProvider (or responses {})
+                  (or response-fn (when response (constantly response)))
+                  (or response-rules [])
+                  prefill?))
 
 ;; ---------------------------------------------------------------------------
 ;; User Provider (interactive simulation)
@@ -670,7 +708,8 @@
 (defn load-provider
   "Load provider from a .provider.edn file path."
   [path]
-  (let [{:keys [type api-key-env base-url max-tokens costs use-responses-api]}
+  (let [{:keys [type api-key-env base-url max-tokens costs use-responses-api
+                responses response-rules response prefill?] :as spec}
         (edn/read-string (slurp path))
         api-key (when api-key-env (System/getenv api-key-env))
         opts (cond-> {:costs (or costs {})}
@@ -683,11 +722,14 @@
       :openai    (openai-provider opts)
       :ollama    (ollama-provider opts)
       :kimi      (kimi-provider opts)
+      :test      (test-provider {:responses responses :response-rules response-rules
+                                 :response response :prefill? prefill?})
       (throw (ex-info (str "Unknown provider type: " type) {:type type})))))
 
 (defn- load-provider-from-map
   "Create a provider from an inline config map (same keys as .provider.edn)."
-  [{:keys [type api-key-env base-url max-tokens costs use-responses-api] :as spec}]
+  [{:keys [type api-key-env base-url max-tokens costs use-responses-api
+          responses response-rules response prefill?] :as spec}]
   (let [api-key (when api-key-env (System/getenv api-key-env))
         opts (cond-> {:costs (or costs {})}
                api-key (assoc :api-key api-key)
@@ -699,6 +741,8 @@
       :openai    (openai-provider opts)
       :ollama    (ollama-provider opts)
       :kimi      (kimi-provider opts)
+      :test      (test-provider {:responses responses :response-rules response-rules
+                                 :response response :prefill? prefill?})
       (throw (ex-info (str "Unknown provider type: " type) {:type type :spec spec})))))
 
 (defn- resolve-path

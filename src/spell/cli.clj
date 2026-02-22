@@ -171,7 +171,7 @@
 (defn- make-provider [{:keys [test model max-tokens responses-api]}]
   (cond
     test
-    (provider/dummy-provider {:response "\"hello world\""})
+    (provider/test-provider {:response "\"hello world\""})
 
     (= model "user")
     (provider/user-provider)

@@ -802,12 +802,12 @@
     (let [p (provider/openai-provider {:api-key "test"})]
       (is (false? (provider/supports-prefill p)))))
 
-  (testing "Dummy provider defaults to supporting prefill"
-    (let [p (provider/dummy-provider)]
+  (testing "Test provider defaults to supporting prefill"
+    (let [p (provider/test-provider {})]
       (is (true? (provider/supports-prefill p)))))
 
-  (testing "Dummy provider can be configured as no-prefill"
-    (let [p (provider/dummy-provider {:prefill? false})]
+  (testing "Test provider can be configured as no-prefill"
+    (let [p (provider/test-provider {:prefill? false})]
       (is (false? (provider/supports-prefill p)))))
 
   (testing "Ollama provider supports prefill"

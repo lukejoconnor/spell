@@ -19,7 +19,7 @@
     ;; build-init wraps "Return 42" into a quine with '(extend).
     ;; extend calls llm-self which calls the provider.
     ;; The response completes the program.
-    (let [p (provider/dummy-provider {:response "(def x 42))"})
+    (let [p (provider/test-provider {:response "(def x 42))"})
           result (api/run {:prompt "Return 42"
                            :provider p})]
       (is (contains? result :result))
@@ -28,13 +28,13 @@
 
   (testing "run with :init evaluates complete program directly"
     ;; :init takes a COMPLETE Spell program (balanced, no LLM needed)
-    (let [p (provider/dummy-provider {:response "should not be called"})
+    (let [p (provider/test-provider {:response "should not be called"})
           result (api/run {:init "(do 42)"
                            :provider p})]
       (is (= 42 (:result result)))))
 
   (testing "run catches errors gracefully"
-    (let [p (provider/dummy-provider {:response "should not be called"})
+    (let [p (provider/test-provider {:response "should not be called"})
           result (api/run {:init "(do undefined-symbol)"
                            :provider p})]
       (is (contains? result :error))
@@ -48,11 +48,11 @@
   (testing "throws when both :prompt and :init provided"
     (is (thrown-with-msg? Exception #"exactly one"
           (api/run {:prompt "hello" :init "(do )"
-                    :provider (provider/dummy-provider)}))))
+                    :provider (provider/test-provider {:response "unused"})}))))
 
   (testing "throws when neither :prompt nor :init provided"
     (is (thrown-with-msg? Exception #"Must specify"
-          (api/run {:provider (provider/dummy-provider)}))))
+          (api/run {:provider (provider/test-provider {:response "unused"})}))))
 
   (testing "throws when :provider missing"
     (is (thrown-with-msg? Exception #"Must specify :provider"
@@ -65,7 +65,7 @@
 (deftest run-init-program-test
   (testing "init program evaluates without LLM call for first pass"
     (let [call-count (atom 0)
-          p (provider/dummy-provider
+          p (provider/test-provider
               {:response-fn (fn [_]
                               (swap! call-count inc)
                               "42)")})
@@ -77,7 +77,7 @@
 
   (testing "init with extend triggers LLM call"
     (let [call-count (atom 0)
-          p (provider/dummy-provider
+          p (provider/test-provider
               {:response-fn (fn [_]
                               (swap! call-count inc)
                               "(def answer 42))")})
@@ -92,14 +92,14 @@
 
 (deftest run-options-test
   (testing "budget option is respected"
-    (let [p (provider/dummy-provider {:response "should not be called"})
+    (let [p (provider/test-provider {:response "should not be called"})
           result (api/run {:init "(do 42)"
                            :provider p
                            :budget 10.0})]
       (is (= 42 (:result result)))))
 
   (testing "trace option produces trace-dir"
-    (let [p (provider/dummy-provider {:response "(def x 42))"})
+    (let [p (provider/test-provider {:response "(def x 42))"})
           result (api/run {:prompt "Return 42"
                            :provider p
                            :trace true})]

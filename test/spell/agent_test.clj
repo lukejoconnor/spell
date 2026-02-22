@@ -22,7 +22,7 @@
 
 (deftest resolve-llms-inline-leaf-test
   (testing "inline leaf spec resolves to callable function returning string"
-    (let [prov (provider/dummy-provider {:response "leaf response"})
+    (let [prov (provider/test-provider {:response "leaf response"})
           llms-map {'summarizer {:eval false
                                  :doc "Summarizes text"
                                  :system "Summarize concisely."}}
@@ -37,7 +37,7 @@
 
 (deftest resolve-llms-inline-eval-test
   (testing "inline eval spec resolves to callable function returning evaluated result"
-    (let [prov (provider/dummy-provider {:response "42)"})
+    (let [prov (provider/test-provider {:response "42)"})
           llms-map {'coder {:eval true
                             :doc "Writes Spell code"}}
           llms-ns (agent/resolve-llms llms-map llm/make-llm nil prov nil)]
@@ -46,14 +46,14 @@
 
 (deftest resolve-llms-default-eval-true-test
   (testing "eval defaults to true when omitted"
-    (let [prov (provider/dummy-provider {:response "42)"})
+    (let [prov (provider/test-provider {:response "42)"})
           llms-map {'worker {:doc "Default eval worker"}}
           llms-ns (agent/resolve-llms llms-map llm/make-llm nil prov nil)]
       (is (= 42 ((:worker llms-ns) "(do "))))))
 
 (deftest resolve-llms-format-wrapping-test
   (testing "format spec wraps with validation"
-    (let [prov (provider/dummy-provider {:response "{:category :animal :confidence 0.95}"})
+    (let [prov (provider/test-provider {:response "{:category :animal :confidence 0.95}"})
           llms-map {'classifier {:eval false
                                  :doc "Classifies text"
                                  :format {:required [:category :confidence]}}}
@@ -68,7 +68,7 @@
     ;; We can't easily test the actual model passed to provider without
     ;; inspecting internals, but we verify the function is created without error
     ;; when parent model is provided
-    (let [prov (provider/dummy-provider {:response "inherited"})
+    (let [prov (provider/test-provider {:response "inherited"})
           llms-map {'helper {:eval false :doc "Helper"}}
           llms-ns (agent/resolve-llms llms-map llm/make-llm "claude-sonnet-4-5-20250929" prov nil)]
       (is (fn? (:helper llms-ns)))
@@ -76,7 +76,7 @@
 
 (deftest resolve-llms-docs-populated-test
   (testing ":docs populated from :doc fields"
-    (let [prov (provider/dummy-provider {:response "ok"})
+    (let [prov (provider/test-provider {:response "ok"})
           llms-map {'alpha {:eval false :doc "Alpha agent"}
                     'beta {:eval false :doc "Beta agent"}
                     'gamma {:eval false}}
@@ -90,7 +90,7 @@
   (testing "circular: sub-agent A can call sub-agent B via shared llms/ namespace"
     ;; A calls B, B returns directly. Verify A sees B's result.
     (let [call-log (atom [])
-          prov (provider/dummy-provider
+          prov (provider/test-provider
                  {:response-fn (fn [prompt]
                                  (swap! call-log conj prompt)
                                  ;; All leaf agents just return text
@@ -106,7 +106,7 @@
 
 (deftest resolve-llms-multiple-specs-test
   (testing "multiple specs in one llms map"
-    (let [prov (provider/dummy-provider {:response "response"})
+    (let [prov (provider/test-provider {:response "response"})
           llms-map {'leaf1 {:eval false :doc "Leaf 1" :system "System 1"}
                     'leaf2 {:eval false :doc "Leaf 2" :system "System 2"}}
           llms-ns (agent/resolve-llms llms-map llm/make-llm nil prov nil)]
@@ -153,7 +153,7 @@
 
 (deftest resolve-llms-describe-integration-test
   (testing "llms namespace works with describe function"
-    (let [prov (provider/dummy-provider {:response "ok"})
+    (let [prov (provider/test-provider {:response "ok"})
           llms-map {'researcher {:eval false :doc "Researches topics"}
                     'writer {:eval false :doc "Writes content"}}
           llms-ns (agent/resolve-llms llms-map llm/make-llm nil prov nil)]
@@ -172,7 +172,7 @@
   (testing "leaf-llm builtin inherits model from make-llm"
     ;; We verify that make-llm with :model creates without error
     ;; and the leaf-llm is callable
-    (let [prov (provider/dummy-provider {:response "leaf-response"})
+    (let [prov (provider/test-provider {:response "leaf-response"})
           result (llm/make-llm {:model "test-model" :namespaces {} :provider prov})]
       (is (fn? (:llm result))))))
 
@@ -216,7 +216,7 @@
         (spit child-file (pr-str {:name 'child-agent
                                   :eval false
                                   :doc "Child from file"}))
-        (let [prov (provider/dummy-provider {:response "file-result"})
+        (let [prov (provider/test-provider {:response "file-result"})
               llms-map {'child (symbol "child-test.agent.edn")}
               llms-ns (agent/resolve-llms llms-map llm/make-llm nil prov dir)]
           (is (fn? (:child llms-ns)))
@@ -235,7 +235,7 @@
     ;; that the llm function works (the namespace is available via effects).
     (let [llms-ns {:docs {:helper "test helper"}
                    :helper (fn [prompt] (str "helped: " prompt))}
-          prov (provider/dummy-provider {:response "(llms/helper :test)))"})
+          prov (provider/test-provider {:response "(llms/helper :test)))"})
           test-llm (:llm (llm/make-llm {:namespaces {'llms llms-ns} :provider prov}))]
       ;; llms/ is an effect namespace, so it needs to go through eval's second pass
       ;; prefix: (eval (do '  response: (llms/helper :test)))
@@ -349,7 +349,7 @@
         (spit a-file (pr-str {:name 'a :doc "Agent A" :eval false}))
         (spit b-file (pr-str {:name 'b :doc "Agent B" :eval false}))
         (let [config (agent/load-agent-config (.getAbsolutePath main-file))
-              prov (provider/dummy-provider {:response "ok"})
+              prov (provider/test-provider {:response "ok"})
               llms-ns ((:resolve-llms-fn config) llm/make-llm nil prov)]
           (is (some? (:resolve-llms-fn config)))
           ;; Only 'a should be present (not 'b)
@@ -368,7 +368,7 @@
         (spit main-file (pr-str {:name 'main}))
         (spit helper-file (pr-str {:name 'helper :doc "I help with things" :eval false}))
         (let [config (agent/load-agent-config (.getAbsolutePath main-file))
-              prov (provider/dummy-provider {:response "ok"})
+              prov (provider/test-provider {:response "ok"})
               llms-ns ((:resolve-llms-fn config) llm/make-llm nil prov)]
           (is (= "I help with things" (get-in llms-ns [:docs :helper]))))
         (finally
