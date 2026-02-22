@@ -3,7 +3,8 @@
             [spell.comm :as comm]
             [spell.globals :as globals]
             [spell.core :as spell]
-            [spell.provider :as provider]))
+            [spell.provider :as provider]
+            [spell.test-helpers :as th]))
 
 ;; Reset globals and comm registry between tests
 (use-fixtures :each
@@ -169,33 +170,29 @@
 
 (deftest globals-accessible-from-spell-test
   (testing "globals/get and globals/set work from Spell code (via eval)"
-    (provider/with-provider
-      (provider/dummy-provider {:response "(globals/set :x 42)(globals/get :x))"})
-      (is (= 42 (spell/llm "(eval '(do "))))))
+    (let [{:keys [llm]} (th/make-test-llm {:response "(globals/set :x 42)(globals/get :x))"})]
+      (is (= 42 (llm "(eval '(do "))))))
 
 (deftest globals-update-from-spell-test
   (testing "globals/update works from Spell code (via eval)"
-    (provider/with-provider
-      (provider/dummy-provider
-        {:response "(globals/update :roles (fn [m] (assoc m :h1 \"worker\")))(globals/get :roles))"})
-      (is (= {:h1 "worker"} (spell/llm "(eval '(do "))))))
+    (let [{:keys [llm]} (th/make-test-llm
+                          {:response "(globals/update :roles (fn [m] (assoc m :h1 \"worker\")))(globals/get :roles))"})]
+      (is (= {:h1 "worker"} (llm "(eval '(do "))))))
 
 (deftest globals-pop-from-spell-test
   (testing "globals/pop works from Spell code (via eval)"
     (globals/set-val :tasks [{:id 1} {:id 2}])
-    (provider/with-provider
-      (provider/dummy-provider {:response "(globals/pop :tasks))"})
-      (is (= {:id 1} (spell/llm "(eval '(do "))))))
+    (let [{:keys [llm]} (th/make-test-llm {:response "(globals/pop :tasks))"})]
+      (is (= {:id 1} (llm "(eval '(do "))))))
 
 (deftest globals-persist-across-llm-calls-test
   (testing "globals set in one llm call are visible in the next"
     (let [call-count (atom 0)
           responses ["(globals/set :shared-val 99)(llm-self \"(eval '(do \"))"
                      "(globals/get :shared-val))"]]
-      (provider/with-provider
-        (provider/dummy-provider
-          {:response-fn (fn [_]
-                          (let [r (nth responses @call-count)]
-                            (swap! call-count inc)
-                            r))})
-        (is (= 99 (spell/llm "(eval '(do ")))))))
+      (let [{:keys [llm]} (th/make-test-llm
+                            {:response-fn (fn [_]
+                                            (let [r (nth responses @call-count)]
+                                              (swap! call-count inc)
+                                              r))})]
+        (is (= 99 (llm "(eval '(do ")))))))

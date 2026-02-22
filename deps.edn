@@ -5,6 +5,28 @@
            :test {:extra-paths ["test"]
                   :extra-deps {io.github.cognitect-labs/test-runner
                                {:git/tag "v0.5.1" :git/sha "dfb30dd"}}}
+           ;; Fast tests only — pure/unit tests, no concurrency or I/O (~1s)
+           :test-fast {:extra-paths ["test"]
+                       :extra-deps {io.github.cognitect-labs/test-runner
+                                    {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+                       :main-opts ["-m" "cognitect.test-runner"
+                                   "-n" "spell.parse-test"
+                                   "-n" "spell.stdlib-test"
+                                   "-n" "spell.eval-test"
+                                   "-n" "spell.llm-test"
+                                   "-n" "spell.agent-test"
+                                   "-n" "spell.api-test"
+                                   "-n" "spell.trace-test"]}
+           ;; Slow tests — concurrency, I/O, filesystem watchers (~12s)
+           :test-slow {:extra-paths ["test"]
+                       :extra-deps {io.github.cognitect-labs/test-runner
+                                    {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+                       :main-opts ["-m" "cognitect.test-runner"
+                                   "-n" "spell.core-test"
+                                   "-n" "spell.io-test"
+                                   "-n" "spell.comm-test"
+                                   "-n" "spell.globals-test"
+                                   "-n" "spell.user-test"]}
            :run {:main-opts ["-m" "spell.cli"]}
            :uberjar {:replace-deps {com.github.seancorfield/depstar {:mvn/version "2.1.303"}}
                      :exec-fn hf.depstar/uberjar

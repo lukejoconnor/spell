@@ -3,12 +3,8 @@
   (:require [clojure.tools.cli :refer [parse-opts]]
             [clojure.string :as str]
             [clojure.java.io :as io]
-            [spell.agent :as agent]
-            [spell.eval :as eval]
-            [spell.llm :as llm]
-            [spell.provider :as provider]
-            [spell.trace :as trace]
-            [spell.user :as user])
+            [spell.api :as api]
+            [spell.provider :as provider])
   (:gen-class))
 
 (def model-aliases
@@ -185,7 +181,7 @@
                                      (parse-model-spec model)
                                      {:provider "openai" :model "gpt-5.2"})
           resolved-model (when model (resolve-model model))
-          base-opts (cond-> {}
+          base-opts (cond-> {:costs provider/default-costs}
                       resolved-model (assoc :model resolved-model)
                       max-tokens (assoc :max-tokens max-tokens))]
       (case provider
@@ -203,110 +199,30 @@
         ("anthropic" nil)
         (provider/anthropic-provider base-opts)))))
 
-(defn- trace-dir-name []
-  (let [fmt (java.text.SimpleDateFormat. "yyyy-MM-dd'T'HH-mm-ss")]
-    (str "traces/" (.format fmt (java.util.Date.)))))
-
-(defn- make-agent-llm
-  "Create an llm function from an agent config.
-
-   Supports :eval and :format options:
-   - :eval true (default): Spell evaluation with namespaces
-   - :eval false: plain text LLM (no Spell parsing/eval)
-   - :format: optional format spec for output validation"
-  [agent-config]
-  (let [{:keys [system model budget recover resolve-namespaces-fn resolve-llms-fn eval format max-retries
-                prefill? thinking reasoning-effort verbosity]} agent-config
-        ;; :eval defaults to true if not specified
-        eval? (if (nil? eval) true eval)
-        ;; Resolve namespaces with make-llm available for sub-agents
-        namespaces (when (and eval? resolve-namespaces-fn)
-                     (resolve-namespaces-fn llm/make-llm))
-        ;; Resolve llms/ namespace if specified
-        llms-ns (when (and eval? resolve-llms-fn)
-                  (resolve-llms-fn llm/make-llm model))
-        all-namespaces (cond-> (or namespaces {})
-                         llms-ns (assoc 'llms llms-ns))
-        ;; Create base LLM function based on :eval setting
-        base-llm (if eval?
-                   ;; Spell evaluation mode
-                   (let [config (cond-> {}
-                                  (seq all-namespaces) (assoc :namespaces all-namespaces)
-                                  model (assoc :model model)
-                                  system (assoc :system system)
-                                  (some? recover) (assoc :recover recover)
-                                  format (assoc :format format)
-                                  (some? prefill?) (assoc :prefill? prefill?)
-                                  thinking (assoc :thinking thinking)
-                                  reasoning-effort (assoc :reasoning-effort reasoning-effort)
-                                  verbosity (assoc :verbosity verbosity))]
-                     (llm/make-llm config))
-                   ;; Leaf mode (no eval)
-                   (llm/make-leaf-llm (cond-> {}
-                                        system (assoc :system system)
-                                        model (assoc :model model))))]
-    ;; Wrap with format validation if specified
-    (if format
-      (llm/wrap-with-format base-llm {:format format
-                                       :eval? eval?
-                                       :max-retries (or max-retries 3)})
-      base-llm)))
-
 (defn run-prompt [prompt {:keys [depth verbose log budget trace agent thinking reasoning-effort verbosity] :as opts}]
   (let [max-depth (cond
                     (nil? depth) nil    ; default: no depth limit
                     (zero? depth) nil   ; 0 also means unlimited
                     :else depth)
-        provider (make-provider opts)
-        usage-atom (atom {:by-model {}})
-        trace-atom (when trace (trace/new-trace))
-        ;; Determine prefill support: provider capability minus thinking override
-        prefill? (and (provider/supports-prefill provider) (not thinking))
-        ;; Load agent if specified, otherwise use default agent
-        ;; CLI flags override agent config values
-        agent-config (cond-> (if agent
-                               (agent/load-agent-config agent)
-                               (agent/default-agent-config))
-                       (some? prefill?) (assoc :prefill? prefill?)
-                       thinking (assoc :thinking thinking)
-                       reasoning-effort (assoc :reasoning-effort reasoning-effort)
-                       verbosity (assoc :verbosity verbosity))
-        llm-fn (make-agent-llm agent-config)
-        ;; Budget: CLI flag > agent config > dynamic var default
-        ;; -b 0 means unlimited (nil)
-        effective-budget (cond
-                           (nil? budget) (or (:budget agent-config)
-                                             provider/*budget*)
-                           (zero? budget) nil
-                           :else budget)
-        ;; --log implies -v
-        effective-verbose (or verbose (some? log))
+        prov (make-provider opts)
+        prefill? (and (provider/supports-prefill prov) (not thinking))
         log-writer (when log (io/writer (io/file log) :append true))]
-    ;; Register :user agent for interactive CLI (terminal stdin only)
-    (when (. System console)
-      (user/register-user-agent!))
-    (try
-      (provider/with-provider provider
-        (binding [eval/*verbose* effective-verbose
-                  eval/*log-writer* log-writer
-                  eval/*max-llm-depth* max-depth
-                  provider/*usage* usage-atom
-                  provider/*budget* effective-budget
-                  provider/*retries* (or (:retries agent-config) provider/*retries*)
-                  trace/*trace* trace-atom]
-          (let [result (try
-                         {:result (llm-fn prompt) :usage usage-atom}
-                         (catch Exception e
-                           {:error (.getMessage e)
-                            :error-data (ex-data e)
-                            :usage usage-atom}))]
-            (if trace-atom
-              (let [dir (trace/write-trace! @trace-atom (trace-dir-name))]
-                (assoc result :trace-dir dir))
-              result))))
-      (finally
-        (when log-writer
-          (.close ^java.io.Writer log-writer))))))
+    (api/run {:prompt prompt
+              :provider prov
+              :agent agent
+              :user? (some? (. System console))
+              :verbose (or verbose (some? log))
+              :log-writer log-writer
+              :budget (cond
+                        (nil? budget) nil  ; api/run handles agent/default fallback
+                        (zero? budget) 0   ; api/run maps 0 -> nil (unlimited)
+                        :else budget)
+              :depth max-depth
+              :trace trace
+              :prefill? prefill?
+              :thinking thinking
+              :reasoning-effort reasoning-effort
+              :verbosity verbosity})))
 
 (defn- format-cache-stats [stats]
   (let [cache-write (:cache_creation_input_tokens stats 0)

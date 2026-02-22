@@ -15,7 +15,8 @@
            [java.nio.file FileSystems Files Paths StandardCopyOption CopyOption
                           StandardWatchEventKinds WatchEvent]
            [java.nio.file.attribute FileAttribute]
-           [java.util.concurrent TimeUnit]))
+           [java.util.concurrent TimeUnit]
+           [com.sun.nio.file SensitivityWatchEventModifier]))
 
 ;; =============================================================================
 ;; Configuration
@@ -409,7 +410,8 @@
          (.register dir watcher
                     (into-array [StandardWatchEventKinds/ENTRY_CREATE
                                  StandardWatchEventKinds/ENTRY_MODIFY
-                                 StandardWatchEventKinds/ENTRY_DELETE]))
+                                 StandardWatchEventKinds/ENTRY_DELETE])
+                    (into-array [SensitivityWatchEventModifier/HIGH]))
          (let [key (if timeout-ms
                      (.poll watcher (long timeout-ms) TimeUnit/MILLISECONDS)
                      (.take watcher))]

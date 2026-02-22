@@ -1,15 +1,15 @@
 (ns spell.core-test
   (:require [clojure.test :refer [deftest is testing]]
-            [spell.core :refer [run-spell effect-builtins]]
+            [spell.core :as spell :refer [run-spell]]
             [spell.eval :as eval]
             [spell.io :as io]
             [clojure.java.io :as jio]
             [clojure.string :as str]))
 
 (defmacro with-effects
-  "Run body with effect-builtins merged into *builtins* (simulates eval's second pass)."
+  "Run body with effect namespaces merged into *builtins* (simulates eval's second pass)."
   [& body]
-  `(binding [eval/*builtins* (merge eval/*builtins* effect-builtins)]
+  `(binding [eval/*builtins* (merge eval/*builtins* spell/all-namespaces)]
      ~@body))
 
 ;; =============================================================================

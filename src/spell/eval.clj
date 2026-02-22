@@ -619,8 +619,8 @@
 
 (def ^:dynamic *builtins*
   "Active builtins map. Rebound by each llm variant during evaluation.
-   Root binding set by spell.core after all definitions exist."
-  nil)
+   Default is core-builtins; effect builtins added by make-llm pipeline."
+  core-builtins)
 
 ;; =============================================================================
 ;; Free variable analysis

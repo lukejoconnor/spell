@@ -3,10 +3,11 @@
             [clojure.data.json :as json]
             [spell.cli :as cli]
             [spell.comm :as comm]
-            [spell.core :as spell :refer [effect-builtins]]
+            [spell.core :as spell]
             [spell.llm :as llm]
             [spell.provider :as provider]
             [spell.recovery]
+            [spell.test-helpers :as th]
             [spell.io :as spell-io]
             [clojure.java.io :as io]
             [clojure.string :as str]
@@ -22,38 +23,34 @@
   (testing "llm evaluates response and extracts return"
     ;; Prompt: "(do " -> Response: "(def return 42))"
     ;; Full completion: "(do (def return 42))"
-    (provider/with-provider
-      (provider/dummy-provider {:response "(def return 42))"})
-      (is (= 42 (spell/llm "(do "))))))
+    (let [{:keys [llm]} (th/make-test-llm {:response "(def return 42))"})]
+      (is (= 42 (llm "(do "))))))
 
 (deftest llm-with-computation-test
   (testing "llm can evaluate expressions in response"
-    (provider/with-provider
-      (provider/dummy-provider {:response "(def return (+ 1 2 3)))"})
-      (is (= 6 (spell/llm "(do "))))))
+    (let [{:keys [llm]} (th/make-test-llm {:response "(def return (+ 1 2 3)))"})]
+      (is (= 6 (llm "(do "))))))
 
 (deftest llm-nested-call-test
   (testing "llm can call llm recursively (llm is effect-only)"
     ;; llm is an effect-builtin — must go through eval's second pass
     (let [call-count (atom 0)
-          responses ["'(cat \"hello \" (llm \"(eval '(do \"))"
+          responses ["'(cat \"hello \" (llm-self \"(eval '(do \"))"
                      "\"world\"))"]]
-      (provider/with-provider
-        (provider/dummy-provider
-          {:response-fn (fn [_]
-                          (let [r (nth responses @call-count)]
-                            (swap! call-count inc)
-                            r))})
-        (is (= "hello world" (spell/llm "(eval (do ")))))))
+      (let [{:keys [llm]} (th/make-test-llm
+                            {:response-fn (fn [_]
+                                            (let [r (nth responses @call-count)]
+                                              (swap! call-count inc)
+                                              r))})]
+        (is (= "hello world" (llm "(eval (do ")))))))
 
 (deftest spell-eval-with-llm-test
   (testing "spell-eval can evaluate programs containing llm calls (with effects)"
-    (provider/with-provider
-      (provider/dummy-provider {:response "(def return \"from llm\"))"})
-      ;; llm is effect-only, so merge effect builtins for direct spell-eval use
-      (binding [eval/*builtins* (merge eval/*builtins* effect-builtins)]
-        (let [r (spell/spell-eval '(llm "(do ") {})]
-          (is (= "from llm" (:ok r))))))))
+    ;; Create an LLM with provider, then use its eval pipeline
+    (let [{:keys [llm]} (th/make-test-llm {:response "(def return \"from llm\"))"})
+          ;; Use the llm function through the eval pipeline
+          result (llm "(do ")]
+      (is (= "from llm" result)))))
 
 ;; =============================================================================
 ;; File I/O task tests
@@ -63,10 +60,9 @@
   (testing "file I/O task with dummy provider"
     (spit "test-greeting.txt" "Alice")
     (try
-      (provider/with-provider
-        (provider/dummy-provider
-          {:response "(def thought \"read file\") (cat \"Hello, \" (:ok (io/slurp \"test-greeting.txt\")) \"!\"))"})
-        (let [result (spell/llm "(eval '(do ")]
+      (let [{:keys [llm]} (th/make-test-llm
+                            {:response "(def thought \"read file\") (cat \"Hello, \" (:ok (io/slurp \"test-greeting.txt\")) \"!\"))"})]
+        (let [result (llm "(eval '(do ")]
           (is (= "Hello, Alice!" result))))
       (finally
         (io/delete-file "test-greeting.txt")))))
@@ -154,18 +150,14 @@
   (testing "make-llm with custom tool via namespace (effect)"
     (let [ns-map {'tools {:docs {:my-tool "A test tool."}
                           :my-tool (fn [] "tool-result")}}
-          custom-llm (spell/make-llm {:namespaces ns-map})]
-      (provider/with-provider
-        (provider/dummy-provider
-          {:response "(tools/my-tool)))"})
-        (is (= "tool-result" (custom-llm "(eval (do '"))))))
+          {:keys [llm]} (th/make-test-llm {:response "(tools/my-tool)))"}
+                          :namespaces ns-map)]
+      (is (= "tool-result" (llm "(eval (do '")))))
 
   (testing "make-llm without namespaces has no tools"
-    (let [bare-llm (spell/make-llm {:namespaces {}})]
-      (provider/with-provider
-        (provider/dummy-provider
-          {:response "\"no tools here\""})
-        (is (= "no tools here" (bare-llm "(do "))))))
+    (let [{:keys [llm]} (th/make-test-llm {:response "\"no tools here\""}
+                          :namespaces {})]
+      (is (= "no tools here" (llm "(do ")))))
 
   (testing "make-llm with agent in namespace (effect)"
     (let [helper-fn (fn
@@ -173,24 +165,21 @@
                       ([prompt _handle] "helper-result"))
           ns-map {'helpers {:docs {:helper "Helper agent"}
                             :helper helper-fn}}
-          parent-llm (spell/make-llm {:namespaces ns-map})]
-      (provider/with-provider
-        (provider/dummy-provider
-          {:response "(helpers/helper \"do something\")))"})
-        (is (= "helper-result" (parent-llm "(eval (do '"))))))
+          {:keys [llm]} (th/make-test-llm {:response "(helpers/helper \"do something\")))"}
+                          :namespaces ns-map)]
+      (is (= "helper-result" (llm "(eval (do '")))))
 
   (testing "llm-self provides automatic self-recursion"
     ;; llm-self is an effect-builtin: accessed via eval double-evaluation.
     (let [call-count (atom 0)
-          custom-llm (spell/make-llm {:namespaces {}})]
-      (provider/with-provider
-        (provider/dummy-provider
-          {:response-fn (fn [_]
-                          (let [n (swap! call-count inc)]
-                            (if (= n 1)
-                              "(eval (do '(cat \"outer-\" (llm-self \"(do \"))))"
-                              "\"inner-result\"")))})
-        (is (= "outer-inner-result" (custom-llm "(do ")))))))
+          {:keys [llm]} (th/make-test-llm
+                          {:response-fn (fn [_]
+                                          (let [n (swap! call-count inc)]
+                                            (if (= n 1)
+                                              "(eval (do '(cat \"outer-\" (llm-self \"(do \"))))"
+                                              "\"inner-result\"")))}
+                          :namespaces {})]
+      (is (= "outer-inner-result" (llm "(do "))))))
 
 ;; =============================================================================
 ;; Namespace tests
@@ -200,18 +189,16 @@
   (testing "model can use qualified symbol (effect namespace)"
     (let [ns-map {'tools {:docs {:bash "run command"}
                           :bash (fn [_] {:exit 0 :out "ok" :err ""})}}
-          test-llm (spell/make-llm {:namespaces ns-map})]
-      (provider/with-provider
-        (provider/dummy-provider {:response "(:out (tools/bash \"test\"))))"})
-        (is (= "ok" (test-llm "(eval (do '")))))))
+          {:keys [llm]} (th/make-test-llm {:response "(:out (tools/bash \"test\")))"}
+                          :namespaces ns-map)]
+      (is (= "ok" (llm "(eval (do '"))))))
 
 (deftest namespace-describe-test
   (testing "describe-fn returns namespace docs (effect namespace)"
     (let [ns-map {'r {:docs {:a "first" :b "second"} :a identity}}
-          test-llm (spell/make-llm {:namespaces ns-map})]
-      (provider/with-provider
-        (provider/dummy-provider {:response "(describe-fn r)))"})
-        (is (= {:a "first" :b "second"} (test-llm "(eval (do '")))))))
+          {:keys [llm]} (th/make-test-llm {:response "(describe-fn r)))"}
+                          :namespaces ns-map)]
+      (is (= {:a "first" :b "second"} (llm "(eval (do '"))))))
 
 (deftest describe-fallback-test
   (testing "describe prefers guide over docs when both present"
@@ -271,11 +258,11 @@
       (is (str/includes? (:ok r) "STRINGS"))))
 
   (testing "patterns namespace has :guide via spell-eval (effect builtin)"
-    (binding [eval/*builtins* (merge eval/*builtins* effect-builtins)]
-      (let [r (spell/spell-eval '(describe-fn patterns :guide) {})]
-        (is (eval/ok? r))
-        (is (string? (:ok r)))
-        (is (str/includes? (:ok r) "PATTERNS NAMESPACE")))))
+    ;; Create a test llm so we have an eval builtin with effect namespaces
+    (let [{:keys [llm]} (th/make-test-llm {:response "(describe-fn patterns :guide))"})]
+      (let [result (llm "(eval '(do ")]
+        (is (string? result))
+        (is (str/includes? result "PATTERNS NAMESPACE")))))
 
   (testing "agents namespace has :guide"
     (let [guide (llm/describe (deref (resolve 'spell.comm/agents-namespace)) :guide)]
@@ -297,10 +284,9 @@
     (let [ns-map {'tools {:docs {:add "add fn" :sub "sub fn"}
                           :add +
                           :sub -}}
-          test-llm (spell/make-llm {:namespaces ns-map})]
-      (provider/with-provider
-        (provider/dummy-provider {:response "(tools/add (tools/sub 10 3) 5)))"})
-        (is (= 12 (test-llm "(eval (do '")))))))
+          {:keys [llm]} (th/make-test-llm {:response "(tools/add (tools/sub 10 3) 5)))"}
+                          :namespaces ns-map)]
+      (is (= 12 (llm "(eval (do '"))))))
 
 (deftest namespace-agent-test
   (testing "can call agent from namespace (effect)"
@@ -308,10 +294,9 @@
                          ([p _] (str "result: " p)))
           ns-map {'helpers {:docs {:helper "helper agent"}
                             :helper mock-agent}}
-          test-llm (spell/make-llm {:namespaces ns-map})]
-      (provider/with-provider
-        (provider/dummy-provider {:response "(helpers/helper \"test\")))"})
-        (is (= "result: test" (test-llm "(eval (do '")))))))
+          {:keys [llm]} (th/make-test-llm {:response "(helpers/helper \"test\")))"}
+                          :namespaces ns-map)]
+      (is (= "result: test" (llm "(eval (do '"))))))
 
 ;; =============================================================================
 ;; System prompt generation tests
@@ -527,45 +512,83 @@
                         (reset! recovery-called true)
                         ;; Return a fixed expression
                         '(def return 42))
-          test-llm (spell/make-llm {:namespaces {}
-                                    :recover recovery-fn})]
-      (provider/with-provider
-        ;; Response has an undefined symbol that will cause an error
-        (provider/dummy-provider {:response "undefined-symbol)"})
-        (let [result (test-llm "(do ")]
-          (is @recovery-called)
-          (is (= 42 result))))))
+          {:keys [llm]} (th/make-test-llm
+                          ;; Response has an undefined symbol that will cause an error
+                          {:response "undefined-symbol)"}
+                          :namespaces {} :recover recovery-fn)]
+      (let [result (llm "(do ")]
+        (is @recovery-called)
+        (is (= 42 result)))))
 
   (testing "quine-extension recovery re-enters via extend"
     ;; Program is a quine with an error. Quine-extension recovery appends
     ;; a new arg with error info + (extend completion). The second LLM call
     ;; (via extend) provides the fix.
     (let [call-count (atom 0)
-          test-llm (spell/make-llm {:namespaces {}})]
-      (provider/with-provider
-        (provider/dummy-provider
-          {:response-fn (fn [_]
-                          (let [n (swap! call-count inc)]
-                            (if (= n 1)
-                              "undefined-symbol) '(extend completion))"  ; first call fails
-                              "(def fix 42))")))})                       ; recovery extend returns fix
-        ;; Use quine prefix so recovery can append
-        (let [result (test-llm "(quine completion (eval (do ")]
-          (is (= 2 @call-count))  ; original + recovery extend
-          (is (= 42 result))))))
+          {:keys [llm]} (th/make-test-llm
+                          {:response-fn (fn [_]
+                                          (let [n (swap! call-count inc)]
+                                            (if (= n 1)
+                                              "undefined-symbol) '(extend completion))"  ; first call fails
+                                              "(def fix 42))")))
+                           :prefill? true}                       ; recovery extend returns fix
+                          :namespaces {})]
+      ;; Use quine prefix so recovery can append
+      (let [result (llm "(quine completion (eval (do ")]
+        (is (= 2 @call-count))  ; original + recovery extend
+        (is (= 42 result)))))
 
   (testing "no recovery when explicitly disabled"
-    (let [test-llm (spell/make-llm {:namespaces {} :recover false})]
-      (provider/with-provider
-        (provider/dummy-provider {:response "undefined-symbol)"})
-        (is (thrown? Exception (test-llm "(do "))))))
+    (let [{:keys [llm]} (th/make-test-llm {:response "undefined-symbol)"}
+                          :namespaces {} :recover false)]
+      (is (thrown? Exception (llm "(do ")))))
 
   (testing "non-quine program propagates error (no quine-extension)"
     ;; Plain (do ...) program can't use quine-extension recovery
-    (let [test-llm (spell/make-llm {:namespaces {} :recover true})]
-      (provider/with-provider
-        (provider/dummy-provider {:response "undefined-symbol)"})
-        (is (thrown? Exception (test-llm "(do ")))))))
+    (let [{:keys [llm]} (th/make-test-llm {:response "undefined-symbol)"}
+                          :namespaces {} :recover true)]
+      (is (thrown? Exception (llm "(do "))))))
+
+(deftest reader-error-recovery-test
+  (testing "reader error recovery via fresh quine — LLM retries successfully"
+    ;; Response #1 has \invalidchar which is an unsupported character literal.
+    ;; Reader recovery embeds the raw text in a recovery quine and extends.
+    ;; Response #2 (via extend) provides a valid fix.
+    (let [call-count (atom 0)
+          {:keys [llm]} (th/make-test-llm
+                          {:response-fn (fn [_]
+                                          (let [n (swap! call-count inc)]
+                                            (if (= n 1)
+                                              "\\invalidchar)"           ; reader error
+                                              "42)")))
+                           :prefill? true}                  ; recovery succeeds
+                          :namespaces {})]
+      (let [result (llm "(quine completion (eval (do ")]
+        (is (= 2 @call-count))
+        (is (= 42 result)))))
+
+  (testing "reader error recovery disabled — throws immediately"
+    (let [{:keys [llm]} (th/make-test-llm {:response "\\invalidchar)"}
+                          :namespaces {} :recover false)]
+      (is (thrown? Exception (llm "(quine completion (eval (do ")))))
+
+  (testing "reader error recovery passes raw text in _error"
+    ;; Verify the LLM sees the broken raw text in the recovery prompt.
+    ;; The second call's prompt should contain the original raw text.
+    (let [prompts (atom [])
+          {:keys [llm]} (th/make-test-llm
+                          {:response-fn (fn [prompt]
+                                          (swap! prompts conj prompt)
+                                          (let [n (count @prompts)]
+                                            (if (= n 1)
+                                              "\\invalidchar)"
+                                              "42)")))}
+                          :namespaces {})]
+      (llm "(quine completion (eval (do ")
+      ;; The recovery prompt (second call) should mention the reader error
+      (let [recovery-prompt (second @prompts)]
+        (is (str/includes? recovery-prompt "Reader error"))
+        (is (str/includes? recovery-prompt "\\invalidchar"))))))
 
 (deftest namespace-recovery-invoke-fn-wrapping-test
   (testing "ns-recover handles 'Function call failed: Unbound symbol: X' from invoke-fn"
@@ -574,23 +597,23 @@
     ;; ns-recover must unwrap this to find and fix the symbol.
     (let [math-ns {:floor (fn [x] (long (Math/floor (double x))))
                    :long long}
-          test-llm (spell/make-llm {:namespaces {'math math-ns}
-                                    :recover true})]
-      (provider/with-provider
-        ;; Code uses bare `floor` inside map — invoke-fn wraps the error
-        (provider/dummy-provider {:response "(reduce + 0 (map (fn [x] (floor (/ x 2.0))) (list 10 20 30))))"})
-        (let [result (test-llm "(do ")]
-          ;; ns-recover should fix floor -> math/floor
-          (is (= 30 result))))))
+          {:keys [llm]} (th/make-test-llm
+                          {:response "(reduce + 0 (map (fn [x] (floor (/ x 2.0))) (list 10 20 30))))"
+                           :prefill? true}
+                          :namespaces {'math math-ns} :recover true)]
+      (let [result (llm "(do ")]
+        ;; ns-recover should fix floor -> math/floor
+        (is (= 30 result)))))
 
   (testing "ns-recover fixes bare symbol to core namespace qualified form"
     ;; sqrt is in core namespace math/ but not in core-builtins
     ;; ns-recover should fix bare sqrt -> math/sqrt
-    (let [test-llm (spell/make-llm {:namespaces {} :recover true})]
-      (provider/with-provider
-        (provider/dummy-provider {:response "(map (fn [x] (sqrt x)) (list 4.0 9.0)))"})
-        (let [result (test-llm "(do ")]
-          (is (= [2.0 3.0] result)))))))
+    (let [{:keys [llm]} (th/make-test-llm
+                          {:response "(map (fn [x] (sqrt x)) (list 4.0 9.0)))"
+                           :prefill? true}
+                          :namespaces {} :recover true)]
+      (let [result (llm "(do ")]
+        (is (= [2.0 3.0] result))))))
 
 (deftest clean-error-message-test
   (testing "strips 'Function call failed: ' prefix"
@@ -608,14 +631,12 @@
     (let [effect-called (atom false)
           math-ns {:floor (fn [x] (long (Math/floor (double x))))}
           io-ns {:do-effect (fn [] (reset! effect-called true) "effect-result")}
-          test-llm (spell/make-llm {:namespaces {'math math-ns 'io io-ns}
-                                    :recover true})]
-      (provider/with-provider
-        ;; Body uses bare `floor` (error), trailing expr uses io/do-effect
-        (provider/dummy-provider {:response "(def x (floor 3.7)) '(io/do-effect)))"})
-        (let [result (test-llm "(eval (do ")]
-          (is (= "effect-result" result))
-          (is @effect-called)))))
+          {:keys [llm]} (th/make-test-llm
+                          {:response "(def x (floor 3.7)) '(io/do-effect)))"}
+                          :namespaces {'math math-ns 'io io-ns} :recover true)]
+      (let [result (llm "(eval (do ")]
+        (is (= "effect-result" result))
+        (is @effect-called))))
 
   (testing "no double-execution of side effects on recovery"
     ;; Body has a fixable error. An effect counter in io/ tracks execution.
@@ -623,12 +644,11 @@
     (let [effect-count (atom 0)
           math-ns {:floor (fn [x] (long (Math/floor (double x))))}
           io-ns {:count-effect (fn [] (swap! effect-count inc))}
-          test-llm (spell/make-llm {:namespaces {'math math-ns 'io io-ns}
-                                    :recover true})]
-      (provider/with-provider
-        (provider/dummy-provider {:response "(def x (floor 3.7)) '(io/count-effect)))"})
-        (test-llm "(eval (do ")
-        (is (= 1 @effect-count))))))
+          {:keys [llm]} (th/make-test-llm
+                          {:response "(def x (floor 3.7)) '(io/count-effect)))"}
+                          :namespaces {'math math-ns 'io io-ns} :recover true)]
+      (llm "(eval (do ")
+      (is (= 1 @effect-count)))))
 
 ;; =============================================================================
 ;; Pattern tests
@@ -636,20 +656,28 @@
 
 (deftest check-result-ok-test
   (testing "check-result returns {:ok answer} when leaf-llm says OK"
-    (provider/with-provider
-      (provider/dummy-provider {:response "OK"})
-      ;; leaf-llm is effect-only, so merge effect builtins
-      (binding [eval/*builtins* (merge eval/*builtins* effect-builtins)]
-        (let [r (spell/spell-eval '(patterns/check-result "What is 2+2?" 4) {})]
-          (is (= {:ok 4} (:ok r))))))))
+    ;; First call: main LLM returns check-result call; second call: leaf-llm returns "OK"
+    (let [call-count (atom 0)
+          {:keys [llm]} (th/make-test-llm
+                          {:response-fn (fn [_]
+                                          (let [n (swap! call-count inc)]
+                                            (if (= n 1)
+                                              "(patterns/check-result \"What is 2+2?\" 4))"
+                                              "OK")))})]
+      (is (= {:ok 4} (llm "(eval '(do "))))))
 
 (deftest check-result-wrong-test
   (testing "check-result returns {:wrong msg} when leaf-llm says WRONG"
-    (provider/with-provider
-      (provider/dummy-provider {:response "WRONG: London is the capital of the UK."})
-      (binding [eval/*builtins* (merge eval/*builtins* effect-builtins)]
-        (let [r (spell/spell-eval '(patterns/check-result "Capital of France?" "London") {})]
-          (is (= {:wrong "London is the capital of the UK."} (:ok r))))))))
+    ;; First call: main LLM returns check-result call; second call: leaf-llm returns "WRONG: ..."
+    (let [call-count (atom 0)
+          {:keys [llm]} (th/make-test-llm
+                          {:response-fn (fn [_]
+                                          (let [n (swap! call-count inc)]
+                                            (if (= n 1)
+                                              "(patterns/check-result \"Capital of France?\" \"London\"))"
+                                              "WRONG: London is not the capital of France")))})]
+      (is (= {:wrong "London is not the capital of France"}
+             (llm "(eval '(do "))))))
 
 ;; =============================================================================
 ;; API retry logic (#64)
@@ -657,62 +685,63 @@
 
 (deftest llm-call-retries-transient-errors
   (testing "instant retry on 500 error succeeds on second attempt"
-    (let [call-count (atom 0)]
-      (provider/with-provider
-        (reify provider/LLMProvider
-          (supports-prefill [_] true)
-          (call-llm [_ prompt] (provider/call-llm _ prompt {}))
-          (call-llm [_ prompt opts]
-            (swap! call-count inc)
-            (if (= 1 @call-count)
-              (throw (ex-info "Server error" {:status 500}))
-              "success")))
-        (binding [provider/*retries* [0]]
-          (is (= "success" (provider/llm-call "test")))
-          (is (= 2 @call-count))))))
+    (let [call-count (atom 0)
+          prov (reify provider/LLMProvider
+                 (supports-prefill [_] true)
+                 (call-llm [_ prompt] (provider/call-llm _ prompt {}))
+                 (call-llm [_ prompt opts]
+                   (swap! call-count inc)
+                   (if (= 1 @call-count)
+                     (throw (ex-info "Server error" {:status 500}))
+                     "success")))]
+      (binding [provider/*retries* [0]]
+        (is (= "success" (provider/call-with-retries
+                           #(provider/call-llm prov "test" {})
+                           [0])))
+        (is (= 2 @call-count)))))
 
   (testing "non-retryable error throws immediately"
-    (let [call-count (atom 0)]
-      (provider/with-provider
-        (reify provider/LLMProvider
-          (supports-prefill [_] true)
-          (call-llm [_ prompt] (provider/call-llm _ prompt {}))
-          (call-llm [_ prompt opts]
-            (swap! call-count inc)
-            (throw (ex-info "Bad request" {:status 400}))))
-        (binding [provider/*retries* [0 0]]
-          (is (thrown-with-msg? Exception #"Bad request"
-                                (provider/llm-call "test")))
-          (is (= 1 @call-count))))))
+    (let [call-count (atom 0)
+          prov (reify provider/LLMProvider
+                 (supports-prefill [_] true)
+                 (call-llm [_ prompt] (provider/call-llm _ prompt {}))
+                 (call-llm [_ prompt opts]
+                   (swap! call-count inc)
+                   (throw (ex-info "Bad request" {:status 400}))))]
+      (is (thrown-with-msg? Exception #"Bad request"
+                            (provider/call-with-retries
+                              #(provider/call-llm prov "test" {})
+                              [0 0])))
+      (is (= 1 @call-count))))
 
   (testing "exhausts all retries then throws"
-    (let [call-count (atom 0)]
-      (provider/with-provider
-        (reify provider/LLMProvider
-          (supports-prefill [_] true)
-          (call-llm [_ prompt] (provider/call-llm _ prompt {}))
-          (call-llm [_ prompt opts]
-            (swap! call-count inc)
-            (throw (ex-info "Rate limited" {:status 429}))))
-        (binding [provider/*retries* [0 0]]
-          (is (thrown-with-msg? Exception #"Rate limited"
-                                (provider/llm-call "test")))
-          ;; 1 initial + 2 retries = 3 calls
-          (is (= 3 @call-count))))))
+    (let [call-count (atom 0)
+          prov (reify provider/LLMProvider
+                 (supports-prefill [_] true)
+                 (call-llm [_ prompt] (provider/call-llm _ prompt {}))
+                 (call-llm [_ prompt opts]
+                   (swap! call-count inc)
+                   (throw (ex-info "Rate limited" {:status 429}))))]
+      (is (thrown-with-msg? Exception #"Rate limited"
+                            (provider/call-with-retries
+                              #(provider/call-llm prov "test" {})
+                              [0 0])))
+      ;; 1 initial + 2 retries = 3 calls
+      (is (= 3 @call-count))))
 
-  (testing "no retries when *retries* is nil"
-    (let [call-count (atom 0)]
-      (provider/with-provider
-        (reify provider/LLMProvider
-          (supports-prefill [_] true)
-          (call-llm [_ prompt] (provider/call-llm _ prompt {}))
-          (call-llm [_ prompt opts]
-            (swap! call-count inc)
-            (throw (ex-info "Server error" {:status 500}))))
-        (binding [provider/*retries* nil]
-          (is (thrown-with-msg? Exception #"Server error"
-                                (provider/llm-call "test")))
-          (is (= 1 @call-count)))))))
+  (testing "no retries when retries-seq is nil"
+    (let [call-count (atom 0)
+          prov (reify provider/LLMProvider
+                 (supports-prefill [_] true)
+                 (call-llm [_ prompt] (provider/call-llm _ prompt {}))
+                 (call-llm [_ prompt opts]
+                   (swap! call-count inc)
+                   (throw (ex-info "Server error" {:status 500}))))]
+      (is (thrown-with-msg? Exception #"Server error"
+                            (provider/call-with-retries
+                              #(provider/call-llm prov "test" {})
+                              nil)))
+      (is (= 1 @call-count)))))
 
 ;; =============================================================================
 ;; Kimi provider (#46)
@@ -826,17 +855,14 @@
 
 (deftest no-prefill-mode-test
   (testing "make-llm with prefill?=false strips prefix echo"
-    (let [test-llm (spell/make-llm {:namespaces {} :prefill? false})]
-      (provider/with-provider
-        ;; Simulate a no-prefill model that echoes the full prefix+response
-        (provider/dummy-provider {:response "(def x 42))"})
-        (is (= 42 (test-llm "(do "))))))
+    (let [{:keys [llm]} (th/make-test-llm {:response "(def x 42))" :prefill? false}
+                          :namespaces {} :prefill? false)]
+      (is (= 42 (llm "(do ")))))
 
   (testing "make-llm with prefill?=true (default) passes prefix normally"
-    (let [test-llm (spell/make-llm {:namespaces {}})]
-      (provider/with-provider
-        (provider/dummy-provider {:response "(def x 42))"})
-        (is (= 42 (test-llm "(do ")))))))
+    (let [{:keys [llm]} (th/make-test-llm {:response "(def x 42))" :prefill? true}
+                          :namespaces {})]
+      (is (= 42 (llm "(do "))))))
 
 ;; =============================================================================
 ;; Model alias tests

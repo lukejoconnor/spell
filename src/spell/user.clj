@@ -20,7 +20,7 @@
 
 (def ^:private last-sender
   "Last agent that sent a message to :user. Used as default recipient."
-  (atom :root))
+  (atom :main))
 
 (def ^:private stdin-queue
   "Queue decoupling stdin reading from message processing.
@@ -82,7 +82,7 @@
 
 (defn parse-user-input
   "Parse user input into [recipient message].
-   \":root hello\" → [:root \"hello\"]
+   \":main hello\" → [:main \"hello\"]
    \"hello\"       → [nil \"hello\"]"
   [input]
   (if-let [[_ handle-str msg] (re-matches #":(\S+)\s+(.*)" input)]
@@ -91,9 +91,9 @@
 
 (defn resolve-recipient
   "Resolve the actual recipient. Uses explicit if provided,
-   otherwise falls back to last-sender-val, then :root."
+   otherwise falls back to last-sender-val, then :main."
   [explicit last-sender-val]
-  (or explicit last-sender-val :root))
+  (or explicit last-sender-val :main))
 
 (defn- lookup-recipients
   "Look up the current roles map from globals."
@@ -106,20 +106,17 @@
 
 (defn- extract-messages
   "Extract ALL messages from a raw completion string.
-   Walks the parsed AST to find all (def msg-N {:from h :value v})
-   and (def waiting-for h) forms. Returns a vector of maps."
+   Walks the parsed AST to find all (def msg-N {:from h ...}) forms.
+   Returns a vector of maps."
   [raw]
   (try
     (let [form (first (parse/read-all (parse/balance-parens raw)))
           msgs (->> (tree-seq seq? seq form)
                     (keep (fn [f]
                             (when (and (seq? f) (= 'def (first f)) (>= (count f) 3))
-                              (let [sym (second f)
-                                    val (nth f 2)]
-                                (cond
-                                  (and (map? val) (contains? val :from) (contains? val :value)) val
-                                  (= sym 'waiting-for) {:from val}
-                                  :else nil)))))
+                              (let [val (nth f 2)]
+                                (when (and (map? val) (contains? val :from))
+                                  val)))))
                     vec)]
       (when (seq msgs) msgs))
     (catch Exception _e nil)))
@@ -162,12 +159,12 @@
   "Print messages to stderr, updating last-sender as we go."
   [messages]
   (binding [*out* *err*]
-    (doseq [{:keys [from value]} messages]
+    (doseq [{:keys [from body expects-response]} messages]
       (when from
         (reset! last-sender from))
-      (if value
-        (println (str "[agent " from "] " value))
-        (println (str "[agent " from " is waiting for input]"))))))
+      (cond
+        body             (println (str "[agent " from "] " body))
+        expects-response (println (str "[agent " from " is waiting for input]"))))))
 
 (defn- user-call-fn
   "The 'API call' for the user agent.
@@ -182,7 +179,7 @@
   (let [balanced (parse/balance-parens prompt-str)
         messages (extract-messages balanced)
         from-handles (vec (distinct (keep :from messages)))
-        expects-reply? (seq @(:waiters (get @comm/registry :user)))
+        expects-reply? (some :expects-response messages)
         ;; Check if this wake was from stdin-signal
         stdin-signal? (some #(= :stdin-watch (:from %)) messages)]
 
@@ -219,20 +216,17 @@
 (defn- user-self
   "Box-based execution for the user agent.
    Structurally similar to -llm but simpler (no trace, no retry, no verbose).
-   Seeds inbox before calling box (like the-llm does before -llm).
-   The parent-handle comes from *current-handle* at call time, making this
-   box non-root. The root box is the orphan box."
-  [inbox-fn handle parent-handle prompt-str]
-  (let [completion (promise)]
+   Uses make-awake-fn to construct the inside-fn from the eval-fn."
+  [eval-fn handle parent-handle prompt-str]
+  (let [completion (promise)
+        awake-fn (comm/make-awake-fn eval-fn)]
     (future
       (try
         (let [response (user-call-fn prompt-str)]
           (deliver completion (str prompt-str response)))
         (catch Exception e
           (deliver completion e))))
-    ;; Seed inbox before entering box (like the-llm seeds before -llm)
-    (compare-and-set! (:inbox (get @comm/registry handle)) nil inbox-fn)
-    (comm/box handle parent-handle completion)))
+    (comm/box handle completion awake-fn)))
 
 ;; =============================================================================
 ;; Registration
@@ -244,11 +238,9 @@
   (let [variant-builtins (merge eval/core-builtins
                                 {'describe-fn llm/describe}
                                 llm/core-namespaces)
-        ;; inbox-fn needs to be available for user-self to seed, so we use a promise
-        inbox-fn-ref (promise)
-        ;; user-self-fn uses *current-handle* as parent
+        ;; user-self-fn reads eval-fn dynamically via *current-eval-fn*
         user-self-fn (fn [prompt-str]
-                       (user-self @inbox-fn-ref
+                       (user-self comm/*current-eval-fn*
                                   comm/*current-handle* comm/*current-handle* prompt-str))
         ;; Effect builtins: llm-self (user-self) + agents namespace
         effect-builtins {'llm-self user-self-fn
@@ -256,25 +248,22 @@
         eval-builtin (llm/make-eval variant-builtins effect-builtins)
         config {:variant-builtins variant-builtins
                 :eval-builtin eval-builtin
-                :recover-fn nil}
-        inbox-fn (llm/make-inbox-fn config (atom nil))]
-    (deliver inbox-fn-ref inbox-fn)
-    inbox-fn))
+                :recover-fn nil}]
+    (llm/make-inbox-fn config (atom nil))))
 
 (defn register-user-agent!
   "Register :user as an agent in the comm system.
    0-arity: uses System/in as reader. 1-arity: accepts a BufferedReader.
    Starts a persistent stdin reader thread that feeds the queue.
    Idempotent: no-op if :user is already registered.
-   Parent-handle is :root (the default root agent)."
+   Parent-handle is :main (the initial agent)."
   ([]
    (register-user-agent! (BufferedReader. (InputStreamReader. System/in))))
   ([^BufferedReader reader]
    (when-not (comm/handle? :user)
-     (let [inbox-fn (make-user-inbox-fn*)
+     (let [eval-fn (make-user-inbox-fn*)
            initial "(quine completion (eval (do )))"]
-       (comm/register! :user inbox-fn :root)
-       (comm/orphan-box! :user initial)
+       (comm/start-box :user eval-fn initial :main)
        (globals/set-val :roles (assoc (or (globals/get-val :roles) {})
                                       :user "human user — interactive terminal"))
        (start-stdin-reader! reader)))))

@@ -81,33 +81,66 @@
 
 (defn- try-quine-recovery
   "Attempt quine-extension recovery: append error info + extend to the quine.
-   Returns eval result (ok or err). Throws on non-quine or retry limit."
+   Returns eval result (ok or err). Throws on non-quine or retry limit.
+   If program doesn't start with (quine completion ...), wraps it first and recurses."
   [program result variant-builtins eval-builtin]
-  (let [max-recovery-args 2
-        quine-arg-count (when (and (seq? program) (= 'quine (first program)))
-                          (- (count (seq program)) 2))]
-    (if (and quine-arg-count (< quine-arg-count (+ 1 max-recovery-args)))
-      ;; Construct recovery quine: append new eval block with error info
-      (let [error-map (cond-> {:error (recovery/clean-error-message (:err result))
-                               :expr (list 'quote (:expr result))}
-                        (:containing-form result)
-                        (assoc :in (list 'quote (:containing-form result))))
-            recovery-arg (list 'eval
+  (if-not (and (seq? program)
+               (= 'quine (first program))
+               (= 'completion (second program)))
+    ;; Not a (quine completion ...) form — wrap and recurse
+    (let [indent (apply str (repeat eval/*llm-depth* "  "))
+          wrapped (list 'quine 'completion program)]
+      (eval/vlog (str indent "Wrapping in quine completion for recovery"))
+      (try-quine-recovery wrapped result variant-builtins eval-builtin))
+    ;; Normal path: program is already (quine completion ...)
+    (let [max-recovery-args 2
+          quine-arg-count (- (count (seq program)) 2)]
+      (if (< quine-arg-count (+ 1 max-recovery-args))
+        ;; Construct recovery quine: append new eval block with error info
+        (let [error-map (cond-> {:error (recovery/clean-error-message (:err result))
+                                 :expr (list 'quote (:expr result))}
+                          (:containing-form result)
+                          (assoc :in (list 'quote (:containing-form result))))
+              recovery-arg (list 'eval
+                             (list 'do
+                               (list 'def '_error error-map)
+                               (list 'quote (list 'extend 'completion))))
+              recovery-quine (apply list (concat (seq program) [recovery-arg]))
+              indent (apply str (repeat eval/*llm-depth* "  "))
+              _     (eval/vlog (str indent "Recovery quine: " (pr-str recovery-quine)))
+              retry (binding [eval/*llm-depth* (inc eval/*llm-depth*)
+                              eval/*raw-text*  nil
+                              eval/*builtins*  variant-builtins]
+                      (eval/spell-eval recovery-quine {'eval eval-builtin}))]
+          (if (eval/ok? retry)
+            retry
+            (throw (ex-info (:err result) {:result result}))))
+        ;; Retry limit reached — propagate error
+        (throw (ex-info (:err result) {:result result}))))))
+
+(defn- try-reader-recovery
+  "Attempt recovery from a reader/parse error by embedding the raw text
+   as a string in a fresh recovery quine. The LLM sees its broken output
+   and the error message, then gets a fresh chance via extend."
+  [raw parse-error variant-builtins eval-builtin]
+  (let [error-msg (or (.getMessage parse-error) "Unknown reader error")
+        indent    (apply str (repeat eval/*llm-depth* "  "))
+        _         (eval/vlog (str indent "=== Reader Error Recovery ==="))
+        _         (eval/vlog (str indent "Parse error: " error-msg))
+        error-map {:error (str "Reader error: " error-msg) :raw raw}
+        recovery-quine (list 'quine 'completion
+                         (list 'eval
                            (list 'do
                              (list 'def '_error error-map)
-                             (list 'quote (list 'extend 'completion))))
-            recovery-quine (apply list (concat (seq program) [recovery-arg]))
-            indent (apply str (repeat eval/*llm-depth* "  "))
-            _     (eval/vlog (str indent "Recovery quine: " (pr-str recovery-quine)))
-            retry (binding [eval/*llm-depth* (inc eval/*llm-depth*)
+                             (list 'quote (list 'extend 'completion)))))
+        result    (binding [eval/*llm-depth* (inc eval/*llm-depth*)
                             eval/*raw-text*  nil
                             eval/*builtins*  variant-builtins]
                     (eval/spell-eval recovery-quine {'eval eval-builtin}))]
-        (if (eval/ok? retry)
-          retry
-          (throw (ex-info (:err result) {:result result}))))
-      ;; Not a quine or retry limit reached — propagate error
-      (throw (ex-info (:err result) {:result result})))))
+    (if (eval/ok? result)
+      (:ok result)
+      (throw (ex-info (str "Reader error (unrecoverable): " error-msg)
+                      {:parse-error error-msg :result result})))))
 
 (defn make-inbox-fn
   "Create inbox function: [raw] -> value.
@@ -117,37 +150,44 @@
   [{:keys [variant-builtins eval-builtin recover-fn]} trace-data-atom]
   (fn [raw]
     (let [raw       (parse/balance-parens raw)
-          forms     (parse/read-all raw)
-          program   (if (> (count (vec forms)) 1) (list* 'do forms) (first forms))
-          indent    (apply str (repeat eval/*llm-depth* "  "))
-          result    (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
-                             eval/*raw-text*       raw
-                             eval/*builtins*       variant-builtins]
-                      (eval/spell-eval program {'eval eval-builtin}))
-          final-result
-          (if (and (eval/err? result) recover-fn (not (:effect-phase result)))
-            (let [_        (do (eval/vlog (str indent "=== Error Recovery ==="))
-                             (eval/vlog (str indent "Error: " (:err result))))
-                  result-with-program (assoc result :program program)]
-              ;; Try namespace recovery first (fast, deterministic)
-              (if-let [fix-expr (recover-fn result-with-program)]
-                (let [_     (eval/vlog (str indent "Namespace recovery: " (pr-str fix-expr)))
-                      retry (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
-                                      eval/*raw-text*       nil
-                                      eval/*builtins*       variant-builtins]
-                              (eval/spell-eval fix-expr (merge (:env result) {'eval eval-builtin})))]
-                  (if (eval/ok? retry)
-                    retry
-                    ;; Namespace fix didn't work, try quine-extension
+          [forms parse-err] (try [(parse/read-all raw) nil]
+                                 (catch Exception e [nil e]))]
+      (if parse-err
+        ;; Reader error: embed raw text as string in recovery quine
+        (if recover-fn
+          (try-reader-recovery raw parse-err variant-builtins eval-builtin)
+          (throw parse-err))
+        ;; Normal path: eval and recovery
+        (let [program   (if (> (count (vec forms)) 1) (list* 'do forms) (first forms))
+              indent    (apply str (repeat eval/*llm-depth* "  "))
+              result    (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
+                                 eval/*raw-text*       raw
+                                 eval/*builtins*       variant-builtins]
+                          (eval/spell-eval program {'eval eval-builtin}))
+              final-result
+              (if (and (eval/err? result) recover-fn)
+                (let [_        (do (eval/vlog (str indent "=== Error Recovery ==="))
+                                 (eval/vlog (str indent "Error: " (:err result))))
+                      result-with-program (assoc result :program program)]
+                  ;; Try namespace recovery first (fast, deterministic)
+                  (if-let [fix-expr (recover-fn result-with-program)]
+                    (let [_     (eval/vlog (str indent "Namespace recovery: " (pr-str fix-expr)))
+                          retry (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
+                                          eval/*raw-text*       nil
+                                          eval/*builtins*       variant-builtins]
+                                  (eval/spell-eval fix-expr (merge (:env result) {'eval eval-builtin})))]
+                      (if (eval/ok? retry)
+                        retry
+                        ;; Namespace fix didn't work, try quine-extension
+                        (try-quine-recovery program result variant-builtins eval-builtin)))
+                    ;; No namespace fix, try quine-extension
                     (try-quine-recovery program result variant-builtins eval-builtin)))
-                ;; No namespace fix, try quine-extension
-                (try-quine-recovery program result variant-builtins eval-builtin)))
-            result)]
-      (when trace-data-atom
-        (reset! trace-data-atom {:program program}))
-      (if (eval/ok? final-result)
-        (:ok final-result)
-        (throw (ex-info (:err final-result) {:result final-result}))))))
+                result)]
+          (when trace-data-atom
+            (reset! trace-data-atom {:program program}))
+          (if (eval/ok? final-result)
+            (:ok final-result)
+            (throw (ex-info (:err final-result) {:result final-result}))))))))
 
 (defn- register-agent
   "Register a dormant agent with stored completion as context.
@@ -158,14 +198,14 @@
     (throw (ex-info "register-agent: handle must be keyword" {:got handle-name})))
   (when-not (string? completion)
     (throw (ex-info "register-agent: completion must be a string" {:got (type completion)})))
-  (let [default-inbox (make-inbox-fn config (atom nil))]
-    (comm/start-box handle-name default-inbox completion)))
+  (let [eval-fn (make-inbox-fn config (atom nil))]
+    (comm/start-box handle-name eval-fn completion)))
 
 (defn- -llm
   "Core llm engine: make API call, deliver to box.
-   handle and parent-handle determine root behavior (handled by box).
-   Does NOT handle registration or inbox seeding — caller does that."
-  [{:keys [call-fn]} handle parent-handle prompt-str trace-data-atom]
+   inside-fn processes the raw completion string.
+   eval-fn, when non-nil, indicates root lifecycle (uses run-root-box)."
+  [{:keys [call-fn]} handle inside-fn eval-fn prompt-str trace-data-atom]
   (when (and eval/*max-llm-depth* (>= eval/*llm-depth* eval/*max-llm-depth*))
     (throw (ex-info "LLM recursion limit exceeded"
                     {:type :depth-exceeded :depth eval/*llm-depth* :limit eval/*max-llm-depth*})))
@@ -189,7 +229,9 @@
           (deliver completion e))))
     (try
       (let [result (binding [trace/*trace-node-id* node-id]
-                     (comm/box handle parent-handle completion))]
+                     (if eval-fn
+                       (comm/run-root-box handle completion inside-fn eval-fn)
+                       (comm/box handle completion inside-fn)))]
         (when node-id
           (trace/complete-node! node-id
             (merge {:response @response-atom
@@ -299,12 +341,11 @@
    - :reasoning-effort - OpenAI reasoning effort (\"low\", \"medium\", \"high\").
    - :verbosity        - OpenAI verbosity (\"low\", \"auto\").
 
-   Returns a function with the same signature as llm:
-   (f prompt) or (f prompt handle).
+   Returns a map {:llm fn, :run fn}.
 
    The returned function is automatically available as 'llm-self in Spell code,
    providing self-recursion without needing to wire up var refs."
-  [{:keys [namespaces model system llm-var recover format prefill? thinking reasoning-effort verbosity]
+  [{:keys [namespaces provider model system llm-var recover format prefill? thinking reasoning-effort verbosity]
     :or {namespaces {} model nil recover true prefill? true}}]
   (let [;; Core namespaces are always available; everything in :namespaces is effect
         core-ns-names (set (keys core-namespaces))
@@ -320,14 +361,17 @@
         prev-prompt-atom (atom nil)
         call-fn  (fn [prompt-str]
                    (let [prev-prompt @prev-prompt-atom
-                         response (provider/llm-call prompt-str
-                                    (cond-> {:system sys-prompt}
-                                      prefill? (assoc :prefix prompt-str)
-                                      model (assoc :model model)
-                                      thinking (assoc :thinking thinking)
-                                      reasoning-effort (assoc :reasoning-effort reasoning-effort)
-                                      verbosity (assoc :verbosity verbosity)
-                                      prev-prompt (assoc :cache-prefix prev-prompt)))]
+                         opts (cond-> {:system sys-prompt}
+                                prefill? (assoc :prefix prompt-str)
+                                model (assoc :model model)
+                                thinking (assoc :thinking thinking)
+                                reasoning-effort (assoc :reasoning-effort reasoning-effort)
+                                verbosity (assoc :verbosity verbosity)
+                                prev-prompt (assoc :cache-prefix prev-prompt))
+                         response (provider/call-with-retries
+                                    #(provider/strip-code-fences
+                                       (provider/call-llm provider prompt-str opts))
+                                    provider/*retries*)]
                      (reset! prev-prompt-atom prompt-str)
                      (if prefill?
                        response
@@ -351,7 +395,9 @@
                    (@self-ref prompt handle)))
         ;; Create effect-builtins (closes over llm-self)
         effect-builtins (merge {'llm-self self-fn
-                               'leaf-llm (make-leaf-llm (cond-> {} model (assoc :model model)))}
+                               'leaf-llm (make-leaf-llm (cond-> {}
+                                                          provider (assoc :provider provider)
+                                                          model (assoc :model model)))}
                          effect-ns-builtins
                          (when llm-var {'llm llm-var}))
         ;; Add register-agent to agents namespace (if present)
@@ -378,7 +424,7 @@
         the-llm  (fn the-llm
                    ([prompt] (the-llm prompt nil))
                    ([prompt handle]
-                    (let [handle     (or handle comm/*current-handle* :root)
+                    (let [handle     (or handle comm/*current-handle* :main)
                           parent     (or comm/*current-handle*  ;; llm-self (inherited)
                                        (:parent-handle (get @comm/registry handle))  ;; spawn child
                                        )
@@ -389,21 +435,29 @@
                           prompt-str (wrap-nl prompt')
                           trace-data (atom nil)
                           inbox-fn   (make-inbox-fn config' trace-data)
-                          default-inbox (make-inbox-fn config' (atom nil))]
-                      ;; Register if new handle
+                          awake-fn   (comm/make-awake-fn inbox-fn)]
                       (when-not (comm/handle? handle)
-                        (comm/register! handle default-inbox))
-                      ;; Update default-inbox-fn so lazy send resolution uses
-                      ;; the eval pipeline (not make-sleep-fn from spawn)
-                      (swap! comm/registry assoc-in [handle :default-inbox-fn] default-inbox)
-                      ;; Seed inbox: top-level (no parent) resets since handle
-                      ;; may be reused; spawn uses CAS to preserve pending sends
-                      (if parent
-                        (compare-and-set! (:inbox (get @comm/registry handle)) nil inbox-fn)
-                        (reset! (:inbox (get @comm/registry handle)) inbox-fn))
-                      (-llm config' handle parent prompt-str trace-data))))]
+                        (comm/register! handle))
+                      (-llm config' handle awake-fn (when root? inbox-fn) prompt-str trace-data))))]
     (reset! self-ref the-llm)
-    the-llm))
+    {:llm the-llm
+     :run (fn run-init [init-string]
+            (let [handle   :main
+                  inbox-fn (make-inbox-fn config' (atom nil))
+                  awake-fn (comm/make-awake-fn inbox-fn)]
+              (when-not (comm/handle? handle)
+                (comm/register! handle))
+              (comm/run-root-box handle init-string awake-fn inbox-fn)))}))
+
+(defn build-init
+  "Build a balanced init program from a prompt and optional preamble.
+   preamble: optional string of Spell expressions spliced before trailing expr."
+  ([prompt] (build-init prompt nil))
+  ([prompt preamble]
+   (str "(quine completion (eval (do "
+        "(quine prompt \"" (parse/escape-string (str prompt)) "\") "
+        (when preamble (str preamble " "))
+        "'(extend))))")))
 
 ;; ---------------------------------------------------------------------------
 ;; Leaf LLM
@@ -414,12 +468,13 @@
    No Spell parsing, evaluation, tools, or sub-agents.
 
    Options:
-   - :system - system prompt string (default: generic assistant)
-   - :model  - optional model name override (nil uses provider default)
+   - :provider - LLM provider instance
+   - :system   - system prompt string (default: generic assistant)
+   - :model    - optional model name override (nil uses provider default)
 
    Returns (fn [prompt] response-string)."
   ([] (make-leaf-llm {}))
-  ([{:keys [system model]
+  ([{:keys [provider system model]
      :or {system "You are a helpful assistant. Respond concisely."}}]
    (fn [prompt]
      (let [prompt-str (str prompt)
@@ -431,9 +486,12 @@
                       (Thread/sleep (rand-int 500))
                       (eval/vlog (str indent "=== Leaf LLM Call (depth " eval/*llm-depth* ") ==="))
                       (eval/vlog (str indent "Prompt: " (pr-str prompt))))
-           response (provider/llm-call prompt-str
-                      (cond-> {:system system}
-                        model (assoc :model model)))
+           opts     (cond-> {:system system}
+                      model (assoc :model model))
+           response (provider/call-with-retries
+                      #(provider/strip-code-fences
+                         (provider/call-llm provider prompt-str opts))
+                      provider/*retries*)
            _        (eval/vlog (str indent "Response: " response))
            _        (when node-id
                       (trace/complete-node! node-id

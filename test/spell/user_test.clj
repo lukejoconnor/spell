@@ -8,12 +8,12 @@
 (use-fixtures :each
   (fn [f]
     (reset! comm/registry {})
-    (reset! @#'user/last-sender :root)
+    (reset! @#'user/last-sender :main)
     (.clear @#'user/stdin-queue)
     (reset! @#'user/signal-pending false)
     (f)
     (reset! comm/registry {})
-    (reset! @#'user/last-sender :root)
+    (reset! @#'user/last-sender :main)
     (.clear @#'user/stdin-queue)
     (reset! @#'user/signal-pending false)))
 
@@ -28,7 +28,7 @@
 
 (deftest parse-user-input-test
   (testing "parses recipient prefix"
-    (is (= [:root "hello"] (user/parse-user-input ":root hello")))
+    (is (= [:main "hello"] (user/parse-user-input ":main hello")))
     (is (= [:seller "offer 100"] (user/parse-user-input ":seller offer 100"))))
 
   (testing "no recipient prefix"
@@ -40,23 +40,23 @@
 
 (deftest resolve-recipient-test
   (testing "explicit takes priority"
-    (is (= :seller (user/resolve-recipient :seller :root))))
+    (is (= :seller (user/resolve-recipient :seller :main))))
 
   (testing "falls back to last-sender"
     (is (= :agent-1 (user/resolve-recipient nil :agent-1))))
 
-  (testing "falls back to :root when both nil"
-    (is (= :root (user/resolve-recipient nil nil)))))
+  (testing "falls back to :main when both nil"
+    (is (= :main (user/resolve-recipient nil nil)))))
 
 ;; =============================================================================
 ;; Registration tests
 ;; =============================================================================
 
 (deftest register-user-agent-test
-  (testing "registers :user handle with parent :root"
+  (testing "registers :user handle with parent :main"
     (user/register-user-agent! (mock-reader "test"))
     (is (true? (comm/handle? :user)))
-    (is (= :root (:parent-handle (get @comm/registry :user)))))
+    (is (= :main (:parent-handle (get @comm/registry :user)))))
 
   (testing "idempotent — second call is no-op"
     (user/register-user-agent! (mock-reader "other"))
@@ -68,25 +68,26 @@
 
 (deftest extract-messages-test
   (testing "extracts single message from raw completion"
-    (let [raw "(quine completion (eval (do (def msg-1 {:from :agent-1 :value \"hello\"}) '(llm-self (reopen completion)) )))"
+    (let [raw "(quine completion (eval (do (def msg-1 {:from :agent-1 :body \"hello\"}) '(llm-self (reopen completion)) )))"
           result (#'user/extract-messages raw)]
       (is (= 1 (count result)))
       (is (= :agent-1 (:from (first result))))
-      (is (= "hello" (:value (first result))))))
+      (is (= "hello" (:body (first result))))))
 
   (testing "extracts multiple messages"
-    (let [raw "(quine completion (eval (do (def msg-1 {:from :agent-1 :value \"hello\"}) (def msg-2 {:from :agent-2 :value \"world\"}) '(llm-self (reopen completion)) )))"
+    (let [raw "(quine completion (eval (do (def msg-1 {:from :agent-1 :body \"hello\"}) (def msg-2 {:from :agent-2 :body \"world\"}) '(llm-self (reopen completion)) )))"
           result (#'user/extract-messages raw)]
       (is (= 2 (count result)))
       (is (= :agent-1 (:from (first result))))
       (is (= :agent-2 (:from (second result))))))
 
-  (testing "extracts poke (waiting-for) from raw completion"
-    (let [raw "(quine completion (eval (do (def waiting-for :agent-2) '(llm-self (reopen completion)) )))"
+  (testing "extracts poke (expects-response, no body) from raw completion"
+    (let [raw "(quine completion (eval (do (def msg-1 {:from :agent-2 :expects-response true}) '(llm-self (reopen completion)) )))"
           result (#'user/extract-messages raw)]
       (is (= 1 (count result)))
       (is (= :agent-2 (:from (first result))))
-      (is (not (contains? (first result) :value)))))
+      (is (true? (:expects-response (first result))))
+      (is (not (contains? (first result) :body)))))
 
   (testing "returns nil for empty/malformed raw"
     (is (nil? (#'user/extract-messages "")))
@@ -110,20 +111,18 @@
                             raw))]
       (user/register-user-agent! reader)
       (Thread/sleep 100)
-      (comm/register! h-agent agent-eval-fn)
-      (reset! (:inbox (get @comm/registry h-agent)) agent-eval-fn)
+      (comm/register! h-agent)
       (let [pa (promise)]
         (deliver pa agent-raw)
-        (let [fa (future (comm/box h-agent h-agent pa))]
+        (let [fa (future (comm/box h-agent pa (comm/make-awake-fn agent-eval-fn)))]
           (deref agent-started 2000 :timeout)
           (let [result (deref fa 5000 :timeout)]
             (is (string? result))
             (is (.contains ^String result ":from :user"))
-            (is (.contains ^String result ":value \"hello from user\""))))))))
+            (is (.contains ^String result ":body \"hello from user\""))))))))
 
-;; Sequential asks: skipped — triggers #108 (notify-waiters! race with fast recipients).
-;; Mock readers respond instantly, so the agent re-registers as a waiter before
-;; the orphan box's notify-waiters! runs. Not reproducible with real LLM agents.
+;; Sequential asks: skipped — mock readers respond too fast for reliable
+;; concurrent box lifecycle testing. Not reproducible with real LLM agents.
 
 ;; =============================================================================
 ;; Fire-and-forget test (send, no ask — should not prompt)
@@ -136,7 +135,7 @@
     (let [reader (mock-reader "")]
       (user/register-user-agent! reader)
       (Thread/sleep 100)
-      (comm/register! :ff-sender identity)
+      (comm/register! :ff-sender)
       (binding [comm/*current-handle* :ff-sender]
         (comm/send "goodbye!" :user))
       ;; Fire-and-forget should process without blocking on stdin.
@@ -156,10 +155,9 @@
           reader (mock-reader "\n:target hello from user\n")
           result-p (promise)
           target-eval-fn (fn [raw] (deliver result-p raw) raw)]
-      ;; Register target with parent :root so orphan-box creates root boxes
-      ;; (enabling the sleep/wake cycle). default-inbox-fn = target-eval-fn.
-      (comm/register! :target target-eval-fn :root)
-      (comm/orphan-box! :target "(quine completion (eval (do )))")
+      ;; Register target with start-box (root lifecycle)
+      (comm/start-box :target target-eval-fn
+                       "(quine completion (eval (do )))" :main)
       (Thread/sleep 100)
       ;; Register user agent — reader has blank line + message
       (user/register-user-agent! reader)
@@ -177,8 +175,8 @@
   (testing "only one signal sent despite multiple blank lines"
     ;; Use a trivial eval-fn (not the full user pipeline) so signal-pending
     ;; is never reset by user-call-fn. This isolates the debounce mechanism.
-    (comm/register! :user (fn [raw] raw))
-    (comm/orphan-box! :user "(quine completion (eval (do )))")
+    (comm/start-box :user (fn [raw] raw)
+                     "(quine completion (eval (do )))")
     (Thread/sleep 50)
     ;; Start reader with 3 blank lines — only 1 CAS should succeed
     (#'user/start-stdin-reader! (mock-reader "\n\n\n"))
@@ -196,9 +194,8 @@
     (let [h-agent :unreg-agent
           agent-eval-fn (fn [raw]
                           (comm/ask-builtin :user "hello"))]
-      (comm/register! h-agent agent-eval-fn)
-      (reset! (:inbox (get @comm/registry h-agent)) agent-eval-fn)
+      (comm/register! h-agent)
       (let [pa (promise)]
         (deliver pa "(quine completion (eval (do )))")
         (is (thrown? Exception
-              (comm/box h-agent h-agent pa)))))))
+              (comm/box h-agent pa (comm/make-awake-fn agent-eval-fn))))))))

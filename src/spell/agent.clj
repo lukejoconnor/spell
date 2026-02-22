@@ -24,6 +24,7 @@
             [spell.comm :as comm]
             [spell.globals :as globals]
             [spell.llm :as llm]
+            [spell.provider :as provider]
             [spell.stdlib :as stdlib]
             [spell.io :as io]))
 
@@ -240,7 +241,7 @@
                            m))
                        parent
                        [:name :doc :system :model :budget :recover :eval :format :max-retries :retries
-                        :thinking :reasoning-effort :verbosity :api :llms])
+                        :thinking :reasoning-effort :verbosity :api :llms :init :provider])
         ;; Merge namespaces
         merged (if (or (:namespaces parent) (:namespaces child))
                  (assoc merged :namespaces
@@ -352,10 +353,15 @@
   "Build a callable LLM function from a resolved agent spec.
    make-llm-fn: factory for eval=true agents
    model: parent model (inherited when spec omits :model)
+   parent-provider: provider instance inherited from parent (used when spec omits :provider)
    extra-namespaces: additional namespaces to merge (e.g. shared llms/ namespace)"
-  [spec make-llm-fn model extra-namespaces base-dir]
+  [spec make-llm-fn model parent-provider extra-namespaces base-dir]
   (let [eval? (if (some? (:eval spec)) (:eval spec) true)
         spec-model (or (:model spec) model)
+        ;; Resolve spec's own :provider or inherit from parent
+        spec-provider (if (contains? spec :provider)
+                        (provider/resolve-provider (:provider spec) base-dir)
+                        parent-provider)
         system (resolve-system-prompt (:system spec) base-dir)
         ;; Resolve spec's own namespaces if present
         spec-namespaces (when (and eval? (:namespaces spec))
@@ -364,18 +370,20 @@
         all-namespaces (merge extra-namespaces spec-namespaces)
         ;; Build the LLM function
         base-llm (if eval?
-                   (make-llm-fn (cond-> {}
-                                  (seq all-namespaces) (assoc :namespaces all-namespaces)
-                                  spec-model (assoc :model spec-model)
-                                  system (assoc :system system)
-                                  (some? (:recover spec)) (assoc :recover (:recover spec))
-                                  (:format spec) (assoc :format (:format spec))
-                                  (some? (:thinking spec)) (assoc :thinking (:thinking spec))
-                                  (:reasoning-effort spec) (assoc :reasoning-effort (:reasoning-effort spec))
-                                  (:verbosity spec) (assoc :verbosity (:verbosity spec))))
+                   (:llm (make-llm-fn (cond-> {}
+                                        (seq all-namespaces) (assoc :namespaces all-namespaces)
+                                        spec-model (assoc :model spec-model)
+                                        system (assoc :system system)
+                                        spec-provider (assoc :provider spec-provider)
+                                        (some? (:recover spec)) (assoc :recover (:recover spec))
+                                        (:format spec) (assoc :format (:format spec))
+                                        (some? (:thinking spec)) (assoc :thinking (:thinking spec))
+                                        (:reasoning-effort spec) (assoc :reasoning-effort (:reasoning-effort spec))
+                                        (:verbosity spec) (assoc :verbosity (:verbosity spec)))))
                    (llm/make-leaf-llm (cond-> {}
                                         system (assoc :system system)
-                                        spec-model (assoc :model spec-model))))]
+                                        spec-model (assoc :model spec-model)
+                                        spec-provider (assoc :provider spec-provider))))]
     ;; Wrap with format validation if specified
     (if (:format spec)
       (llm/wrap-with-format base-llm {:format (:format spec)
@@ -387,7 +395,7 @@
   "Resolve :llms map into an effect namespace.
    Uses atom-based lazy init for circular references (A can call B, B can call A).
    Returns namespace map with :docs and callable functions, or nil if no llms."
-  [llms-map make-llm-fn model base-dir]
+  [llms-map make-llm-fn model parent-provider base-dir]
   (when (seq llms-map)
     ;; Phase 1: create atoms and proxy namespace
     (let [fn-atoms (into {} (map (fn [[k _]] [k (atom nil)]) llms-map))
@@ -404,7 +412,7 @@
       ;; Phase 2: resolve each spec and fill atoms
       (doseq [[k v] llms-map]
         (let [spec (resolve-llm-spec v base-dir)
-              llm-fn (build-llm-from-spec spec make-llm-fn model {'llms llms-ns} base-dir)]
+              llm-fn (build-llm-from-spec spec make-llm-fn model parent-provider {'llms llms-ns} base-dir)]
           (reset! (get fn-atoms k) llm-fn)))
       llms-ns)))
 
@@ -451,7 +459,7 @@
 
      ;; Create the llm function
      (if make-llm-fn
-       (make-llm-fn config)
+       (:llm (make-llm-fn config))
        ;; Return config if no make-llm-fn provided (for testing)
        {:agent-def agent-def
         :config config
@@ -481,7 +489,11 @@
         agent-def (resolve-inheritance raw-def base-dir)
 
         {:keys [name doc system model budget recover namespaces eval format max-retries retries
-                thinking reasoning-effort verbosity api]} agent-def
+                thinking reasoning-effort verbosity api init provider]} agent-def
+
+        ;; Resolve :provider if present
+        resolved-provider (when provider
+                            (provider/resolve-provider provider base-dir))
 
         ;; Normalize :llms — use ::not-set sentinel to distinguish absent from nil
         raw-llms (get agent-def :llms ::not-set)
@@ -492,8 +504,8 @@
         resolve-fn (fn [make-llm-fn]
                      (resolve-namespaces namespaces base-dir make-llm-fn))
         resolve-llms-fn' (when (seq llms)
-                           (fn [make-llm-fn parent-model]
-                             (resolve-llms llms make-llm-fn parent-model base-dir)))]
+                           (fn [make-llm-fn parent-model parent-provider]
+                             (resolve-llms llms make-llm-fn parent-model parent-provider base-dir)))]
 
     {:name name
      :doc doc
@@ -509,6 +521,8 @@
      :reasoning-effort reasoning-effort  ; OpenAI reasoning effort ("low", "medium", "high")
      :verbosity verbosity               ; OpenAI verbosity ("low", "auto")
      :api api                           ; :responses or :chat (default: auto-detect)
+     :init (resolve-system-prompt init base-dir) ; preamble expressions (string or {:file path})
+     :provider resolved-provider        ; resolved provider instance (or nil)
      :resolve-namespaces-fn resolve-fn
      :resolve-llms-fn resolve-llms-fn'}))
 
@@ -535,3 +549,44 @@
      :format format
      :max-retries max-retries
      :resolve-namespaces-fn resolve-fn}))
+
+(defn make-agent-llm
+  "Create an llm+run map from an agent config.
+   Returns {:llm fn, :run fn} for eval agents, {:llm fn} for leaf agents.
+
+   Supports :eval and :format options:
+   - :eval true (default): Spell evaluation with namespaces
+   - :eval false: plain text LLM (no Spell parsing/eval)
+   - :format: optional format spec for output validation"
+  [agent-config]
+  (let [{:keys [system model budget recover resolve-namespaces-fn resolve-llms-fn eval format max-retries
+                prefill? thinking reasoning-effort verbosity provider]} agent-config
+        eval? (if (nil? eval) true eval)
+        namespaces (when (and eval? resolve-namespaces-fn)
+                     (resolve-namespaces-fn llm/make-llm))
+        llms-ns (when (and eval? resolve-llms-fn)
+                  (resolve-llms-fn llm/make-llm model provider))
+        all-namespaces (cond-> (or namespaces {})
+                         llms-ns (assoc 'llms llms-ns))
+        result (if eval?
+                 (let [config (cond-> {}
+                                (seq all-namespaces) (assoc :namespaces all-namespaces)
+                                model (assoc :model model)
+                                system (assoc :system system)
+                                provider (assoc :provider provider)
+                                (some? recover) (assoc :recover recover)
+                                format (assoc :format format)
+                                (some? prefill?) (assoc :prefill? prefill?)
+                                thinking (assoc :thinking thinking)
+                                reasoning-effort (assoc :reasoning-effort reasoning-effort)
+                                verbosity (assoc :verbosity verbosity))]
+                   (llm/make-llm config))
+                 {:llm (llm/make-leaf-llm (cond-> {}
+                                            system (assoc :system system)
+                                            model (assoc :model model)
+                                            provider (assoc :provider provider)))})]
+    (if format
+      (update result :llm llm/wrap-with-format {:format format
+                                                 :eval? eval?
+                                                 :max-retries (or max-retries 3)})
+      result)))

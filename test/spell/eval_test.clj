@@ -3,7 +3,7 @@
             [spell.eval :as eval :refer [spell-eval run-spell]]
             [spell.macros :as macros]
             [spell.stdlib :as stdlib]
-            [spell.core :as core :refer [effect-builtins]]))
+            [spell.core :as core]))
 
 ;; =============================================================================
 ;; Test helpers - include stdlib functions directly for testing
@@ -24,9 +24,9 @@
          (extract-ns-fns stdlib/strings)))
 
 (defmacro with-effects
-  "Run body with effect-builtins merged into *builtins* (simulates eval's second pass)."
+  "Run body with effect namespaces merged into *builtins* (simulates eval's second pass)."
   [& body]
-  `(binding [eval/*builtins* (merge eval/*builtins* effect-builtins)]
+  `(binding [eval/*builtins* (merge eval/*builtins* core/all-namespaces)]
      ~@body))
 
 (defn eval-ok
@@ -946,7 +946,7 @@
   (testing "two futures run concurrently (not sequentially)"
     ;; Each future sleeps 100ms. If sequential, total >= 200ms; if concurrent, ~100ms.
     (let [sleep-fn (fn [ms] (Thread/sleep (long ms)) ms)
-          builtins (merge eval/core-builtins effect-builtins {'sleep sleep-fn})
+          builtins (merge eval/core-builtins core/all-namespaces {'sleep sleep-fn})
           start (System/currentTimeMillis)
           result (binding [eval/*builtins* builtins]
                    (first (eval-ok
@@ -982,7 +982,7 @@
 
 (deftest future-dynamic-bindings
   (testing "future conveys *builtins* via bound-fn"
-    (let [custom-builtins (merge eval/core-builtins effect-builtins
+    (let [custom-builtins (merge eval/core-builtins core/all-namespaces
                                  {'my-tool (fn [] "tool-result")})]
       (binding [eval/*builtins* custom-builtins]
         (is (= "tool-result"
@@ -1028,7 +1028,7 @@
 (deftest pmap-concurrency
   (testing "pmap runs items concurrently"
     (let [sleep-fn (fn [ms] (Thread/sleep (long ms)) ms)
-          builtins (merge eval/core-builtins effect-builtins {'sleep sleep-fn})
+          builtins (merge eval/core-builtins core/all-namespaces {'sleep sleep-fn})
           start (System/currentTimeMillis)
           result (binding [eval/*builtins* builtins]
                    (first (eval-ok
@@ -2628,7 +2628,12 @@
       (is (eval/err? result))))
 
   (testing "successful eval returns value"
-    (let [result (spell-eval '(eval '(+ 1 2)) {})]
+    (let [simple-eval (fn [expr]
+                        (let [r (spell-eval expr {})]
+                          (if (eval/ok? r) (:ok r)
+                            (throw (ex-info (:err r) {:result r})))))
+          result (binding [eval/*builtins* (assoc eval/*builtins* 'eval simple-eval)]
+                   (spell-eval '(eval '(+ 1 2)) {}))]
       (is (eval/ok? result))
       (is (= 3 (:ok result))))))
 

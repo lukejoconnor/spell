@@ -20,3 +20,20 @@ benchmarking/
 
 # Benchmark data (exercism clone, results)
 data/
+results/
+
+# Claude Code worktrees
+.claude/worktrees/
+
+# Scratch/temp files
+.__tmp_*
+temp.txt
+*.bak
+*.bak2
+
+# Python
+__pycache__/
+*.pyc
+
+# Old/scratch files
+old/

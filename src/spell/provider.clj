@@ -7,6 +7,7 @@
    - ollama-provider: Calls local Ollama API
    - dummy-provider: Returns canned responses for testing"
   (:require [clojure.data.json :as json]
+            [clojure.edn :as edn]
             [clojure.string :as str])
   (:import [java.net URI]
            [java.net.http HttpClient HttpRequest HttpRequest$BodyPublishers
@@ -46,7 +47,7 @@
    Default [0 10] = instant retry, then retry after 10s. nil or [] = no retries."
   [0 10])
 
-(def ^:private model-costs
+(def default-costs
   "Cost per million tokens: {model-prefix [input-cost output-cost]}"
   {"claude-3-5-haiku"  [0.80 4.00]
    "claude-haiku-4-5"  [1.00 5.00]
@@ -82,20 +83,21 @@
    "moonshot-v1-128k"  [2.00 5.00]})
 
 (defn- lookup-cost
-  "Find cost for a model ID by prefix matching."
-  [model-id]
+  "Find cost for a model ID by prefix matching in a cost table."
+  [model-id cost-table]
   (some (fn [[prefix costs]]
           (when (.startsWith ^String model-id prefix) costs))
-        model-costs))
+        cost-table))
 
 (defn current-cost
   "Compute total cost in dollars from accumulated usage data.
    Returns nil if no models have known pricing.
    Accounts for cache pricing: cache writes 1.25x, cache reads 0.1x normal input."
   [usage-atom]
-  (let [by-model (:by-model @usage-atom)
+  (let [{:keys [by-model cost-table]} @usage-atom
+        effective-costs (or cost-table default-costs)
         costs (keep (fn [[model stats]]
-                      (when-let [[in-cost out-cost] (lookup-cost model)]
+                      (when-let [[in-cost out-cost] (lookup-cost model effective-costs)]
                         (let [base-input (* (:input_tokens stats 0) (/ in-cost 1000000.0))
                               cache-write (* (:cache_creation_input_tokens stats 0) (/ in-cost 1000000.0) 1.25)
                               cache-read (* (:cache_read_input_tokens stats 0) (/ in-cost 1000000.0) 0.1)
@@ -107,26 +109,30 @@
 
 (defn track-usage!
   "Add usage data to the *usage* atom if bound.
+   Optional cost-table merges into the atom for current-cost to use.
    Throws ex-info with {:type :budget-exceeded} if *budget* is set and cumulative cost exceeds it."
-  [model usage]
-  (when (and *usage* usage)
-    (swap! *usage* update-in [:by-model model]
-           (fn [existing]
-             (cond-> {:input_tokens (+ (:input_tokens existing 0) (:input_tokens usage 0))
-                      :output_tokens (+ (:output_tokens existing 0) (:output_tokens usage 0))
-                      :cache_creation_input_tokens (+ (:cache_creation_input_tokens existing 0)
-                                                      (:cache_creation_input_tokens usage 0))
-                      :cache_read_input_tokens (+ (:cache_read_input_tokens existing 0)
-                                                  (:cache_read_input_tokens usage 0))
-                      :calls (inc (:calls existing 0))}
-               (:reasoning_tokens usage)
-               (assoc :reasoning_tokens (+ (:reasoning_tokens existing 0)
-                                           (:reasoning_tokens usage 0))))))
-    (when *budget*
-      (when-let [cost (current-cost *usage*)]
-        (when (> cost *budget*)
-          (throw (ex-info (format "Budget exceeded: $%.4f spent (limit $%.4f)" cost *budget*)
-                          {:type :budget-exceeded :cost cost :budget *budget*})))))))
+  ([model usage] (track-usage! model usage nil))
+  ([model usage cost-table]
+   (when (and *usage* usage)
+     (swap! *usage* (fn [u]
+                      (cond-> (update-in u [:by-model model]
+                                (fn [existing]
+                                  (cond-> {:input_tokens (+ (:input_tokens existing 0) (:input_tokens usage 0))
+                                           :output_tokens (+ (:output_tokens existing 0) (:output_tokens usage 0))
+                                           :cache_creation_input_tokens (+ (:cache_creation_input_tokens existing 0)
+                                                                           (:cache_creation_input_tokens usage 0))
+                                           :cache_read_input_tokens (+ (:cache_read_input_tokens existing 0)
+                                                                       (:cache_read_input_tokens usage 0))
+                                           :calls (inc (:calls existing 0))}
+                                    (:reasoning_tokens usage)
+                                    (assoc :reasoning_tokens (+ (:reasoning_tokens existing 0)
+                                                                (:reasoning_tokens usage 0))))))
+                        cost-table (update :cost-table merge cost-table))))
+     (when *budget*
+       (when-let [cost (current-cost *usage*)]
+         (when (> cost *budget*)
+           (throw (ex-info (format "Budget exceeded: $%.4f spent (limit $%.4f)" cost *budget*)
+                           {:type :budget-exceeded :cost cost :budget *budget*}))))))))
 
 (defn usage-summary
   "Compute a summary from accumulated usage data.
@@ -135,10 +141,11 @@
             :total {:input_tokens N :output_tokens N :calls N :cost F
                     :cache_creation_input_tokens N :cache_read_input_tokens N}}"
   [usage-atom]
-  (let [by-model (:by-model @usage-atom)
+  (let [{:keys [by-model cost-table]} @usage-atom
+        effective-costs (or cost-table default-costs)
         with-costs (into {}
                      (map (fn [[model stats]]
-                            (let [[in-cost out-cost] (lookup-cost model)
+                            (let [[in-cost out-cost] (lookup-cost model effective-costs)
                                   cost (when (and in-cost out-cost)
                                          (let [base-input (* (:input_tokens stats 0) (/ in-cost 1000000.0))
                                                cache-write (* (:cache_creation_input_tokens stats 0) (/ in-cost 1000000.0) 1.25)
@@ -270,7 +277,7 @@
               (catch Exception _ nil))))))
     {:text (.toString text) :usage @usage}))
 
-(defrecord AnthropicProvider [api-key model max-tokens http-client]
+(defrecord AnthropicProvider [api-key model max-tokens http-client costs]
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt opts]
@@ -288,7 +295,7 @@
         (let [{:keys [text usage]} (if stream?
                                      (parse-anthropic-stream (.body response))
                                      (parse-anthropic-response (.body response)))]
-          (track-usage! effective-model usage)
+          (track-usage! effective-model usage costs)
           text)
         (throw (ex-info "Anthropic API request failed"
                         {:status status :body (.body response)})))))
@@ -302,15 +309,16 @@
    Options:
    - :api-key - API key (default: ANTHROPIC_API_KEY env var)
    - :model - Model name (default: claude-sonnet-4-20250514)
-   - :max-tokens - Max tokens per response (default: 16384)"
+   - :max-tokens - Max tokens per response (default: 16384)
+   - :costs - Cost table {model-prefix [input-per-M output-per-M]}"
   ([] (anthropic-provider {}))
-  ([{:keys [api-key model max-tokens]
+  ([{:keys [api-key model max-tokens costs]
      :or {model "claude-sonnet-4-5-20250929"}}]
    (let [key (or api-key (System/getenv "ANTHROPIC_API_KEY"))]
      (when-not key
        (throw (ex-info "No API key provided. Set ANTHROPIC_API_KEY or pass :api-key"
                        {:env "ANTHROPIC_API_KEY"})))
-     (->AnthropicProvider key model max-tokens (make-http-client)))))
+     (->AnthropicProvider key model max-tokens (make-http-client) costs))))
 
 ;; ---------------------------------------------------------------------------
 ;; Ollama Provider
@@ -339,7 +347,7 @@
        :usage {:input_tokens (:prompt_eval_count parsed 0)
                :output_tokens (:eval_count parsed 0)}})))
 
-(defrecord OllamaProvider [base-url model http-client]
+(defrecord OllamaProvider [base-url model http-client costs]
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt opts]
@@ -349,7 +357,7 @@
           status (.statusCode response)]
       (if (<= 200 status 299)
         (let [{:keys [text usage]} (parse-ollama-response (.body response))]
-          (track-usage! effective-model usage)
+          (track-usage! effective-model usage costs)
           text)
         (throw (ex-info "Ollama API request failed"
                         {:status status :body (.body response)})))))
@@ -360,16 +368,17 @@
 
    Options:
    - :base-url - Ollama API URL (default: OLLAMA_HOST env var or http://localhost:11434)
-   - :model - Model name (default: llama3.2)"
+   - :model - Model name (default: llama3.2)
+   - :costs - Cost table {model-prefix [input-per-M output-per-M]}"
   ([] (ollama-provider {}))
-  ([{:keys [base-url model]
+  ([{:keys [base-url model costs]
      :or {model "llama3.2"}}]
    (let [url (or base-url
                  (System/getenv "OLLAMA_HOST")
                  "http://localhost:11434")
          ;; Strip trailing slash if present
          url (str/replace url #"/$" "")]
-     (->OllamaProvider url model (make-http-client)))))
+     (->OllamaProvider url model (make-http-client) costs))))
 
 ;; ---------------------------------------------------------------------------
 ;; OpenAI Provider
@@ -436,7 +445,7 @@
                          :output_tokens (:completion_tokens usage 0)}
                   reasoning-tokens (assoc :reasoning_tokens reasoning-tokens))}))))
 
-(defrecord OpenAIProvider [api-key base-url model max-tokens http-client use-responses-api]
+(defrecord OpenAIProvider [api-key base-url model max-tokens http-client use-responses-api costs]
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt opts]
@@ -455,7 +464,7 @@
         (let [{:keys [text usage]} (if responses?
                                      (parse-openai-responses-response (.body response))
                                      (parse-openai-response (.body response)))]
-          (track-usage! effective-model usage)
+          (track-usage! effective-model usage costs)
           text)
         (throw (ex-info "OpenAI API request failed"
                         {:status status :body (.body response)})))))
@@ -469,9 +478,10 @@
    - :base-url             - API base URL (default: https://api.openai.com/v1)
    - :model                - Model name (default: gpt-4o)
    - :max-tokens           - Max tokens per response (default: 16384)
-   - :use-responses-api    - Force Responses API instead of Chat Completions (default: false)"
+   - :use-responses-api    - Force Responses API instead of Chat Completions (default: false)
+   - :costs                - Cost table {model-prefix [input-per-M output-per-M]}"
   ([] (openai-provider {}))
-  ([{:keys [api-key base-url model max-tokens use-responses-api]
+  ([{:keys [api-key base-url model max-tokens use-responses-api costs]
      :or {model "gpt-4o"
           base-url "https://api.openai.com/v1"}}]
    (let [key (or api-key (System/getenv "OPENAI_API_KEY"))
@@ -479,7 +489,7 @@
      (when-not key
        (throw (ex-info "No API key provided. Set OPENAI_API_KEY or pass :api-key"
                        {:env "OPENAI_API_KEY"})))
-     (->OpenAIProvider key url model max-tokens (make-http-client) use-responses-api))))
+     (->OpenAIProvider key url model max-tokens (make-http-client) use-responses-api costs))))
 
 ;; ---------------------------------------------------------------------------
 ;; Kimi Provider (Moonshot AI)
@@ -501,7 +511,7 @@
                     (.build))]
     request))
 
-(defrecord KimiProvider [api-key base-url model max-tokens http-client]
+(defrecord KimiProvider [api-key base-url model max-tokens http-client costs]
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt opts]
@@ -512,7 +522,7 @@
           status (.statusCode response)]
       (if (<= 200 status 299)
         (let [{:keys [text usage]} (parse-openai-response (.body response))]
-          (track-usage! effective-model usage)
+          (track-usage! effective-model usage costs)
           text)
         (throw (ex-info "Kimi API request failed"
                         {:status status :body (.body response)})))))
@@ -525,9 +535,10 @@
    - :api-key    - API key (default: MOONSHOT_API_KEY env var)
    - :base-url   - API base URL (default: https://api.moonshot.ai/v1)
    - :model      - Model name (default: kimi-k2.5)
-   - :max-tokens - Max tokens per response"
+   - :max-tokens - Max tokens per response
+   - :costs      - Cost table {model-prefix [input-per-M output-per-M]}"
   ([] (kimi-provider {}))
-  ([{:keys [api-key base-url model max-tokens]
+  ([{:keys [api-key base-url model max-tokens costs]
      :or {model "kimi-k2.5"
           base-url "https://api.moonshot.ai/v1"}}]
    (let [key (or api-key (System/getenv "MOONSHOT_API_KEY"))
@@ -535,7 +546,7 @@
      (when-not key
        (throw (ex-info "No API key provided. Set MOONSHOT_API_KEY or pass :api-key"
                        {:env "MOONSHOT_API_KEY"})))
-     (->KimiProvider key url model max-tokens (make-http-client)))))
+     (->KimiProvider key url model max-tokens (make-http-client) costs))))
 
 ;; ---------------------------------------------------------------------------
 ;; Dummy Provider (for testing)
@@ -611,26 +622,7 @@
   []
   (->UserProvider))
 
-;; ---------------------------------------------------------------------------
-;; Dynamic provider binding
-;; ---------------------------------------------------------------------------
-
-(def ^:dynamic *provider*
-  "Current LLM provider. Bind with `with-provider` or set with `set-provider!`."
-  nil)
-
-(defn set-provider!
-  "Set the global default provider."
-  [provider]
-  (alter-var-root #'*provider* (constantly provider)))
-
-(defmacro with-provider
-  "Execute body with a specific provider bound."
-  [provider & body]
-  `(binding [*provider* ~provider]
-     ~@body))
-
-(defn- strip-code-fences
+(defn strip-code-fences
   "Strip markdown code fences from LLM responses.
    Handles ```lang\\n...\\n``` wrapping that some models produce."
   [s]
@@ -641,7 +633,7 @@
           (str/replace #"\r?\n?```\s*$" ""))
       s)))
 
-(defn- retryable?
+(defn retryable?
   "Returns true if the exception looks like a transient API failure worth retrying.
    Rate limits (429), server errors (5xx), and network errors are retryable."
   [ex]
@@ -653,25 +645,75 @@
         (instance? java.net.http.HttpConnectTimeoutException ex)
         (instance? java.net.http.HttpTimeoutException ex))))
 
-(defn llm-call
-  "Call the current provider with prompt. Uses *provider* or throws if unset.
-   opts may include :system for system prompt.
-   Retries transient failures according to *retries*."
-  ([prompt] (llm-call prompt {}))
-  ([prompt opts]
-   (if *provider*
-     (loop [retries-left (seq *retries*)]
-       (let [result (try
-                      {:ok (strip-code-fences (call-llm *provider* prompt opts))}
-                      (catch Exception e
-                        (if (and retries-left (retryable? e))
-                          {:retry e :sleep (first retries-left) :rest (next retries-left)}
-                          (throw e))))]
-         (if (:ok result)
-           (:ok result)
-           (do
-             (when (pos? (:sleep result))
-               (Thread/sleep (* 1000 (long (:sleep result)))))
-             (recur (:rest result))))))
-     (throw (ex-info "No LLM provider set. Use set-provider! or with-provider."
-                     {})))))
+(defn call-with-retries
+  "Call f, retrying on transient failures according to retries-seq.
+   retries-seq is a sequence of sleep durations in seconds."
+  [f retries-seq]
+  (loop [retries-left (seq retries-seq)]
+    (let [result (try
+                   {:ok (f)}
+                   (catch Exception e
+                     (if (and retries-left (retryable? e))
+                       {:retry e :sleep (first retries-left) :rest (next retries-left)}
+                       (throw e))))]
+      (if (:ok result)
+        (:ok result)
+        (do
+          (when (pos? (:sleep result))
+            (Thread/sleep (* 1000 (long (:sleep result)))))
+          (recur (:rest result)))))))
+
+;; ---------------------------------------------------------------------------
+;; Provider loading from .provider.edn files
+;; ---------------------------------------------------------------------------
+
+(defn load-provider
+  "Load provider from a .provider.edn file path."
+  [path]
+  (let [{:keys [type api-key-env base-url max-tokens costs use-responses-api]}
+        (edn/read-string (slurp path))
+        api-key (when api-key-env (System/getenv api-key-env))
+        opts (cond-> {:costs (or costs {})}
+               api-key (assoc :api-key api-key)
+               base-url (assoc :base-url base-url)
+               max-tokens (assoc :max-tokens max-tokens)
+               use-responses-api (assoc :use-responses-api true))]
+    (case type
+      :anthropic (anthropic-provider opts)
+      :openai    (openai-provider opts)
+      :ollama    (ollama-provider opts)
+      :kimi      (kimi-provider opts)
+      (throw (ex-info (str "Unknown provider type: " type) {:type type})))))
+
+(defn- load-provider-from-map
+  "Create a provider from an inline config map (same keys as .provider.edn)."
+  [{:keys [type api-key-env base-url max-tokens costs use-responses-api] :as spec}]
+  (let [api-key (when api-key-env (System/getenv api-key-env))
+        opts (cond-> {:costs (or costs {})}
+               api-key (assoc :api-key api-key)
+               base-url (assoc :base-url base-url)
+               max-tokens (assoc :max-tokens max-tokens)
+               use-responses-api (assoc :use-responses-api true))]
+    (case type
+      :anthropic (anthropic-provider opts)
+      :openai    (openai-provider opts)
+      :ollama    (ollama-provider opts)
+      :kimi      (kimi-provider opts)
+      (throw (ex-info (str "Unknown provider type: " type) {:type type :spec spec})))))
+
+(defn- resolve-path
+  "Resolve a relative path against a base directory."
+  [path base-dir]
+  (if (or (nil? base-dir) (str/starts-with? path "/"))
+    path
+    (str base-dir "/" path)))
+
+(defn resolve-provider
+  "Resolve provider from path string, inline map, or existing instance."
+  [spec base-dir]
+  (cond
+    (satisfies? LLMProvider spec) spec
+    (string? spec) (load-provider (resolve-path spec base-dir))
+    (map? spec) (load-provider-from-map spec)
+    :else (throw (ex-info "Invalid provider spec" {:spec spec}))))
+

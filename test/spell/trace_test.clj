@@ -5,7 +5,8 @@
             [spell.trace :as trace]
             [spell.core :as spell]
             [spell.eval :as eval]
-            [spell.provider :as provider]))
+            [spell.provider :as provider]
+            [spell.test-helpers :as th]))
 
 ;; =============================================================================
 ;; Unit tests
@@ -167,9 +168,8 @@
 (deftest integration-single-call-test
   (testing "single llm call creates one traced node"
     (binding [trace/*trace* (trace/new-trace)]
-      (provider/with-provider
-        (provider/dummy-provider {:response "42)"})
-        (let [result (spell/llm "(do ")]
+      (let [{:keys [llm]} (th/make-test-llm {:response "42)"})]
+        (let [result (llm "(do ")]
           (is (= 42 result))
           (let [{:keys [nodes root]} @trace/*trace*]
             (is (= 1 (count nodes)))
@@ -184,16 +184,15 @@
 (deftest integration-nested-calls-test
   (testing "nested llm calls produce correct trace tree"
     (let [call-count (atom 0)
-          responses ["'(cat \"hello \" (llm \"(do \"))"
+          responses ["'(cat \"hello \" (llm-self \"(do \"))"
                      "\"world\")"]]
       (binding [trace/*trace* (trace/new-trace)]
-        (provider/with-provider
-          (provider/dummy-provider
-            {:response-fn (fn [_]
-                            (let [r (nth responses @call-count)]
-                              (swap! call-count inc)
-                              r))})
-          (let [result (spell/llm "(eval (do ")]
+        (let [{:keys [llm]} (th/make-test-llm
+                              {:response-fn (fn [_]
+                                              (let [r (nth responses @call-count)]
+                                                (swap! call-count inc)
+                                                r))})]
+          (let [result (llm "(eval (do ")]
             (is (= "hello world" result))
             (let [{:keys [nodes root]} @trace/*trace*]
               ;; Two nodes: root + child
@@ -215,9 +214,8 @@
 (deftest integration-error-recorded-test
   (testing "eval error is captured in trace"
     (binding [trace/*trace* (trace/new-trace)]
-      (provider/with-provider
-        (provider/dummy-provider {:response "undefined-symbol)"})
-        (is (thrown? Exception (spell/llm "(do ")))
+      (let [{:keys [llm]} (th/make-test-llm {:response "undefined-symbol)"} :recover false)]
+        (is (thrown? Exception (llm "(do ")))
         (let [node (first (:nodes @trace/*trace*))]
           (is (some? (:error node)))
           (is (not (contains? node :value))))))))
@@ -225,28 +223,26 @@
 (deftest integration-tracing-off-test
   (testing "no trace overhead when *trace* is nil"
     (binding [trace/*trace* nil]
-      (provider/with-provider
-        (provider/dummy-provider {:response "42)"})
-        (is (= 42 (spell/llm "(do ")))))))
+      (let [{:keys [llm]} (th/make-test-llm {:response "42)"})]
+        (is (= 42 (llm "(do ")))))))
 
 (deftest integration-three-deep-test
   (testing "three levels of nesting produce correct parent chain"
     (let [call-count (atom 0)
-          responses ["'(llm \"(eval (do \")"  ; depth 0 → calls depth 1
-                     "'(llm \"(eval (do \")"  ; depth 1 → calls depth 2
-                     "99)))"]]                ; depth 2 → returns 99
+          responses ["'(llm-self \"(eval (do \")"
+                     "'(llm-self \"(eval (do \")"
+                     "99)))"]]
       (binding [trace/*trace* (trace/new-trace)]
-        (provider/with-provider
-          (provider/dummy-provider
-            {:response-fn (fn [_]
-                            (let [r (nth responses @call-count)]
-                              (swap! call-count inc)
-                              r))})
-          (let [result (spell/llm "(eval (do ")]
+        (let [{:keys [llm]} (th/make-test-llm
+                              {:response-fn (fn [_]
+                                              (let [r (nth responses @call-count)]
+                                                (swap! call-count inc)
+                                                r))})]
+          (let [result (llm "(eval (do ")]
             (is (= 99 result))
             (let [nodes (:nodes @trace/*trace*)]
               (is (= 3 (count nodes)))
-              ;; Parent chain: 0 → 1 → 2
+              ;; Parent chain: 0 -> 1 -> 2
               (is (nil? (:parent (nth nodes 0))))
               (is (= 0 (:parent (nth nodes 1))))
               (is (= 1 (:parent (nth nodes 2))))
