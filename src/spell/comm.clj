@@ -16,7 +16,7 @@
 ;; =============================================================================
 
 (def registry
-  "Global registry: handle -> {:inbox (atom nil), :signal (atom (promise)),
+  "Global registry: handle -> {:inbox (atom identity), :signal (atom (promise)),
                                 :has-box (atom false),
                                 :completed (atom (promise)),
                                 :parent-handle kw-or-nil}"
@@ -31,7 +31,7 @@
    (when (contains? @registry handle)
      (throw (ex-info "Handle already registered" {:handle handle})))
    (swap! registry assoc handle
-          {:inbox             (atom nil)
+          {:inbox             (atom identity)
            :signal            (atom (promise))
            :has-box           (atom false)
            :parent-handle     parent-handle
@@ -83,6 +83,19 @@
       (reset! signal (promise))
       (box handle raw (make-awake-fn eval-fn)))))
 
+(defn- reset-signal-for-orphan!
+  "Reset signal to a fresh promise before starting an orphan box.
+   If the inbox has unconsumed messages, re-deliver so the orphan wakes.
+   Without this, a stale signal (delivered during active execution but
+   consumed by a concurrent box) causes the orphan to wake spuriously
+   and replay the entire program — creating a zombie continuation."
+  [handle]
+  (let [{:keys [signal inbox]} (get @registry handle)
+        new-signal (promise)]
+    (reset! signal new-signal)
+    (when (not= @inbox identity)
+      (deliver new-signal :wake))))
+
 (defn- make-root-fn
   "Wrap an inside-fn with root lifecycle: completed delivery + orphan creation.
    After inside-fn returns (or throws), delivers completed and starts an
@@ -93,12 +106,14 @@
       (let [result (inside-fn raw)]
         (deliver @(:completed (get @registry handle)) result)
         (reset! (:completed (get @registry handle)) (promise))
+        (reset-signal-for-orphan! handle)
         (future (box handle *current-raw*
                   (make-root-fn handle eval-fn (make-asleep-fn handle eval-fn))))
         result)
       (catch Exception e
         (deliver @(:completed (get @registry handle)) nil)
         (reset! (:completed (get @registry handle)) (promise))
+        (reset-signal-for-orphan! handle)
         (future (box handle *current-raw*
                   (make-root-fn handle eval-fn (make-asleep-fn handle eval-fn))))
         (throw e)))))
@@ -140,9 +155,9 @@
       (let [raw (parse/balance-parens raw-or-ex)]
         (when-not (compare-and-set! has-box false true)
           (throw (ex-info "Box already active for handle" {:handle handle})))
-        (let [[transform _] (reset-vals! inbox nil)]
+        (let [[transform _] (reset-vals! inbox identity)]
           (reset! has-box false)
-          (let [transformed (if transform (transform raw) raw)]
+          (let [transformed (transform raw)]
             (binding [*current-handle* handle
                       *current-raw*    raw]
               (inside-fn transformed))))))))
@@ -158,7 +173,7 @@
   (let [{:keys [inbox signal]} (get @registry handle)]
     (when-not inbox
       (throw (ex-info "Handle not registered" {:handle handle})))
-    (swap! inbox (fn [cur] (if cur (comp transform-fn cur) transform-fn)))
+    (swap! inbox (fn [cur] (comp transform-fn cur)))
     (deliver @signal :wake)))
 
 (defn send-msg-fn
@@ -176,7 +191,7 @@
   [handle signal-promise msg-fn]
   (when-not (realized? signal-promise)
     (let [{:keys [inbox]} (get @registry handle)]
-      (swap! inbox (fn [cur] (if cur (comp msg-fn cur) msg-fn)))
+      (swap! inbox (fn [cur] (comp msg-fn cur)))
       (deliver signal-promise :wake))))
 
 ;; =============================================================================

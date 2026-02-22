@@ -574,7 +574,7 @@
   (testing "returns nil immediately"
     (let [dir (str test-dir "/ws-nil")]
       (.mkdirs (jio/file dir))
-      (comm/register! :ws-test-nil identity)
+      (comm/register! :ws-test-nil)
       (is (nil? (io/watch-send dir :ws-test-nil 100))))))
 
 (deftest watch-send-delivers-message
@@ -582,36 +582,31 @@
     (let [dir (str test-dir "/ws-deliver")
           received (promise)]
       (.mkdirs (jio/file dir))
-      ;; Register with an eval-fn that captures what arrives
-      (comm/register! :ws-test-deliver
-        (fn [raw] (deliver received raw) :done))
-      ;; Seed inbox with sleep-fn so box blocks until watch event
-      (reset! (:inbox (get @comm/registry :ws-test-deliver))
-              (#'comm/make-sleep-fn :ws-test-deliver))
+      ;; Use start-box to register with an eval-fn that captures what arrives
+      (comm/start-box :ws-test-deliver
+        (fn [raw] (deliver received raw) :done)
+        "(quine c (eval (do 1)))")
+      (Thread/sleep 50)
       (io/watch-send dir :ws-test-deliver 15000)
       (Thread/sleep 500)
       (spit (str dir "/trigger.txt") "hello")
-      ;; Box blocks (via sleep-fn) until watch-send fires
-      (let [p (promise)]
-        (deliver p "(quine c (eval (do 1)))")
-        (let [result (comm/box :ws-test-deliver :ws-test-deliver p)]
-          (is (= :done result))
-          (let [raw (deref received 1000 :timeout)]
-            (is (not= :timeout raw))
-            (is (string? raw))
-            (is (re-find #"watch-send" raw))))))))
+      ;; Wait for the agent to process the watch event
+      (let [raw (deref received 5000 :timeout)]
+        (is (not= :timeout raw))
+        (is (string? raw))
+        (is (re-find #"watch-send" raw))))))
 
 (deftest watch-send-timeout-no-message
   (testing "does not send on timeout"
     (let [dir (str test-dir "/ws-timeout")]
       (.mkdirs (jio/file dir))
-      (comm/register! :ws-test-timeout identity)
-      (io/watch-send dir :ws-test-timeout 200)
+      (comm/register! :ws-test-timeout)
+      (io/watch-send dir :ws-test-timeout 100)
       ;; Wait for the watcher to time out
-      (Thread/sleep 500)
-      ;; Inbox should still be nil (no message sent)
+      (Thread/sleep 200)
+      ;; Inbox should still be identity (no message sent)
       (let [inbox (:inbox (get @comm/registry :ws-test-timeout))]
-        (is (nil? @inbox))))))
+        (is (= identity @inbox))))))
 
 ;; =============================================================================
 ;; io-namespace tests

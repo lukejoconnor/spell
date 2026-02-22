@@ -624,8 +624,8 @@
           eval-fn (fn [raw] (str "evaluated:" raw))
           p (promise)]
       (comm/register! handle)
-      ;; inbox is nil (no pending sends)
-      (is (nil? @(:inbox (get @comm/registry handle))))
+      ;; inbox is identity (no pending sends)
+      (is (= identity @(:inbox (get @comm/registry handle))))
       ;; Box should pass raw through unchanged to inside-fn
       (deliver p "hello")
       (is (= "evaluated:hello" (comm/box handle p eval-fn))))))
@@ -674,8 +674,8 @@
       (comm/event-send (fn [] {:timeout true}) handle :test-event)
       ;; Wait for the future to complete
       (Thread/sleep 50)
-      ;; Inbox should still be nil (no message sent)
-      (is (nil? @(:inbox (get @comm/registry handle)))))))
+      ;; Inbox should still be identity (no message sent)
+      (is (= identity @(:inbox (get @comm/registry handle)))))))
 
 (deftest event-send-notifies-on-exception-test
   (testing "event-send sends {:error msg} when event-fn throws"
@@ -702,8 +702,8 @@
       (comm/event-send (fn [] {:abort :reason}) handle :test-event)
       ;; Wait for the future to complete
       (Thread/sleep 50)
-      ;; Inbox should still be nil (no message sent)
-      (is (nil? @(:inbox (get @comm/registry handle)))))))
+      ;; Inbox should still be identity (no message sent)
+      (is (= identity @(:inbox (get @comm/registry handle)))))))
 
 ;; =============================================================================
 ;; Completion notifier tests
@@ -797,8 +797,8 @@
         (deliver sig :wake)
         ;; Now deliver-msg-fn should be a no-op
         (comm/deliver-msg-fn handle sig (fn [raw] (str "msg:" raw)))
-        ;; Inbox should still be nil (no transform composed)
-        (is (nil? @(:inbox (get @comm/registry handle))))))))
+        ;; Inbox should still be identity (no transform composed)
+        (is (= identity @(:inbox (get @comm/registry handle))))))))
 
 ;; =============================================================================
 ;; Effect guard tests
