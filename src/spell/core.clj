@@ -4,6 +4,7 @@
    Re-exports key vars for public API."
   (:require [spell.comm :as comm]
             [spell.globals :as globals]
+            [spell.grammar :as grammar]
             [spell.llm :as llm-engine]
             [spell.eval :as eval]
             [spell.io :as io]
@@ -19,6 +20,10 @@
 ;; Re-export from spell.llm
 (def make-llm llm-engine/make-llm)
 (def make-leaf-llm llm-engine/make-leaf-llm)
+;; Re-export from spell.grammar
+(def suffix-lark-grammar grammar/suffix-lark-grammar)
+(def suffix-lark-grammar-stats grammar/suffix-lark-grammar-stats)
+(def openai-suffix-grammar-format grammar/openai-suffix-grammar-format)
 ;; Re-export from spell.stdlib
 (def describe stdlib/describe)
 

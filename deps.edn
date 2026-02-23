@@ -11,6 +11,7 @@
                                     {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
                        :main-opts ["-m" "cognitect.test-runner"
                                    "-n" "spell.parse-test"
+                                   "-n" "spell.grammar-test"
                                    "-n" "spell.stdlib-test"
                                    "-n" "spell.eval-test"
                                    "-n" "spell.llm-test"

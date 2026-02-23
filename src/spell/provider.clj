@@ -393,7 +393,8 @@
   [model]
   (some #(str/includes? model %) ["codex"]))
 
-(defn- openai-responses-request [api-key base-url model prompt system-prompt max-tokens reasoning-effort verbosity]
+(defn- openai-responses-request
+  [api-key base-url model prompt system-prompt max-tokens reasoning-effort verbosity grammar-format]
   (let [reasoning (when reasoning-effort
                     {:effort reasoning-effort})
         body (cond-> {:model model
@@ -401,7 +402,12 @@
                system-prompt (assoc :instructions system-prompt)
                max-tokens (assoc :max_output_tokens max-tokens)
                reasoning (assoc :reasoning reasoning)
-               verbosity (assoc :verbosity verbosity))
+               verbosity (assoc :verbosity verbosity)
+               grammar-format (assoc :tools [{:type "custom"
+                                              :name "spell_suffix"
+                                              :description "Spell suffix constrained by grammar"
+                                              :format grammar-format}]
+                                     :tool_choice "required"))
         request (-> (HttpRequest/newBuilder)
                     (.uri (URI/create (str base-url "/responses")))
                     (.header "Content-Type" "application/json")
@@ -415,8 +421,13 @@
     (if-let [error (:error parsed)]
       (throw (ex-info "OpenAI Responses API error" {:error error}))
       (let [usage (:usage parsed)
+            output-text (:output_text parsed "")
+            tool-input (some (fn [item]
+                               (when (= "custom_tool_call" (:type item))
+                                 (:input item)))
+                             (:output parsed))
             reasoning-tokens (get-in usage [:output_tokens_details :reasoning_tokens])]
-        {:text (:output_text parsed "")
+        {:text (if (str/blank? output-text) (or tool-input "") output-text)
          :usage (cond-> {:input_tokens (get-in parsed [:usage :input_tokens] 0)
                          :output_tokens (get-in parsed [:usage :output_tokens] 0)}
                   reasoning-tokens (assoc :reasoning_tokens reasoning-tokens))}))))
@@ -454,12 +465,13 @@
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt opts]
     (let [effective-model (or (:model opts) model)
-          responses? (or use-responses-api (responses-model? effective-model))
+          grammar-format (:grammar-format opts)
+          responses? (or use-responses-api (responses-model? effective-model) grammar-format)
           reasoning-effort (:reasoning-effort opts)
           verbosity (:verbosity opts)
           request (if responses?
                     (openai-responses-request api-key base-url effective-model prompt (:system opts)
-                                             max-tokens reasoning-effort verbosity)
+                                             max-tokens reasoning-effort verbosity grammar-format)
                     (openai-request api-key base-url effective-model prompt (:system opts) (:prefix opts)
                                    max-tokens reasoning-effort verbosity))
           response (.send http-client request (HttpResponse$BodyHandlers/ofString))
@@ -483,7 +495,13 @@
    - :model                - Model name (default: gpt-4o)
    - :max-tokens           - Max tokens per response (default: 16384)
    - :use-responses-api    - Force Responses API instead of Chat Completions (default: false)
-   - :costs                - Cost table {model-prefix [input-per-M output-per-M]}"
+   - :costs                - Cost table {model-prefix [input-per-M output-per-M]}
+
+   Call opts supported by this provider:
+   - :grammar-format       - OpenAI custom-tool grammar format map
+                             {:type \"grammar\" :syntax \"lark\" :definition \"...\"}
+                             When present, request is routed to Responses API with
+                             tool_choice \"required\" and custom_tool_call output parsing."
   ([] (openai-provider {}))
   ([{:keys [api-key base-url model max-tokens use-responses-api costs]
      :or {model "gpt-4o"

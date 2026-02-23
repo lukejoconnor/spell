@@ -242,7 +242,8 @@
                            m))
                        parent
                        [:name :doc :system :model :budget :recover :eval :format :max-retries :retries
-                        :thinking :reasoning-effort :verbosity :api :llms :init :provider])
+                        :thinking :reasoning-effort :verbosity :suffix-grammar? :grammar-max-chars
+                        :api :llms :init :provider])
         ;; Merge namespaces
         merged (if (or (:namespaces parent) (:namespaces child))
                  (assoc merged :namespaces
@@ -380,7 +381,9 @@
                                         (:format spec) (assoc :format (:format spec))
                                         (some? (:thinking spec)) (assoc :thinking (:thinking spec))
                                         (:reasoning-effort spec) (assoc :reasoning-effort (:reasoning-effort spec))
-                                        (:verbosity spec) (assoc :verbosity (:verbosity spec)))))
+                                        (:verbosity spec) (assoc :verbosity (:verbosity spec))
+                                        (some? (:suffix-grammar? spec)) (assoc :suffix-grammar? (:suffix-grammar? spec))
+                                        (:grammar-max-chars spec) (assoc :grammar-max-chars (:grammar-max-chars spec)))))
                    (llm/make-leaf-llm (cond-> {}
                                         system (assoc :system system)
                                         spec-model (assoc :model spec-model)
@@ -444,7 +447,8 @@
 
          ;; Extract fields (from merged def)
          {:keys [name doc system model budget recover namespaces eval format max-retries
-                 retries thinking reasoning-effort verbosity api init provider]} agent-def
+                 retries thinking reasoning-effort verbosity suffix-grammar? grammar-max-chars
+                 api init provider]} agent-def
          eval? (if (nil? eval) true eval)
 
          ;; Resolve system prompt
@@ -469,6 +473,8 @@
                   (some? thinking) (assoc :thinking thinking)
                   reasoning-effort (assoc :reasoning-effort reasoning-effort)
                   verbosity (assoc :verbosity verbosity)
+                  (some? suffix-grammar?) (assoc :suffix-grammar? suffix-grammar?)
+                  grammar-max-chars (assoc :grammar-max-chars grammar-max-chars)
                   (some? api) (assoc :api api)
                   (some? init) (assoc :init init))]
 
@@ -509,7 +515,8 @@
         agent-def (resolve-inheritance raw-def base-dir)
 
         {:keys [name doc system model budget recover namespaces eval format max-retries retries
-                thinking reasoning-effort verbosity api init provider]} agent-def
+                thinking reasoning-effort verbosity suffix-grammar? grammar-max-chars
+                api init provider]} agent-def
 
         ;; Resolve :provider if present
         resolved-provider (when provider
@@ -540,6 +547,8 @@
      :thinking thinking
      :reasoning-effort reasoning-effort  ; OpenAI reasoning effort ("low", "medium", "high")
      :verbosity verbosity               ; OpenAI verbosity ("low", "auto")
+     :suffix-grammar? suffix-grammar?   ; enable prefix-aware grammar constraints
+     :grammar-max-chars grammar-max-chars ; soft grammar size ceiling
      :api api                           ; :responses or :chat (default: auto-detect)
      :init (resolve-system-prompt init base-dir) ; preamble expressions (string or {:file path})
      :provider resolved-provider        ; resolved provider instance (or nil)
@@ -580,7 +589,8 @@
    - :format: optional format spec for output validation"
   [agent-config]
   (let [{:keys [system model budget recover resolve-namespaces-fn resolve-llms-fn eval format max-retries
-                prefill? thinking reasoning-effort verbosity provider]} agent-config
+                prefill? thinking reasoning-effort verbosity suffix-grammar? grammar-max-chars
+                provider]} agent-config
         eval? (if (nil? eval) true eval)
         namespaces (when (and eval? resolve-namespaces-fn)
                      (resolve-namespaces-fn llm/make-llm))
@@ -599,7 +609,9 @@
                                 (some? prefill?) (assoc :prefill? prefill?)
                                 thinking (assoc :thinking thinking)
                                 reasoning-effort (assoc :reasoning-effort reasoning-effort)
-                                verbosity (assoc :verbosity verbosity))]
+                                verbosity (assoc :verbosity verbosity)
+                                (some? suffix-grammar?) (assoc :suffix-grammar? suffix-grammar?)
+                                grammar-max-chars (assoc :grammar-max-chars grammar-max-chars))]
                    (llm/make-llm config))
                  {:llm (llm/make-leaf-llm (cond-> {}
                                             system (assoc :system system)

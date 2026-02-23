@@ -33,11 +33,14 @@
      :thinking — Anthropic adaptive thinking budget
      :reasoning-effort — OpenAI reasoning effort
      :verbosity — OpenAI verbosity
+     :suffix-grammar? — enable prefix-aware OpenAI suffix grammar constraints
+     :grammar-max-chars — max generated grammar chars before fallback
      :retries  — API retry sleep durations
      :usage    — pre-created usage atom (default: fresh atom)"
   [{:keys [prompt init agent provider user? user-reader
            verbose log-writer budget depth trace
-           prefill? thinking reasoning-effort verbosity retries usage]}]
+           prefill? thinking reasoning-effort verbosity
+           suffix-grammar? grammar-max-chars retries usage]}]
   ;; Validate inputs
   (when (and prompt init)
     (throw (ex-info "Specify exactly one of :prompt or :init, not both" {})))
@@ -54,7 +57,9 @@
                        (some? prefill?) (assoc :prefill? prefill?)
                        thinking (assoc :thinking thinking)
                        reasoning-effort (assoc :reasoning-effort reasoning-effort)
-                       verbosity (assoc :verbosity verbosity))
+                       verbosity (assoc :verbosity verbosity)
+                       suffix-grammar? (assoc :suffix-grammar? suffix-grammar?)
+                       grammar-max-chars (assoc :grammar-max-chars grammar-max-chars))
         ;; Build llm+run from agent config
         llm-map (agent/make-agent-llm agent-config)
         _ (when-not (:run llm-map)

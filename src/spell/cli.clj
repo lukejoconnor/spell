@@ -95,6 +95,10 @@
     :validate [#(contains? #{"low" "medium" "high"} %) "Must be low, medium, or high"]]
    [nil "--verbosity LEVEL" "OpenAI verbosity (low, auto)"
     :validate [#(contains? #{"low" "auto"} %) "Must be low or auto"]]
+   [nil "--suffix-grammar" "Enable prefix-aware OpenAI suffix grammar constraints"]
+   [nil "--grammar-max-chars CHARS" "Max generated grammar chars before fallback (default: 2000)"
+    :parse-fn #(Integer/parseInt %)
+    :validate [pos? "Must be positive"]]
    [nil "--responses-api" "Force OpenAI Responses API instead of Chat Completions"]
    ["-T" "--trace" "Record execution trace to traces/"]
    ["-l" "--log FILE" "Log verbose output to FILE (implies -v)"]
@@ -203,7 +207,11 @@
         ("anthropic" nil)
         (provider/anthropic-provider base-opts)))))
 
-(defn run-prompt [prompt {:keys [depth verbose log budget trace agent thinking reasoning-effort verbosity] :as opts} usage-atom]
+(defn run-prompt
+  [prompt {:keys [depth verbose log budget trace agent thinking reasoning-effort verbosity
+                  suffix-grammar grammar-max-chars]
+           :as opts}
+   usage-atom]
   (let [max-depth (cond
                     (nil? depth) nil    ; default: no depth limit
                     (zero? depth) nil   ; 0 also means unlimited
@@ -227,6 +235,8 @@
               :thinking thinking
               :reasoning-effort reasoning-effort
               :verbosity verbosity
+              :suffix-grammar? suffix-grammar
+              :grammar-max-chars grammar-max-chars
               :usage usage-atom})))
 
 (defn- format-cache-stats [stats]

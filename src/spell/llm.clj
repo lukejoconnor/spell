@@ -5,6 +5,7 @@
   (:require [clojure.string :as str]
             [spell.comm :as comm]
             [spell.eval :as eval]
+            [spell.grammar :as grammar]
             [spell.parse :as parse]
             [spell.prompt :as prompt]
             [spell.provider :as provider]
@@ -23,6 +24,14 @@
   {'strings stdlib/strings
    'math stdlib/math
    'builtins stdlib/builtins-namespace})
+
+(def ^:private max-recovery-attempts
+  "Maximum number of recovery retries before failing."
+  2)
+
+(def ^:dynamic *reader-recovery-depth*
+  "Current depth of nested reader-error recovery retries."
+  0)
 
 ;; ---------------------------------------------------------------------------
 ;; Prefix Echo Deduplication
@@ -79,9 +88,8 @@
       (eval/vlog (str indent "Wrapping in quine completion for recovery"))
       (try-quine-recovery wrapped result variant-builtins eval-builtin))
     ;; Normal path: program is already (quine completion ...)
-    (let [max-recovery-args 2
-          quine-arg-count (- (count (seq program)) 2)]
-      (if (< quine-arg-count (+ 1 max-recovery-args))
+    (let [quine-arg-count (- (count (seq program)) 2)]
+      (if (< quine-arg-count (+ 1 max-recovery-attempts))
         ;; Construct recovery quine: append new eval block with error info
         (let [error-map (cond-> {:error (recovery/clean-error-message (:err result))
                                  :expr (list 'quote (:expr result))}
@@ -111,7 +119,15 @@
   [raw parse-error variant-builtins eval-builtin]
   (let [error-msg (or (.getMessage parse-error) "Unknown reader error")
         indent    (apply str (repeat eval/*llm-depth* "  "))
+        _         (when (>= *reader-recovery-depth* max-recovery-attempts)
+                    (throw (ex-info (str "Reader error recovery limit exceeded: " max-recovery-attempts)
+                                    {:type :reader-recovery-exhausted
+                                     :attempts *reader-recovery-depth*
+                                     :limit max-recovery-attempts
+                                     :parse-error error-msg})))
         _         (eval/vlog (str indent "=== Reader Error Recovery ==="))
+        _         (eval/vlog (str indent "Recovery attempt: "
+                                  (inc *reader-recovery-depth*) "/" max-recovery-attempts))
         _         (eval/vlog (str indent "Parse error: " error-msg))
         error-map {:error (str "Reader error: " error-msg) :raw raw}
         recovery-quine (list 'quine 'completion
@@ -119,13 +135,15 @@
                            (list 'do
                              (list 'def '_error error-map)
                              (list 'quote (list 'extend 'completion)))))
-        result    (binding [eval/*llm-depth* (inc eval/*llm-depth*)
-                            eval/*raw-text*  nil
-                            eval/*builtins*  variant-builtins]
+        result    (binding [eval/*llm-depth*           (inc eval/*llm-depth*)
+                            eval/*raw-text*            nil
+                            eval/*builtins*            variant-builtins
+                            *reader-recovery-depth*    (inc *reader-recovery-depth*)]
                     (eval/spell-eval recovery-quine {'eval eval-builtin}))]
     (if (eval/ok? result)
       (:ok result)
-      (throw (ex-info (str "Reader error (unrecoverable): " error-msg)
+      (throw (ex-info (or (:err result)
+                          (str "Reader error (unrecoverable): " error-msg))
                       {:parse-error error-msg :result result})))))
 
 (defn make-inbox-fn
@@ -278,13 +296,18 @@
                          Number = budget_tokens, true = default (10000).
    - :reasoning-effort - OpenAI reasoning effort (\"low\", \"medium\", \"high\").
    - :verbosity        - OpenAI verbosity (\"low\", \"auto\").
+   - :suffix-grammar?  - Generate prefix-aware OpenAI grammar constraints per call (default: false).
+                         Adds :grammar-format to provider opts. If generated grammar exceeds
+                         :grammar-max-chars, grammar constraints are skipped for that call.
+   - :grammar-max-chars - Max grammar size before skipping constraints (default: 2000).
 
    Returns a map {:llm fn, :run fn}.
 
    The returned function is automatically available as 'llm-self in Spell code,
    providing self-recursion without needing to wire up var refs."
-  [{:keys [namespaces provider model system llm-var recover format prefill? thinking reasoning-effort verbosity]
-    :or {namespaces {} model nil recover true prefill? true}}]
+  [{:keys [namespaces provider model system llm-var recover format prefill? thinking reasoning-effort verbosity
+           suffix-grammar? grammar-max-chars]
+    :or {namespaces {} model nil recover true prefill? true suffix-grammar? false grammar-max-chars 2000}}]
   (let [;; Core namespaces are always available; everything in :namespaces is effect
         core-ns-names (set (keys core-namespaces))
         ns-builtins (into {} (map (fn [[sym ns-map]] [sym ns-map]) namespaces))
@@ -299,12 +322,19 @@
         prev-prompt-atom (atom nil)
         call-fn  (fn [prompt-str]
                    (let [prev-prompt @prev-prompt-atom
+                         grammar-format (when suffix-grammar?
+                                          (let [{:keys [definition over-limit?]}
+                                                (grammar/suffix-lark-grammar-stats prompt-str
+                                                                                   {:max-chars grammar-max-chars})]
+                                            (when-not over-limit?
+                                              {:type "grammar" :syntax "lark" :definition definition})))
                          opts (cond-> {:system sys-prompt}
                                 prefill? (assoc :prefix prompt-str)
                                 model (assoc :model model)
                                 thinking (assoc :thinking thinking)
                                 reasoning-effort (assoc :reasoning-effort reasoning-effort)
                                 verbosity (assoc :verbosity verbosity)
+                                grammar-format (assoc :grammar-format grammar-format)
                                 prev-prompt (assoc :cache-prefix prev-prompt))
                          response (provider/call-with-retries
                                     #(provider/strip-code-fences
@@ -431,4 +461,3 @@
                           {:response response :raw-text response :value response}))]
          response))
      {:spell/leaf true})))
-

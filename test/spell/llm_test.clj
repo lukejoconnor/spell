@@ -438,6 +438,34 @@
       (is (= 0 (get-in result [:usage :input_tokens])))
       (is (= 0 (get-in result [:usage :output_tokens]))))))
 
+(deftest openai-responses-parse-response-test
+  (testing "parses standard output_text response"
+    (let [response-body (json/write-str {:output_text "(def return 42))"
+                                         :usage {:input_tokens 100
+                                                 :output_tokens 30}})
+          result (#'provider/parse-openai-responses-response response-body)]
+      (is (= "(def return 42))" (:text result)))
+      (is (= 100 (get-in result [:usage :input_tokens])))
+      (is (= 30 (get-in result [:usage :output_tokens])))))
+
+  (testing "falls back to custom_tool_call input when output_text is blank"
+    (let [response-body (json/write-str {:output_text ""
+                                         :output [{:type "custom_tool_call"
+                                                   :name "spell_suffix"
+                                                   :input "(def x 1)"}]
+                                         :usage {:input_tokens 12
+                                                 :output_tokens 7}})
+          result (#'provider/parse-openai-responses-response response-body)]
+      (is (= "(def x 1)" (:text result)))
+      (is (= 12 (get-in result [:usage :input_tokens])))
+      (is (= 7 (get-in result [:usage :output_tokens])))))
+
+  (testing "throws on error response"
+    (let [response-body (json/write-str {:error {:message "invalid api key"
+                                                  :type "invalid_request_error"}})]
+      (is (thrown-with-msg? Exception #"OpenAI Responses API error"
+            (#'provider/parse-openai-responses-response response-body))))))
+
 ;; =============================================================================
 ;; CLI parse-model-spec tests
 ;; =============================================================================
@@ -606,7 +634,19 @@
       ;; The recovery prompt (second call) should mention the reader error
       (let [recovery-prompt (second @prompts)]
         (is (str/includes? recovery-prompt "Reader error"))
-        (is (str/includes? recovery-prompt "\\invalidchar"))))))
+        (is (str/includes? recovery-prompt "\\invalidchar")))))
+
+  (testing "reader error recovery depth limit stops runaway loops"
+    (let [call-count (atom 0)
+          {:keys [llm]} (th/make-test-llm
+                          {:response-fn (fn [_]
+                                          (swap! call-count inc)
+                                          "\\invalidchar)")}
+                          :namespaces {})]
+      (is (thrown-with-msg? Exception #"Reader error recovery limit exceeded"
+                            (llm "(quine completion (eval (do ")))
+      ;; Initial call + 2 recovery retries
+      (is (= 3 @call-count)))))
 
 (deftest namespace-recovery-invoke-fn-wrapping-test
   (testing "ns-recover handles 'Function call failed: Unbound symbol: X' from invoke-fn"
@@ -881,6 +921,38 @@
     (let [{:keys [llm]} (th/make-test-llm {:response "(def x 42))" :prefill? true}
                           :namespaces {})]
       (is (= 42 (llm "(do "))))))
+
+(deftest suffix-grammar-option-test
+  (testing "make-llm passes generated grammar-format when enabled"
+    (let [seen-opts (atom nil)
+          prov (reify provider/LLMProvider
+                 (supports-prefill [_] true)
+                 (call-llm [this prompt] (provider/call-llm this prompt {}))
+                 (call-llm [_ _ opts]
+                   (reset! seen-opts opts)
+                   "(def x 7))"))
+          {:keys [llm]} (llm/make-llm {:provider prov
+                                       :namespaces {}
+                                       :suffix-grammar? true})]
+      (is (= 7 (llm "(do ")))
+      (is (= "grammar" (get-in @seen-opts [:grammar-format :type])))
+      (is (= "lark" (get-in @seen-opts [:grammar-format :syntax])))
+      (is (string? (get-in @seen-opts [:grammar-format :definition])))))
+
+  (testing "skips grammar-format when generated grammar exceeds max chars"
+    (let [seen-opts (atom nil)
+          prov (reify provider/LLMProvider
+                 (supports-prefill [_] true)
+                 (call-llm [this prompt] (provider/call-llm this prompt {}))
+                 (call-llm [_ _ opts]
+                   (reset! seen-opts opts)
+                   "(def x 9))"))
+          {:keys [llm]} (llm/make-llm {:provider prov
+                                       :namespaces {}
+                                       :suffix-grammar? true
+                                       :grammar-max-chars 10})]
+      (is (= 9 (llm "(do ")))
+      (is (nil? (:grammar-format @seen-opts))))))
 
 ;; =============================================================================
 ;; Leaf-llm async via future/plet (not spawn)
