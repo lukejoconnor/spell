@@ -464,6 +464,7 @@ expression becomes inert. You get a new turn with the incoming message in scope.
 
 All agents/ calls are effect functions — quote them in the trailing expression.
 Messages arrive as def bindings: (def msg-N {:from sender :body val}).
+Reply using Spell code (e.g. string literals, quoted effect expressions), not plain English outside quotes.
 Check (globals/get :roles) to discover available agents.
 Use (describe agents :fn-name) for detailed docs on any function."
    :docs {:ask "(agents/ask target message) — send message, block for reply; (agents/ask [a b c]) pokes all, waits for all to complete"
