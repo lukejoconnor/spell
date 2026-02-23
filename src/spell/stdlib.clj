@@ -16,7 +16,8 @@
 
 (def strings
   "String manipulation and regex functions (like clojure.string)."
-  {:guide "STRINGS — Mirrors clojure.string. Regex functions take string patterns (not compiled regex).
+  {:short-docs "String manipulation and regex (mirrors clojure.string)."
+   :docs {:guide "STRINGS — Mirrors clojure.string. Regex functions take string patterns (not compiled regex).
 
   subs          — substring: (strings/subs s start) or (strings/subs s start end)
   index-of      — first index of substring, or nil
@@ -37,8 +38,7 @@
   re-matches    — full-string regex match
   re-seq        — all regex matches as vector
 
-Use (describe strings :fn-name) for any function."
-   :docs {:_ "Mirrors clojure.string — split, join, replace, trim, includes?, starts-with?, ends-with?, upper-case, lower-case, blank?, index-of, subs, re-find, re-seq, re-matches, split-lines, capitalize. Regex functions take string patterns."}
+Use (describe strings :fn-name) for any function."}
    :detail
    {:split
     "Split string by regex pattern. Pattern is a string (not a compiled regex).
@@ -161,7 +161,8 @@ Example:
 
 (def math
   "Mathematical functions (like Java's Math/)."
-  {:guide "MATH — Mirrors java.lang.Math with standard semantics.
+  {:short-docs "Mathematical functions (mirrors java.lang.Math)."
+   :docs {:guide "MATH — Mirrors java.lang.Math with standard semantics.
 
   Basic:         sqrt, cbrt, pow, exp, expm1, abs, sign
   Rounding:      floor, ceil, round, trunc
@@ -176,8 +177,7 @@ Example:
   Type coercion: float, double, long, bigdec, rationalize
   Constants:     PI, E, INF, NEG-INF, NaN
 
-All functions take and return numbers. Use (describe math :fn-name) for any function."
-   :docs {:_ "Wraps java.lang.Math — sqrt pow log sin cos tan abs floor ceil round, plus: factorial, gcd, lcm, log2, rand, rand-int, +' *' (auto-promoting), PI, E, float/double/long/bigdec/rationalize"}
+All functions take and return numbers. Use (describe math :fn-name) for any function."}
 
    ;; Basic
    :sqrt (fn [x] (Math/sqrt x))
@@ -248,7 +248,8 @@ All functions take and return numbers. Use (describe math :fn-name) for any func
 
 (def patterns
   "Reusable orchestration patterns (Spell-specific)."
-  {:guide "PATTERNS NAMESPACE
+  {:short-docs "Reusable orchestration patterns: check-result, clean-prompt, explore."
+   :docs {:guide "PATTERNS NAMESPACE
 
 check-result: Verifies an answer using leaf-llm. Returns {:ok answer} or {:wrong msg}.
   (patterns/check-result \"What is 2+2?\" 4)            ;; => {:ok 4}
@@ -262,7 +263,7 @@ clean-prompt: Cleans up a raw prompt (voice-to-text, quick notes) via leaf-llm, 
 explore: One-shot delegation to a child exploration agent. Spawns a child that greps, reads, and analyzes, then returns structured findings.
   '(call-now findings (patterns/explore \"Where is authentication handled?\"))
   Returns {:answer \"...\" :files [\"src/auth.py\" ...]}\""
-   :docs {:check-result "(patterns/check-result prompt answer) — verify answer with leaf-llm, returns {:ok answer} or {:wrong msg}"
+          :check-result "(patterns/check-result prompt answer) — verify answer with leaf-llm, returns {:ok answer} or {:wrong msg}"
           :clean-prompt "(patterns/clean-prompt raw-prompt) — clean up raw prompt via leaf-llm and execute it"
           :explore "(patterns/explore question) — one-shot exploration agent, returns {:answer \"...\" :files [...]}"}
    ;; check-result: verify answer with leaf-llm (core builtin), return {:ok answer} or {:wrong msg}
@@ -308,7 +309,8 @@ explore: One-shot delegation to a child exploration agent. Spawns a child that g
 (def builtins-namespace
   "Docs-only namespace for core builtins reference.
    (describe builtins) for overview, (describe builtins :category) for category listing."
-  {:guide "BUILTINS — Core functions always available without namespace prefix.
+  {:short-docs "Core functions always available without namespace prefix."
+   :docs {:guide "BUILTINS — Core functions always available without namespace prefix.
 
 Categories (use (describe builtins :category) for full listing):
   special-forms — quote, def, do, if, let, fn, expand, quine, loop, recur, for, try
@@ -329,7 +331,6 @@ Categories (use (describe builtins :category) for full listing):
 
 For namespace functions (io/, agents/, globals/, futures/, strings/, math/, patterns/), use (describe <namespace>).
 Use (describe builtins :fn-name) for individual function docs."
-   :docs {:_ "Core builtins — (describe builtins) for overview, (describe builtins :category) for category listing."
           :special-forms "quote def do if let fn fn* expand quine loop recur for try"
           :macros "when defn and or cond if-let when-let case as-> cond-> cond->> some-> some->> call-now -> ->> future plet print define defmacro describe think rethink extend compact"
           :effect "eval llm-self leaf-llm describe-fn llm"
@@ -836,7 +837,7 @@ Example:
   "Get documentation from a namespace.
    (describe ns) — guide if available, else docs map
    (describe ns :key) — detailed doc for specific item (checks :detail, then :docs)"
-  ([ns] (or (:guide ns) (:docs ns)))
+  ([ns] (or (get-in ns [:docs :guide]) (:docs ns)))
   ([ns key] (or (get-in ns [:detail key])
                 (get-in ns [:docs key])
                 (get ns key))))
@@ -847,7 +848,8 @@ Example:
 
 (def futures-namespace
   "Parallel computation namespace — effect-guarded (trailing expression only)."
-  {:guide "FUTURES
+  {:short-docs "Parallel computation: future, await, pmap."
+   :docs {:guide "FUTURES
 
 future/await/plet for deterministic parallel computation. These are for pure computation only — never use them for LLM calls (they'd share the parent handle and contend over the box).
 
@@ -859,7 +861,7 @@ future/await/plet for deterministic parallel computation. These are for pure com
 
 Note: future, await, and plet are core builtins (no namespace prefix needed).
 Only await-all and pmap are in the futures/ namespace."
-   :docs {:await-all "(futures/await-all [f1 f2 ...]) — await multiple futures, returns vector of results"
+          :await-all "(futures/await-all [f1 f2 ...]) — await multiple futures, returns vector of results"
           :pmap "(futures/pmap f coll) — parallel map, applies f to each element concurrently"}
    :await-all (fn [futures]
                 (when-not (sequential? futures)

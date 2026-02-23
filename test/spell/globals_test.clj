@@ -165,7 +165,7 @@
       (is (= n (count (globals/get-val :results)))))))
 
 ;; =============================================================================
-;; Integration tests (with DummyProvider)
+;; Integration tests (with TestProvider)
 ;; =============================================================================
 
 (deftest globals-accessible-from-spell-test

@@ -318,6 +318,7 @@
         sys-prompt (prompt/compose-system-prompt
                      {:base system
                       :namespaces effect-ns-builtins
+                      :core-namespaces core-namespaces
                       :format format})
         prev-prompt-atom (atom nil)
         call-fn  (fn [prompt-str]

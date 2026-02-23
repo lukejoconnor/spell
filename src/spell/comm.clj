@@ -440,7 +440,8 @@
 
 (def agents-namespace
   "Agent communication namespace — effect-guarded (trailing expression only)."
-  {:guide "AGENTS — Inter-agent communication (effect namespace).
+  {:short-docs "Inter-agent communication: spawn, ask, send, reply."
+   :docs {:guide "AGENTS — Inter-agent communication (effect namespace).
 
   (agents/ask target message)     — send message to target, block for reply
   (agents/ask [a b c])            — multi-target: poke all, wake when all complete
@@ -467,7 +468,7 @@ Messages arrive as def bindings: (def msg-N {:from sender :body val}).
 Reply using Spell code (e.g. string literals, quoted effect expressions), not plain English outside quotes.
 Check (globals/get :roles) to discover available agents.
 Use (describe agents :fn-name) for detailed docs on any function."
-   :docs {:ask "(agents/ask target message) — send message, block for reply; (agents/ask [a b c]) pokes all, waits for all to complete"
+          :ask "(agents/ask target message) — send message, block for reply; (agents/ask [a b c]) pokes all, waits for all to complete"
           :reply-ask "(agents/reply-ask msg value) — reply to msg, block for next message"
           :reply "(agents/reply msg value) — reply to msg, fire-and-forget"
           :send "(agents/send value target) — send value with auto-tagged :from; trailing send ends your turn"

@@ -4,8 +4,9 @@
    Providers implement the LLMProvider protocol. Built-in providers:
    - anthropic-provider: Calls Claude API
    - openai-provider: Calls OpenAI API
+   - chatgpt-codex-provider: Calls ChatGPT Codex Responses API
    - ollama-provider: Calls local Ollama API
-   - dummy-provider: Returns canned responses for testing"
+   - test-provider: Declarative test provider with flexible response matching"
   (:require [clojure.data.json :as json]
             [clojure.edn :as edn]
             [clojure.string :as str])
@@ -422,12 +423,21 @@
       (throw (ex-info "OpenAI Responses API error" {:error error}))
       (let [usage (:usage parsed)
             output-text (:output_text parsed "")
+            message-text (->> (:output parsed)
+                              (filter #(= "message" (:type %)))
+                              (mapcat :content)
+                              (filter #(= "output_text" (:type %)))
+                              (map :text)
+                              (str/join ""))
             tool-input (some (fn [item]
                                (when (= "custom_tool_call" (:type item))
                                  (:input item)))
                              (:output parsed))
             reasoning-tokens (get-in usage [:output_tokens_details :reasoning_tokens])]
-        {:text (if (str/blank? output-text) (or tool-input "") output-text)
+        {:text (or (not-empty output-text)
+                   (not-empty message-text)
+                   (not-empty tool-input)
+                   "")
          :usage (cond-> {:input_tokens (get-in parsed [:usage :input_tokens] 0)
                          :output_tokens (get-in parsed [:usage :output_tokens] 0)}
                   reasoning-tokens (assoc :reasoning_tokens reasoning-tokens))}))))
@@ -519,6 +529,146 @@
        (->OpenAIProvider key url model max-tokens client use-responses-api costs)))))
 
 ;; ---------------------------------------------------------------------------
+;; ChatGPT Codex Provider (subscription-backed Responses API)
+;; ---------------------------------------------------------------------------
+
+(defn- expand-home [path]
+  (if (and path (str/starts-with? path "~"))
+    (str (System/getProperty "user.home") (subs path 1))
+    path))
+
+(defn- load-chatgpt-auth
+  "Load ChatGPT access token/account id from Codex auth.json."
+  [auth-file]
+  (let [path (expand-home auth-file)]
+    (try
+      (let [parsed (json/read-str (slurp path) :key-fn keyword)
+            token (get-in parsed [:tokens :access_token])
+            account-id (get-in parsed [:tokens :account_id])]
+        (when (str/blank? token)
+          (throw (ex-info "Missing tokens.access_token" {:path path})))
+        {:token token :account-id account-id})
+      (catch Exception e
+        (throw (ex-info (str "Failed to load ChatGPT auth from " path)
+                        {:path path}
+                        e))))))
+
+(defn- chatgpt-codex-request
+  [api-key account-id base-url model prompt system-prompt max-tokens reasoning-effort verbosity grammar-format]
+  (let [reasoning (when reasoning-effort
+                    {:effort reasoning-effort})
+        text-controls (when (= verbosity "low")
+                        {:verbosity "low"})
+        tools (when grammar-format
+                [{:type "custom"
+                  :name "spell_suffix"
+                  :description "Spell suffix constrained by grammar"
+                  :format grammar-format}])
+        body (cond-> {:model model
+                      :instructions (if (str/blank? system-prompt)
+                                      "You are a helpful assistant."
+                                      system-prompt)
+                      :input [{:type "message"
+                               :role "user"
+                               :content [{:type "input_text"
+                                          :text prompt}]}]
+                      :tools (or tools [])
+                      :tool_choice (if tools "required" "auto")
+                      :parallel_tool_calls true
+                      :store false
+                      :stream true
+                      :include []}
+               max-tokens (assoc :max_output_tokens max-tokens)
+               reasoning (assoc :reasoning reasoning)
+               text-controls (assoc :text text-controls))
+        request-builder (cond-> (-> (HttpRequest/newBuilder)
+                                    (.uri (URI/create (str base-url "/responses")))
+                                    (.header "Content-Type" "application/json")
+                                    (.header "Accept" "text/event-stream")
+                                    (.header "Authorization" (str "Bearer " api-key)))
+                          (not (str/blank? account-id))
+                          (.header "ChatGPT-Account-ID" account-id))
+        request (-> request-builder
+                    (.POST (HttpRequest$BodyPublishers/ofString (json/write-str body)))
+                    (.build))]
+    request))
+
+(defn- parse-chatgpt-codex-stream
+  "Parse ChatGPT Codex Responses SSE stream, returning {:text :usage}."
+  [response-body]
+  (let [failed (atom nil)
+        completed (atom nil)]
+    (doseq [line (str/split-lines response-body)]
+      (when (str/starts-with? line "data: ")
+        (let [data (subs line 6)]
+          (when (and (not (str/blank? data))
+                     (not= data "[DONE]"))
+            (try
+              (let [parsed (json/read-str data :key-fn keyword)]
+                (case (:type parsed)
+                  "response.failed"
+                  (reset! failed (or (get-in parsed [:response :error]) (:error parsed)))
+
+                  "response.completed"
+                  (reset! completed (:response parsed))
+
+                  nil))
+              (catch Exception _ nil))))))
+    (when @failed
+      (throw (ex-info "ChatGPT Codex Responses API error" {:error @failed})))
+    (when-not @completed
+      (throw (ex-info "ChatGPT Codex Responses stream missing response.completed"
+                      {:body (subs response-body 0 (min 1000 (count response-body)))})))
+    (parse-openai-responses-response (json/write-str @completed))))
+
+(defrecord ChatGPTCodexProvider [api-key account-id base-url model max-tokens http-client costs]
+  LLMProvider
+  (call-llm [this prompt] (call-llm this prompt {}))
+  (call-llm [_ prompt opts]
+    (let [effective-model (or (:model opts) model)
+          grammar-format (:grammar-format opts)
+          reasoning-effort (:reasoning-effort opts)
+          verbosity (:verbosity opts)
+          request (chatgpt-codex-request api-key account-id base-url effective-model prompt
+                                         (:system opts) max-tokens reasoning-effort verbosity grammar-format)
+          response (.send http-client request (HttpResponse$BodyHandlers/ofString))
+          status (.statusCode response)]
+      (if (<= 200 status 299)
+        (let [{:keys [text usage]} (parse-chatgpt-codex-stream (.body response))]
+          (track-usage! effective-model usage costs)
+          text)
+        (throw (ex-info "ChatGPT Codex Responses request failed"
+                        {:status status :body (.body response)})))))
+  (supports-prefill [_] false))
+
+(defn chatgpt-codex-provider
+  "Create a ChatGPT subscription-backed Codex provider.
+
+   Options:
+   - :api-key     - bearer token override (default: read from :auth-file)
+   - :account-id  - ChatGPT account id header override (default: read from :auth-file)
+   - :auth-file   - path to Codex auth.json (default: ~/.codex/auth.json)
+   - :base-url    - API base URL (default: https://chatgpt.com/backend-api/codex)
+   - :model       - Model name (default: gpt-5.3-codex)
+   - :max-tokens  - Max output tokens
+   - :costs       - Cost table {model-prefix [input-per-M output-per-M]}"
+  ([] (chatgpt-codex-provider {}))
+  ([{:keys [api-key account-id auth-file base-url model max-tokens costs]
+     :or {auth-file "~/.codex/auth.json"
+          base-url "https://chatgpt.com/backend-api/codex"
+          model "gpt-5.3-codex"}}]
+   (let [{file-token :token file-account-id :account-id}
+         (when (str/blank? api-key)
+           (load-chatgpt-auth auth-file))
+         token (or api-key file-token)
+         effective-account-id (or account-id file-account-id)
+         url (str/replace (or base-url "https://chatgpt.com/backend-api/codex") #"/$" "")]
+     (when (str/blank? token)
+       (throw (ex-info "No ChatGPT token available. Log in with codex or pass :api-key"
+                       {:auth-file (expand-home auth-file)})))
+     (->ChatGPTCodexProvider token effective-account-id url model max-tokens (make-http-client) costs))))
+
+;; ---------------------------------------------------------------------------
 ;; Kimi Provider (Moonshot AI)
 ;; ---------------------------------------------------------------------------
 
@@ -576,29 +726,70 @@
      (->KimiProvider key url model max-tokens (make-http-client) costs))))
 
 ;; ---------------------------------------------------------------------------
-;; Dummy Provider (for testing)
+;; Test Provider (declarative testing)
 ;; ---------------------------------------------------------------------------
 
-(defrecord DummyProvider [response-fn prefill?]
+(defn- match-rule
+  "Check if a prompt matches a response rule.
+   Rule format: {:includes [strs...] :excludes [strs...] :response str-or-map}"
+  [prompt {:keys [includes excludes]}]
+  (and (every? #(str/includes? prompt %) includes)
+       (not-any? #(str/includes? prompt %) (or excludes []))))
+
+(defrecord TestProvider [responses response-fn response-rules prefill?]
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt _opts]
-    (response-fn prompt))
+    (let [entry (or (get responses prompt)
+                    (when response-fn (response-fn prompt))
+                    (some (fn [rule]
+                            (when (match-rule prompt rule)
+                              (when-not (:response rule)
+                                (throw (ex-info "TestProvider: matched rule has no :response key"
+                                                {:prompt prompt :rule rule})))
+                              (:response rule)))
+                          response-rules))]
+      (when-not entry
+        (throw (ex-info (str "TestProvider: no response for prompt")
+                        {:prompt prompt
+                         :available-keys (vec (keys responses))})))
+      (let [{:keys [response latency]} (if (string? entry)
+                                         {:response entry}
+                                         entry)]
+        (when (and latency (pos? latency))
+          (Thread/sleep (long latency)))
+        response)))
   (supports-prefill [_] (if (some? prefill?) prefill? true)))
 
-(defn dummy-provider
-  "Create a dummy provider for testing.
+(defn test-provider
+  "Create a declarative test provider.
 
    Options:
-   - :response - Static response string (default: \"Hello, world!\")
-   - :response-fn - Function (prompt -> response) for dynamic responses
-   - :prefill? - Whether this provider supports prefill (default: true)
+   - :response — static response string (catch-all fallback for any prompt).
+   - :responses — map of prompt-string to response.
+     Values are either a plain string or {:response str :latency ms}.
+     When a prompt doesn't match any key, throws with the full prompt
+     text (copy-paste into the map to build test fixtures).
+   - :response-fn — optional fallback (fn [prompt] -> response-or-nil).
+     Tried when :responses has no exact match. Useful for prompts
+     containing gensym'd names (multi-agent scenarios).
+   - :response-rules — vector of rules checked in order when exact match
+     and response-fn both miss. Each rule:
+       {:includes [\"sub1\" \"sub2\"]  ;; all must be present in prompt
+        :excludes [\"exc\"]            ;; none may be present (optional)
+        :response \"the response\"}    ;; string or {:response str :latency ms}
+   - :prefill? — whether this provider supports prefill (default: true).
 
-   If both provided, :response-fn takes precedence."
-  ([] (dummy-provider {}))
-  ([{:keys [response response-fn prefill?]
-     :or {response "Hello, world!"}}]
-   (->DummyProvider (or response-fn (constantly response)) prefill?)))
+   Usage:
+     (test-provider {:response \"42)\"})
+     (test-provider {:responses {\"(quine completion (eval (do \" \"42)))\"}})
+     (test-provider {:response-fn (fn [p] (when (.contains p \"foo\") \"bar\"))})
+     (test-provider {:response-rules [{:includes [\"hello\"] :response \"world\"}]})"
+  [{:keys [responses response-fn response-rules response prefill?]}]
+  (->TestProvider (or responses {})
+                  (or response-fn (when response (constantly response)))
+                  (or response-rules [])
+                  prefill?))
 
 ;; ---------------------------------------------------------------------------
 ;; User Provider (interactive simulation)
@@ -697,7 +888,8 @@
 (defn load-provider
   "Load provider from a .provider.edn file path."
   [path]
-  (let [{:keys [type api-key-env base-url model max-tokens costs use-responses-api]}
+  (let [{:keys [type api-key-env base-url model max-tokens costs use-responses-api auth-file account-id
+                responses response-rules response prefill?]}
         (edn/read-string (slurp path))
         api-key (when api-key-env (System/getenv api-key-env))
         opts (cond-> {:costs (or costs {})}
@@ -705,29 +897,40 @@
                base-url (assoc :base-url base-url)
                model (assoc :model model)
                max-tokens (assoc :max-tokens max-tokens)
-               use-responses-api (assoc :use-responses-api true))]
+               use-responses-api (assoc :use-responses-api true)
+               auth-file (assoc :auth-file auth-file)
+               account-id (assoc :account-id account-id))]
     (case type
       :anthropic (anthropic-provider opts)
       :openai    (openai-provider opts)
+      :chatgpt-codex (chatgpt-codex-provider opts)
       :ollama    (ollama-provider opts)
       :kimi      (kimi-provider opts)
+      :test      (test-provider {:responses responses :response-rules response-rules
+                                 :response response :prefill? prefill?})
       (throw (ex-info (str "Unknown provider type: " type) {:type type})))))
 
 (defn- load-provider-from-map
   "Create a provider from an inline config map (same keys as .provider.edn)."
-  [{:keys [type api-key-env base-url model max-tokens costs use-responses-api] :as spec}]
+  [{:keys [type api-key-env base-url model max-tokens costs use-responses-api auth-file account-id
+           responses response-rules response prefill?] :as spec}]
   (let [api-key (when api-key-env (System/getenv api-key-env))
         opts (cond-> {:costs (or costs {})}
                api-key (assoc :api-key api-key)
                base-url (assoc :base-url base-url)
                model (assoc :model model)
                max-tokens (assoc :max-tokens max-tokens)
-               use-responses-api (assoc :use-responses-api true))]
+               use-responses-api (assoc :use-responses-api true)
+               auth-file (assoc :auth-file auth-file)
+               account-id (assoc :account-id account-id))]
     (case type
       :anthropic (anthropic-provider opts)
       :openai    (openai-provider opts)
+      :chatgpt-codex (chatgpt-codex-provider opts)
       :ollama    (ollama-provider opts)
       :kimi      (kimi-provider opts)
+      :test      (test-provider {:responses responses :response-rules response-rules
+                                 :response response :prefill? prefill?})
       (throw (ex-info (str "Unknown provider type: " type) {:type type :spec spec})))))
 
 (defn- resolve-path

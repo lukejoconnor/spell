@@ -18,14 +18,14 @@
    "gpt53"   "gpt-5.3"})
 
 (def provider-prefixes
-  #{"ollama" "chatgpt" "openclaw" "openai" "anthropic" "kimi" "moonshot"})
+  #{"ollama" "chatgpt" "codex" "openclaw" "openai" "anthropic" "kimi" "moonshot"})
 
 (defn parse-model-spec
   "Parse 'provider:model' into {:provider str :model str}.
    If no known provider prefix, returns {:provider nil :model input}.
    Examples:
      ollama:smollm2:135m  -> {:provider \"ollama\" :model \"smollm2:135m\"}
-     chatgpt:gpt-4o       -> {:provider \"chatgpt\" :model \"gpt-4o\"}
+     chatgpt:gpt-5.3-codex -> {:provider \"chatgpt\" :model \"gpt-5.3-codex\"}
      haiku                -> {:provider nil :model \"haiku\"}"
   [s]
   (if-let [idx (str/index-of s ":")]
@@ -78,7 +78,7 @@
   [["-t" "--test" "Use dummy LLM provider (returns 'hello world')"]
    ["-e" "--example NAME" "Run a named example from examples/"]
    ["-a" "--agent FILE" "Use agent definition from .agent.edn file"]
-   ["-m" "--model MODEL" "Model spec: haiku, sonnet, opus, ollama:<model>, openai:<model>, openclaw:<model>, user (default: openclaw:gpt-5.3)"]
+   ["-m" "--model MODEL" "Model spec: haiku, sonnet, opus, ollama:<model>, chatgpt:<model>, openai:<model>, openclaw:<model>, user (default: openclaw:gpt-5.3)"]
    ["-d" "--depth DEPTH" "Max recursion depth (default: unlimited, 0 = unlimited)"
     :parse-fn #(Integer/parseInt %)
     :validate [#(>= % 0) "Must be non-negative"]]
@@ -127,6 +127,7 @@
           "  spell -t 'Test prompt'"
           "  spell -m haiku 'Add 1 and 2'"
           "  spell -m ollama:llama3.2 'Return 42'"
+          "  spell -m chatgpt:gpt-5.3-codex 'Return 42'"
           "  spell -m openai:gpt-4o 'Return 42'"
           "  spell examples/hello-world.spl"
           "  spell -e hello-world"
@@ -176,7 +177,7 @@
 (defn- make-provider [{:keys [test model max-tokens responses-api]}]
   (cond
     test
-    (provider/dummy-provider {:response "\"hello world\""})
+    (provider/test-provider {:response "\"hello world\""})
 
     (= model "user")
     (provider/user-provider)
@@ -186,6 +187,11 @@
                                      (parse-model-spec model)
                                      {:provider "openclaw" :model "gpt-5.3"})
           resolved-model (when model (resolve-model model))
+          ;; ChatGPT/Codex backend exposes gpt-5.3 as gpt-5.3-codex.
+          resolved-model (if (and (#{"chatgpt" "codex"} provider)
+                                  (= resolved-model "gpt-5.3"))
+                           "gpt-5.3-codex"
+                           resolved-model)
           base-opts (cond-> {:costs provider/default-costs}
                       resolved-model (assoc :model resolved-model)
                       max-tokens (assoc :max-tokens max-tokens))]
@@ -193,7 +199,10 @@
         "ollama"
         (provider/ollama-provider base-opts)
 
-        ("chatgpt" "openai")
+        ("chatgpt" "codex")
+        (provider/chatgpt-codex-provider base-opts)
+
+        "openai"
         (provider/openai-provider (cond-> base-opts
                                     responses-api (assoc :use-responses-api true)))
 

@@ -5,8 +5,8 @@
             [spell.provider :as provider]))
 
 (defn make-test-llm
-  "Create test LLM+run map with dummy provider.
-   response-or-opts: string (static response) or map (dummy-provider opts).
+  "Create test LLM+run map with test provider.
+   response-or-opts: string (static response) or map (test-provider opts).
    Returns {:llm fn, :run fn}.
 
    Keyword opts:
@@ -16,7 +16,7 @@
    - :model — model name override"
   [response-or-opts & {:keys [namespaces prefill? recover model]
                         :or {prefill? true recover true}}]
-  (let [prov (provider/dummy-provider
+  (let [prov (provider/test-provider
                (if (string? response-or-opts)
                  {:response response-or-opts :prefill? prefill?}
                  (assoc response-or-opts :prefill? prefill?)))]
@@ -27,10 +27,10 @@
                     model (assoc :model model)))))
 
 (defn make-test-leaf-llm
-  "Create test leaf LLM with dummy provider.
+  "Create test leaf LLM with test provider.
    Returns (fn [prompt] response-string)."
   [response-or-opts & {:keys [system model]}]
-  (let [prov (provider/dummy-provider
+  (let [prov (provider/test-provider
                (if (string? response-or-opts)
                  {:response response-or-opts}
                  response-or-opts))]

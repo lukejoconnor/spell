@@ -203,11 +203,15 @@
       (is (= {:a "first" :b "second"} (llm "(eval (do '"))))))
 
 (deftest describe-fallback-test
-  (testing "describe prefers guide over docs when both present"
-    (let [ns-map {:docs {:a "doc for a"} :a identity :guide "full guide text"}]
+  (testing "describe prefers :docs :guide over raw :docs when both present"
+    (let [ns-map {:docs {:guide "full guide text" :a "doc for a"} :a identity}]
       (is (= "full guide text" (stdlib/describe ns-map)))
       (is (= "doc for a" (stdlib/describe ns-map :a)))
       (is (= "full guide text" (stdlib/describe ns-map :guide)))))
+
+  (testing "describe falls back to :docs map when no :guide entry"
+    (let [ns-map {:docs {:a "doc for a"} :a identity}]
+      (is (= {:a "doc for a"} (stdlib/describe ns-map)))))
 
   (testing "describe prefers :docs over top-level"
     (let [ns-map {:docs {:x "from docs"} :x "from top"}]
@@ -328,7 +332,26 @@
 
   (testing "qualified symbol usage instructions included"
     (let [p (prompt/generate-system-prompt spell/all-namespaces)]
-      (is (str/includes? p "io/sh")))))
+      (is (str/includes? p "io/sh"))))
+
+  (testing "short-docs appear in system prompt for core namespaces"
+    (let [core-ns {'strings stdlib/strings 'math stdlib/math}
+          p (prompt/compose-system-prompt {:core-namespaces core-ns})]
+      (is (str/includes? p "strings"))
+      (is (str/includes? p "String manipulation and regex"))
+      (is (str/includes? p "math"))
+      (is (str/includes? p "Mathematical functions"))))
+
+  (testing ":guide and :_ entries are filtered from per-function docs"
+    (let [ns-map {'tools {:short-docs "Test tools."
+                          :docs {:guide "TOOLS guide text"
+                                 :_ "Meta entry"
+                                 :my-tool "Does things."}
+                          :my-tool identity}}
+          p (prompt/generate-system-prompt ns-map)]
+      (is (str/includes? p "my-tool: Does things."))
+      (is (not (str/includes? p "guide: TOOLS guide text")))
+      (is (not (str/includes? p "_: Meta entry"))))))
 
 
 ;; =============================================================================
@@ -366,7 +389,23 @@
   (testing "resolve-provider honors :model in inline map"
     (let [p (provider/resolve-provider {:type :ollama
                                         :model "qwen2.5:32b"} nil)]
-      (is (= "qwen2.5:32b" (:model p))))))
+      (is (= "qwen2.5:32b" (:model p)))))
+
+  (testing "load-provider supports chatgpt-codex type"
+    (let [auth-file (java.io.File/createTempFile "provider-chatgpt-auth-" ".json")
+          provider-file (java.io.File/createTempFile "provider-chatgpt-" ".provider.edn")]
+      (try
+        (spit auth-file (json/write-str {:tokens {:access_token "test-token"
+                                                  :account_id "acc-1"}}))
+        (spit provider-file (pr-str {:type :chatgpt-codex
+                                     :auth-file (.getAbsolutePath auth-file)
+                                     :model "gpt-5.3-codex"}))
+        (let [p (provider/load-provider (.getAbsolutePath provider-file))]
+          (is (instance? spell.provider.ChatGPTCodexProvider p))
+          (is (= "gpt-5.3-codex" (:model p))))
+        (finally
+          (.delete auth-file)
+          (.delete provider-file))))))
 
 (deftest ollama-parse-response-test
   (testing "parses successful chat response"
@@ -460,11 +499,88 @@
       (is (= 12 (get-in result [:usage :input_tokens])))
       (is (= 7 (get-in result [:usage :output_tokens])))))
 
+  (testing "falls back to message output_text content when output_text is absent"
+    (let [response-body (json/write-str {:output [{:type "message"
+                                                   :role "assistant"
+                                                   :content [{:type "output_text" :text "OK"}]}]
+                                         :usage {:input_tokens 3
+                                                 :output_tokens 2}})
+          result (#'provider/parse-openai-responses-response response-body)]
+      (is (= "OK" (:text result)))
+      (is (= 3 (get-in result [:usage :input_tokens])))
+      (is (= 2 (get-in result [:usage :output_tokens])))))
+
   (testing "throws on error response"
     (let [response-body (json/write-str {:error {:message "invalid api key"
                                                   :type "invalid_request_error"}})]
       (is (thrown-with-msg? Exception #"OpenAI Responses API error"
             (#'provider/parse-openai-responses-response response-body))))))
+
+(deftest chatgpt-codex-provider-constructor-test
+  (testing "constructs with explicit token override"
+    (let [p (provider/chatgpt-codex-provider {:api-key "chatgpt-token"
+                                              :account-id "acc_123"})]
+      (is (instance? spell.provider.ChatGPTCodexProvider p))
+      (is (= "chatgpt-token" (:api-key p)))
+      (is (= "acc_123" (:account-id p)))
+      (is (= "https://chatgpt.com/backend-api/codex" (:base-url p)))
+      (is (= "gpt-5.3-codex" (:model p)))))
+
+  (testing "loads token and account id from auth file"
+    (let [tmp (java.io.File/createTempFile "chatgpt-auth-" ".json")]
+      (try
+        (spit tmp (json/write-str {:tokens {:access_token "from-file-token"
+                                            :account_id "from-file-account"}}))
+        (let [p (provider/chatgpt-codex-provider {:auth-file (.getAbsolutePath tmp)})]
+          (is (= "from-file-token" (:api-key p)))
+          (is (= "from-file-account" (:account-id p))))
+        (finally
+          (.delete tmp)))))
+
+  (testing "strips trailing slash from base-url"
+    (let [p (provider/chatgpt-codex-provider {:api-key "chatgpt-token"
+                                              :base-url "https://chatgpt.com/backend-api/codex/"})]
+      (is (= "https://chatgpt.com/backend-api/codex" (:base-url p))))))
+
+(deftest chatgpt-codex-stream-parse-test
+  (testing "parses response.completed with assistant message output"
+    (let [sse (str "event: response.completed\n"
+                   "data: "
+                   (json/write-str {:type "response.completed"
+                                    :response {:output [{:type "message"
+                                                         :role "assistant"
+                                                         :content [{:type "output_text" :text "OK"}]}]
+                                               :usage {:input_tokens 10
+                                                       :output_tokens 4}}})
+                   "\n\n")
+          result (#'provider/parse-chatgpt-codex-stream sse)]
+      (is (= "OK" (:text result)))
+      (is (= 10 (get-in result [:usage :input_tokens])))
+      (is (= 4 (get-in result [:usage :output_tokens])))))
+
+  (testing "parses custom_tool_call grammar output"
+    (let [sse (str "event: response.completed\n"
+                   "data: "
+                   (json/write-str {:type "response.completed"
+                                    :response {:output [{:type "custom_tool_call"
+                                                         :name "spell_suffix"
+                                                         :input "(def x 1)"}]
+                                               :usage {:input_tokens 9
+                                                       :output_tokens 3}}})
+                   "\n\n")
+          result (#'provider/parse-chatgpt-codex-stream sse)]
+      (is (= "(def x 1)" (:text result)))
+      (is (= 9 (get-in result [:usage :input_tokens])))
+      (is (= 3 (get-in result [:usage :output_tokens])))))
+
+  (testing "throws on response.failed"
+    (let [sse (str "event: response.failed\n"
+                   "data: "
+                   (json/write-str {:type "response.failed"
+                                    :response {:error {:message "bad auth"}}})
+                   "\n\n")]
+      (is (thrown-with-msg? Exception #"ChatGPT Codex Responses API error"
+            (#'provider/parse-chatgpt-codex-stream sse))))))
 
 ;; =============================================================================
 ;; CLI parse-model-spec tests
@@ -488,6 +604,10 @@
            (cli/parse-model-spec "chatgpt:gpt-4o")))
     (is (= {:provider "chatgpt" :model "gpt-4o-mini"}
            (cli/parse-model-spec "chatgpt:gpt-4o-mini"))))
+
+  (testing "codex provider prefix"
+    (is (= {:provider "codex" :model "gpt-5.3-codex"}
+           (cli/parse-model-spec "codex:gpt-5.3-codex"))))
 
   (testing "openai provider prefix"
     (is (= {:provider "openai" :model "gpt-4o"}
@@ -860,12 +980,12 @@
     (let [p (provider/openai-provider {:api-key "test"})]
       (is (false? (provider/supports-prefill p)))))
 
-  (testing "Dummy provider defaults to supporting prefill"
-    (let [p (provider/dummy-provider)]
+  (testing "Test provider defaults to supporting prefill"
+    (let [p (provider/test-provider {})]
       (is (true? (provider/supports-prefill p)))))
 
-  (testing "Dummy provider can be configured as no-prefill"
-    (let [p (provider/dummy-provider {:prefill? false})]
+  (testing "Test provider can be configured as no-prefill"
+    (let [p (provider/test-provider {:prefill? false})]
       (is (false? (provider/supports-prefill p)))))
 
   (testing "Ollama provider supports prefill"

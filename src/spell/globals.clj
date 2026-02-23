@@ -75,7 +75,8 @@
 ;; ---------------------------------------------------------------------------
 
 (def globals-namespace
-  {:guide "GLOBALS — Shared state visible to all agents (effect namespace).
+  {:short-docs "Shared mutable state visible to all agents."
+   :docs {:guide "GLOBALS — Shared state visible to all agents (effect namespace).
 
   (globals/get key)              — read a global by key
   (globals/set key value)        — write a global (returns the value)
@@ -88,7 +89,7 @@
 Pre-initialized with :roles {} and :tasks [].
 All globals/ calls are effect functions — quote them in the trailing expression.
 Use (describe globals :fn-name) for detailed docs on any function."
-   :docs {:get   "Get global value by key: (globals/get :roles)"
+          :get   "Get global value by key: (globals/get :roles)"
           :set   "Set global value: (globals/set :roles {}) — returns value"
           :update "Atomic read-modify-write: (globals/update :tasks (fn [t] (conj t item))) — returns new value"
           :pop   "Atomic remove-and-return first element: (globals/pop :tasks) — returns claimed item"

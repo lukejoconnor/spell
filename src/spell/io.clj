@@ -536,7 +536,8 @@
 
 (def io-namespace
   "The io/ namespace map for Spell agents."
-  {:guide "IO — File operations, process execution, and file watching (effect namespace).
+  {:short-docs "File operations, shell commands, and process execution."
+   :docs {:guide "IO — File operations, process execution, and file watching (effect namespace).
 
   (io/read-file path)              — read file with line numbers as string
   (io/read-lines path)             — read file as vector of line strings
@@ -563,7 +564,7 @@
 
 All io/ calls are effect functions — quote them in the trailing expression.
 Use (describe io :fn-name) for detailed docs on any function."
-   :docs {;; File reading/writing
+          ;; File reading/writing
           :slurp "Read entire file as string. Returns {:ok content} or {:error msg}."
           :spit "Write to file. (spit path content) or (spit path content {:append true}). Returns {:ok path} or {:error msg}."
           :slurp-bytes "Read file as byte array. Returns {:ok bytes} or {:error msg}."

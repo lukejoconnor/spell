@@ -187,7 +187,7 @@
             (comm/box handle p identity))))))
 
 ;; =============================================================================
-;; Integration tests (with DummyProvider)
+;; Integration tests (with TestProvider)
 ;; =============================================================================
 
 (deftest llm-still-works-unchanged-test
@@ -298,7 +298,7 @@
 
 
 ;; =============================================================================
-;; Handle inheritance tests (with DummyProvider)
+;; Handle inheritance tests (with TestProvider)
 ;; =============================================================================
 
 (deftest handle-inheritance-test
@@ -319,7 +319,7 @@
           (is (= (first result) (second result))))))))
 
 ;; =============================================================================
-;; Spawn tests (with DummyProvider)
+;; Spawn tests (with TestProvider)
 ;; =============================================================================
 
 (deftest spawn-returns-handle-test

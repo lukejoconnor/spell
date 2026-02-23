@@ -428,6 +428,8 @@
        "'(llm-self (wrap-cat "))
 
 (defspellmacro 'compact
-  (fn [comp-sym]
-    (list 'llm-self
-      (list 'str (list 'prune-and-reopen comp-sym) compact-suffix))))
+  (fn
+    ([] (list 'compact 'completion))
+    ([comp-sym]
+     (list 'llm-self
+       (list 'str (list 'prune-and-reopen comp-sym) compact-suffix)))))

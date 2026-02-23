@@ -67,15 +67,16 @@ Access with qualified symbols — no import needed:
 (io/bash "ls -la")           ; effect — only in trailing expression
 ```
 
-Namespace structure (simple maps with `:guide`, `:docs`, optional `:detail`, and items):
+Namespace structure (simple maps with `:short-docs`, `:docs`, optional `:detail`, and items):
 ```clojure
-{:guide "MYNS — terse overview for (describe myns)"
- :docs {:bash "Short one-liner for system prompt listing"}
+{:short-docs "One sentence for system prompt summary."
+ :docs {:guide "MYNS — terse overview for (describe myns)"
+        :bash "Short one-liner for system prompt listing"}
  :detail {:bash "Detailed multi-line doc with usage examples for (describe myns :bash)"}
  :bash run-bash}
 ```
 
-`describe` lookup: `(describe ns)` returns `:guide` (terse overview). `(describe ns :key)` checks `:detail` first, then `:docs`, then raw key. The `:docs` one-liners are used by `namespaces-section` for the system prompt listing; `:detail` provides expanded per-function documentation.
+`describe` lookup: `(describe ns)` returns `[:docs :guide]` (terse overview), falling back to the `:docs` map. `(describe ns :key)` checks `:detail` first, then `:docs`, then raw key. The `:short-docs` string is rendered in the system prompt for all namespaces (core and effect). The per-function `:docs` entries (excluding `:guide` and `:_`) are rendered for effect namespaces only; `:detail` provides expanded per-function documentation.
 
 `make-llm` accepts a `:namespaces` map (effect namespaces only — core namespaces are automatic) and a `:provider`:
 ```clojure
