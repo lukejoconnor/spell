@@ -8,16 +8,10 @@
 (use-fixtures :each
   (fn [f]
     (reset! runtime/registry {})
-    (reset! @#'user/last-sender :main)
-    (.clear @#'user/stdin-queue)
-    (reset! @#'user/signal-pending false)
-    (reset! @#'user/seen-msg-names #{})
+    (user/reset-state!)
     (f)
     (reset! runtime/registry {})
-    (reset! @#'user/last-sender :main)
-    (.clear @#'user/stdin-queue)
-    (reset! @#'user/signal-pending false)
-    (reset! @#'user/seen-msg-names #{})))
+    (user/reset-state!)))
 
 (defn- mock-reader
   "Create a BufferedReader that reads from a string (one line per readLine)."

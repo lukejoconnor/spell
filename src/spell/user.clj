@@ -279,6 +279,14 @@
                 :recover-fn nil}]
     (llm/make-inbox-fn config (atom nil))))
 
+(defn reset-state!
+  "Reset module-level state. For use in test fixtures."
+  []
+  (reset! last-sender :main)
+  (.clear stdin-queue)
+  (reset! signal-pending false)
+  (reset! seen-msg-names #{}))
+
 (defn register-user-agent!
   "Register :user as an agent in the runtime system.
    0-arity: uses System/in as reader. 1-arity: accepts a BufferedReader.
