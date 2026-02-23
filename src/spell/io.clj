@@ -476,11 +476,11 @@
 
 (defn sh
   "Execute shell command. Returns {:exit N :out \"...\" :err \"...\"}.
-   Optional first extra arg may be an opts map with :timeout seconds.
+   Optional last arg may be an opts map with :timeout seconds.
    :timeout 0 disables timeout for this call."
   [command & more]
-  (let [[opts parts] (if (and (seq more) (map? (first more)))
-                       [(first more) (rest more)]
+  (let [[opts parts] (if (and (seq more) (map? (last more)))
+                       [(last more) (butlast more)]
                        [nil more])
         timeout-seconds (resolve-timeout-seconds
                           (if (contains? opts :timeout)
