@@ -6,7 +6,7 @@
    processing, avoiding contention between the reader thread and
    user-call-fn."
   (:require [clojure.string :as str]
-            [spell.comm :as comm]
+            [spell.runtime :as runtime]
             [spell.eval :as eval]
             [spell.globals :as globals]
             [spell.llm :as llm]
@@ -45,7 +45,7 @@
 
 (defn- start-stdin-reader!
   "Start a persistent thread that reads lines from reader into stdin-queue.
-   On empty lines (the signal), also wakes :user via comm/send.
+   On empty lines (the signal), also wakes :user via runtime/send.
    On EOF, puts ::eof sentinel."
   [^BufferedReader reader]
   (future
@@ -58,8 +58,8 @@
             ;; Empty line = signal → wake :user (debounced)
             (when (= "" (str/trim line))
               (when (compare-and-set! signal-pending false true)
-                (binding [comm/*current-handle* :stdin-watch]
-                  (comm/send :stdin-signal :user))))
+                (binding [runtime/*current-handle* :stdin-watch]
+                  (runtime/send :stdin-signal :user))))
             (recur)))))))
 
 ;; =============================================================================
@@ -247,14 +247,14 @@
    Uses make-awake-fn to construct the inside-fn from the eval-fn."
   [eval-fn handle parent-handle prompt-str]
   (let [completion (promise)
-        awake-fn (comm/make-awake-fn eval-fn)]
+        awake-fn (runtime/make-awake-fn eval-fn)]
     (future
       (try
         (let [response (user-call-fn prompt-str)]
           (deliver completion (str prompt-str response)))
         (catch Exception e
           (deliver completion e))))
-    (comm/box handle completion awake-fn)))
+    (runtime/box handle completion awake-fn)))
 
 ;; =============================================================================
 ;; Registration
@@ -268,11 +268,11 @@
                                 llm/core-namespaces)
         ;; user-self-fn reads eval-fn dynamically via *current-eval-fn*
         user-self-fn (fn [prompt-str]
-                       (user-self comm/*current-eval-fn*
-                                  comm/*current-handle* comm/*current-handle* prompt-str))
+                       (user-self runtime/*current-eval-fn*
+                                  runtime/*current-handle* runtime/*current-handle* prompt-str))
         ;; Effect builtins: llm-self (user-self) + agents namespace
         effect-builtins {'llm-self user-self-fn
-                         'agents comm/agents-namespace}
+                         'agents runtime/agents-namespace}
         eval-builtin (llm/make-eval variant-builtins effect-builtins)
         config {:variant-builtins variant-builtins
                 :eval-builtin eval-builtin
@@ -280,7 +280,7 @@
     (llm/make-inbox-fn config (atom nil))))
 
 (defn register-user-agent!
-  "Register :user as an agent in the comm system.
+  "Register :user as an agent in the runtime system.
    0-arity: uses System/in as reader. 1-arity: accepts a BufferedReader.
    Starts a persistent stdin reader thread that feeds the queue.
    Idempotent: no-op if :user is already registered.
@@ -288,11 +288,11 @@
   ([]
    (register-user-agent! (BufferedReader. (InputStreamReader. System/in))))
   ([^BufferedReader reader]
-   (when-not (comm/handle? :user)
+   (when-not (runtime/handle? :user)
      (reset! seen-msg-names #{})
      (let [eval-fn (make-user-inbox-fn*)
            initial "(quine completion (eval (do )))"]
-       (comm/start-box :user eval-fn initial :main)
+       (runtime/start-box :user eval-fn initial :main)
        (globals/set-val :roles (assoc (or (globals/get-val :roles) {})
                                       :user "human user — interactive terminal"))
        (start-stdin-reader! reader)))))

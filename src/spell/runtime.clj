@@ -1,5 +1,5 @@
-(ns spell.comm
-  "Inter-agent communication: ask/send/spawn primitives.
+(ns spell.runtime
+  "Agent runtime: box execution primitive, registry, message passing, spawn/ask.
 
    box is the universal execution primitive: it waits for a completion source,
    drains inbox transforms, and passes the result to an inside-fn. ask sends a

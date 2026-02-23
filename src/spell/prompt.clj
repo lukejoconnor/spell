@@ -2,7 +2,7 @@
   "System prompt composition for Spell agents.
 
    Pure string functions that build system prompts from namespace metadata
-   and format specs. No dependency on LLM or comm."
+   and format specs. No dependency on LLM or runtime."
   (:require [clojure.string :as str]))
 
 (defn- fn-docs
@@ -57,7 +57,7 @@
          (str "key " (first required))
          (str "keys " (pr-str required)))
        ".\n"
-       "Example: {:answer 42}\n"
+       "Example: {" (first required) " 42}\n"
        (when optional
          (str "Optional keys: " (pr-str optional) "\n"))))
 

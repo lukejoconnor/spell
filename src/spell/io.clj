@@ -10,7 +10,7 @@
    - File manipulation: delete, copy, move, stat, temp-file
    - Process execution: sh, exec, env"
   (:require [clojure.string :as str]
-            [spell.comm :as comm])
+            [spell.runtime :as runtime])
   (:import [java.io File]
            [java.nio.file FileSystems Files Paths StandardCopyOption CopyOption
                           StandardWatchEventKinds WatchEvent]
@@ -437,16 +437,16 @@
    and logs to stderr. Returns nil immediately."
   [event-fn handle from-tag]
   (future
-    (binding [comm/*current-handle* from-tag]
+    (binding [runtime/*current-handle* from-tag]
       (try
         (let [result (event-fn)]
           (cond
-            (:ok result) (comm/send (:ok result) handle)
+            (:ok result) (runtime/send (:ok result) handle)
             (:abort result) nil))
         (catch Exception e
           (binding [*out* *err*]
             (println (str "event-send error for " handle ": " (.getMessage e))))
-          (comm/send {:error (.getMessage e)} handle)))))
+          (runtime/send {:error (.getMessage e)} handle)))))
   nil)
 
 (defn watch-send

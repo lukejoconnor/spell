@@ -2,7 +2,7 @@
   "Spell — wiring layer.
    Assembles components (eval, llm, stdlib) into the default configuration.
    Re-exports key vars for public API."
-  (:require [spell.comm :as comm]
+  (:require [spell.runtime :as runtime]
             [spell.globals :as globals]
             [spell.grammar :as grammar]
             [spell.llm :as llm-engine]
@@ -45,6 +45,6 @@
    and don't need to be listed here."
   {'io io/io-namespace
    'globals globals/globals-namespace
-   'agents comm/agents-namespace
+   'agents runtime/agents-namespace
    'futures stdlib/futures-namespace
    'patterns stdlib/patterns})
