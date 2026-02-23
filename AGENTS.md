@@ -159,12 +159,10 @@ Core interpreter and tooling complete (see `clojure -M:test` for current totals)
 
 **Next priorities** (see `notebook/TODO.md`):
 - MCP support (#30)
-- Orchestration visualizations (#33)
-- Aider Polyglot / Exercism benchmark (#66)
 - Consider demoting `for` to macro (#80)
 - Implement orchestration patterns (#94)
-- Document that bare `send` causes agent to return (#114)
-- Document special handles in `(describe agents)` (#116)
+- Detect and handle runaway extend loops (#126)
+- Graceful shutdown and restart (#122)
 
 **Key insight:** The `llm` function uses prompt-as-prefix semantics — the prompt string is sent as both the user message and the assistant prefix, so the response continues the prompt as code. Natural-language prompts are wrapped in the completion wrapper `(quine completion (eval (do ...)))`, giving the program access to its own source as data via the `completion` binding. The `eval` builtin evaluates in the caller's environment (dynamic scoping makes expansion redundant).
 
@@ -184,13 +182,9 @@ Core interpreter and tooling complete (see `clojure -M:test` for current totals)
 
 **Use `uv` for Python.** When running Python scripts (benchmarking, etc.), use `uv run` instead of `python3` directly. This handles virtual environments and dependencies automatically.
 
-## Benchmark Reporting
+## Benchmarking
 
-When reporting benchmark accuracy, the denominator is always the total number of test items, not the number that ran without errors. Errors count as wrong answers — it doesn't matter *why* you got it wrong. Report accuracy as `correct / total`, and separately note errors and wrong answers for diagnostic purposes. Example: "50% (13/30) — 4 errors, 13 wrong" not "50% (13/26)".
-
-## Scientific Neutrality
-
-The user has observed a tendency toward "good news" bias in benchmark analysis — e.g., emphasizing results that favor Spell, soft-pedaling unfavorable comparisons, or framing ambiguous findings optimistically. Maintain a neutral, skeptical stance when analyzing benchmark results. Present findings as-is, including results that are unfavorable or inconclusive, without spin.
+See `benchmarking/CLAUDE.md` for benchmark infrastructure, run commands, baseline results, and analysis workflow. Key harness files: `benchmarking/run_benchmark.py` (Python), `dev/benchmark.clj` and `dev/exercism_bench.clj` (Clojure).
 
 ## System Prompt Best Practices
 
