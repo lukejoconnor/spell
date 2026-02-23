@@ -501,7 +501,18 @@
 
   (testing "stderr"
     (let [result (io/sh "echo error >&2")]
-      (is (= "error" (:err result))))))
+      (is (= "error" (:err result)))))
+
+  (testing "per-call timeout override"
+    (let [result (io/sh "sleep 2" {:timeout 1})]
+      (is (= -1 (:exit result)))
+      (is (re-find #"timed out" (:err result)))))
+
+  (testing "timeout 0 disables timeout for this call"
+    (let [result (io/sh "sleep 1 && echo done" {:timeout 0})]
+      (is (= 0 (:exit result)))
+      (is (= "done" (:out result)))
+      (is (= "" (:err result))))))
 
 (deftest exec-test
   (let [result (io/exec ["echo" "hello"])]
