@@ -1,0 +1,5 @@
+{:type :chatgpt-codex
+ :base-url "https://chatgpt.com/backend-api/codex"
+ :auth-file "~/.codex/auth.json"
+ :model "gpt-5.3-codex"
+ :max-tokens 16384}

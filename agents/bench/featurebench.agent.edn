@@ -1,0 +1,8 @@
+;; Default benchmark agent for FeatureBench coding tasks.
+
+{:base spell:default
+ :name bench-featurebench
+ :doc "Benchmark agent for FeatureBench patch generation"
+
+ :namespaces
+ {io stdlib/io}}
