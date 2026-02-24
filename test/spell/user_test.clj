@@ -68,21 +68,21 @@
 
 (deftest extract-messages-test
   (testing "extracts single message from raw completion"
-    (let [raw "(quine completion (eval (do (def msg-1 {:from :agent-1 :body \"hello\"}) '(llm-self (reopen completion)) )))"
+    (let [raw "(quine completion (eval (do (def msg-1 {:from :agent-1 :body \"hello\"}) '(!llm-self (reopen completion)) )))"
           result (#'user/extract-messages raw)]
       (is (= 1 (count result)))
       (is (= :agent-1 (:from (first result))))
       (is (= "hello" (:body (first result))))))
 
   (testing "extracts multiple messages"
-    (let [raw "(quine completion (eval (do (def msg-1 {:from :agent-1 :body \"hello\"}) (def msg-2 {:from :agent-2 :body \"world\"}) '(llm-self (reopen completion)) )))"
+    (let [raw "(quine completion (eval (do (def msg-1 {:from :agent-1 :body \"hello\"}) (def msg-2 {:from :agent-2 :body \"world\"}) '(!llm-self (reopen completion)) )))"
           result (#'user/extract-messages raw)]
       (is (= 2 (count result)))
       (is (= :agent-1 (:from (first result))))
       (is (= :agent-2 (:from (second result))))))
 
   (testing "extracts poke (expects-response, no body) from raw completion"
-    (let [raw "(quine completion (eval (do (def msg-1 {:from :agent-2 :expects-response true}) '(llm-self (reopen completion)) )))"
+    (let [raw "(quine completion (eval (do (def msg-1 {:from :agent-2 :expects-response true}) '(!llm-self (reopen completion)) )))"
           result (#'user/extract-messages raw)]
       (is (= 1 (count result)))
       (is (= :agent-2 (:from (first result))))

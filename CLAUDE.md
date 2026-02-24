@@ -30,16 +30,16 @@ The **completion wrapper** `(quine completion (eval (do ...)))` is the standard 
 
 The **trailing expression** is the last expression in the completion wrapper's `do` block. Because of double evaluation, the trailing expression is special — it is the only expression whose return value gets evaluated again by the outer `eval`.
 
-The **trailing expression pattern** is the practice of quoting the trailing expression (e.g., `'(extend completion)`, `'(call-now ...)`, `'(agents/ask target)`). This works because:
+The **trailing expression pattern** is the practice of quoting the trailing expression (e.g., `'(!extend completion)`, `'(!call-now ...)`, `'(agents/!ask target)`). This works because:
 
-- **Quoted trailing expressions execute via double evaluation**: `'(llm ...)` as the trailing expression returns a list from `do`. The outer `eval` evaluates this list, actually calling `llm`. Same for `'(recv)`, `'(call-now ...)`, etc.
+- **Quoted trailing expressions execute via double evaluation**: `'(!llm-self ...)` as the trailing expression returns a list from `do`. The outer `eval` evaluates this list, actually calling `!llm-self`. Same for `'(!call-now ...)`, etc.
 - **Extensions make previous trailing expressions inert**: When a new expression is appended (by a message or extension), the previously-quoted expression is no longer last. The quote makes it return data (discarded as an intermediate value). Only the new trailing expression is double-evaluated by the outer `eval`.
 - **Context window visibility**: Even discarded intermediate expressions remain in the source code. The LLM reads them in its context window (via the `completion` binding or prefix text), even without programmatic bindings. In Spell, anything in the source code is visible to the LLM regardless of environment bindings.
 
-### Think / Rethink / Extend (Context Pruning)
-`think`, `rethink`, and `extend` are macros for managing chains of thought. `(think "label" body...)` marks a reasoning step — evaluates body, returns nil. `(rethink "label" body...)` replaces the previous sibling expression at the source level (pruning it when the completion is next extended). `(rethink N "label" body...)` prunes N previous siblings. `(extend completion)` prunes all rethought expressions from the completion and calls `llm-self` to continue with clean context.
+### Think / Rethink / !extend (Context Pruning)
+`think`, `rethink`, and `!extend` are macros for managing chains of thought. `(think "label" body...)` marks a reasoning step — evaluates body, returns nil. `(rethink "label" body...)` replaces the previous sibling expression at the source level (pruning it when the completion is next extended). `(rethink N "label" body...)` prunes N previous siblings. `(!extend completion)` prunes all rethought expressions from the completion and calls `!llm-self` to continue with clean context.
 
-Pruning is recursive (walks the full AST) and respects list structure: only argument-position siblings are prunable, never the operator. `call-now`, `print`, and `describe` also prune rethinks automatically when extending (they use `prune-and-reopen` internally).
+Pruning is recursive (walks the full AST) and respects list structure: only argument-position siblings are prunable, never the operator. `!call-now`, `!print`, and `!describe` also prune rethinks automatically when extending (they use `prune-and-reopen` internally).
 
 The `prune-and-reopen` builtin destructures a quine form, runs `prune-rethinks` on its AST, and rebuilds an open prefix string. Unlike `reopen` (which strips exactly 3 trailing parens), `prune-and-reopen` rebuilds the prefix from the pruned AST directly.
 
@@ -69,13 +69,13 @@ Access with qualified symbols — no import needed:
 
 Namespace structure (simple maps with `:guide`, `:docs`, optional `:detail`, and items):
 ```clojure
-{:guide "MYNS — terse overview for (describe myns)"
+{:guide "MYNS — terse overview for (!describe myns)"
  :docs {:bash "Short one-liner for system prompt listing"}
- :detail {:bash "Detailed multi-line doc with usage examples for (describe myns :bash)"}
+ :detail {:bash "Detailed multi-line doc with usage examples for (!describe myns :bash)"}
  :bash run-bash}
 ```
 
-`describe` lookup: `(describe ns)` returns `:guide` (terse overview). `(describe ns :key)` checks `:detail` first, then `:docs`, then raw key. The `:docs` one-liners are used by `namespaces-section` for the system prompt listing; `:detail` provides expanded per-function documentation.
+`describe` lookup: `(describe-fn ns)` returns `:guide` (terse overview). `(describe-fn ns :key)` checks `:detail` first, then `:docs`, then raw key. The `:docs` one-liners are used by `namespaces-section` for the system prompt listing; `:detail` provides expanded per-function documentation.
 
 `make-llm` accepts a `:namespaces` map (effect namespaces only — core namespaces are automatic) and a `:provider`:
 ```clojure
@@ -84,21 +84,21 @@ Namespace structure (simple maps with `:guide`, `:docs`, optional `:detail`, and
            :model "..."})
 ```
 
-`describe` is a Spell macro that produces an extension (like `call-now`). The child LLM sees the docs as a literal in its continuation:
+`!describe` is a Spell macro that produces an extension (like `!call-now`). The child LLM sees the docs as a literal in its continuation:
 ```clojure
-'(describe io)           ; extension: child sees terse namespace overview
-'(describe io :bash)     ; extension: child sees detailed function doc
-'(describe io :guide)    ; extension: child sees guide text (same as describe io)
+'(!describe io)           ; extension: child sees terse namespace overview
+'(!describe io :bash)     ; extension: child sees detailed function doc
+'(!describe io :guide)    ; extension: child sees guide text (same as !describe io)
 ```
 `describe-fn` is the pure function underneath (available in builtins for direct access).
 
 Qualified symbols work recursively: `outer/inner/item` looks up `:inner` in `outer`, then `:item` in that.
 
 ### Concurrency
-Two concurrency patterns: **serial llm-self** (child inherits your handle, entire call tree is one logical agent) and **agents/spawn** (new handle, independent agent, communicates via `agents/ask`). `plet`/`futures/pmap`/`future` are for deterministic parallel computation only — never for LLM calls (they'd share the parent handle and contend over the box). This invariant guarantees deadlock freedom: same-handle trees are serial (can't self-deadlock), and cross-handle dependencies use `agents/ask` (which always wakes the target).
+Two concurrency patterns: **serial !llm-self** (child inherits your handle, entire call tree is one logical agent) and **agents/spawn** (new handle, independent agent, communicates via `agents/!ask`). `plet`/`futures/pmap`/`future` are for deterministic parallel computation only — never for LLM calls (they'd share the parent handle and contend over the box). This invariant guarantees deadlock freedom: same-handle trees are serial (can't self-deadlock), and cross-handle dependencies use `agents/!ask` (which always wakes the target).
 
 ### Communication (agents/ namespace)
-`agents/ask` enables request-reply message passing between concurrent agents. `(agents/ask target msg)` sends a message and blocks for reply; `(agents/ask target)` pokes target and blocks (no message); `(agents/ask [a b c])` multi-target ask — pokes all targets, first reply wins. Every form of ask wakes the target, preventing deadlocks. `agents/send` sends a value to a target with auto-tagged sender. `agents/send-msg-fn` is low-level fire-and-forget. `agents/spawn` starts an agent in a background future. Handles are keywords (`:agent-42`) — self-evaluating, safe through serialization. `agents/parent-handle` lets spawned children find their parent automatically. `globals/` provides shared state visible to all agents (pre-initialized with `:roles` and `:tasks`).
+`agents/!ask` enables request-reply message passing between concurrent agents. `(agents/!ask target msg)` sends a message and blocks for reply; `(agents/!ask target)` pokes target and blocks (no message); `(agents/!ask [a b c])` multi-target ask — pokes all targets, first reply wins. Every form of !ask wakes the target, preventing deadlocks. `agents/send` sends a value to a target with auto-tagged sender. `agents/send-msg-fn` is low-level fire-and-forget. `agents/spawn` starts an agent in a background future. Handles are keywords (`:agent-42`) — self-evaluating, safe through serialization. `agents/parent-handle` lets spawned children find their parent automatically. `globals/` provides shared state visible to all agents (pre-initialized with `:roles` and `:tasks`).
 
 Messages arrive as def bindings: `(def msg-N {:from sender :body val})`. Special handles: `:main` (initial agent), `:user` (human operator in interactive sessions — check `(globals/get :roles)` for availability).
 
@@ -144,17 +144,17 @@ Programs return the value of their last expression (standard Lisp semantics). No
 
 Core interpreter and tooling complete (461 tests, 1772 assertions). 13 special forms, 26 macros (via `defspellmacro`), user-defined macros via `defmacro`.
 
-**Language features:** Vector destructuring (`&` rest, `:as`), dynamic scoping, `try`/`catch`/`throw`, `future`/`await`/`plet`, `loop`/`recur` (including fn-level), `think`/`rethink`/`extend` (context pruning), `compact` (context compaction), `quine` (self-referential code).
+**Language features:** Vector destructuring (`&` rest, `:as`), dynamic scoping, `try`/`catch`/`throw`, `future`/`await`/`plet`, `loop`/`recur` (including fn-level), `think`/`rethink`/`!extend` (context pruning), `!compact` (context compaction), `quine` (self-referential code).
 
 **Two-category namespace system:** Core namespaces (strings, math, builtins) always available; effect namespaces (io, globals, agents, futures, patterns, llms) gated through `eval` builtin's double evaluation. The `eval` builtin is per-agent (not a special form) — merges effect namespaces with pure builtins; effects only available in trailing expression.
 
-**Inter-agent communication:** `agents/spawn`, `agents/ask` (single, multi-target, and ask-all), `agents/send`, `agents/reply`, `agents/reply-ask`, `agents/spawn-ask`, `agents/register`. Keyword handles, message preemption, `globals/` namespace for shared state with `wait-until`.
+**Inter-agent communication:** `agents/spawn`, `agents/!ask` (single, multi-target, and ask-all), `agents/send`, `agents/reply`, `agents/!reply-ask`, `agents/!spawn-ask`, `agents/register`. Keyword handles, message preemption, `globals/` namespace for shared state with `wait-until`.
 
 **Providers:** Anthropic (with prompt caching), OpenAI (with Responses API), Ollama, Kimi — unified `-m provider:model` CLI syntax. Provider-in-closure architecture; declarative `.provider.edn` files. No-prefill mode for OpenAI; extended thinking support.
 
 **CLI:** `-t` (test), `-m` (model), `-a` (agent), `-v` (verbose), `-d` (depth), `-b` (budget), `-R` (reasoning-effort), `-e` (example), `-M` (max-tokens), `-K` (thinking), `-T` (trace), `-l` (log), `-S` (setup), `-C` (cleanup). Accepts `.spl` files and `.agent.edn` agents. Auto-wraps NL prompts into code prefixes.
 
-**Entry point:** `api/run` accepts `:prompt` (NL) or `:init` (Spell program). `build-init` wraps prompts into `(quine completion (eval (do (quine prompt "...") '(extend))))`. Agent `.edn` files support `:init` preamble, `:llms` sub-agent variants, `:provider` threading, `:retries`. Budget limit default $1.00 (`-b 0` for unlimited).
+**Entry point:** `api/run` accepts `:prompt` (NL) or `:init` (Spell program). `build-init` wraps prompts into `(quine completion (eval (do (quine prompt "...") '(!extend))))`. Agent `.edn` files support `:init` preamble, `:llms` sub-agent variants, `:provider` threading, `:retries`. Budget limit default $1.00 (`-b 0` for unlimited).
 
 **Next priorities** (see `notebook/TODO.md`):
 - MCP support (#30)
@@ -163,11 +163,11 @@ Core interpreter and tooling complete (461 tests, 1772 assertions). 13 special f
 - Consider demoting `for` to macro (#80)
 - Implement orchestration patterns (#94)
 - Document that bare `send` causes agent to return (#114)
-- Document special handles in `(describe agents)` (#116)
+- Document special handles in `(!describe agents)` (#116)
 
 **Key insight:** The `llm` function uses prompt-as-prefix semantics — the prompt string is sent as both the user message and the assistant prefix, so the response continues the prompt as code. Natural-language prompts are wrapped in the completion wrapper `(quine completion (eval (do ...)))`, giving the program access to its own source as data via the `completion` binding. The `eval` builtin evaluates in the caller's environment (dynamic scoping makes expansion redundant).
 
-**Architecture:** 5-component design: (1) `spell-eval` — pure evaluator, (2) `eval` builtin — per-agent effectful evaluator via `make-inbox-fn` (closes over dangerous tools), (3) `box` — universal execution primitive in `comm.clj`; single point of interaction between local and global state, handles root detection via `(not= parent-handle handle)`, balance-parens, inbox drain, and lifecycle (notifier-based completion signals, orphan-box), (4) `-llm` — thin wrapper that makes the API call and delivers to box, (5) `api/run` — single entry point that wires agent config, init program, and dynamic vars. `make-llm` constructs the configuration and returns `{:llm the-llm, :run run-init}` — `:llm` is the callable LLM function, `:run` evaluates a complete init program through box without an API call. Provider closes into `make-llm`'s `call-fn` — no global dynamic var. Each agent can specify its own `:provider` in `.agent.edn` (path to `.provider.edn` or inline map); sub-agents inherit from parent unless overridden. `build-init` constructs init programs from prompts: `(quine completion (eval (do (quine prompt "...") '(extend))))`. `agent/make-agent-llm` is the unified factory that resolves agent configs into `{:llm, :run}` maps, threading `:provider` through `resolve-llms` → `build-llm-from-spec` → `make-llm`. Core namespaces (strings, math, builtins) are defined in `llm.clj` as `core-namespaces` and always merged into variant-builtins. Effect namespaces are passed via `:namespaces` and documented dynamically via `compose-system-prompt`. Agent `.edn` files support `:init` field for preamble expressions spliced before the trailing `'(extend)`. Agent coordination uses `:completed` promises with `realized?`-gated signal capture; `ask` installs notifiers via `install-completion-notifier`; `ask-all` uses `install-persistent-notifier` to wait for all targets' `:completed` promises.
+**Architecture:** 5-component design: (1) `spell-eval` — pure evaluator, (2) `eval` builtin — per-agent effectful evaluator via `make-inbox-fn` (closes over dangerous tools), (3) `box` — universal execution primitive in `comm.clj`; single point of interaction between local and global state, handles root detection via `(not= parent-handle handle)`, balance-parens, inbox drain, and lifecycle (notifier-based completion signals, orphan-box), (4) `-llm` — thin wrapper that makes the API call and delivers to box, (5) `api/run` — single entry point that wires agent config, init program, and dynamic vars. `make-llm` constructs the configuration and returns `{:llm the-llm, :run run-init}` — `:llm` is the callable LLM function, `:run` evaluates a complete init program through box without an API call. Provider closes into `make-llm`'s `call-fn` — no global dynamic var. Each agent can specify its own `:provider` in `.agent.edn` (path to `.provider.edn` or inline map); sub-agents inherit from parent unless overridden. `build-init` constructs init programs from prompts: `(quine completion (eval (do (quine prompt "...") '(!extend))))`. `agent/make-agent-llm` is the unified factory that resolves agent configs into `{:llm, :run}` maps, threading `:provider` through `resolve-llms` → `build-llm-from-spec` → `make-llm`. Core namespaces (strings, math, builtins) are defined in `llm.clj` as `core-namespaces` and always merged into variant-builtins. Effect namespaces are passed via `:namespaces` and documented dynamically via `compose-system-prompt`. Agent `.edn` files support `:init` field for preamble expressions spliced before the trailing `'(!extend)`. Agent coordination uses `:completed` promises with `realized?`-gated signal capture; `!ask` installs notifiers via `install-completion-notifier`; `ask-all` uses `install-persistent-notifier` to wait for all targets' `:completed` promises.
 
 ## Development Principles
 

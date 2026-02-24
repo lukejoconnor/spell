@@ -174,40 +174,40 @@
                             (mapcat (fn [step] [g step]) (butlast steps))))
                [(last steps)])))))
 
-;; call-now: (call-now name expr) or (call-now name expr limit)
-;;           (call-now name1 expr1 name2 expr2 ...) — multi-binding
+;; !call-now: (!call-now name expr) or (!call-now name expr limit)
+;;            (!call-now name1 expr1 name2 expr2 ...) — multi-binding
 ;; Sugar for evaluate-then-extend. No effect guard exception — respects double evaluation.
 ;; Optional limit controls inline threshold for serialize (default: call-now-inline-limit).
 ;; Negative limit means always inline (no out-of-band storage).
 ;; Multi-binding evaluates all exprs, then extends with all bindings in one turn.
-(defspellmacro 'call-now
+(defspellmacro '!call-now
   (fn [& args]
     (cond
-      ;; Single binding: (call-now name expr)
+      ;; Single binding: (!call-now name expr)
       (= (count args) 2)
       (let [[name-sym val-expr] args
             temp (gensym "call-now__")]
         (list 'let [temp val-expr]
-              (list 'llm-self
+              (list '!llm-self
                     (list 'str
                           (list 'prune-and-reopen 'completion)
                           (str "(def " name-sym " ")
                           (list 'serialize temp)
                           ") "))))
 
-      ;; Single binding with limit: (call-now name expr limit)
+      ;; Single binding with limit: (!call-now name expr limit)
       (= (count args) 3)
       (let [[name-sym val-expr limit] args
             temp (gensym "call-now__")]
         (list 'let [temp val-expr]
-              (list 'llm-self
+              (list '!llm-self
                     (list 'str
                           (list 'prune-and-reopen 'completion)
                           (str "(def " name-sym " ")
                           (list 'serialize temp limit)
                           ") "))))
 
-      ;; Multi-binding: (call-now name1 expr1 name2 expr2 ...)
+      ;; Multi-binding: (!call-now name1 expr1 name2 expr2 ...)
       (and (even? (count args)) (>= (count args) 4))
       (let [pairs (partition 2 args)
             temps (map (fn [[name-sym _]] (gensym (str "call-now-" name-sym "__"))) pairs)
@@ -218,13 +218,13 @@
                                  ") "])
                               temps pairs)]
         (list 'let let-bindings
-              (list 'llm-self
+              (list '!llm-self
                     (list* 'str
                            (list 'prune-and-reopen 'completion)
                            str-parts))))
 
       :else
-      (throw (ex-info "call-now: expected 2 args (name expr), 3 args (name expr limit), or even >= 4 args (name1 expr1 name2 expr2 ...)"
+      (throw (ex-info "!call-now: expected 2 args (name expr), 3 args (name expr limit), or even >= 4 args (name1 expr1 name2 expr2 ...)"
                       {:args-count (count args)})))))
 
 ;; =============================================================================
@@ -268,16 +268,16 @@
       (list 'let fut-bindings
             (list* 'let await-bindings body)))))
 
-;; print: (print expr...) — evaluate exprs, extend completion with bare serialized values.
-;; Like (call-now x x) but without creating a binding — values appear as
+;; !print: (!print expr...) — evaluate exprs, extend completion with bare serialized values.
+;; Like (!call-now x x) but without creating a binding — values appear as
 ;; literals in the continuation so the LLM can see them.
-(defspellmacro 'print
+(defspellmacro '!print
   (fn [& val-exprs]
     (let [temps (mapv (fn [_] (gensym "print__")) val-exprs)
           bindings (vec (mapcat vector temps val-exprs))
           serialized (map (fn [t] (list 'serialize t)) temps)]
       (list 'let bindings
-            (list 'llm-self
+            (list '!llm-self
                   (list* 'str
                          (list 'prune-and-reopen 'completion)
                          (concat (interpose " " serialized) [" "])))))))
@@ -294,30 +294,30 @@
   (fn [name-sym params & body]
     (list 'def name-sym {:spell/macro true :expander (list* 'fn params body)})))
 
-;; describe: produces an extension with namespace docs
-;;   (describe ns)           — guide (or docs if no guide)
-;;   (describe ns :key)      — doc for specific item
-;;   (describe ns1 ns2 ...)  — multiple namespaces in one turn
-;; Expands to (print ...) so the child LLM sees the docs as a literal.
-(defspellmacro 'describe
+;; !describe: produces an extension with namespace docs
+;;   (!describe ns)           — guide (or docs if no guide)
+;;   (!describe ns :key)      — doc for specific item
+;;   (!describe ns1 ns2 ...)  — multiple namespaces in one turn
+;; Expands to (!print ...) so the child LLM sees the docs as a literal.
+(defspellmacro '!describe
   (fn [& args]
     (cond
-      ;; (describe ns)
+      ;; (!describe ns)
       (= 1 (count args))
-      (list 'print (list 'describe-fn (first args)))
+      (list '!print (list 'describe-fn (first args)))
 
-      ;; (describe ns :key) — keyword means key lookup
+      ;; (!describe ns :key) — keyword means key lookup
       (and (= 2 (count args)) (keyword? (second args)))
-      (list 'print (list 'describe-fn (first args) (second args)))
+      (list '!print (list 'describe-fn (first args) (second args)))
 
-      ;; (describe ns1 ns2 ...) — multi-namespace
+      ;; (!describe ns1 ns2 ...) — multi-namespace
       :else
       (let [parts (mapcat (fn [ns-sym]
                             [(str "## " ns-sym "\n")
                              (list 'describe-fn ns-sym)
                              "\n\n"])
                           args)]
-        (list 'print (list* 'cat parts))))))
+        (list '!print (list* 'cat parts))))))
 
 ;; ->: (-> x (f a) (g b)) -> (g (f x a) b)
 (defspellmacro '->
@@ -411,23 +411,23 @@
         (list* 'do (concat body [nil]))
         nil))))
 
-;; extend: (extend completion) — prune rethinks and continue via llm-self
-(defspellmacro 'extend
+;; !extend: (!extend completion) — prune rethinks and continue via !llm-self
+(defspellmacro '!extend
   (fn
-    ([] (list 'llm-self (list 'prune-and-reopen 'completion)))
-    ([comp-sym] (list 'llm-self (list 'prune-and-reopen comp-sym)))))
+    ([] (list '!llm-self (list 'prune-and-reopen 'completion)))
+    ([comp-sym] (list '!llm-self (list 'prune-and-reopen comp-sym)))))
 
-;; compact: (compact completion) — prune rethinks, append compaction instructions, continue via llm-self
-;; Prefix ends with '(llm-self (wrap-cat — LLM writes quoted forms, balance-parens closes everything.
+;; !compact: (!compact completion) — prune rethinks, append compaction instructions, continue via !llm-self
+;; Prefix ends with '(!llm-self (wrap-cat — LLM writes quoted forms, balance-parens closes everything.
 (def ^:private compact-suffix
   (str "(think \"=compact= Compact your context into the wrap-cat below. "
        "Each argument is a QUOTED form: '(def x 1) '(think \\\"label\\\" ...) etc. "
        "For large values: (list 'def 'x (deep-truncate x 500)). "
        "Preserve =compact:N= markers. Drop routine thinks; keep decisions/key defs. "
        "Just write the forms — closing parens and continuation are automatic.\" nil) "
-       "'(llm-self (wrap-cat "))
+       "'(!llm-self (wrap-cat "))
 
-(defspellmacro 'compact
+(defspellmacro '!compact
   (fn [comp-sym]
-    (list 'llm-self
+    (list '!llm-self
       (list 'str (list 'prune-and-reopen comp-sym) compact-suffix))))

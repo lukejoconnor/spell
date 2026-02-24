@@ -244,7 +244,7 @@
                        (user-self comm/*current-eval-fn*
                                   comm/*current-handle* comm/*current-handle* prompt-str))
         ;; Effect builtins: llm-self (user-self) + agents namespace
-        effect-builtins {'llm-self user-self-fn
+        effect-builtins {'!llm-self user-self-fn
                          'agents comm/agents-namespace}
         eval-builtin (llm/make-eval variant-builtins effect-builtins)
         config {:variant-builtins variant-builtins

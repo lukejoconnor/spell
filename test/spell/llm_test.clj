@@ -37,7 +37,7 @@
   (testing "llm can call llm recursively (llm is effect-only)"
     ;; llm is an effect-builtin — must go through eval's second pass
     (let [call-count (atom 0)
-          responses ["'(cat \"hello \" (llm-self \"(eval '(do \"))"
+          responses ["'(cat \"hello \" (!llm-self \"(eval '(do \"))"
                      "\"world\"))"]]
       (let [{:keys [llm]} (th/make-test-llm
                             {:response-fn (fn [_]
@@ -178,7 +178,7 @@
                           {:response-fn (fn [_]
                                           (let [n (swap! call-count inc)]
                                             (if (= n 1)
-                                              "(eval (do '(cat \"outer-\" (llm-self \"(do \"))))"
+                                              "(eval (do '(cat \"outer-\" (!llm-self \"(do \"))))"
                                               "\"inner-result\"")))}
                           :namespaces {})]
       (is (= "outer-inner-result" (llm "(do "))))))

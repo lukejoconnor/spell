@@ -90,7 +90,7 @@
               recovery-arg (list 'eval
                              (list 'do
                                (list 'def '_error error-map)
-                               (list 'quote (list 'extend 'completion))))
+                               (list 'quote (list '!extend 'completion))))
               recovery-quine (apply list (concat (seq program) [recovery-arg]))
               indent (apply str (repeat eval/*llm-depth* "  "))
               _     (eval/vlog (str indent "Recovery quine: " (pr-str recovery-quine)))
@@ -118,7 +118,7 @@
                          (list 'eval
                            (list 'do
                              (list 'def '_error error-map)
-                             (list 'quote (list 'extend 'completion)))))
+                             (list 'quote (list '!extend 'completion)))))
         result    (binding [eval/*llm-depth* (inc eval/*llm-depth*)
                             eval/*raw-text*  nil
                             eval/*builtins*  variant-builtins]
@@ -281,7 +281,7 @@
 
    Returns a map {:llm fn, :run fn}.
 
-   The returned function is automatically available as 'llm-self in Spell code,
+   The returned function is automatically available as '!llm-self in Spell code,
    providing self-recursion without needing to wire up var refs."
   [{:keys [namespaces provider model system llm-var recover format prefill? thinking reasoning-effort verbosity]
     :or {namespaces {} model nil recover true prefill? true}}]
@@ -331,8 +331,8 @@
                    (when-not (comm/handle? handle)
                      (throw (ex-info "Explicit handle requires spawn context" {:handle handle})))
                    (@self-ref prompt handle)))
-        ;; Create effect-builtins (closes over llm-self)
-        effect-builtins (merge {'llm-self self-fn
+        ;; Create effect-builtins (closes over !llm-self)
+        effect-builtins (merge {'!llm-self self-fn
                                'leaf-llm (make-leaf-llm (cond-> {}
                                                           provider (assoc :provider provider)
                                                           model (assoc :model model)))}
@@ -389,7 +389,7 @@
    (str "(quine completion (eval (do "
         "(quine prompt \"" (parse/escape-string (str prompt)) "\") "
         (when preamble (str preamble " "))
-        "'(extend))))")))
+        "'(!extend))))")))
 
 ;; ---------------------------------------------------------------------------
 ;; Leaf LLM

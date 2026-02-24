@@ -16,8 +16,8 @@
 
 (deftest run-prompt-test
   (testing "run with :prompt triggers LLM call and returns result"
-    ;; build-init wraps "Return 42" into a quine with '(extend).
-    ;; extend calls llm-self which calls the provider.
+    ;; build-init wraps "Return 42" into a quine with '(!extend).
+    ;; !extend calls !llm-self which calls the provider.
     ;; The response completes the program.
     (let [p (provider/dummy-provider {:response "(def x 42))"})
           result (api/run {:prompt "Return 42"
@@ -75,13 +75,13 @@
       (is (= 42 (:result result)))
       (is (= 0 @call-count))))
 
-  (testing "init with extend triggers LLM call"
+  (testing "init with !extend triggers LLM call"
     (let [call-count (atom 0)
           p (provider/dummy-provider
               {:response-fn (fn [_]
                               (swap! call-count inc)
                               "(def answer 42))")})
-          result (api/run {:init "(quine completion (eval (do '(extend))))"
+          result (api/run {:init "(quine completion (eval (do '(!extend))))"
                            :provider p})]
       (is (= 42 (:result result)))
       (is (= 1 @call-count)))))

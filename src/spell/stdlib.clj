@@ -260,7 +260,7 @@ clean-prompt: Cleans up a raw prompt (voice-to-text, quick notes) via leaf-llm, 
   Accepts a string or quine form (serializes non-strings automatically).
 
 explore: One-shot delegation to a child exploration agent. Spawns a child that greps, reads, and analyzes, then returns structured findings.
-  '(call-now findings (patterns/explore \"Where is authentication handled?\"))
+  '(!call-now findings (patterns/explore \"Where is authentication handled?\"))
   Returns {:answer \"...\" :files [\"src/auth.py\" ...]}\""
    :docs {:check-result "(patterns/check-result prompt answer) — verify answer with leaf-llm, returns {:ok answer} or {:wrong msg}"
           :clean-prompt "(patterns/clean-prompt raw-prompt) — clean up raw prompt via leaf-llm and execute it"
@@ -282,7 +282,7 @@ explore: One-shot delegation to a child exploration agent. Spawns a child that g
                                        (if (strings/starts-with? trimmed "WRONG:")
                                          (strings/subs trimmed 6)
                                          trimmed))})))}
-   ;; clean-prompt: clean up raw text via leaf-llm, then execute with llm-self
+   ;; clean-prompt: clean up raw text via leaf-llm, then execute with !llm-self
    :clean-prompt {:spell/fn true
                   :params ['raw]
                   :body '((let [text (if (string? raw) raw (pr-str raw))
@@ -291,11 +291,11 @@ explore: One-shot delegation to a child exploration agent. Spawns a child that g
                                                        "The input may be wrapped in code syntax — ignore that and focus on the natural language content. "
                                                        "Output ONLY the rewritten prompt.\n\n"
                                                        text))]
-                            (llm-self cleaned)))}
+                            (!llm-self cleaned)))}
    ;; explore: one-shot delegation to a child exploration agent
    :explore {:spell/fn true
              :params ['query]
-             :body '((agents/spawn-ask llm-self
+             :body '((agents/!spawn-ask !llm-self
                        (cat "You are an exploration agent. Your task is to investigate the codebase and return structured findings.\n\n"
                             "Use io/sh with grep, find, and io/read-file or io/read-lines to explore.\n"
                             "Return a map with :answer (string summary) and :files (vector of relevant file paths).\n\n"
@@ -312,8 +312,8 @@ explore: One-shot delegation to a child exploration agent. Spawns a child that g
 
 Categories (use (describe builtins :category) for full listing):
   special-forms — quote, def, do, if, let, fn, expand, quine, loop, recur, for, try
-  macros        — when, defn, cond, case, ->, ->>, call-now, print, describe, think/rethink/extend, ...
-  effect        — eval, llm-self, leaf-llm, describe-fn, llm (trailing expression only)
+  macros        — when, defn, cond, case, ->, ->>, !call-now, !print, !describe, think/rethink/!extend, ...
+  effect        — eval, !llm-self, leaf-llm, describe-fn, llm (trailing expression only)
   math          — +, -, *, /, inc, dec, mod, abs, max, min, floor, ceil, rand, ...
   comparison    — <, >, =, not, nil?, empty?, identity, ...
   types         — string?, number?, vector?, map?, fn?, keyword?, name, type, int, double, ...
@@ -327,12 +327,12 @@ Categories (use (describe builtins :category) for full listing):
   concurrency   — future*, await
   error         — throw, gensym
 
-For namespace functions (io/, agents/, globals/, futures/, strings/, math/, patterns/), use (describe <namespace>).
-Use (describe builtins :fn-name) for individual function docs."
+For namespace functions (io/, agents/, globals/, futures/, strings/, math/, patterns/), use (!describe <namespace>).
+Use (!describe builtins :fn-name) for individual function docs."
    :docs {:_ "Core builtins — (describe builtins) for overview, (describe builtins :category) for category listing."
           :special-forms "quote def do if let fn fn* expand quine loop recur for try"
-          :macros "when defn and or cond if-let when-let case as-> cond-> cond->> some-> some->> call-now -> ->> future plet print define defmacro describe think rethink extend compact"
-          :effect "eval llm-self leaf-llm describe-fn llm"
+          :macros "when defn and or cond if-let when-let case as-> cond-> cond->> some-> some->> !call-now -> ->> future plet !print define defmacro !describe think rethink !extend !compact"
+          :effect "eval !llm-self leaf-llm describe-fn llm"
           :math "+ - * / inc dec quot mod rem abs max min max-key min-key floor ceil rand rand-int rand-nth random-sample random-uuid +' -' *' inc' dec' parse-number even? odd? pos? neg? zero?"
           :comparison "< > <= >= = not= compare not nil? empty? some? true? false? any? identity"
           :types "string? number? list? seq? vector? set? map? fn? keyword? symbol? coll? sequential? int? boolean? name symbol keyword namespace type int long float double bigdec bigint rationalize parse-boolean boolean"
@@ -376,25 +376,25 @@ Use (describe builtins :fn-name) for individual function docs."
   cond->> — thread-last conditionally; applies each step only when its test is truthy
   some-> — thread-first with nil short-circuit; stops and returns nil on nil intermediate
   some->> — thread-last with nil short-circuit; stops and returns nil on nil intermediate
-  call-now — evaluate expr, extend completion with named binding; crosses the effect boundary
+  !call-now — evaluate expr, extend completion with named binding; crosses the effect boundary
   -> — thread-first; insert value as first argument through a chain of forms
   ->> — thread-last; insert value as last argument through a chain of forms
   future — wrap expr in a thunk and launch as a parallel future; returns a future handle
   plet — parallel let; launch all bindings as futures and await all before entering body
-  print — evaluate exprs, extend completion with their serialized values as visible literals
+  !print — evaluate exprs, extend completion with their serialized values as visible literals
   define — Scheme-style alias for def; binds a symbol to a value
   defmacro — define a user-level macro; expander receives unevaluated argument forms
-  describe — extend completion with namespace documentation; accepts ns or ns :key
+  !describe — extend completion with namespace documentation; accepts ns or ns :key
   think — label a reasoning step; evaluates body for side effects, returns nil
   rethink — like think but prunes N previous sibling expressions from source on extend
-  extend — prune rethink forms from the completion and continue execution via llm-self
-  compact — prune rethinks and prompt the LLM to compress its context via wrap-cat"
+  !extend — prune rethink forms from the completion and continue execution via !llm-self
+  !compact — prune rethinks and prompt the LLM to compress its context via wrap-cat"
 
     :effect
     "Per-agent effect builtins (available in trailing expression via double evaluation):
 
   eval — transparent evaluator; inverse of quote. Merges effect builtins with pure builtins
-  llm-self — call yourself recursively with a new prompt; child inherits your handle
+  !llm-self — call yourself recursively with a new prompt; child inherits your handle
   leaf-llm — plain text-in/text-out LLM call; no Spell parsing or evaluation, returns string
   describe-fn — retrieve documentation from a namespace: (describe-fn ns) or (describe-fn ns :key)
   llm — reference to the current LLM function (when available via :llm-var configuration)"
@@ -620,7 +620,7 @@ The completion wrapper is (quine completion (eval (do ...))).
 Stripping the 3 trailing parens reopens the do block for continuation.
 
 Example:
-  '(llm-self (reopen completion))  ;; child continues your do block"
+  '(!llm-self (reopen completion))  ;; child continues your do block"
 
     :wrap-cat
     "Build an open completion wrapper prefix from arguments.
@@ -631,13 +631,13 @@ Each argument is pr-str'd and joined with spaces. The result is the string:
   \"(quine completion (eval (do arg1-printed arg2-printed ... \"
 — an open prefix (no closing parens) that a child LLM continues.
 
-Use with llm-self to pass context to a child in a proper Spell wrapper:
-  '(llm-self (wrap-cat \"Analyze this:\" data))
+Use with !llm-self to pass context to a child in a proper Spell wrapper:
+  '(!llm-self (wrap-cat \"Analyze this:\" data))
   ;; child sees: (quine completion (eval (do \"Analyze this:\" {:key \"val\"} ...
   ;; and continues writing code from there
 
-Compare with passing a bare string to llm-self:
-  '(llm-self \"Analyze this\")
+Compare with passing a bare string to !llm-self:
+  '(!llm-self \"Analyze this\")
   ;; auto-wrapped: (quine completion (eval (do (quine prompt \"Analyze this\")
   ;; child sees the string as a quine-bound prompt
 
@@ -654,7 +654,7 @@ Unlike reopen (which just strips 3 trailing parens), prune-and-reopen:
 2. Removes expressions marked for pruning by rethink
 3. Rebuilds the prefix from the cleaned AST
 
-Used internally by call-now, print, describe, and extend."
+Used internally by !call-now, !print, !describe, and !extend."
 
     :serialize
     "Serialize a value for embedding in a continuation string.
@@ -694,28 +694,28 @@ Lower-level than reopen. Use reopen for the standard 3-paren case."
 
 (eval expr)
 
-Merges effect builtins (llm-self, leaf-llm, agents/, io/, globals/, futures/)
+Merges effect builtins (!llm-self, leaf-llm, agents/, io/, globals/, futures/)
 with pure builtins, then evaluates expr. This is what makes effect functions
 available in the trailing expression of the completion wrapper.
 
 The double evaluation pattern:
-  (quine completion (eval (do ... '(llm-self ...))))
+  (quine completion (eval (do ... '(!llm-self ...))))
   The do block returns the quoted list as data.
   eval evaluates it with effect functions bound."
 
-    :llm-self
+    :!llm-self
     "Call yourself recursively with a new prompt. Child inherits your handle
 (same logical agent, serial execution).
 
-(llm-self prompt)
-(llm-self prompt handle)
+(!llm-self prompt)
+(!llm-self prompt handle)
 
 prompt: string or open prefix. If a bare string, automatically wrapped in
 the completion wrapper. If already an open prefix (from reopen or wrap-cat),
 used as-is.
 
 The child writes Spell code that is parsed and evaluated. Use for:
-- Extending context (extend, compact)
+- Extending context (!extend, !compact)
 - Delegating computation to a child
 - Multi-step tool use chains
 
@@ -733,39 +733,39 @@ Use when you need a natural-language answer, judgment, or text generation
 rather than code execution. The response is returned as a string value.
 
 Example:
-  '(call-now answer (leaf-llm \"Is this a mammal? yes/no\"))
+  '(!call-now answer (leaf-llm \"Is this a mammal? yes/no\"))
   ;; answer is \"yes\" or \"no\" as a string"
 
     :describe-fn
-    "Retrieve documentation from a namespace. Pure function underlying the describe macro.
+    "Retrieve documentation from a namespace. Pure function underlying the !describe macro.
 
 (describe-fn ns)       — returns :guide if available, else :docs map
 (describe-fn ns :key)  — returns detailed doc for :key (checks :detail, then :docs)"
 
-    :call-now
+    :!call-now
     "Macro. Evaluate expr (which may use effect functions), bind result to name,
 and extend the completion so the child LLM continues with the binding in scope.
 
-'(call-now name expr)
+'(!call-now name expr)
 
 This is the primary tool-calling pattern. The expr is evaluated with effect
 functions available, the result is serialized as (def name result) in the
 continuation, and a child LLM turn begins.
 
 Example — tool call:
-  '(call-now files (io/sh \"ls\"))
+  '(!call-now files (io/sh \"ls\"))
   ;; next turn: files is bound to {:exit 0 :out \"...\" :err \"...\"}
 
 Example — inspect a computation:
-  '(call-now result (+ (* 3 17) (/ 100 4)))
+  '(!call-now result (+ (* 3 17) (/ 100 4)))
   ;; next turn: result is bound to 76"
 
-    :print
+    :!print
     "Macro. Evaluate exprs and place their serialized values as bare literals in the
-continuation — like call-now but without creating named bindings.
+continuation — like !call-now but without creating named bindings.
 
-'(print expr)
-'(print expr1 expr2 expr3)
+'(!print expr)
+'(!print expr1 expr2 expr3)
 
 Use to inspect values without polluting the namespace. Accepts any number of arguments."
 
@@ -796,23 +796,23 @@ N defaults to 1 (prune previous sibling). Specify N to prune more siblings.
 Example:
   (think \"Sum is n*(n+1) = 10100.\" (def total (* 100 101)))
   (rethink \"Wrong — formula is n*(n+1)/2.\" (def total (/ (* 100 101) 2)))
-  '(extend completion)
+  '(!extend completion)
   ;; child sees only the corrected think"
 
-    :extend
-    "Macro. Prune rethink-marked expressions from the completion and continue via llm-self.
+    :!extend
+    "Macro. Prune rethink-marked expressions from the completion and continue via !llm-self.
 
-'(extend completion)
+'(!extend completion)
 
-Calls prune-and-reopen on the completion, then llm-self with the cleaned prefix.
+Calls prune-and-reopen on the completion, then !llm-self with the cleaned prefix.
 Use after a rethink to continue with a shorter, corrected context."
 
-    :compact
+    :!compact
     "Macro. Prune rethinks, then prompt the LLM to compress its context.
 
-'(compact completion)
+'(!compact completion)
 
-Like extend but additionally asks the LLM to summarize/compress. Use when
+Like !extend but additionally asks the LLM to summarize/compress. Use when
 context has grown large and you want to continue from a shorter prefix."
 
     :defmacro

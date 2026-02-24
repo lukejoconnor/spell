@@ -198,7 +198,7 @@
 (deftest llm-nested-still-works-test
   (testing "nested llm calls work through box (llm is effect-only)"
     (let [call-count (atom 0)
-          responses ["'(cat \"hello \" (llm-self \"(eval (do \")))"
+          responses ["'(cat \"hello \" (!llm-self \"(eval (do \")))"
                      "'\"world\")))"]]
       (let [{:keys [llm]} (th/make-test-llm
                             {:response-fn (fn [_]
@@ -302,11 +302,11 @@
 ;; =============================================================================
 
 (deftest handle-inheritance-test
-  (testing "llm-self calls inherit the parent's handle"
-    ;; All effect builtins (agents/current-handle, llm-self) go through eval's second pass.
+  (testing "!llm-self calls inherit the parent's handle"
+    ;; All effect builtins (agents/current-handle, !llm-self) go through eval's second pass.
     (let [call-count (atom 0)
-          responses [;; Outer: use eval to access current-handle and llm-self via double-eval
-                     "'(list (agents/current-handle) (llm-self \"(eval (do \")))"
+          responses [;; Outer: use eval to access current-handle and !llm-self via double-eval
+                     "'(list (agents/current-handle) (!llm-self \"(eval (do \")))"
                      ;; Inner: return current-handle (via eval)
                      "'(agents/current-handle)))"]]
       (let [{:keys [llm]} (th/make-test-llm
@@ -338,10 +338,10 @@
   (testing "spawned agent sees spawner's handle via parent-handle"
     (let [call-count (atom 0)
           responses [;; Parent: all effect builtins via eval
-                     "'(let [my-h (agents/current-handle) child-result (llm-self \"(eval (do \")] (list my-h child-result)))"
-                     ;; Inner llm-self (inherits handle, not spawned): return nil for parent-handle
+                     "'(let [my-h (agents/current-handle) child-result (!llm-self \"(eval (do \")] (list my-h child-result)))"
+                     ;; Inner !llm-self (inherits handle, not spawned): return nil for parent-handle
                      "'(agents/parent-handle)))"]]
-      ;; First test: llm-self inherits handle, so parent-handle is nil (not spawned)
+      ;; First test: !llm-self inherits handle, so parent-handle is nil (not spawned)
       (let [{:keys [llm]} (th/make-test-llm
                             {:response-fn (fn [_]
                                             (let [r (nth responses @call-count)]
@@ -392,10 +392,10 @@
 
 (deftest spawn-addressable-test
   (testing "spawned agent can be sent to (handle is registered)"
-    ;; spawn and llm-self are effect-builtins: accessed via eval double-evaluation.
+    ;; spawn and !llm-self are effect-builtins: accessed via eval double-evaluation.
     (let [call-count (atom 0)
-          responses [;; Outer: use eval to access spawn+llm-self via double-eval
-                     "(eval (do '(let [w (agents/spawn llm-self \"(do \")] (not (nil? w)))))"
+          responses [;; Outer: use eval to access spawn+!llm-self via double-eval
+                     "(eval (do '(let [w (agents/spawn !llm-self \"(do \")] (not (nil? w)))))"
                      ;; Worker: just return 77
                      "77)"]]
       (let [{:keys [llm]} (th/make-test-llm
@@ -660,9 +660,9 @@
 
 (deftest inbox-cas-seeds-when-empty-test
   (testing "inherited -llm seeds inbox when it's empty (no pending sends)"
-    ;; Simple recursive llm-self without any sends — should work as before
+    ;; Simple recursive !llm-self without any sends — should work as before
     (let [call-count (atom 0)
-          responses ["'(llm-self \"(eval (do \"))"
+          responses ["'(!llm-self \"(eval (do \"))"
                      "99))"]]
       (let [{:keys [llm]} (th/make-test-llm
                             {:response-fn (fn [_]
@@ -778,7 +778,7 @@
     (is (thrown-with-msg? Exception #"Unbound symbol: agents"
           (eval/run-spell '(agents/spawn identity "test"))))
     (is (thrown-with-msg? Exception #"Unbound symbol: agents"
-          (eval/run-spell '(agents/ask :nobody "hello"))))
+          (eval/run-spell '(agents/!ask :nobody "hello"))))
     (is (thrown-with-msg? Exception #"Unbound symbol: agents"
           (eval/run-spell '(agents/current-handle))))
     (is (thrown-with-msg? Exception #"Unbound symbol: agents"
@@ -838,7 +838,7 @@
 
 (deftest effect-guard-allows-in-second-pass-test
   (testing "dangerous fns work through double-evaluation (eval special form)"
-    ;; agents/ask resolves through eval double-evaluation but fails at runtime
-    (let [{:keys [llm]} (th/make-test-llm {:response "(agents/ask :nobody \"hello\")))"})]
+    ;; agents/!ask resolves through eval double-evaluation but fails at runtime
+    (let [{:keys [llm]} (th/make-test-llm {:response "(agents/!ask :nobody \"hello\")))"})]
       (is (thrown-with-msg? Exception #"not inside an agent context|not registered"
             (llm "(eval (do '"))))))

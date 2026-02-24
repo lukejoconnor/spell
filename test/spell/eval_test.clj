@@ -2445,20 +2445,20 @@
 ;; =============================================================================
 
 (deftest print-macro-expansion
-  (testing "print macro expands to let + llm-self with serialize"
-    (let [expanded (macros/spell-macroexpand-1 '(print (+ 1 2)))]
-      ;; Should be (let [temp (+ 1 2)] (llm-self (str (reopen completion) (serialize temp) " ")))
+  (testing "!print macro expands to let + !llm-self with serialize"
+    (let [expanded (macros/spell-macroexpand-1 '(!print (+ 1 2)))]
+      ;; Should be (let [temp (+ 1 2)] (!llm-self (str (reopen completion) (serialize temp) " ")))
       (is (= 'let (first expanded)))
       (let [body (nth expanded 2)]
-        (is (= 'llm-self (first body))))))
+        (is (= '!llm-self (first body))))))
 
-  (testing "print macro multi-arity"
-    (let [expanded (macros/spell-macroexpand-1 '(print a b c))]
+  (testing "!print macro multi-arity"
+    (let [expanded (macros/spell-macroexpand-1 '(!print a b c))]
       (is (= 'let (first expanded)))
       ;; bindings should have 6 elements (3 pairs)
       (is (= 6 (count (second expanded))))
       (let [body (nth expanded 2)]
-        (is (= 'llm-self (first body)))))))
+        (is (= '!llm-self (first body)))))))
 
 ;; =============================================================================
 ;; Think / Rethink / Extend
@@ -2545,11 +2545,11 @@
                    '(quine completion (eval (do
                       (think "A" (def x 1))
                       (rethink "B" (def x 2))
-                      (quote (extend completion))))))]
+                      (quote (!extend completion))))))]
       ;; Should prune think "A", convert rethink to think "B"
       (is (= '(quine completion (eval (do
                 (think "B" (def x 2))
-                (quote (extend completion)))))
+                (quote (!extend completion)))))
              result))))
 
   (testing "vectors are recursed into but not sibling-processed"
@@ -2561,7 +2561,7 @@
     (let [quine-form '(quine completion (eval (do
                          (think "A" (def x 1))
                          (rethink "B" (def x 2))
-                         (quote (extend completion)))))
+                         (quote (!extend completion)))))
           result (run-spell (list 'prune-and-reopen (list 'quote quine-form)))]
       ;; Should contain the pruned body as an open prefix
       (is (string? result))
@@ -2580,8 +2580,8 @@
 
   (testing "prune-and-reopen with multi-arg quine preserves inert args"
     (let [quine-form '(quine completion
-                        (eval (do (def x 1) (quote (extend completion))))
-                        (eval (do (rethink "fix" (def y 2)) (quote (extend completion)))))
+                        (eval (do (def x 1) (quote (!extend completion))))
+                        (eval (do (rethink "fix" (def y 2)) (quote (!extend completion)))))
           result (run-spell (list 'prune-and-reopen (list 'quote quine-form)))]
       ;; Should start with quine completion
       (is (string? result))
@@ -2598,9 +2598,9 @@
       (is (.contains ^String result "(def a 10)")))))
 
 (deftest extend-macro-expansion-test
-  (testing "extend expands to llm-self with prune-and-reopen"
-    (let [expanded (macros/spell-macroexpand-1 '(extend completion))]
-      (is (= 'llm-self (first expanded)))
+  (testing "!extend expands to !llm-self with prune-and-reopen"
+    (let [expanded (macros/spell-macroexpand-1 '(!extend completion))]
+      (is (= '!llm-self (first expanded)))
       (is (= '(prune-and-reopen completion) (second expanded))))))
 
 ;; =============================================================================
@@ -2676,20 +2676,20 @@
 ;; =============================================================================
 
 (deftest compact-macro-expansion-test
-  (testing "compact expands to llm-self with prune-and-reopen + compact instructions"
-    (let [expanded (macros/spell-macroexpand-1 '(compact completion))]
-      (is (= 'llm-self (first expanded)))
+  (testing "!compact expands to !llm-self with prune-and-reopen + compact instructions"
+    (let [expanded (macros/spell-macroexpand-1 '(!compact completion))]
+      (is (= '!llm-self (first expanded)))
       (is (seq? (second expanded)))
       (is (= 'str (first (second expanded))))
       (is (= '(prune-and-reopen completion) (second (second expanded))))))
 
-  (testing "compact suffix has llm-self/wrap-cat trailing expression"
-    (let [expanded (macros/spell-macroexpand-1 '(compact completion))
+  (testing "!compact suffix has !llm-self/wrap-cat trailing expression"
+    (let [expanded (macros/spell-macroexpand-1 '(!compact completion))
           suffix-str (nth (second expanded) 2)]
       (is (string? suffix-str))
       (is (clojure.string/includes? suffix-str "=compact="))
       (is (clojure.string/includes? suffix-str "deep-truncate"))
-      (is (clojure.string/includes? suffix-str "'(llm-self (wrap-cat ")))))
+      (is (clojure.string/includes? suffix-str "'(!llm-self (wrap-cat ")))))
 
 ;; =============================================================================
 ;; User-defined macros (defmacro)
