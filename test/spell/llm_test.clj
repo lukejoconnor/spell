@@ -399,6 +399,19 @@
                                           :base-url "https://api.openai.com/v1/"})]
       (is (= "https://api.openai.com/v1" (:base-url provider))))))
 
+(deftest openai-reasoning-defaults-test
+  (testing "defaults to high for reasoning-capable OpenAI model families"
+    (is (= "high" (#'provider/effective-openai-reasoning-effort "gpt-5.2" nil)))
+    (is (= "high" (#'provider/effective-openai-reasoning-effort "o4-mini" nil)))
+    (is (= "high" (#'provider/effective-openai-reasoning-effort "gpt-5.3-codex" nil))))
+
+  (testing "leaves non-reasoning model families unchanged"
+    (is (nil? (#'provider/effective-openai-reasoning-effort "gpt-4o" nil))))
+
+  (testing "explicit override wins over default"
+    (is (= "medium" (#'provider/effective-openai-reasoning-effort "gpt-5.2" "medium")))
+    (is (= "low" (#'provider/effective-openai-reasoning-effort "o3" "low")))))
+
 (deftest openai-parse-response-test
   (testing "parses successful chat completion"
     (let [response-body (json/write-str {:choices [{:message {:content "(def return 42))"}}]

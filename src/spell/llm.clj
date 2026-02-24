@@ -277,6 +277,8 @@
    - :thinking         - Anthropic adaptive thinking. When truthy, passed to provider opts.
                          Number = budget_tokens, true = default (10000).
    - :reasoning-effort - OpenAI reasoning effort (\"low\", \"medium\", \"high\").
+                         If omitted, providers default to \"high\" for reasoning-capable
+                         OpenAI model families (gpt-5/o-series/codex).
    - :verbosity        - OpenAI verbosity (\"low\", \"auto\").
 
    Returns a map {:llm fn, :run fn}.

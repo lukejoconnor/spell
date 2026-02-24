@@ -389,6 +389,23 @@
   [model]
   (some #(str/includes? model %) ["codex"]))
 
+(defn- reasoning-model?
+  "Does this OpenAI model family support reasoning effort controls?"
+  [model]
+  (let [m (str/lower-case (or model ""))]
+    (or (str/starts-with? m "gpt-5")
+        (str/starts-with? m "o1")
+        (str/starts-with? m "o3")
+        (str/starts-with? m "o4")
+        (str/includes? m "codex"))))
+
+(defn- effective-openai-reasoning-effort
+  "Use explicit reasoning effort when provided; otherwise default to high for reasoning models."
+  [model reasoning-effort]
+  (or reasoning-effort
+      (when (reasoning-model? model)
+        "high")))
+
 (defn- openai-responses-request [api-key base-url model prompt system-prompt max-tokens reasoning-effort verbosity]
   (let [reasoning (when reasoning-effort
                     {:effort reasoning-effort})
@@ -451,7 +468,7 @@
   (call-llm [_ prompt opts]
     (let [effective-model (or (:model opts) model)
           responses? (or use-responses-api (responses-model? effective-model))
-          reasoning-effort (:reasoning-effort opts)
+          reasoning-effort (effective-openai-reasoning-effort effective-model (:reasoning-effort opts))
           verbosity (:verbosity opts)
           request (if responses?
                     (openai-responses-request api-key base-url effective-model prompt (:system opts)
@@ -716,4 +733,3 @@
     (string? spec) (load-provider (resolve-path spec base-dir))
     (map? spec) (load-provider-from-map spec)
     :else (throw (ex-info "Invalid provider spec" {:spec spec}))))
-

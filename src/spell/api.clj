@@ -31,7 +31,7 @@
      :trace    — when true, record execution trace
      :prefill? — override provider prefill support
      :thinking — Anthropic adaptive thinking budget
-     :reasoning-effort — OpenAI reasoning effort
+     :reasoning-effort — OpenAI reasoning effort (defaults to high on reasoning-capable model families)
      :verbosity — OpenAI verbosity
      :retries  — API retry sleep durations
      :usage    — pre-created usage atom (default: fresh atom)"
