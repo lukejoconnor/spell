@@ -10,6 +10,14 @@
             [clojure.set :as set]))
 
 ;; =============================================================================
+;; Error message prefixes (shared with recovery.clj)
+;; =============================================================================
+
+(def unbound-symbol-prefix "Unbound symbol: ")
+(def namespace-lookup-prefix "Namespace lookup failed: ")
+(def fn-call-prefix "Function call failed: ")
+
+;; =============================================================================
 ;; Dynamic vars
 ;; =============================================================================
 
@@ -874,12 +882,12 @@
             (let [root-val (:ok root-result)
                   result (reduce #(get %1 (keyword %2)) root-val (rest parts))]
               (if (nil? result)
-                (err (str "Namespace lookup failed: " expr) env expr)
+                (err (str namespace-lookup-prefix expr) env expr)
                 (ok result (:env root-result))))))
         ;; Unqualified: lookup in env, fallback to *builtins*
         (if-let [entry (or (find env expr) (find (or *builtins* core-builtins) expr))]
           (ok (val entry) env)
-          (err (str "Unbound symbol: " expr) env expr))))
+          (err (str unbound-symbol-prefix expr) env expr))))
 
     ;; Vector: evaluate each element, threading env
     (vector? expr)
@@ -1145,12 +1153,12 @@
                   (let [thrown (get (ex-data ex) :spell/thrown)
                         ex-type (get (ex-data ex) :type)]
                     (cond
-                      ;; Resource limits — re-throw, not recoverable
-                      (#{:depth-exceeded :budget-exceeded} ex-type) (throw ex)
+                      ;; Typed exceptions — re-throw, not recoverable
+                      ex-type (throw ex)
                       ;; Spell throw — preserve thrown value for try/catch
                       thrown {:err (ex-message ex) :thrown thrown :env e :expr expr}
                       ;; Other errors — wrap as eval error
-                      :else (err (str "Function call failed: " (ex-message ex)) e expr)))))))
+                      :else (err (str fn-call-prefix (ex-message ex)) e expr)))))))
           (let [result (spell-eval (first remaining) e)]
             (if (err? result)
               result

@@ -1,0 +1,8 @@
+;; Default comparison agent using ChatGPT Codex mandatory tool-call provider.
+
+{:base spell:default
+ :name default-toolcall
+ :doc "Default agent with mandatory tool-call Codex provider"
+
+ :system {:file "../prompts/minimal-no-prefill-toolcall.txt"}
+ :provider {:file "../providers/chatgpt-codex-toolcall.provider.edn"}}

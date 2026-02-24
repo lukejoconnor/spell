@@ -1,5 +1,5 @@
-(ns spell.comm
-  "Inter-agent communication: ask/send/spawn primitives.
+(ns spell.runtime
+  "Agent runtime: box execution primitive, registry, message passing, spawn/ask.
 
    box is the universal execution primitive: it waits for a completion source,
    drains inbox transforms, and passes the result to an inside-fn. ask sends a
@@ -447,7 +447,7 @@
   (agents/ask [a b c])            — multi-target: poke all, wake when all complete
   (agents/reply-ask msg value)    — reply to msg, block for next message
   (agents/reply msg value)        — reply to msg (fire-and-forget, ends conversation)
-  (agents/send value target)      — send value to target with auto-tagged :from
+  (agents/send value target)      — send value to target with auto-tagged :from (trailing send ends your turn)
   (agents/spawn llm-fn prompt :name) — start background agent, returns handle
   (agents/spawn-ask llm-fn prompt :name) — spawn agent, block until it sends back
   (agents/current-handle)         — your handle (:main, :spawn-N, or named keyword)
@@ -471,7 +471,7 @@ Use (describe agents :fn-name) for detailed docs on any function."
           :ask "(agents/ask target message) — send message, block for reply; (agents/ask [a b c]) pokes all, waits for all to complete"
           :reply-ask "(agents/reply-ask msg value) — reply to msg, block for next message"
           :reply "(agents/reply msg value) — reply to msg, fire-and-forget"
-          :send "(agents/send value target) — send value with auto-tagged :from"
+          :send "(agents/send value target) — send value with auto-tagged :from; trailing send ends your turn"
           :spawn "(agents/spawn llm-fn prompt :name) — start background agent, returns handle. llm-fn must be llm-self (not leaf-llm)"
           :spawn-ask "(agents/spawn-ask llm-fn prompt :name) — spawn agent, block until it sends back. llm-fn must be llm-self (not leaf-llm)"
           :current-handle "(agents/current-handle) — your handle (:main, :spawn-N, or named keyword)"
@@ -564,6 +564,10 @@ The recipient sees (def msg-N {:from your-handle :body val}).
 
 Low-level primitive. Prefer ask/reply-ask/reply for conversations.
 Primary use: spawned child sending its result back to the parent.
+If send is your trailing expression, the message is sent and your turn ends.
+To continue after sending, use a trailing do with extend:
+  '(do (agents/send value target) (extend))
+or use reply-ask for request-reply conversations.
 
 Example (from a spawned child):
   '(agents/send 42 (agents/parent-handle))"
@@ -644,4 +648,3 @@ Internal plumbing for the communication layer."}
    :current-handle (fn [] *current-handle*)
    :parent-handle (fn [] (:parent-handle (get @registry *current-handle*)))
    :send-msg-fn send-msg-fn})
-

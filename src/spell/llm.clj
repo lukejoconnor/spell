@@ -3,7 +3,7 @@
 
    Core loop: call LLM, concatenate prefix+response, parse, eval."
   (:require [clojure.string :as str]
-            [spell.comm :as comm]
+            [spell.runtime :as runtime]
             [spell.eval :as eval]
             [spell.grammar :as grammar]
             [spell.parse :as parse]
@@ -203,7 +203,7 @@
   (when-not (string? completion)
     (throw (ex-info "register-agent: completion must be a string" {:got (type completion)})))
   (let [eval-fn (make-inbox-fn config (atom nil))]
-    (comm/start-box handle-name eval-fn completion)))
+    (runtime/start-box handle-name eval-fn completion)))
 
 (defn- -llm
   "Core llm engine: make API call, deliver to box.
@@ -234,8 +234,8 @@
     (try
       (let [result (binding [trace/*trace-node-id* node-id]
                      (if eval-fn
-                       (comm/run-root-box handle completion inside-fn eval-fn)
-                       (comm/box handle completion inside-fn)))]
+                       (runtime/run-root-box handle completion inside-fn eval-fn)
+                       (runtime/box handle completion inside-fn)))]
         (when node-id
           (trace/complete-node! node-id
             (merge {:response @response-atom
@@ -359,7 +359,7 @@
                   ([prompt] (@self-ref prompt))
                   ([prompt handle]
                    ;; 2-arity only valid from spawn context (handle pre-registered)
-                   (when-not (comm/handle? handle)
+                   (when-not (runtime/handle? handle)
                      (throw (ex-info "Explicit handle requires spawn context" {:handle handle})))
                    (@self-ref prompt handle)))
         ;; Create effect-builtins (closes over llm-self)
@@ -387,9 +387,9 @@
         the-llm  (fn the-llm
                    ([prompt] (the-llm prompt nil))
                    ([prompt handle]
-                    (let [handle     (or handle comm/*current-handle* :main)
-                          parent     (or comm/*current-handle*  ;; llm-self (inherited)
-                                       (:parent-handle (get @comm/registry handle))  ;; spawn child
+                    (let [handle     (or handle runtime/*current-handle* :main)
+                          parent     (or runtime/*current-handle*  ;; llm-self (inherited)
+                                       (:parent-handle (get @runtime/registry handle))  ;; spawn child
                                        )
                           root?      (not= parent handle)
                           prompt'    (if (or (seq? prompt) (list? prompt))
@@ -398,19 +398,19 @@
                           prompt-str (wrap-nl prompt')
                           trace-data (atom nil)
                           inbox-fn   (make-inbox-fn config' trace-data)
-                          awake-fn   (comm/make-awake-fn inbox-fn)]
-                      (when-not (comm/handle? handle)
-                        (comm/register! handle))
+                          awake-fn   (runtime/make-awake-fn inbox-fn)]
+                      (when-not (runtime/handle? handle)
+                        (runtime/register! handle))
                       (-llm config' handle awake-fn (when root? inbox-fn) prompt-str trace-data))))]
     (reset! self-ref the-llm)
     {:llm the-llm
      :run (fn run-init [init-string]
             (let [handle   :main
                   inbox-fn (make-inbox-fn config' (atom nil))
-                  awake-fn (comm/make-awake-fn inbox-fn)]
-              (when-not (comm/handle? handle)
-                (comm/register! handle))
-              (comm/run-root-box handle init-string awake-fn inbox-fn)))}))
+                  awake-fn (runtime/make-awake-fn inbox-fn)]
+              (when-not (runtime/handle? handle)
+                (runtime/register! handle))
+              (runtime/run-root-box handle init-string awake-fn inbox-fn)))}))
 
 (defn build-init
   "Build a balanced init program from a prompt and optional preamble.
@@ -421,6 +421,7 @@
         "(quine prompt \"" (parse/escape-string (str prompt)) "\") "
         (when preamble (str preamble " "))
         "'(extend))))")))
+
 
 ;; ---------------------------------------------------------------------------
 ;; Leaf LLM

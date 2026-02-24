@@ -124,14 +124,14 @@ Programs return the value of their last expression (standard Lisp semantics). No
 | `prompts/minimal.txt` | Default system prompt for Spell agents |
 | `src/spell/recovery.clj` | Error recovery (namespace symbol fixup, LLM-based recovery) |
 | `src/spell/parse.clj` | S-expression parser (read-all for multi-form input) |
-| `src/spell/comm.clj` | Communication layer (box execution primitive, registry, send/sleep/spawn, ask, notifier-based completion signals, agents-namespace, futures-namespace) |
+| `src/spell/runtime.clj` | Agent runtime (box execution primitive, registry, send/sleep/spawn, ask, notifier-based completion signals, agents-namespace) |
 | `src/spell/globals.clj` | Global shared state (globals/ namespace: get, set, update, pop, wait-until) |
 | `src/spell/io.clj` | I/O operations (bash, read-file, write-file, str-replace, replace-lines, sh, watch-send) |
 | `src/spell/user.clj` | User agent (`:user` handle, stdin queue, message routing, event-send integration) |
 | `src/spell/stdlib.clj` | Standard library namespaces (strings, math, builtins) and patterns definition |
 | `src/spell/cli.clj` | CLI with `-t`, `-m`, `-a`, `-v`, `-d`, `-b`, `-R`, `-e`, `-M`, `-K`, `-T`, `-l`, `-S`, `-C` flags; delegates to `api/run` |
 | `src/spell/trace.clj` | Trace recording system for debugging LLM call trees |
-| `test/spell/*_test.clj` | 12 test files (core, eval, llm, parse, stdlib, io, comm, globals, trace, agent, user, api) |
+| `test/spell/*_test.clj` | 12 test files (core, eval, llm, parse, stdlib, io, runtime, globals, trace, agent, user, api) |
 | `dev/benchmark.clj` | Orchestration benchmark harness |
 | `spl-lib/patterns.spl` | Reusable Spell patterns (check-result) |
 | `src/spell/agent.clj` | Agent definition loader (.agent.edn files, `:llms` sub-agent variants, `:provider` threading, `make-agent-llm`, reasoning params) |
@@ -159,16 +159,14 @@ Core interpreter and tooling complete (see `clojure -M:test` for current totals)
 
 **Next priorities** (see `notebook/TODO.md`):
 - MCP support (#30)
-- Orchestration visualizations (#33)
-- Aider Polyglot / Exercism benchmark (#66)
 - Consider demoting `for` to macro (#80)
 - Implement orchestration patterns (#94)
-- Document that bare `send` causes agent to return (#114)
-- Document special handles in `(describe agents)` (#116)
+- Detect and handle runaway extend loops (#126)
+- Graceful shutdown and restart (#122)
 
 **Key insight:** The `llm` function uses prompt-as-prefix semantics — the prompt string is sent as both the user message and the assistant prefix, so the response continues the prompt as code. Natural-language prompts are wrapped in the completion wrapper `(quine completion (eval (do ...)))`, giving the program access to its own source as data via the `completion` binding. The `eval` builtin evaluates in the caller's environment (dynamic scoping makes expansion redundant).
 
-**Architecture:** 5-component design: (1) `spell-eval` — pure evaluator, (2) `eval` builtin — per-agent effectful evaluator via `make-inbox-fn` (closes over dangerous tools), (3) `box` — universal execution primitive in `comm.clj`; single point of interaction between local and global state, handles root detection via `(not= parent-handle handle)`, balance-parens, inbox drain, and lifecycle (notifier-based completion signals, orphan-box), (4) `-llm` — thin wrapper that makes the API call and delivers to box, (5) `api/run` — single entry point that wires agent config, init program, and dynamic vars. `make-llm` constructs the configuration and returns `{:llm the-llm, :run run-init}` — `:llm` is the callable LLM function, `:run` evaluates a complete init program through box without an API call. Provider closes into `make-llm`'s `call-fn` — no global dynamic var. Each agent can specify its own `:provider` in `.agent.edn` (path to `.provider.edn` or inline map); sub-agents inherit from parent unless overridden. `build-init` constructs init programs from prompts: `(quine completion (eval (do (quine prompt "...") '(extend))))`. `agent/make-agent-llm` is the unified factory that resolves agent configs into `{:llm, :run}` maps, threading `:provider` through `resolve-llms` → `build-llm-from-spec` → `make-llm`. Core namespaces (strings, math, builtins) are defined in `llm.clj` as `core-namespaces` and always merged into variant-builtins. Effect namespaces are passed via `:namespaces` and documented dynamically via `compose-system-prompt`. Agent `.edn` files support `:init` field for preamble expressions spliced before the trailing `'(extend)`. Agent coordination uses `:completed` promises with `realized?`-gated signal capture; `ask` installs notifiers via `install-completion-notifier`; `ask-all` uses `install-persistent-notifier` to wait for all targets' `:completed` promises.
+**Architecture:** 5-component design: (1) `spell-eval` — pure evaluator, (2) `eval` builtin — per-agent effectful evaluator via `make-inbox-fn` (closes over dangerous tools), (3) `box` — universal execution primitive in `runtime.clj`; single point of interaction between local and global state, handles root detection via `(not= parent-handle handle)`, balance-parens, inbox drain, and lifecycle (notifier-based completion signals, orphan-box), (4) `-llm` — thin wrapper that makes the API call and delivers to box, (5) `api/run` — single entry point that wires agent config, init program, and dynamic vars. `make-llm` constructs the configuration and returns `{:llm the-llm, :run run-init}` — `:llm` is the callable LLM function, `:run` evaluates a complete init program through box without an API call. Provider closes into `make-llm`'s `call-fn` — no global dynamic var. Each agent can specify its own `:provider` in `.agent.edn` (path to `.provider.edn` or inline map); sub-agents inherit from parent unless overridden. `build-init` constructs init programs from prompts: `(quine completion (eval (do (quine prompt "...") '(extend))))`. `agent/make-agent-llm` is the unified factory that resolves agent configs into `{:llm, :run}` maps, threading `:provider` through `resolve-llms` → `build-llm-from-spec` → `make-llm`. Core namespaces (strings, math, builtins) are defined in `llm.clj` as `core-namespaces` and always merged into variant-builtins. Effect namespaces are passed via `:namespaces` and documented dynamically via `compose-system-prompt`. Agent `.edn` files support `:init` field for preamble expressions spliced before the trailing `'(extend)`. Agent coordination uses `:completed` promises with `realized?`-gated signal capture; `ask` installs notifiers via `install-completion-notifier`; `ask-all` uses `install-persistent-notifier` to wait for all targets' `:completed` promises.
 
 ## Development Principles
 
@@ -184,13 +182,9 @@ Core interpreter and tooling complete (see `clojure -M:test` for current totals)
 
 **Use `uv` for Python.** When running Python scripts (benchmarking, etc.), use `uv run` instead of `python3` directly. This handles virtual environments and dependencies automatically.
 
-## Benchmark Reporting
+## Benchmarking
 
-When reporting benchmark accuracy, the denominator is always the total number of test items, not the number that ran without errors. Errors count as wrong answers — it doesn't matter *why* you got it wrong. Report accuracy as `correct / total`, and separately note errors and wrong answers for diagnostic purposes. Example: "50% (13/30) — 4 errors, 13 wrong" not "50% (13/26)".
-
-## Scientific Neutrality
-
-The user has observed a tendency toward "good news" bias in benchmark analysis — e.g., emphasizing results that favor Spell, soft-pedaling unfavorable comparisons, or framing ambiguous findings optimistically. Maintain a neutral, skeptical stance when analyzing benchmark results. Present findings as-is, including results that are unfavorable or inconclusive, without spin.
+See `benchmarking/CLAUDE.md` for benchmark infrastructure, run commands, baseline results, and analysis workflow. Key harness files: `benchmarking/run_benchmark.py` (Python), `dev/benchmark.clj` and `dev/exercism_bench.clj` (Clojure).
 
 ## System Prompt Best Practices
 

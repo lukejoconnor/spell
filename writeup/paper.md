@@ -1,10 +1,12 @@
 # Self-prompting execution language for large language models
 
-The performance of agentic systems on complicated tasks depends sensitively on the agentic harness, particularly its approach to orchestration and context management. An ongoing trend is to grant agents greater control over their own context and their own orchestration, within the bounds of human-designed templates. However, autonomy remains limited: for example, agents control the ingress of data into their context window via tool calls, but they lack control over egress. I propose a system in which LLMs write self-prompting programs, expressing self-orchestration and context window manipulation in code. The language of this system is Spell (self-prompting execution language for LLMs), a Lisp dialect resembling Clojure. ...
+I propose a recursive agentic system in which the the agent's entire completion is an executable program. The program can construct a prompt or prefix and feed it back to the language model, granting the model control over its own context. It can spawn and feed subagents the same way, and it can compose model calls with tool calls. The language of the system is a dialect of Lisp called Spell (self-prompting execution language for LLMs)... 
 
 
 
 ## Introduction
+
+The performance of agentic systems on complicated tasks depends sensitively on the agentic harness, particularly its approach to orchestration and context management. An ongoing trend is to grant agents greater control over their own context and their own orchestration, within the bounds of human-designed templates. However, autonomy remains limited: for example, agents control the ingress of data into their context window via tool calls, but they lack control over egress. 
 
 Very recently, *orchestration* has emerged as a key differentiator among agentic systems. The term usually implies parallelization: an ensemble of AI agents work on a task in concert, reducing latency. Orchestration is one strategy for *context engineering*; it allows tokens to be divided across multiple context windows. 
 
@@ -26,7 +28,6 @@ Outline:
 - naive translation into pseudo-spell
 - full program
 - communications
-
 
 Spell is embedded within Clojure, a modern dialect of Lisp, and it resembles Clojure closely. From Lisp it inherits homoiconicity, the idea that source code can be manipulated as data. In Spell, an LLM's completion is code, this code can manipulate itself as data, and in particular, it can replicate itself within the context window of a subsequent LLM call. In pseudocode, a tool call in Spell is as follows:
 
@@ -55,9 +56,6 @@ Several layers must be unpacked. First, the outer `quine` form binds the source 
 2. `call-now` produces the following expression: `(def some-text "some string literal")`
 3. `call-now` takes the quine form, `completion`, strips trailing parentheses, and concatenates the tool call expression
 4. `call-now` invokes the LLM and passes it the concatenation. 
-
-
-
 
 
 Suppose we call `llm` with the following prompt:

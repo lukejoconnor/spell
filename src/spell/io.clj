@@ -10,7 +10,7 @@
    - File manipulation: delete, copy, move, stat, temp-file
    - Process execution: sh, exec, env"
   (:require [clojure.string :as str]
-            [spell.comm :as comm])
+            [spell.runtime :as runtime])
   (:import [java.io File]
            [java.nio.file FileSystems Files Paths StandardCopyOption CopyOption
                           StandardWatchEventKinds WatchEvent]
@@ -437,16 +437,16 @@
    and logs to stderr. Returns nil immediately."
   [event-fn handle from-tag]
   (future
-    (binding [comm/*current-handle* from-tag]
+    (binding [runtime/*current-handle* from-tag]
       (try
         (let [result (event-fn)]
           (cond
-            (:ok result) (comm/send (:ok result) handle)
+            (:ok result) (runtime/send (:ok result) handle)
             (:abort result) nil))
         (catch Exception e
           (binding [*out* *err*]
             (println (str "event-send error for " handle ": " (.getMessage e))))
-          (comm/send {:error (.getMessage e)} handle)))))
+          (runtime/send {:error (.getMessage e)} handle)))))
   nil)
 
 (defn watch-send
@@ -461,23 +461,45 @@
 ;; Process execution
 ;; =============================================================================
 
+(defn- resolve-timeout-seconds
+  "Normalize timeout input to seconds or nil.
+   nil and 0 disable timeout. Positive values are rounded up to whole seconds."
+  [timeout]
+  (cond
+    (nil? timeout) nil
+    (not (number? timeout))
+    (throw (ex-info "sh: :timeout must be numeric" {:timeout timeout}))
+    (neg? (double timeout))
+    (throw (ex-info "sh: :timeout must be >= 0" {:timeout timeout}))
+    (zero? (double timeout)) nil
+    :else (long (Math/ceil (double timeout)))))
+
 (defn sh
-  "Execute shell command. Returns {:exit N :out \"...\" :err \"...\"}."
+  "Execute shell command. Returns {:exit N :out \"...\" :err \"...\"}.
+   Optional last arg may be an opts map with :timeout seconds.
+   :timeout 0 disables timeout for this call."
   [command & more]
-  (let [command (if (seq more) (apply str command more) command)
+  (let [[opts parts] (if (and (seq more) (map? (last more)))
+                       [(last more) (butlast more)]
+                       [nil more])
+        timeout-seconds (resolve-timeout-seconds
+                          (if (contains? opts :timeout)
+                            (:timeout opts)
+                            *sh-timeout*))
+        command (if (seq parts) (apply str command parts) command)
         shell (or (System/getenv "SHELL") "bash")
         pb (ProcessBuilder. [shell "-c" command])
         process (.start pb)
         out-future (future (slurp (.getInputStream process)))
         err-future (future (slurp (.getErrorStream process)))
-        timed-out? (if *sh-timeout*
-                     (not (.waitFor process (long *sh-timeout*) TimeUnit/SECONDS))
+        timed-out? (if timeout-seconds
+                     (not (.waitFor process timeout-seconds TimeUnit/SECONDS))
                      (do (.waitFor process) false))]
     (if timed-out?
       (do (.destroyForcibly process)
           {:exit -1
            :out ""
-           :err (str "Command timed out after " *sh-timeout* " seconds")})
+           :err (str "Command timed out after " timeout-seconds " seconds")})
       {:exit (.exitValue process)
        :out (str/trim @out-future)
        :err (str/trim @err-future)})))
@@ -525,6 +547,7 @@
   (io/str-replace path old new)    — replace string in file; opts {:all true}
   (io/replace-lines path start end content) — replace line range
   (io/sh command)                  — execute shell command, returns {:exit :out :err}
+  (io/sh command {:timeout 10})    — per-call timeout override in seconds (0 disables)
   (io/exec [cmd arg1 ...])         — execute command directly (no shell)
   (io/ls path)                     — list directory contents
   (io/exists? path)                — check if path exists
@@ -567,7 +590,7 @@ Use (describe io :fn-name) for detailed docs on any function."
           ;; File watching
           :watch-send "Watch directory in background, send events to handle when they occur. (watch-send path handle) or (watch-send path handle timeout-ms). Returns nil immediately. Message arrives with :from :watch-send."
           ;; Process execution
-          :sh "Execute shell command. Returns {:exit N :out \"...\" :err \"...\"}."
+          :sh "Execute shell command. (sh cmd) or (sh cmd {:timeout secs}); :timeout 0 disables timeout for this call. Returns {:exit N :out \"...\" :err \"...\"}."
           :exec "Execute command directly (no shell). (exec [\"cmd\" \"arg1\" ...]). Returns {:exit N :out \"...\" :err \"...\"}."
           :env "Get env var(s). (env) returns all as map. (env \"PATH\") returns value or nil."}
    :detail
@@ -641,13 +664,19 @@ Example:
     "Execute a shell command. Returns {:exit N :out \"...\" :err \"...\"}.
 
 (io/sh command)
+(io/sh command {:timeout secs})
 (io/sh part1 part2 ...)
 
 command: a string passed to the shell via `sh -c`.
 Multiple arguments are concatenated into a single string:
   (io/sh \"grep -n 'pattern' \" path)  ;; args joined: \"grep -n 'pattern' /tmp/foo\"
 
-Times out after 30 seconds by default. Timeout returns {:exit -1 :err \"...timed out...\"}."
+Timeout:
+  - Default comes from runtime config (30 seconds by default)
+  - Per-call override: (io/sh \"cmd\" {:timeout 5})
+  - Disable timeout for one call: (io/sh \"cmd\" {:timeout 0})
+
+Timeout returns {:exit -1 :err \"...timed out...\"}."
 
     :exec
     "Execute command directly without a shell. Takes a vector of strings.

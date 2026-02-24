@@ -5,6 +5,7 @@
    - anthropic-provider: Calls Claude API
    - openai-provider: Calls OpenAI API
    - chatgpt-codex-provider: Calls ChatGPT Codex Responses API
+   - chatgpt-codex-toolcall-provider: ChatGPT Codex Responses with mandatory custom tool output
    - ollama-provider: Calls local Ollama API
    - test-provider: Declarative test provider with flexible response matching"
   (:require [clojure.data.json :as json]
@@ -593,6 +594,45 @@
                     (.build))]
     request))
 
+(defn- chatgpt-codex-toolcall-request
+  [api-key account-id base-url model prompt system-prompt max-tokens reasoning-effort verbosity grammar-format]
+  (let [reasoning (when reasoning-effort
+                    {:effort reasoning-effort})
+        text-controls (when (= verbosity "low")
+                        {:verbosity "low"})
+        tool (cond-> {:type "custom"
+                      :name "spell_suffix"
+                      :description "Spell suffix emitted as custom tool input"}
+               grammar-format (assoc :format grammar-format))
+        body (cond-> {:model model
+                      :instructions (if (str/blank? system-prompt)
+                                      "You are a helpful assistant."
+                                      system-prompt)
+                      :input [{:type "message"
+                               :role "user"
+                               :content [{:type "input_text"
+                                          :text prompt}]}]
+                      :tools [tool]
+                      :tool_choice "required"
+                      :parallel_tool_calls true
+                      :store false
+                      :stream true
+                      :include []}
+               max-tokens (assoc :max_output_tokens max-tokens)
+               reasoning (assoc :reasoning reasoning)
+               text-controls (assoc :text text-controls))
+        request-builder (cond-> (-> (HttpRequest/newBuilder)
+                                    (.uri (URI/create (str base-url "/responses")))
+                                    (.header "Content-Type" "application/json")
+                                    (.header "Accept" "text/event-stream")
+                                    (.header "Authorization" (str "Bearer " api-key)))
+                          (not (str/blank? account-id))
+                          (.header "ChatGPT-Account-ID" account-id))
+        request (-> request-builder
+                    (.POST (HttpRequest$BodyPublishers/ofString (json/write-str body)))
+                    (.build))]
+    request))
+
 (defn- parse-chatgpt-codex-stream
   "Parse ChatGPT Codex Responses SSE stream, returning {:text :usage}."
   [response-body]
@@ -621,6 +661,53 @@
                       {:body (subs response-body 0 (min 1000 (count response-body)))})))
     (parse-openai-responses-response (json/write-str @completed))))
 
+(defn- parse-chatgpt-codex-toolcall-response
+  "Parse a completed ChatGPT Codex response and require custom_tool_call output."
+  [completed]
+  (let [usage (:usage completed)
+        tool-input (some (fn [item]
+                           (when (= "custom_tool_call" (:type item))
+                             (:input item)))
+                         (:output completed))
+        reasoning-tokens (get-in usage [:output_tokens_details :reasoning_tokens])]
+    (when (nil? tool-input)
+      (throw (ex-info "ChatGPT Codex mandatory tool-call provider received non-tool output"
+                      {:type :toolcall-required-missing
+                       :status 500
+                       :output (:output completed)})))
+    {:text tool-input
+     :usage (cond-> {:input_tokens (get-in usage [:input_tokens] 0)
+                     :output_tokens (get-in usage [:output_tokens] 0)}
+              reasoning-tokens (assoc :reasoning_tokens reasoning-tokens))}))
+
+(defn- parse-chatgpt-codex-toolcall-stream
+  "Parse ChatGPT Codex Responses SSE stream, requiring custom_tool_call output."
+  [response-body]
+  (let [failed (atom nil)
+        completed (atom nil)]
+    (doseq [line (str/split-lines response-body)]
+      (when (str/starts-with? line "data: ")
+        (let [data (subs line 6)]
+          (when (and (not (str/blank? data))
+                     (not= data "[DONE]"))
+            (try
+              (let [parsed (json/read-str data :key-fn keyword)]
+                (case (:type parsed)
+                  "response.failed"
+                  (reset! failed (or (get-in parsed [:response :error]) (:error parsed)))
+
+                  "response.completed"
+                  (reset! completed (:response parsed))
+
+                  nil))
+              (catch Exception _ nil))))))
+    (when @failed
+      (throw (ex-info "ChatGPT Codex Responses API error" {:error @failed})))
+    (when-not @completed
+      (throw (ex-info "ChatGPT Codex Responses stream missing response.completed"
+                      {:body (subs response-body 0 (min 1000 (count response-body)))})))
+    (parse-chatgpt-codex-toolcall-response @completed)))
+
 (defrecord ChatGPTCodexProvider [api-key account-id base-url model max-tokens http-client costs]
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
@@ -638,6 +725,26 @@
           (track-usage! effective-model usage costs)
           text)
         (throw (ex-info "ChatGPT Codex Responses request failed"
+                        {:status status :body (.body response)})))))
+  (supports-prefill [_] false))
+
+(defrecord ChatGPTCodexToolcallProvider [api-key account-id base-url model max-tokens http-client costs]
+  LLMProvider
+  (call-llm [this prompt] (call-llm this prompt {}))
+  (call-llm [_ prompt opts]
+    (let [effective-model (or (:model opts) model)
+          grammar-format (:grammar-format opts)
+          reasoning-effort (:reasoning-effort opts)
+          verbosity (:verbosity opts)
+          request (chatgpt-codex-toolcall-request api-key account-id base-url effective-model prompt
+                                                  (:system opts) max-tokens reasoning-effort verbosity grammar-format)
+          response (.send http-client request (HttpResponse$BodyHandlers/ofString))
+          status (.statusCode response)]
+      (if (<= 200 status 299)
+        (let [{:keys [text usage]} (parse-chatgpt-codex-toolcall-stream (.body response))]
+          (track-usage! effective-model usage costs)
+          text)
+        (throw (ex-info "ChatGPT Codex mandatory tool-call request failed"
                         {:status status :body (.body response)})))))
   (supports-prefill [_] false))
 
@@ -667,6 +774,33 @@
        (throw (ex-info "No ChatGPT token available. Log in with codex or pass :api-key"
                        {:auth-file (expand-home auth-file)})))
      (->ChatGPTCodexProvider token effective-account-id url model max-tokens (make-http-client) costs))))
+
+(defn chatgpt-codex-toolcall-provider
+  "Create a ChatGPT subscription-backed Codex provider with mandatory custom tool output.
+
+   Options:
+   - :api-key     - bearer token override (default: read from :auth-file)
+   - :account-id  - ChatGPT account id header override (default: read from :auth-file)
+   - :auth-file   - path to Codex auth.json (default: ~/.codex/auth.json)
+   - :base-url    - API base URL (default: https://chatgpt.com/backend-api/codex)
+   - :model       - Model name (default: gpt-5.3-codex)
+   - :max-tokens  - Max output tokens
+   - :costs       - Cost table {model-prefix [input-per-M output-per-M]}"
+  ([] (chatgpt-codex-toolcall-provider {}))
+  ([{:keys [api-key account-id auth-file base-url model max-tokens costs]
+     :or {auth-file "~/.codex/auth.json"
+          base-url "https://chatgpt.com/backend-api/codex"
+          model "gpt-5.3-codex"}}]
+   (let [{file-token :token file-account-id :account-id}
+         (when (str/blank? api-key)
+           (load-chatgpt-auth auth-file))
+         token (or api-key file-token)
+         effective-account-id (or account-id file-account-id)
+         url (str/replace (or base-url "https://chatgpt.com/backend-api/codex") #"/$" "")]
+     (when (str/blank? token)
+       (throw (ex-info "No ChatGPT token available. Log in with codex or pass :api-key"
+                       {:auth-file (expand-home auth-file)})))
+     (->ChatGPTCodexToolcallProvider token effective-account-id url model max-tokens (make-http-client) costs))))
 
 ;; ---------------------------------------------------------------------------
 ;; Kimi Provider (Moonshot AI)
@@ -904,6 +1038,7 @@
       :anthropic (anthropic-provider opts)
       :openai    (openai-provider opts)
       :chatgpt-codex (chatgpt-codex-provider opts)
+      :chatgpt-codex-toolcall (chatgpt-codex-toolcall-provider opts)
       :ollama    (ollama-provider opts)
       :kimi      (kimi-provider opts)
       :test      (test-provider {:responses responses :response-rules response-rules
@@ -927,6 +1062,7 @@
       :anthropic (anthropic-provider opts)
       :openai    (openai-provider opts)
       :chatgpt-codex (chatgpt-codex-provider opts)
+      :chatgpt-codex-toolcall (chatgpt-codex-toolcall-provider opts)
       :ollama    (ollama-provider opts)
       :kimi      (kimi-provider opts)
       :test      (test-provider {:responses responses :response-rules response-rules

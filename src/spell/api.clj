@@ -2,7 +2,7 @@
   "Single entry point for running Spell agents.
    Pure wiring — no CLI concerns, no provider construction."
   (:require [spell.agent :as agent]
-            [spell.comm :as comm]
+            [spell.runtime :as runtime]
             [spell.eval :as eval]
             [spell.globals :as globals]
             [spell.llm :as llm]
@@ -75,8 +75,8 @@
         effective-verbose (or verbose (some? log-writer))
         trace-atom (when trace (trace/new-trace))
         usage-atom (or usage (atom {:by-model {}}))]
-    ;; Reset comm registry and globals for fresh run
-    (reset! comm/registry {})
+    ;; Reset runtime registry and globals for fresh run
+    (reset! runtime/registry {})
     (globals/reset-globals!)
     ;; Register user agent if requested
     (when user?

@@ -2,7 +2,7 @@
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [clojure.data.json :as json]
             [spell.cli :as cli]
-            [spell.comm :as comm]
+            [spell.runtime :as runtime]
             [spell.core :as spell]
             [spell.llm :as llm]
             [spell.provider :as provider]
@@ -17,9 +17,9 @@
 
 (use-fixtures :each
   (fn [f]
-    (reset! comm/registry {})
+    (reset! runtime/registry {})
     (f)
-    (reset! comm/registry {})))
+    (reset! runtime/registry {})))
 
 (deftest llm-basic-test
   (testing "llm evaluates response and extracts return"
@@ -271,7 +271,7 @@
         (is (str/includes? result "PATTERNS NAMESPACE")))))
 
   (testing "agents namespace has :guide"
-    (let [guide (stdlib/describe (deref (resolve 'spell.comm/agents-namespace)) :guide)]
+    (let [guide (stdlib/describe (deref (resolve 'spell.runtime/agents-namespace)) :guide)]
       (is (string? guide))
       (is (str/includes? guide "AGENTS"))))
 
@@ -402,6 +402,22 @@
                                      :model "gpt-5.3-codex"}))
         (let [p (provider/load-provider (.getAbsolutePath provider-file))]
           (is (instance? spell.provider.ChatGPTCodexProvider p))
+          (is (= "gpt-5.3-codex" (:model p))))
+        (finally
+          (.delete auth-file)
+          (.delete provider-file)))))
+
+  (testing "load-provider supports chatgpt-codex-toolcall type"
+    (let [auth-file (java.io.File/createTempFile "provider-chatgpt-toolcall-auth-" ".json")
+          provider-file (java.io.File/createTempFile "provider-chatgpt-toolcall-" ".provider.edn")]
+      (try
+        (spit auth-file (json/write-str {:tokens {:access_token "test-token"
+                                                  :account_id "acc-1"}}))
+        (spit provider-file (pr-str {:type :chatgpt-codex-toolcall
+                                     :auth-file (.getAbsolutePath auth-file)
+                                     :model "gpt-5.3-codex"}))
+        (let [p (provider/load-provider (.getAbsolutePath provider-file))]
+          (is (instance? spell.provider.ChatGPTCodexToolcallProvider p))
           (is (= "gpt-5.3-codex" (:model p))))
         (finally
           (.delete auth-file)
@@ -542,6 +558,32 @@
                                               :base-url "https://chatgpt.com/backend-api/codex/"})]
       (is (= "https://chatgpt.com/backend-api/codex" (:base-url p))))))
 
+(deftest chatgpt-codex-toolcall-provider-constructor-test
+  (testing "constructs with explicit token override"
+    (let [p (provider/chatgpt-codex-toolcall-provider {:api-key "chatgpt-token"
+                                                       :account-id "acc_123"})]
+      (is (instance? spell.provider.ChatGPTCodexToolcallProvider p))
+      (is (= "chatgpt-token" (:api-key p)))
+      (is (= "acc_123" (:account-id p)))
+      (is (= "https://chatgpt.com/backend-api/codex" (:base-url p)))
+      (is (= "gpt-5.3-codex" (:model p)))))
+
+  (testing "loads token and account id from auth file"
+    (let [tmp (java.io.File/createTempFile "chatgpt-toolcall-auth-" ".json")]
+      (try
+        (spit tmp (json/write-str {:tokens {:access_token "from-file-token"
+                                            :account_id "from-file-account"}}))
+        (let [p (provider/chatgpt-codex-toolcall-provider {:auth-file (.getAbsolutePath tmp)})]
+          (is (= "from-file-token" (:api-key p)))
+          (is (= "from-file-account" (:account-id p))))
+        (finally
+          (.delete tmp)))))
+
+  (testing "strips trailing slash from base-url"
+    (let [p (provider/chatgpt-codex-toolcall-provider {:api-key "chatgpt-token"
+                                                       :base-url "https://chatgpt.com/backend-api/codex/"})]
+      (is (= "https://chatgpt.com/backend-api/codex" (:base-url p))))))
+
 (deftest chatgpt-codex-stream-parse-test
   (testing "parses response.completed with assistant message output"
     (let [sse (str "event: response.completed\n"
@@ -581,6 +623,49 @@
                    "\n\n")]
       (is (thrown-with-msg? Exception #"ChatGPT Codex Responses API error"
             (#'provider/parse-chatgpt-codex-stream sse))))))
+
+(deftest chatgpt-codex-toolcall-stream-parse-test
+  (testing "parses custom_tool_call output"
+    (let [sse (str "event: response.completed\n"
+                   "data: "
+                   (json/write-str {:type "response.completed"
+                                    :response {:output [{:type "custom_tool_call"
+                                                         :name "spell_suffix"
+                                                         :input "(def x 1)"}]
+                                               :usage {:input_tokens 9
+                                                       :output_tokens 3}}})
+                   "\n\n")
+          result (#'provider/parse-chatgpt-codex-toolcall-stream sse)]
+      (is (= "(def x 1)" (:text result)))
+      (is (= 9 (get-in result [:usage :input_tokens])))
+      (is (= 3 (get-in result [:usage :output_tokens])))))
+
+  (testing "throws and marks retryable when no custom_tool_call is present"
+    (let [sse (str "event: response.completed\n"
+                   "data: "
+                   (json/write-str {:type "response.completed"
+                                    :response {:output [{:type "message"
+                                                         :role "assistant"
+                                                         :content [{:type "output_text" :text "OK"}]}]
+                                               :usage {:input_tokens 10
+                                                       :output_tokens 4}}})
+                   "\n\n")
+          ex (try
+               (#'provider/parse-chatgpt-codex-toolcall-stream sse)
+               nil
+               (catch Exception e e))]
+      (is ex)
+      (is (re-find #"mandatory tool-call provider received non-tool output" (ex-message ex)))
+      (is (= 500 (:status (ex-data ex))))))
+
+  (testing "throws on response.failed"
+    (let [sse (str "event: response.failed\n"
+                   "data: "
+                   (json/write-str {:type "response.failed"
+                                    :response {:error {:message "bad auth"}}})
+                   "\n\n")]
+      (is (thrown-with-msg? Exception #"ChatGPT Codex Responses API error"
+            (#'provider/parse-chatgpt-codex-toolcall-stream sse))))))
 
 ;; =============================================================================
 ;; CLI parse-model-spec tests

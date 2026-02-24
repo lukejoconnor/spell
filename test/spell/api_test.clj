@@ -1,14 +1,14 @@
 (ns spell.api-test
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [spell.api :as api]
-            [spell.comm :as comm]
+            [spell.runtime :as runtime]
             [spell.provider :as provider]))
 
 (use-fixtures :each
   (fn [f]
-    (reset! comm/registry {})
+    (reset! runtime/registry {})
     (f)
-    (reset! comm/registry {})))
+    (reset! runtime/registry {})))
 
 ;; =============================================================================
 ;; Basic run tests

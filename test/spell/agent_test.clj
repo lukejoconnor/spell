@@ -1,16 +1,16 @@
 (ns spell.agent-test
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [spell.agent :as agent]
-            [spell.comm :as comm]
+            [spell.runtime :as runtime]
             [spell.llm :as llm]
             [spell.provider :as provider]
             [spell.stdlib :as stdlib]))
 
 (use-fixtures :each
   (fn [f]
-    (reset! comm/registry {})
+    (reset! runtime/registry {})
     (f)
-    (reset! comm/registry {})))
+    (reset! runtime/registry {})))
 
 ;; =============================================================================
 ;; resolve-llms tests

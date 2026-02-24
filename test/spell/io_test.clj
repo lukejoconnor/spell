@@ -1,7 +1,7 @@
 (ns spell.io-test
   (:require [clojure.test :refer :all]
             [spell.io :as io]
-            [spell.comm :as comm]
+            [spell.runtime :as runtime]
             [clojure.java.io :as jio]))
 
 (def test-dir "target/test-files")
@@ -501,7 +501,18 @@
 
   (testing "stderr"
     (let [result (io/sh "echo error >&2")]
-      (is (= "error" (:err result))))))
+      (is (= "error" (:err result)))))
+
+  (testing "per-call timeout override"
+    (let [result (io/sh "sleep 2" {:timeout 1})]
+      (is (= -1 (:exit result)))
+      (is (re-find #"timed out" (:err result)))))
+
+  (testing "timeout 0 disables timeout for this call"
+    (let [result (io/sh "sleep 1 && echo done" {:timeout 0})]
+      (is (= 0 (:exit result)))
+      (is (= "done" (:out result)))
+      (is (= "" (:err result))))))
 
 (deftest exec-test
   (let [result (io/exec ["echo" "hello"])]
@@ -574,16 +585,16 @@
   (testing "returns nil immediately"
     (let [dir (str test-dir "/ws-nil")]
       (.mkdirs (jio/file dir))
-      (comm/register! :ws-test-nil)
+      (runtime/register! :ws-test-nil)
       (is (nil? (io/watch-send dir :ws-test-nil 100))))))
 
 (deftest watch-send-delivers-message
-  (testing "sends file events to handle via comm"
+  (testing "sends file events to handle via runtime"
     (let [dir (str test-dir "/ws-deliver")
           received (promise)]
       (.mkdirs (jio/file dir))
       ;; Use start-box to register with an eval-fn that captures what arrives
-      (comm/start-box :ws-test-deliver
+      (runtime/start-box :ws-test-deliver
         (fn [raw] (deliver received raw) :done)
         "(quine c (eval (do 1)))")
       (Thread/sleep 50)
@@ -600,12 +611,12 @@
   (testing "does not send on timeout"
     (let [dir (str test-dir "/ws-timeout")]
       (.mkdirs (jio/file dir))
-      (comm/register! :ws-test-timeout)
+      (runtime/register! :ws-test-timeout)
       (io/watch-send dir :ws-test-timeout 100)
       ;; Wait for the watcher to time out
       (Thread/sleep 200)
       ;; Inbox should still be identity (no message sent)
-      (let [inbox (:inbox (get @comm/registry :ws-test-timeout))]
+      (let [inbox (:inbox (get @runtime/registry :ws-test-timeout))]
         (is (= identity @inbox))))))
 
 ;; =============================================================================
@@ -637,17 +648,17 @@
 
 (deftest event-send-returns-nil-test
   (testing "event-send returns nil immediately"
-    (comm/register! :es-io-nil)
+    (runtime/register! :es-io-nil)
     (try
       (is (nil? (io/event-send (fn [] {:ok "data"}) :es-io-nil :test-sender)))
-      (finally (swap! comm/registry dissoc :es-io-nil)))))
+      (finally (swap! runtime/registry dissoc :es-io-nil)))))
 
 (deftest event-send-sends-on-ok-test
   (testing "event-send sends message when event-fn returns {:ok val}"
     (let [handle :es-io-ok
           received (promise)
           eval-fn (fn [raw] (deliver received raw) :done)]
-      (comm/start-box handle eval-fn "(quine c (eval (do 1)))")
+      (runtime/start-box handle eval-fn "(quine c (eval (do 1)))")
       (Thread/sleep 50)
       (try
         (io/event-send (fn [] {:ok "event-data"}) handle :test-event)
@@ -656,24 +667,24 @@
           (is (string? raw))
           (is (.contains ^String raw ":from :test-event"))
           (is (.contains ^String raw ":body \"event-data\"")))
-        (finally (swap! comm/registry dissoc handle))))))
+        (finally (swap! runtime/registry dissoc handle))))))
 
 (deftest event-send-silent-on-non-ok-test
   (testing "event-send does not send when event-fn returns non-:ok"
     (let [handle :es-io-silent]
-      (comm/register! handle)
+      (runtime/register! handle)
       (try
         (io/event-send (fn [] {:timeout true}) handle :test-event)
         (Thread/sleep 50)
-        (is (= identity @(:inbox (get @comm/registry handle))))
-        (finally (swap! comm/registry dissoc handle))))))
+        (is (= identity @(:inbox (get @runtime/registry handle))))
+        (finally (swap! runtime/registry dissoc handle))))))
 
 (deftest event-send-notifies-on-exception-test
   (testing "event-send sends {:error msg} when event-fn throws"
     (let [handle :es-io-ex
           received (promise)
           eval-fn (fn [raw] (deliver received raw) :done)]
-      (comm/start-box handle eval-fn "(quine c (eval (do 1)))")
+      (runtime/start-box handle eval-fn "(quine c (eval (do 1)))")
       (Thread/sleep 50)
       (try
         (io/event-send (fn [] (throw (ex-info "boom" {}))) handle :test-event)
@@ -682,14 +693,14 @@
           (is (string? raw))
           (is (.contains ^String raw ":from :test-event"))
           (is (.contains ^String raw ":error")))
-        (finally (swap! comm/registry dissoc handle))))))
+        (finally (swap! runtime/registry dissoc handle))))))
 
 (deftest event-send-abort-test
   (testing "event-send does not send when event-fn returns {:abort ...}"
     (let [handle :es-io-abort]
-      (comm/register! handle)
+      (runtime/register! handle)
       (try
         (io/event-send (fn [] {:abort :reason}) handle :test-event)
         (Thread/sleep 50)
-        (is (= identity @(:inbox (get @comm/registry handle))))
-        (finally (swap! comm/registry dissoc handle))))))
+        (is (= identity @(:inbox (get @runtime/registry handle))))
+        (finally (swap! runtime/registry dissoc handle))))))
