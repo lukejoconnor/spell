@@ -1,18 +1,16 @@
-;; Default agent with standard library and I/O, using minimal system prompt.
+;; Default agent with standard library and I/O, using no-prefill minimal prompt.
 ;; Other agents can extend this with :base default.agent.edn or :base spell:default
 ;; This matches the built-in CLI default.
 
 {:name default
  :doc "Default agent with standard library and I/O"
 
- :system {:file "../prompts/minimal.txt"}
+ :system {:file "../prompts/minimal-no-prefill.txt"}
 
  :namespaces
  {io       stdlib/io
   strings  stdlib/strings
   math     stdlib/math
   patterns stdlib/patterns
-  globals  stdlib/globals
-  agents   stdlib/agents
   futures  stdlib/futures
   builtins stdlib/builtins}}

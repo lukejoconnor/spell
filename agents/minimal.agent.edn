@@ -4,5 +4,5 @@
 
 {:base with-io.agent.edn
  :name minimal
- :doc "Agent with minimal system prompt (no comms, concise)"
- :system {:file ../prompts/minimal.txt}}
+ :doc "Agent with minimal no-prefill system prompt (no comms, concise)"
+ :system {:file ../prompts/minimal-no-prefill.txt}}
