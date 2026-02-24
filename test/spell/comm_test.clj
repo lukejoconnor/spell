@@ -445,7 +445,9 @@
           ;; B should have received the ask message
           (is (some? @b-received))
           (is (.contains ^String @b-received ":body \"hello\""))
-          (is (.contains ^String @b-received ":from :ask-agent-a")))))))
+          (is (.contains ^String @b-received ":from :ask-agent-a"))
+          (is (.contains ^String @b-received "(prune-and-reopen completion)")
+              "ask continuations should prune rethink-marked forms"))))))
 
 (deftest ask-no-msg-wakes-target-test
   (testing "ask(target) sends a poke to target, waking it"
