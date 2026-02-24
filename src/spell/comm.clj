@@ -222,10 +222,12 @@
 (defn- create-msg
   "Create a function that reopens a completion, appends (def name value),
    and appends an llm-self extension so the recipient continues thinking.
+   Message continuations use prune-and-reopen so rethink-marked forms are
+   dropped before the recipient's next turn.
    Internal plumbing for signaling (waiting-for, spawn-result)."
   [name value]
   (fn [raw]
-    (str (reopen raw) "(def " name " " (eval/serialize-for-continuation value) ") '(!llm-self (reopen completion)) ")))
+    (str (reopen raw) "(def " name " " (eval/serialize-for-continuation value) ") '(!llm-self (prune-and-reopen completion)) ")))
 
 (defn send
   "Send a message to target with auto-tagged sender handle.
@@ -518,7 +520,7 @@ incoming message in scope. Re-evaluate and re-issue if still appropriate.
   '(agents/!ask :B \"hello\")
   ;; agent C sends a message before your !ask fires; your completion becomes:
   ...'(agents/!ask :B \"hello\") (def msg-0 {:from :C :body \"urgent\"})
-  '(!llm-self (reopen completion))  ;; !ask became inert data — it did not fire"
+  '(!llm-self (prune-and-reopen completion))  ;; !ask became inert data — it did not fire"
 
     :!reply-ask
     "Reply to a received message and block for the next response.
