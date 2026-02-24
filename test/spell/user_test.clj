@@ -1,17 +1,23 @@
 (ns spell.user-test
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
-            [spell.runtime :as runtime]
+            [spell.comm :as comm]
             [spell.user :as user])
   (:import [java.io BufferedReader StringReader]))
 
 ;; Clean registry and queue between tests
 (use-fixtures :each
   (fn [f]
-    (reset! runtime/registry {})
-    (user/reset-state!)
+    (reset! comm/registry {})
+    (reset! @#'user/last-sender :main)
+    (.clear @#'user/stdin-queue)
+    (reset! @#'user/signal-pending false)
+    (reset! @#'user/seen-msg-names #{})
     (f)
-    (reset! runtime/registry {})
-    (user/reset-state!)))
+    (reset! comm/registry {})
+    (reset! @#'user/last-sender :main)
+    (.clear @#'user/stdin-queue)
+    (reset! @#'user/signal-pending false)
+    (reset! @#'user/seen-msg-names #{})))
 
 (defn- mock-reader
   "Create a BufferedReader that reads from a string (one line per readLine)."
@@ -51,12 +57,12 @@
 (deftest register-user-agent-test
   (testing "registers :user handle with parent :main"
     (user/register-user-agent! (mock-reader "test"))
-    (is (true? (runtime/handle? :user)))
-    (is (= :main (:parent-handle (get @runtime/registry :user)))))
+    (is (true? (comm/handle? :user)))
+    (is (= :main (:parent-handle (get @comm/registry :user)))))
 
   (testing "idempotent — second call is no-op"
     (user/register-user-agent! (mock-reader "other"))
-    (is (true? (runtime/handle? :user)))))
+    (is (true? (comm/handle? :user)))))
 
 ;; =============================================================================
 ;; Message extraction tests
@@ -104,14 +110,14 @@
           agent-eval-fn (fn [raw]
                           (if (compare-and-set! first? true false)
                             (do (deliver agent-started true)
-                                (runtime/ask-builtin :user "What is your name?"))
+                                (comm/ask-builtin :user "What is your name?"))
                             raw))]
       (user/register-user-agent! reader)
       (Thread/sleep 100)
-      (runtime/register! h-agent)
+      (comm/register! h-agent)
       (let [pa (promise)]
         (deliver pa agent-raw)
-        (let [fa (future (runtime/box h-agent pa (runtime/make-awake-fn agent-eval-fn)))]
+        (let [fa (future (comm/box h-agent pa (comm/make-awake-fn agent-eval-fn)))]
           (deref agent-started 2000 :timeout)
           (let [result (deref fa 5000 :timeout)]
             (is (string? result))
@@ -132,15 +138,15 @@
     (let [reader (mock-reader "")]
       (user/register-user-agent! reader)
       (Thread/sleep 100)
-      (runtime/register! :ff-sender)
-      (binding [runtime/*current-handle* :ff-sender]
-        (runtime/send "goodbye!" :user))
+      (comm/register! :ff-sender)
+      (binding [comm/*current-handle* :ff-sender]
+        (comm/send "goodbye!" :user))
       ;; Fire-and-forget should process without blocking on stdin.
       ;; The user agent quine-restarts immediately (no > prompt).
       ;; If it blocked, deref would timeout.
       (Thread/sleep 500)
       ;; Handle is still registered (agent didn't crash)
-      (is (true? (runtime/handle? :user))))))
+      (is (true? (comm/handle? :user))))))
 
 ;; =============================================================================
 ;; User-initiated messaging test
@@ -153,7 +159,7 @@
           result-p (promise)
           target-eval-fn (fn [raw] (deliver result-p raw) raw)]
       ;; Register target with start-box (root lifecycle)
-      (runtime/start-box :target target-eval-fn
+      (comm/start-box :target target-eval-fn
                        "(quine completion (eval (do )))" :main)
       (Thread/sleep 100)
       ;; Register user agent — reader has blank line + message
@@ -172,7 +178,7 @@
   (testing "only one signal sent despite multiple blank lines"
     ;; Use a trivial eval-fn (not the full user pipeline) so signal-pending
     ;; is never reset by user-call-fn. This isolates the debounce mechanism.
-    (runtime/start-box :user (fn [raw] raw)
+    (comm/start-box :user (fn [raw] raw)
                      "(quine completion (eval (do )))")
     (Thread/sleep 50)
     ;; Start reader with 3 blank lines — only 1 CAS should succeed
@@ -190,9 +196,9 @@
   (testing "asking unregistered :user throws"
     (let [h-agent :unreg-agent
           agent-eval-fn (fn [raw]
-                          (runtime/ask-builtin :user "hello"))]
-      (runtime/register! h-agent)
+                          (comm/ask-builtin :user "hello"))]
+      (comm/register! h-agent)
       (let [pa (promise)]
         (deliver pa "(quine completion (eval (do )))")
         (is (thrown? Exception
-              (runtime/box h-agent pa (runtime/make-awake-fn agent-eval-fn))))))))
+              (comm/box h-agent pa (comm/make-awake-fn agent-eval-fn))))))))

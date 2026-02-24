@@ -9,7 +9,7 @@
   (:gen-class))
 
 (def provider-prefixes
-  #{"ollama" "chatgpt" "codex" "openclaw" "openai" "anthropic" "kimi" "moonshot" "test"})
+  #{"ollama" "chatgpt" "codex" "codex-toolcall" "openclaw" "openai" "anthropic" "kimi" "moonshot" "test"})
 
 (def cli-options
   [["-r" "--request FILE" "Request JSON path, or '-' for stdin" :default "-"]
@@ -72,6 +72,22 @@
       (println payload)
       (spit path (str payload "\n")))))
 
+(defn- json-safe
+  "Convert values to JSON-serializable data.
+   Preserves primitive values; stringifies unknown objects."
+  [v]
+  (cond
+    (or (nil? v) (string? v) (number? v) (boolean? v)) v
+    (keyword? v) (name v)
+    (symbol? v) (str v)
+    (map? v) (into {}
+                   (map (fn [[k vv]] [(json-safe k) (json-safe vv)]))
+                   v)
+    (vector? v) (mapv json-safe v)
+    (set? v) (mapv json-safe v)
+    (seq? v) (mapv json-safe v)
+    :else (pr-str v)))
+
 (defn- make-provider [{:keys [model max-tokens responses-api] :as _req}]
   (let [model-spec (or model "anthropic:claude-sonnet-4-5-20250929")
         {:keys [provider model]} (parse-model-spec model-spec)
@@ -89,6 +105,9 @@
 
       ("chatgpt" "codex")
       (provider/chatgpt-codex-provider base-opts)
+
+      "codex-toolcall"
+      (provider/chatgpt-codex-toolcall-provider base-opts)
 
       "openai"
       (provider/openai-provider (cond-> base-opts
@@ -128,7 +147,7 @@
      :latency_ms latency-ms
      :error (.getMessage e)
      :error_type (some-> (:type data) name)
-     :error_data data}))
+     :error_data (json-safe data)}))
 
 (defn- normalize-budget [budget]
   (cond
@@ -157,6 +176,10 @@
                           thinking reasoning-effort verbosity suffix-grammar
                           grammar-max-chars retries] :as req}]
   (let [provider-inst (make-provider req)
+        effective-prefill (if (contains? req :prefill)
+                            prefill
+                            (and (provider/supports-prefill provider-inst)
+                                 (not thinking)))
         start-ns (System/nanoTime)]
     (try
       (let [result (api/run (cond-> {:provider provider-inst
@@ -168,18 +191,18 @@
                                      :thinking thinking
                                      :reasoning-effort reasoning-effort
                                      :verbosity verbosity
+                                     :prefill? effective-prefill
                                      :suffix-grammar? suffix-grammar
                               :grammar-max-chars grammar-max-chars}
                               prompt (assoc :prompt prompt)
-                              init (assoc :init init)
-                              (contains? req :prefill) (assoc :prefill? prefill)))]
+                              init (assoc :init init)))]
         (if (:error result)
           {:ok false
            :mode "spell"
            :latency_ms (/ (double (- (System/nanoTime) start-ns)) 1000000.0)
            :error (:error result)
            :error_type (some-> result :error-data :type name)
-           :error_data (:error-data result)
+           :error_data (json-safe (:error-data result))
            :usage (when-let [u (:usage result)] (provider/usage-summary u))
            :trace_dir (:trace-dir result)}
           (response-ok "spell" start-ns result)))

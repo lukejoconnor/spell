@@ -21,7 +21,7 @@
    - {:file f}          → slurp file as string"
   (:require [clojure.edn :as edn]
             [clojure.string :as str]
-            [spell.runtime :as runtime]
+            [spell.comm :as comm]
             [spell.format :as format]
             [spell.globals :as globals]
             [spell.llm :as llm]
@@ -39,7 +39,7 @@
    Seqs, fns, and bit- ops are in core-builtins (matching Clojure)."
   {'io io/io-namespace
    'globals globals/globals-namespace
-   'agents runtime/agents-namespace
+   'agents comm/agents-namespace
    'futures stdlib/futures-namespace
    'builtins stdlib/builtins-namespace
    'strings stdlib/strings
@@ -53,6 +53,8 @@
   {:name 'default
    :doc "Default agent with standard tools"
    :namespaces {'io 'stdlib/io
+                'globals 'stdlib/globals
+                'agents 'stdlib/agents
                 'futures 'stdlib/futures
                 'patterns 'stdlib/patterns}})
 
@@ -573,7 +575,7 @@
      :budget nil
      :recover nil
      :eval nil           ; nil means default (true)
-     :format (or format {:required [:result]})
+     :format format
      :max-retries max-retries
      :resolve-namespaces-fn resolve-fn}))
 

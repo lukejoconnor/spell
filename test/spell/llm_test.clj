@@ -2,7 +2,7 @@
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [clojure.data.json :as json]
             [spell.cli :as cli]
-            [spell.runtime :as runtime]
+            [spell.comm :as comm]
             [spell.core :as spell]
             [spell.llm :as llm]
             [spell.provider :as provider]
@@ -17,9 +17,9 @@
 
 (use-fixtures :each
   (fn [f]
-    (reset! runtime/registry {})
+    (reset! comm/registry {})
     (f)
-    (reset! runtime/registry {})))
+    (reset! comm/registry {})))
 
 (deftest llm-basic-test
   (testing "llm evaluates response and extracts return"
@@ -271,7 +271,7 @@
         (is (str/includes? result "PATTERNS NAMESPACE")))))
 
   (testing "agents namespace has :guide"
-    (let [guide (stdlib/describe (deref (resolve 'spell.runtime/agents-namespace)) :guide)]
+    (let [guide (stdlib/describe (deref (resolve 'spell.comm/agents-namespace)) :guide)]
       (is (string? guide))
       (is (str/includes? guide "AGENTS"))))
 

@@ -225,11 +225,6 @@ Multiple extensions in one response — only the last quoted expression fires:
   '(call-now files (io/sh "ls"))  ; only this fires; describe is inert
   ; correct: just '(describe agents) — see guide on your next turn
 
-Using bare trailing send when you intend to keep talking:
-  '(agents/send offer :seller)  ; sends message and your turn ends
-  '(do (agents/send offer :seller) (extend))  ; keep running after send
-  '(agents/reply-ask msg-0 counteroffer)      ; for request-reply conversations
-
 Hallucinating tool call results inline — the system injects actual results after call-now:
   '(call-now content (io/read-file path))
   (def content "import numpy...")  ; WRONG: instead, just pass your turn

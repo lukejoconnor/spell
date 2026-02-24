@@ -1,19 +1,19 @@
 (ns spell.globals-test
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
-            [spell.runtime :as runtime]
+            [spell.comm :as comm]
             [spell.globals :as globals]
             [spell.core :as spell]
             [spell.provider :as provider]
             [spell.test-helpers :as th]))
 
-;; Reset globals and runtime registry between tests
+;; Reset globals and comm registry between tests
 (use-fixtures :each
   (fn [f]
     (globals/reset-globals!)
-    (reset! runtime/registry {})
+    (reset! comm/registry {})
     (f)
     (globals/reset-globals!)
-    (reset! runtime/registry {})))
+    (reset! comm/registry {})))
 
 ;; =============================================================================
 ;; Unit tests

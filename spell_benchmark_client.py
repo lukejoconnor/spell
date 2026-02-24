@@ -32,14 +32,40 @@ class SpellBenchmarkClient:
 
     def run(self, request: dict[str, Any], timeout: int = 300, cwd: Path | str | None = None) -> BenchmarkAPIResponse:
         cmd = [*self.clj_cmd, "--request", "-", "--response", "-"]
-        proc = subprocess.run(
-            cmd,
-            input=json.dumps(request),
-            text=True,
-            capture_output=True,
-            timeout=timeout,
-            cwd=str(cwd or self.project_root),
-        )
+        try:
+            proc = subprocess.run(
+                cmd,
+                input=json.dumps(request),
+                text=True,
+                capture_output=True,
+                timeout=timeout,
+                cwd=str(cwd or self.project_root),
+            )
+        except subprocess.TimeoutExpired as exc:
+            payload = {
+                "ok": False,
+                "mode": request.get("mode", "unknown"),
+                "error": f"spell.benchmark-api timed out after {timeout}s",
+                "error_type": "timeout",
+                "error_data": {
+                    "timeout_seconds": timeout,
+                    "stdout": (exc.stdout or "")[:4000],
+                    "stderr": (exc.stderr or "")[:4000],
+                    "cmd": cmd,
+                },
+            }
+            return BenchmarkAPIResponse(
+                ok=False,
+                mode=str(payload["mode"]),
+                result=None,
+                usage=None,
+                latency_ms=None,
+                error=payload["error"],
+                error_type=payload["error_type"],
+                error_data=payload["error_data"],
+                trace_dir=None,
+                raw=payload,
+            )
 
         stdout = (proc.stdout or "").strip()
         stderr = (proc.stderr or "").strip()

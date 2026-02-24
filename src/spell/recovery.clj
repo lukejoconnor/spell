@@ -14,8 +14,8 @@
   "Strip wrapping noise from error messages (e.g. 'Function call failed: ')."
   [err-str]
   (cond-> err-str
-    (str/starts-with? err-str eval/fn-call-prefix)
-    (subs (count eval/fn-call-prefix))))
+    (str/starts-with? err-str "Function call failed: ")
+    (subs (count "Function call failed: "))))
 
 ;; ---------------------------------------------------------------------------
 ;; Namespace recovery (deterministic)
@@ -52,8 +52,8 @@
       (when-let [fix
                  (cond
                    ;; Case 1: "Unbound symbol: X" — bare symbol, search all namespaces
-                   (str/starts-with? inner-err eval/unbound-symbol-prefix)
-                   (let [sym (symbol (subs inner-err (count eval/unbound-symbol-prefix)))
+                   (str/starts-with? inner-err "Unbound symbol: ")
+                   (let [sym (symbol (subs inner-err (count "Unbound symbol: ")))
                          matches (find-in-namespaces sym namespaces)]
                      (when (= 1 (count matches))
                        (let [qualified (first matches)]
@@ -61,8 +61,8 @@
                          (substitute-symbol program sym qualified))))
 
                    ;; Case 2: "Namespace lookup failed: ns/item" — wrong namespace
-                   (str/starts-with? inner-err eval/namespace-lookup-prefix)
-                   (let [qualified-str (subs inner-err (count eval/namespace-lookup-prefix))
+                   (str/starts-with? inner-err "Namespace lookup failed: ")
+                   (let [qualified-str (subs inner-err (count "Namespace lookup failed: "))
                          parts (str/split qualified-str #"/")
                          item-sym (symbol (last parts))
                          bad-qualified (symbol qualified-str)

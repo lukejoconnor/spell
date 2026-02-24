@@ -59,14 +59,14 @@ Common prompt/response patterns in tests:
                       r))}))
 ```
 
-**Registry cleanup** — most test files reset `runtime/registry` between tests:
+**Registry cleanup** — most test files reset `comm/registry` between tests:
 
 ```clojure
 (use-fixtures :each
   (fn [f]
-    (reset! runtime/registry {})
+    (reset! comm/registry {})
     (f)
-    (reset! runtime/registry {})))
+    (reset! comm/registry {})))
 ```
 
 **Effect namespace testing** — effects (io, agents, globals, futures) are only available through eval's double evaluation. Test prompts must use the `(eval (do '...))` or `(eval '(do ...))` pattern.
