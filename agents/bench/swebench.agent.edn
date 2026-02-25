@@ -4,5 +4,7 @@
  :name bench-swebench
  :doc "Benchmark agent for SWE-bench patch generation"
 
+ :init "(quine sys-reminder \"Recall: you are writing Spell code, not natural language.\")"
+
  :namespaces
  {io stdlib/io}}
