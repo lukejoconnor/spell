@@ -117,7 +117,7 @@
       (provider/kimi-provider base-opts)
 
       "openclaw"
-      (provider/load-provider "providers/openclaw.provider.edn")
+      (provider/load-provider "config/providers/openclaw.provider.edn")
 
       "test"
       (provider/test-provider {:response "\"hello world\""})

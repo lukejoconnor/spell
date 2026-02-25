@@ -89,9 +89,9 @@ Other implemented providers:
 | `src/spell/api.clj` | Public `run` entry point. |
 | `src/spell/cli.clj` | CLI implementation. |
 | `src/spell/benchmark_api.clj` | JSON benchmark API bridge. |
-| `prompts/minimal.txt`, `prompts/minimal-no-prefill.txt`, `prompts/minimal-no-prefill-toolcall.txt` | Base prompt variants; provider-agnostic behavior changes should be applied consistently to all three unless intentionally variant-specific. |
-| `agents/*.agent.edn` | Agent specs. |
-| `providers/*.provider.edn` | Declarative provider specs. |
+| `config/prompts/minimal.txt`, `config/prompts/minimal-no-prefill.txt`, `config/prompts/minimal-no-prefill-toolcall.txt` | Base prompt variants; provider-agnostic behavior changes should be applied consistently to all three unless intentionally variant-specific. |
+| `config/agents/*.agent.edn` | Agent specs. |
+| `config/providers/*.provider.edn` | Declarative provider specs. |
 | `test/spell/*_test.clj` | Interpreter/runtime/provider tests. |
 | `benchmarking/CLAUDE.md` | Benchmark workflow and reporting guidance. |
 | `notebook/TODO.md`, `notebook/DONE.md`, `notebook/INDEX.md` | Active tasks, completed tasks, and notebook index. |

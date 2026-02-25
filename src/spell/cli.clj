@@ -132,7 +132,7 @@
           "  spell examples/hello-world.spl"
           "  spell -e hello-world"
           "  spell -e twenty-questions -m opus -d 40"
-          "  spell -a agents/coder.agent.edn 'Fix the bug'"]
+          "  spell -a config/agents/coder.agent.edn 'Fix the bug'"]
          (when-let [examples (seq (list-examples))]
            [""
             "Available examples:"
@@ -213,7 +213,7 @@
         (provider/kimi-provider base-opts)
 
         "openclaw"
-        (provider/load-provider "providers/openclaw.provider.edn")
+        (provider/load-provider "config/providers/openclaw.provider.edn")
 
         ;; anthropic (explicit or default)
         ("anthropic" nil)

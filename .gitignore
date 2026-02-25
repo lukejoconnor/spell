@@ -30,6 +30,7 @@ results/
 temp.txt
 *.bak
 *.bak2
+spell_benchmark_client.py
 
 # Python
 __pycache__/

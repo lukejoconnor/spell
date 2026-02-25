@@ -568,7 +568,7 @@
                      (resolve-namespaces namespaces nil make-llm-fn))]
     {:name name
      :doc doc
-     :system (try-slurp "prompts/minimal.txt")
+     :system (try-slurp "config/prompts/minimal.txt")
      :model nil
      :budget nil
      :recover nil
