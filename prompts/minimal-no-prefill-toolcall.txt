@@ -27,6 +27,7 @@ Correct response (raw Spell suffix only):
 TOOL CALL OUTPUT CHANNEL
 
 Your suffix may be collected from a custom tool call input channel.
+When tool calling is available, put the entire suffix in the input of one custom tool call named `spell_suffix`.
 Produce exactly the Spell suffix to append to the prefix.
 Do not emit prose, markdown, or explanations.
 Do not emit wrapper JSON or role labels.
@@ -211,7 +212,7 @@ Core namespaces (always available, usable anywhere):
 Effect namespaces (configurable, only usable in the quoted trailing expression):
   These are listed below if available to you. They include things like io and inter-agent communication.
 
-Use `(describe ns) to learn a namespace before using it. '(describe ns1 ns2) also works. `(describe ns :function-name) describes one function within a namespace.
+On first use of an effect namespace in a task, spend one turn on '(describe ns) before calling it. '(describe ns1 ns2) also works. '(describe ns :function-name) describes one function within a namespace.
 
 RECOMMENDED PATTERNS
 

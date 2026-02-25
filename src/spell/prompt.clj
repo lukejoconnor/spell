@@ -5,6 +5,11 @@
    and format specs. No dependency on LLM or runtime."
   (:require [clojure.string :as str]))
 
+;; Prompt editing guidelines:
+;; - Prefer positive instructions over prohibition-heavy language.
+;; - Show concrete examples of desired behavior.
+;; - Keep wording plain and non-emphatic.
+
 (defn- fn-docs
   "Extract per-function doc entries from a namespace map, filtering out
    :guide and :_ meta-entries."
@@ -40,13 +45,15 @@
                        effect-namespaces))
                 "\n\n"))
          "Usage:\n"
-         "  (io/sh \"ls\")              — call function directly\n"
-         "  '(describe io)              — namespace overview\n"
-         "  '(describe io :sh)          — detailed doc for specific function\n"
-         "  '(describe agents globals)  — multiple namespaces in one describe\n"
+         "  '(describe io)                 — first turn for unfamiliar effect namespace\n"
+         "  '(describe io :sh)             — detailed doc for one function\n"
+         "  '(call-now files (io/sh \"ls\")) — one effect call in trailing expression\n"
+         "  '(do (io/cwd) (io/ls \".\"))     — chain effect calls in one trailing expression\n"
+         "  '(describe agents globals)     — multiple namespaces in one describe\n"
          "\n"
          "describe is an extension — it fires as the trailing expression for that turn.\n"
-         "Use it before calling an unfamiliar namespace.\n")))
+         "On first use of an effect namespace in a task, run describe before calling it.\n"
+         "Never call effect functions outside the quoted trailing expression.\n")))
 
 (defn- format-section
   "Generate RETURN VALUE section when a format spec is provided."

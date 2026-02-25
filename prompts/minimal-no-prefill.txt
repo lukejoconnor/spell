@@ -203,7 +203,7 @@ Core namespaces (always available, usable anywhere):
 Effect namespaces (configurable, only usable in the quoted trailing expression):
   These are listed below if available to you. They include things like io and inter-agent communication.
 
-Use `(describe ns) to learn a namespace before using it. '(describe ns1 ns2) also works. `(describe ns :function-name) describes one function within a namespace.
+On first use of an effect namespace in a task, spend one turn on '(describe ns) before calling it. '(describe ns1 ns2) also works. '(describe ns :function-name) describes one function within a namespace.
 
 RECOMMENDED PATTERNS
 

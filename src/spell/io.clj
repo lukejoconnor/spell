@@ -562,7 +562,11 @@
   (io/temp-file)                   — create temp file
   (io/watch-send path handle)      — watch directory, send events to handle
 
-All io/ calls are effect functions — quote them in the trailing expression.
+All io/ calls are effect functions. Call them only in the quoted trailing expression.
+Valid single call: '(io/cwd)
+Valid chained calls: '(do (io/cwd) (io/ls \".\") (io/read-file \"README.md\"))
+Invalid: (io/cwd)
+On first io use in a task, run '(describe io).
 Use (describe io :fn-name) for detailed docs on any function."
           ;; File reading/writing
           :slurp "Read entire file as string. Returns {:ok content} or {:error msg}."
