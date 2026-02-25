@@ -414,13 +414,16 @@
 
 (defn build-init
   "Build a balanced init program from a prompt and optional preamble.
-   preamble: optional string of Spell expressions spliced before trailing expr."
-  ([prompt] (build-init prompt nil))
-  ([prompt preamble]
-   (str "(quine completion (eval (do "
-        "(quine prompt \"" (parse/escape-string (str prompt)) "\") "
-        (when preamble (str preamble " "))
-        "'(extend))))")))
+   preamble: optional string of Spell expressions spliced before trailing expr.
+   trailing-expr: expression string for quoted trailing call (default: (extend))."
+  ([prompt] (build-init prompt nil "(extend)"))
+  ([prompt preamble] (build-init prompt preamble "(extend)"))
+  ([prompt preamble trailing-expr]
+   (let [trailing-expr (or trailing-expr "(extend)")]
+     (str "(quine completion (eval (do "
+          "(quine prompt \"" (parse/escape-string (str prompt)) "\") "
+          (when preamble (str preamble " "))
+          "'" trailing-expr "))))"))))
 
 
 ;; ---------------------------------------------------------------------------

@@ -172,7 +172,7 @@
       (catch Exception e
         (response-error "baseline" start-ns e)))))
 
-(defn- run-spell [{:keys [prompt init agent budget depth trace prefill
+(defn- run-spell [{:keys [prompt init agent budget depth trace prefill trailing-expr
                           thinking reasoning-effort verbosity suffix-grammar
                           grammar-max-chars retries] :as req}]
   (let [provider-inst (make-provider req)
@@ -191,6 +191,7 @@
                                      :thinking thinking
                                      :reasoning-effort reasoning-effort
                                      :verbosity verbosity
+                                     :trailing-expr trailing-expr
                                      :prefill? effective-prefill
                                      :suffix-grammar? suffix-grammar
                               :grammar-max-chars grammar-max-chars}

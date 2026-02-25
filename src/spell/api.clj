@@ -22,6 +22,7 @@
 
    Optional:
      :agent    — path to .agent.edn (default: built-in)
+     :trailing-expr — trailing expression string for prompt-wrapped init (default: \"(extend)\")
      :user?    — register :user handle (default: false)
      :user-reader — BufferedReader for user input (default: System/in)
      :verbose  — show raw LLM response (default: false)
@@ -37,7 +38,7 @@
      :grammar-max-chars — max generated grammar chars before fallback
      :retries  — API retry sleep durations
      :usage    — pre-created usage atom (default: fresh atom)"
-  [{:keys [prompt init agent provider user? user-reader
+  [{:keys [prompt init agent trailing-expr provider user? user-reader
            verbose log-writer budget depth trace
            prefill? thinking reasoning-effort verbosity
            suffix-grammar? grammar-max-chars retries usage]}]
@@ -66,7 +67,7 @@
         _ (when-not (:run llm-map)
             (throw (ex-info "Agent has :eval false — cannot run init program" {})))
         ;; Build init program
-        init-program (or init (llm/build-init prompt (:init agent-config)))
+        init-program (or init (llm/build-init prompt (:init agent-config) trailing-expr))
         ;; Budget: explicit > agent config > dynamic var default
         effective-budget (cond
                            (nil? budget) (or (:budget agent-config) provider/*budget*)
