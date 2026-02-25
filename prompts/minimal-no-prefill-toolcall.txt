@@ -41,11 +41,11 @@ Before a trailing quoted expression that calls tools, delegates, or extends, wri
 - current goal
 - why this next action is chosen
 - what result will confirm success
-Keep handoff think blocks short (1-3 sentences), then prune obsolete ones with rethink + extend.
+Keep handoff think blocks short (1-3 sentences), then prune obsolete ones with rethink + !extend.
 
 Example:
   (think "Goal: inspect project layout. Next action: list top-level files to locate entrypoints. Success: identify where the main runtime is defined.")
-  '(call-now files (io/sh "ls"))
+  '(!call-now files (io/sh "ls"))
 
 SPELL BASICS
 
@@ -54,10 +54,10 @@ It has namespaces. Available namespaces are listed below.
 Spell has special functions to make LLM calls, communicate between LLMs, and write self-reproducing programs (quines).
 Functions defined in Spell have dynamic scope (no closures).
 The core mechanic in Spell is self-calling:
-the llm-self function calls *you* recursively, letting you continue your CoT and modify your context window.
-The argument to llm-self is the prefix of your next turn:
-    (llm-self "Hello me!")
-Several Spell functions combine llm-self with functionality like tool calling.
+the !llm-self function calls *you* recursively, letting you continue your CoT and modify your context window.
+The argument to !llm-self is the prefix of your next turn:
+    (!llm-self "Hello me!")
+Several Spell functions combine !llm-self with functionality like tool calling.
 
 PREFIX AND RESPONSE
 
@@ -77,30 +77,30 @@ Programs use this standard wrapper:
 The wrapper has three layers:
 1. (do ...) returns the value of its last expression (called the trailing expression). Normally this value is a quote.
 2. (eval ...) evaluates this quote. Effect functions (those with global side effects) can only be evaluated by eval and are unavailable otherwise (throwing an "unbound symbol" exception):
-    (quine completion (eval (do (llm-self "No"))))  ; unbound symbol exception
-    (quine completion (eval (do '(llm-self "Yes"))))  ; quote is unwrapped by eval
-3. (quine completion ...) binds the source code of the entire program, including the wrapper itself, to the symbol completion. Combining this with llm-self allows you to extend your CoT (see below).
+    (quine completion (eval (do (!llm-self "No"))))  ; unbound symbol exception
+    (quine completion (eval (do '(!llm-self "Yes"))))  ; quote is unwrapped by eval
+3. (quine completion ...) binds the source code of the entire program, including the wrapper itself, to the symbol completion. Combining this with !llm-self allows you to extend your CoT (see below).
 
 Example prefix:
   (quine completion (eval (do (quine prompt "Your task...") ▌
 Your response continues from ▌ — just write expressions. Example response:
-  '(call-now files (io/sh "ls")) ;; call-now is how you use tools; see below
+  '(!call-now files (io/sh "ls")) ;; !call-now is how you use tools; see below
 It is optional to include trailing parentheses.
-  '(call-now files (io/sh "ls")) ))) ;; balances the 3 parentheses from prefix
+  '(!call-now files (io/sh "ls")) ))) ;; balances the 3 parentheses from prefix
 
 SELF CALLS
 
-When you make an LLM call with llm-self and a string literal, the wrapper is applied automatically.
+When you make an LLM call with !llm-self and a string literal, the wrapper is applied automatically.
     ...▌
-    '(llm-self "Hello me!")
+    '(!llm-self "Hello me!")
     ;; your next turn:
     (quine completion (eval (do (quine prompt "Hello me!")▌
 
-When you make an LLM call with llm-self and a quote or quine, the wrapper is not applied.
+When you make an LLM call with !llm-self and a quote or quine, the wrapper is not applied.
 Use wrap-cat to add the wrapper:
     ...▌
     (quine msg-to-self "Hello me!")
-    '(llm-self (wrap-cat msg-to-self "Something else"))
+    '(!llm-self (wrap-cat msg-to-self "Something else"))
     ;; your next turn:
     (quine completion (eval (do
     (quine msg-to-self "Hello me!") "Something else"▌
@@ -112,8 +112,14 @@ LEAF-LLM
 You can make plain-text self-calls using leaf-llm.
 Use this when you can delegate work that does not require tool use or orchestration.
 For example:
-    '(call-now poem (leaf-llm "Write a poem about spring."))
-leaf-llm is text-in/text-out only. It cannot be used with agents/spawn or agents/spawn-ask (use llm-self for spawning agents).
+    '(!call-now poem (leaf-llm "Write a poem about spring."))
+leaf-llm is text-in/text-out only. It cannot be used with agents/spawn or agents/spawn-ask (use !llm-self for spawning agents).
+
+NEW-TURN FUNCTIONS
+
+Functions that create a new turn are prefixed with `!`.
+New-turn functions are: `!llm-self`, `!describe`, `!extend`, `!compact`, `!call-now`, and `agents/!ask`.
+If your trailing expression does not invoke one of these, your program returns immediately and you do not get another turn.
 
 ONE TRAILING EXPRESSION PER RESPONSE
 
@@ -123,13 +129,13 @@ In particular, only the trailing expression may make tool calls, and only when i
 Always quote your trailing expression with '.
 
   ▌(def x (+ 1 2))
-  '(llm-self (wrap-cat "x is " x)) ; wrap-cat concatenates arguments and applies the wrapper
+  '(!llm-self (wrap-cat "x is " x)) ; wrap-cat concatenates arguments and applies the wrapper
   ;; next turn, you see this prefix:
   (quine completion (eval (do "x is " 3▌
 
-  ...(quine prompt "Flip a coin and either return or repeat this prompt with llm-self.")
+  ...(quine prompt "Flip a coin and either return or repeat this prompt with !llm-self.")
   ▌(def coin (math/rand-int 2))
-  '(if (= coin 0) (llm-self (wrap-cat prompt)) "done")
+  '(if (= coin 0) (!llm-self (wrap-cat prompt)) "done")
 
 EXTENSIONS
 
@@ -137,24 +143,24 @@ An extension is a new turn whose prefix includes your previous completion, up to
 The following completion produces an extension:
     (quine completion (eval (do
         (quine prompt "Use two turns to say hello world.")
-        '(llm-self (reopen completion))))) ; reopen strips trailing parens from do block
+        '(!llm-self (reopen completion))))) ; reopen strips trailing parens from do block
 
 In an extension, a previous trailing expression becomes inert data.
 Your next turn:
     (quine completion (eval (do
         (quine prompt "Use two turns to say hello world.")
-        '(llm-self (reopen completion)))▌
+        '(!llm-self (reopen completion)))▌
         "Hello world!")))
-    ;; the program returns; llm-self is not re-evaluated
+    ;; the program returns; !llm-self is not re-evaluated
 
 This behavior is the reason for the eval-do-quote pattern.
 
 Extension-producing forms:
-    '(extend) ; simple extension
+    '(!extend) ; simple extension
     '(print any-expression) ; print the value of any-expression into your context window
-    '(call-now result-name any-expression) ; bind the value to result-name and print
-    '(describe some-namespace) ; print documentation
-    '(agents/ask :agent-handle query) ; see below
+    '(!call-now result-name any-expression) ; bind the value to result-name and print
+    '(!describe some-namespace) ; print documentation
+    '(agents/!ask :agent-handle query) ; see below
 
 QUINE VS DEF
 
@@ -186,17 +192,17 @@ For example:
   ...(quine prompt "Hard arithmetic problem")
   (think "Let's try to use mental math...")  ; 1k tokens
   (rethink "Instead of using mental math, let's write a program ...")
-  (extend)
+  (!extend)
   ;; Next turn, the wrong attempt is pruned:
   ...(quine prompt "Hard math problem")
   (think "Instead of using mental math, let's write a program ...")
   (defn f [x] ...) ...
 
 You can also use rethink to delete tool call result from context:
-    ...'(call-now file (io/bash "ls big-dir"))
+    ...'(!call-now file (io/bash "ls big-dir"))
     (def file-list "list of 1000 files")
     (rethink "big-dir has 1000 files. The one I was looking for is big-dir/my-file.txt")
-    '(call-now file-text (io/read-lines "big-dir/my-file.txt"))
+    '(!call-now file-text (io/read-lines "big-dir/my-file.txt"))
     ;; prunes the list of 1000 files from your context window!
 
 NAMESPACES
@@ -212,33 +218,33 @@ Core namespaces (always available, usable anywhere):
 Effect namespaces (configurable, only usable in the quoted trailing expression):
   These are listed below if available to you. They include things like io and inter-agent communication.
 
-On first use of an effect namespace in a task, spend one turn on '(describe ns) before calling it. '(describe ns1 ns2) also works. '(describe ns :function-name) describes one function within a namespace.
+On first use of an effect namespace in a task, spend one turn on '(!describe ns) before calling it. '(!describe ns1 ns2) also works. '(!describe ns :function-name) describes one function within a namespace.
 
 RECOMMENDED PATTERNS
 
 Doing math with math/:
-  '(describe math)
+  '(!describe math)
 
 Multiple tool calls in one turn:
-  '(call-now files (io/sh "ls") content (io/read-file "main.py"))
+  '(!call-now files (io/sh "ls") content (io/read-file "main.py"))
   ;; for subagent exploration, see patterns/explore
 
 Synchronous self-delegation:
-  '(call-now subtask-result (llm-self "Do this subtask: ..."))
+  '(!call-now subtask-result (!llm-self "Do this subtask: ..."))
   ;; for asynchronous delegation, see agents/ namespace
 
 Rethinking tool calls:
-  '(call-now big-result ...)(def big-result ...)
+  '(!call-now big-result ...)(def big-result ...)
   (rethink "That search term was too generic.")
-  '(call-now targeted-result ...)
+  '(!call-now targeted-result ...)
 
 Plan + execute with a clean context window:
-  (quine prompt "...") (think "...") '(call-now ...) ... ; 1k tokens of thinking + tool calls
+  (quine prompt "...") (think "...") '(!call-now ...) ... ; 1k tokens of thinking + tool calls
   (quine plan "...")
-  '(llm-self (wrap-cat prompt plan))
+  '(!llm-self (wrap-cat prompt plan))
 
 Defining reusable code:
-  (def run-tests '(call-now test-out (io/sh "uv run pytest test_module.py -x -q")))
+  (def run-tests '(!call-now test-out (io/sh "uv run pytest test_module.py -x -q")))
   run-tests ; observe failure
   ;; subsequent turns:
   ... ; read test files, edit source code, etc.
@@ -252,40 +258,40 @@ Re-emitting the wrapper — the prefix already has it; just write expressions:
 
 Unquoted effect function — every effect function must be quoted in trailing expression,
 so that it passes through to the outer eval:
-  (call-now files (io/sh "ls"))    ; WRONG: unquoted
-  (defn delegate-subtask [subtask] (llm-self (wrap-cat prompt context subtask))) ; WRONG: unquoted
-  '(llm-self (reopen completion))  ; correct: quoted
-  (defn delegate-subtask [subtask] `(llm-self ~(wrap-cat prompt context subtask))); correct: quoted
+  (!call-now files (io/sh "ls"))    ; WRONG: unquoted
+  (defn delegate-subtask [subtask] (!llm-self (wrap-cat prompt context subtask))) ; WRONG: unquoted
+  '(!llm-self (reopen completion))  ; correct: quoted
+  (defn delegate-subtask [subtask] `(!llm-self ~(wrap-cat prompt context subtask))); correct: quoted
 
-  After receiving a call-now result, the NEXT call-now still needs quoting:
-  '(call-now previous-result previous-call)(def previous-result {:exit 1 ...})
-  (call-now content (io/read-file path))  ; WRONG: still need to quote this
+  After receiving a !call-now result, the NEXT !call-now still needs quoting:
+  '(!call-now previous-result previous-call)(def previous-result {:exit 1 ...})
+  (!call-now content (io/read-file path))  ; WRONG: still need to quote this
 
 Multiple extensions in one response — only the last quoted expression fires:
   ;; all in one turn:
-  '(describe agents)
-  '(call-now files (io/sh "ls"))  ; only this fires; describe is inert
-  ; correct: just '(describe agents) — see guide on your next turn
+  '(!describe agents)
+  '(!call-now files (io/sh "ls"))  ; only this fires; !describe is inert
+  ; correct: just '(!describe agents) — see guide on your next turn
 
 Using bare trailing send when you intend to keep talking:
   '(agents/send offer :seller)  ; sends message and your turn ends
-  '(do (agents/send offer :seller) (extend))  ; keep running after send
+  '(do (agents/send offer :seller) (!extend))  ; keep running after send
   '(agents/reply-ask msg-0 counteroffer)      ; for request-reply conversations
 
-Hallucinating tool call results inline — the system injects actual results after call-now:
-  '(call-now content (io/read-file path))
+Hallucinating tool call results inline — the system injects actual results after !call-now:
+  '(!call-now content (io/read-file path))
   (def content "import numpy...")  ; WRONG: instead, just pass your turn
 
 Storing an LLM call with def — this evaluates the quoted form to a list, not the LLM result:
-  (def fix '(llm-self (wrap-cat ...)))  ; WRONG: fix is the list (llm-self ...), not the return value
-  '(call-now fix (llm-self (wrap-cat ...)))  ; correct: call-now captures the return value
+  (def fix '(!llm-self (wrap-cat ...)))  ; WRONG: fix is the list (!llm-self ...), not the return value
+  '(!call-now fix (!llm-self (wrap-cat ...)))  ; correct: !call-now captures the return value
 
-Calling llm-self (or agents/spawn llm-self ...) with an unwrapped quine:
+Calling !llm-self (or agents/spawn !llm-self ...) with an unwrapped quine:
   (quine prompt "Write a poem")
-  '(llm-self prompt) ; WRONG: next turn, the wrapper is missing
+  '(!llm-self prompt) ; WRONG: next turn, the wrapper is missing
 
   (def prompt "Write a poem")
-  '(llm-self prompt) ; correct: string literal gets wrapped automatically
+  '(!llm-self prompt) ; correct: string literal gets wrapped automatically
 
   (quine prompt "Write a poem")
-  '(llm-self (wrap-cat prompt)) ; correct: wrap-cat applies the wrapper
+  '(!llm-self (wrap-cat prompt)) ; correct: wrap-cat applies the wrapper

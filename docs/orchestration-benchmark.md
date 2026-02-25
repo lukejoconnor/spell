@@ -4,7 +4,7 @@
 
 ## Overview
 
-Spell gives LLMs the ability to write programs that call other LLMs, use tools, and manage multi-step reasoning flows. But do models actually *use* these capabilities? This benchmark tests whether frontier models employ Spell's orchestration primitives — `llm` recursion, `call-now` tool use, hooks, branching — when given tasks of varying complexity.
+Spell gives LLMs the ability to write programs that call other LLMs, use tools, and manage multi-step reasoning flows. But do models actually *use* these capabilities? This benchmark tests whether frontier models employ Spell's orchestration primitives — `llm` recursion, `!call-now` tool use, hooks, branching — when given tasks of varying complexity.
 
 We ran two rounds across four models:
 - **v0 (open-ended):** 5 prompts that *could* benefit from orchestration but don't require it. 30 runs (Opus, Sonnet).
@@ -14,11 +14,11 @@ Total cost: ~$13 across 78 Spell runs + AI judge evaluations.
 
 ## Methodology
 
-Each prompt is a `.spl` file passed to Spell's `llm` function. The model receives Spell's system prompt (which teaches `llm`, `call-now`, hooks, etc.) and generates a Spell program as its response. The program is then evaluated by the Spell interpreter.
+Each prompt is a `.spl` file passed to Spell's `llm` function. The model receives Spell's system prompt (which teaches `llm`, `!call-now`, hooks, etc.) and generates a Spell program as its response. The program is then evaluated by the Spell interpreter.
 
 **Metrics collected per run:**
 - Number of `llm` calls (child LLM invocations)
-- Number of `call-now` calls (tool-use continuations)
+- Number of `!call-now` calls (tool-use continuations)
 - Maximum recursion depth
 - AI judge scores: quality (1-5) and orchestration appropriateness (1-5)
 
@@ -31,7 +31,7 @@ Each prompt is a `.spl` file passed to Spell's `llm` function. The model receive
 
 ### v0: Open-Ended Prompts
 
-| Prompt | Avg Quality | Opus `llm` calls | Sonnet `llm` calls | Opus `call-now` | Pattern |
+| Prompt | Avg Quality | Opus `llm` calls | Sonnet `llm` calls | Opus `!call-now` | Pattern |
 |--------|-------------|-------------------|---------------------|-----------------|---------|
 | iterative-refinement | 4.3 | 0, 0, 0 | 0, 0, 0 | 0, 0, 0 | Always inline |
 | adversarial-self-check | 4.3 | 0, 0, 0 | 0, 0, 0 | 0, 0, 0 | Always inline |
@@ -109,7 +109,7 @@ Each prompt is a `.spl` file passed to Spell's `llm` function. The model receive
 
 **3. Quality drops with orchestration complexity.** v0 inline tasks averaged quality 4.3; v1 forcing tasks averaged 2.7. Models can *conceive* of correct orchestration patterns but frequently make execution errors: type casting failures, unbound symbols, infinite loops.
 
-**4. `llm` recursion and `call-now` are distinct strategies.** `call-now` (tool use) was triggered by computational tasks. `llm` recursion was triggered by multi-perspective analysis. No prompt elicited both.
+**4. `llm` recursion and `!call-now` are distinct strategies.** `!call-now` (tool use) was triggered by computational tasks. `llm` recursion was triggered by multi-perspective analysis. No prompt elicited both.
 
 **5. Opus orchestrates most reliably.** Opus quality (3.3) leads all models, with consistent architectural patterns (always 4 `llm` calls for independent-analysts, always 1 for blind-evaluation). Cost is highest ($3.65) but reliability justifies it for complex orchestration.
 
@@ -117,7 +117,7 @@ Each prompt is a `.spl` file passed to Spell's `llm` function. The model receive
 
 **7. GPT-4o cannot reliably produce Spell syntax.** Averaging 22.6 LLM calls per run (vs 2.1 for Opus) indicates massive retry rates. All 3 tool-computation runs hit the $1 budget cap. Even simple prompts like blind-evaluation produced 5-26 calls due to syntax errors. Quality (1.2) and orchestration (1.1) are lowest of all models.
 
-**8. `call-now` is the hardest pattern for OpenAI models.** Tool-computation requires prefix-based continuations. GPT-4o fails 100% (budget-exceeded on all 3). GPT-5.2 manages but with low quality. Anthropic models handle this pattern reliably due to native assistant prefill support.
+**8. `!call-now` is the hardest pattern for OpenAI models.** Tool-computation requires prefix-based continuations. GPT-4o fails 100% (budget-exceeded on all 3). GPT-5.2 manages but with low quality. Anthropic models handle this pattern reliably due to native assistant prefill support.
 
 **9. Advanced features remain unused.** No run across any model used hooks, `make-llm`, `recurse`, or `fn`-based agents. These require more complex tasks or explicit prompting.
 
@@ -129,7 +129,7 @@ Four distinct patterns emerged across the 54 runs:
 |---------|-------------|----------------|
 | **Inline** | Everything in a single generation, no child calls | iterative-refinement |
 | **Delegate-and-synthesize** | Child `llm` calls for subtasks, parent combines results | multi-source-synthesis |
-| **Tool-augmented** | `call-now` for bash/Python within a single generation | tool-computation |
+| **Tool-augmented** | `!call-now` for bash/Python within a single generation | tool-computation |
 | **Recursive game loop** | `llm` calls in a recursive function with state threading | number-guessing |
 
 ## Prompts and Representative Examples
@@ -164,7 +164,7 @@ Which led to a strange code excursion,
 Till stack overflow ended the version.")
 ```
 
-No `llm` calls, no `call-now`. The model performs the full write-critique-improve loop internally.
+No `llm` calls, no `!call-now`. The model performs the full write-critique-improve loop internally.
 
 ### 2. adversarial-self-check (v0, inline)
 
@@ -270,7 +270,7 @@ Determine whether 7919 is prime. Use one method first, then verify with a differ
 method. Report both methods used, whether they agree, and the final answer.
 ```
 
-**Representative output** (Opus, rep 0) — attempted trial division in Spell + Python verification via `call-now`. All 3 attempts failed with errors:
+**Representative output** (Opus, rep 0) — attempted trial division in Spell + Python verification via `!call-now`. All 3 attempts failed with errors:
 ```clojure
 (do
   ;; Method 1: Trial division in Spell
@@ -285,8 +285,8 @@ method. Report both methods used, whether they agree, and the final answer.
               (check-divisors n (rest divs))))))
       (check-divisors 7919 test-divisors)))
 
-  ;; Method 2: Python via call-now
-  (call-now {:bash-check (:out (bash "python3 -c \"...\""))})
+  ;; Method 2: Python via !call-now
+  (!call-now {:bash-check (:out (bash "python3 -c \"...\""))})
 
   (def method2-result (strip bash-check))        ;; <-- wrong arity, crash
   ...)
@@ -333,20 +333,20 @@ List the files in the current directory using bash. Find which file has the long
 name. Read the first 3 lines of that file and summarize what it appears to contain.
 ```
 
-**Representative output** (Opus, rep 0) — sequential tool calls via `call-now`:
+**Representative output** (Opus, rep 0) — sequential tool calls via `!call-now`:
 ```clojure
-(call-now {:files (:out (bash "ls"))})
+(!call-now {:files (:out (bash "ls"))})
 ;; Bindings: {"files" "bin\nCLAUDE.md\ndeps.edn\ndev\nexamples\n..."}
 
 (def thought "The files are: ... CLAUDE.md has the longest name at 9 characters.")
 
-(call-now {:first-lines (:out (bash "head -n 3 CLAUDE.md"))})
+(!call-now {:first-lines (:out (bash "head -n 3 CLAUDE.md"))})
 ;; Bindings: {"first-lines" "# spell\n\nA domain-specific language for..."}
 
 (def summary "CLAUDE.md is a documentation file describing 'spell'...")
 ```
 
-`call-now` preserves the KV cache — the model continues generating after each tool result as if it were a single uninterrupted completion. Opus achieved quality 4-5; Sonnet failed on all 3 replicates (syntax errors, unbound symbols).
+`!call-now` preserves the KV cache — the model continues generating after each tool result as if it were a single uninterrupted completion. Opus achieved quality 4-5; Sonnet failed on all 3 replicates (syntax errors, unbound symbols).
 
 ### 8. independent-analysts (v1, delegate-and-synthesize)
 
@@ -420,7 +420,7 @@ This prompt sits at the frontier of current capability: models can *design* recu
 
 1. **Models are rational about orchestration.** They don't orchestrate for the sake of it. Inline solutions are preferred when they suffice, and the quality is higher. This is arguably the correct behavior.
 
-2. **Task structure drives orchestration.** "Three perspectives" naturally maps to three `llm` calls. "Use bash" naturally maps to `call-now`. Models follow structural cues, not abstract instructions.
+2. **Task structure drives orchestration.** "Three perspectives" naturally maps to three `llm` calls. "Use bash" naturally maps to `!call-now`. Models follow structural cues, not abstract instructions.
 
 3. **The capability-execution gap is real.** Models can design correct orchestration architectures but struggle with the mechanics: type coercion across LLM boundaries, scoping in continuations, parsing LLM output as structured data.
 
@@ -428,7 +428,7 @@ This prompt sits at the frontier of current capability: models can *design* recu
 
 5. **Spell syntax is a discriminator across model families.** Anthropic models produce valid Spell programs reliably (2-4 calls per run). GPT-4o averages 22.6 calls — mostly retries from syntax errors. GPT-5.2 is comparable to Sonnet. This suggests Spell's Lisp syntax is a meaningful capability test, not just a formatting requirement.
 
-6. **Prefix-based continuation is critical for cross-model support.** The assistant-prefill pattern (sending the Spell boilerplate as an assistant prefix rather than a single concatenated prompt) was necessary for OpenAI models to function at all. Even with it, `call-now` continuations remain fragile on non-Anthropic models.
+6. **Prefix-based continuation is critical for cross-model support.** The assistant-prefill pattern (sending the Spell boilerplate as an assistant prefix rather than a single concatenated prompt) was necessary for OpenAI models to function at all. Even with it, `!call-now` continuations remain fragile on non-Anthropic models.
 
 7. **Budget limits are essential for cross-model benchmarking.** Without per-run cost caps, retry storms on weaker models can consume orders of magnitude more budget than successful runs ($14 vs $0.02).
 
@@ -487,7 +487,7 @@ quality and total caloric intake for metabolic health.
 The model attempted three retries, each hitting different errors. On retry 2, it resorted to checking `7919 % p` for each prime via 23 separate `bash` calls:
 
 ```clojure
-(call-now {:mod2  (:out (bash "echo $((7919 % 2))"))
+(!call-now {:mod2  (:out (bash "echo $((7919 % 2))"))
            :mod3  (:out (bash "echo $((7919 % 3))"))
            :mod7  (:out (bash "echo $((7919 % 7))"))
            ...

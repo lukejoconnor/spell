@@ -75,7 +75,7 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- try-quine-recovery
-  "Attempt quine-extension recovery: append error info + extend to the quine.
+  "Attempt quine-extension recovery: append error info + !extend to the quine.
    Returns eval result (ok or err). Throws on non-quine or retry limit.
    If program doesn't start with (quine completion ...), wraps it first and recurses."
   [program result variant-builtins eval-builtin]
@@ -98,7 +98,7 @@
               recovery-arg (list 'eval
                              (list 'do
                                (list 'def '_error error-map)
-                               (list 'quote (list 'extend 'completion))))
+                               (list 'quote (list '!extend 'completion))))
               recovery-quine (apply list (concat (seq program) [recovery-arg]))
               indent (apply str (repeat eval/*llm-depth* "  "))
               _     (eval/vlog (str indent "Recovery quine: " (pr-str recovery-quine)))
@@ -115,7 +115,7 @@
 (defn- try-reader-recovery
   "Attempt recovery from a reader/parse error by embedding the raw text
    as a string in a fresh recovery quine. The LLM sees its broken output
-   and the error message, then gets a fresh chance via extend."
+   and the error message, then gets a fresh chance via !extend."
   [raw parse-error variant-builtins eval-builtin]
   (let [error-msg (or (.getMessage parse-error) "Unknown reader error")
         indent    (apply str (repeat eval/*llm-depth* "  "))
@@ -134,7 +134,7 @@
                          (list 'eval
                            (list 'do
                              (list 'def '_error error-map)
-                             (list 'quote (list 'extend 'completion)))))
+                             (list 'quote (list '!extend 'completion)))))
         result    (binding [eval/*llm-depth*           (inc eval/*llm-depth*)
                             eval/*raw-text*            nil
                             eval/*builtins*            variant-builtins
@@ -303,7 +303,7 @@
 
    Returns a map {:llm fn, :run fn}.
 
-   The returned function is automatically available as 'llm-self in Spell code,
+   The returned function is automatically available as '!llm-self in Spell code,
    providing self-recursion without needing to wire up var refs."
   [{:keys [namespaces provider model system llm-var recover format prefill? thinking reasoning-effort verbosity
            suffix-grammar? grammar-max-chars]
@@ -353,17 +353,17 @@
                      :else ns-recover)
         ;; Create a promise for the final config (to break circular dependency)
         final-config (promise)
-        ;; Create llm-self that closes over api-config, gets eval dynamically
+        ;; Create !llm-self that closes over api-config, gets eval dynamically
         self-ref (atom nil)
-        self-fn (fn llm-self
+        self-fn (fn !llm-self
                   ([prompt] (@self-ref prompt))
                   ([prompt handle]
                    ;; 2-arity only valid from spawn context (handle pre-registered)
                    (when-not (runtime/handle? handle)
                      (throw (ex-info "Explicit handle requires spawn context" {:handle handle})))
                    (@self-ref prompt handle)))
-        ;; Create effect-builtins (closes over llm-self)
-        effect-builtins (merge {'llm-self self-fn
+        ;; Create effect-builtins (closes over !llm-self)
+        effect-builtins (merge {'!llm-self self-fn
                                'leaf-llm (make-leaf-llm (cond-> {}
                                                           provider (assoc :provider provider)
                                                           model (assoc :model model)))}
@@ -388,7 +388,7 @@
                    ([prompt] (the-llm prompt nil))
                    ([prompt handle]
                     (let [handle     (or handle runtime/*current-handle* :main)
-                          parent     (or runtime/*current-handle*  ;; llm-self (inherited)
+                          parent     (or runtime/*current-handle*  ;; !llm-self (inherited)
                                        (:parent-handle (get @runtime/registry handle))  ;; spawn child
                                        )
                           root?      (not= parent handle)
@@ -415,11 +415,11 @@
 (defn build-init
   "Build a balanced init program from a prompt and optional preamble.
    preamble: optional string of Spell expressions spliced before trailing expr.
-   trailing-expr: expression string for quoted trailing call (default: (extend))."
-  ([prompt] (build-init prompt nil "(extend)"))
-  ([prompt preamble] (build-init prompt preamble "(extend)"))
+   trailing-expr: expression string for quoted trailing call (default: (!extend))."
+  ([prompt] (build-init prompt nil "(!extend)"))
+  ([prompt preamble] (build-init prompt preamble "(!extend)"))
   ([prompt preamble trailing-expr]
-   (let [trailing-expr (or trailing-expr "(extend)")]
+   (let [trailing-expr (or trailing-expr "(!extend)")]
      (str "(quine completion (eval (do "
           "(quine prompt \"" (parse/escape-string (str prompt)) "\") "
           (when preamble (str preamble " "))

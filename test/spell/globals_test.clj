@@ -188,7 +188,7 @@
 (deftest globals-persist-across-llm-calls-test
   (testing "globals set in one llm call are visible in the next"
     (let [call-count (atom 0)
-          responses ["(globals/set :shared-val 99)(llm-self \"(eval '(do \"))"
+          responses ["(globals/set :shared-val 99)(!llm-self \"(eval '(do \"))"
                      "(globals/get :shared-val))"]]
       (let [{:keys [llm]} (th/make-test-llm
                             {:response-fn (fn [_]

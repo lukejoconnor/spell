@@ -1,6 +1,6 @@
 (ns spell.user
   "User-as-agent: treat the human as an agent with handle :user.
-   Supports both agent-initiated communication (agents/ask :user msg)
+   Supports both agent-initiated communication (agents/!ask :user msg)
    and user-initiated messaging (press Enter to signal readiness).
    Uses a LinkedBlockingQueue to decouple stdin reading from message
    processing, avoiding contention between the reader thread and
@@ -270,8 +270,8 @@
         user-self-fn (fn [prompt-str]
                        (user-self runtime/*current-eval-fn*
                                   runtime/*current-handle* runtime/*current-handle* prompt-str))
-        ;; Effect builtins: llm-self (user-self) + agents namespace
-        effect-builtins {'llm-self user-self-fn
+        ;; Effect builtins: !llm-self (user-self) + agents namespace
+        effect-builtins {'!llm-self user-self-fn
                          'agents runtime/agents-namespace}
         eval-builtin (llm/make-eval variant-builtins effect-builtins)
         config {:variant-builtins variant-builtins

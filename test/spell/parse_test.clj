@@ -19,7 +19,7 @@
   (testing "empty string"
     (is (= [] (read-all ""))))
 
-  (testing "do block followed by defs (call-now pattern)"
+  (testing "do block followed by defs (!call-now pattern)"
     (is (= ['(do (def response "hi") (def return 42))
             '(def files "result")]
            (read-all "(do (def response \"hi\") (def return 42))\n(def files \"result\")"))))

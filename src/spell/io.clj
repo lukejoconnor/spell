@@ -566,14 +566,14 @@ All io/ calls are effect functions. Call them only in the quoted trailing expres
 Valid single call: '(io/cwd)
 Valid chained calls: '(do (io/cwd) (io/ls \".\") (io/read-file \"README.md\"))
 Invalid: (io/cwd)
-On first io use in a task, run '(describe io).
-Use (describe io :fn-name) for detailed docs on any function."
+On first io use in a task, run '(!describe io).
+Use (!describe io :fn-name) for detailed docs on any function."
           ;; File reading/writing
           :slurp "Read entire file as string. Returns {:ok content} or {:error msg}."
           :spit "Write to file. (spit path content) or (spit path content {:append true}). Returns {:ok path} or {:error msg}."
           :slurp-bytes "Read file as byte array. Returns {:ok bytes} or {:error msg}."
           :read-file "Read file with line numbers. Returns string \"1: line1\\n2: line2\\n...\" or {:error msg}. Optional start/end for range."
-          :read-lines "Read file as vector of raw line strings with line-offset metadata. Displays with line numbers via call-now; evaluates to raw vector. Optional start/end for range."
+          :read-lines "Read file as vector of raw line strings with line-offset metadata. Displays with line numbers via !call-now; evaluates to raw vector. Optional start/end for range."
           :write-file "Write content to file. Creates parent dirs. Returns {:ok path} or {:error msg}."
           ;; String replacement
           :str-replace "Replace string in file. Unique by default; (str-replace path old new {:all true}) replaces all. Returns {:ok path} or {:error msg}."
@@ -610,7 +610,7 @@ Returns a string with numbered lines: \"1: first line\\n2: second line\\n...\"
 Returns {:error msg} on failure.
 
 Use the range form to extract a subset for a child:
-  '(call-now code (io/read-file \"main.py\" 40 60))
+  '(!call-now code (io/read-file \"main.py\" 40 60))
 
 For raw content without line numbers, use io/slurp:
   (:ok (io/slurp \"file.txt\"))"
@@ -624,10 +624,10 @@ For raw content without line numbers, use io/slurp:
   start, end: 1-indexed, inclusive (clamped to file bounds)
 
 Returns a vector of raw strings with metadata {:spell/line-offset N}.
-When serialized via call-now, displays with line numbers for readability,
+When serialized via !call-now, displays with line numbers for readability,
 but the binding evaluates to the raw vector.
 
-  '(call-now code (io/read-lines \"main.py\" 40 60))
+  '(!call-now code (io/read-lines \"main.py\" 40 60))
   ;; child sees numbered display, but code is a plain vector
   (nth code 0)           ;; first line as string
   (subvec code 0 5)      ;; first 5 lines
@@ -704,7 +704,7 @@ Does nothing on timeout or error.
 
 Example:
   '(do (io/watch-send \"./src\" (agents/current-handle) 10000)
-       (agents/ask (agents/current-handle)))
+       (agents/!ask (agents/current-handle)))
   ;; next turn: message with file change events"
 
     :spit

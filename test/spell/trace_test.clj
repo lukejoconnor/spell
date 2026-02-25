@@ -184,7 +184,7 @@
 (deftest integration-nested-calls-test
   (testing "nested llm calls produce correct trace tree"
     (let [call-count (atom 0)
-          responses ["'(cat \"hello \" (llm-self \"(do \"))"
+          responses ["'(cat \"hello \" (!llm-self \"(do \"))"
                      "\"world\")"]]
       (binding [trace/*trace* (trace/new-trace)]
         (let [{:keys [llm]} (th/make-test-llm
@@ -229,8 +229,8 @@
 (deftest integration-three-deep-test
   (testing "three levels of nesting produce correct parent chain"
     (let [call-count (atom 0)
-          responses ["'(llm-self \"(eval (do \")"
-                     "'(llm-self \"(eval (do \")"
+          responses ["'(!llm-self \"(eval (do \")"
+                     "'(!llm-self \"(eval (do \")"
                      "99)))"]]
       (binding [trace/*trace* (trace/new-trace)]
         (let [{:keys [llm]} (th/make-test-llm

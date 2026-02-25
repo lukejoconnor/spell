@@ -20,7 +20,7 @@ Spell occupies a gap in the current landscape. PARL demonstrates that model-desi
 
 Our contributions are:
 
-1. **A language for LLM self-orchestration.** We define Spell, a Lisp dialect with primitives for recursive self-invocation (`llm`), self-reference (`uneval`), environment-closing expansion (`expand`), tool-use continuations (`call-now`), and meta-level hooks. We provide formal semantics grounded in the Lisp tradition of meta-circular evaluation.
+1. **A language for LLM self-orchestration.** We define Spell, a Lisp dialect with primitives for recursive self-invocation (`llm`), self-reference (`uneval`), environment-closing expansion (`expand`), tool-use continuations (`!call-now`), and meta-level hooks. We provide formal semantics grounded in the Lisp tradition of meta-circular evaluation.
 
 2. **An implementation and evaluation.** We implement Spell as a Clojure interpreter with a sandboxed evaluator, automatic expansion, a hook system, and an agent factory (`make-llm`) for configuring agent hierarchies with controlled tool access and model selection.
 

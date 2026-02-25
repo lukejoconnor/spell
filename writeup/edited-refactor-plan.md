@@ -149,13 +149,13 @@ Add a module-level default inbox function in `comm.clj`:
 - 2-arg: explicit handle (from spawn)
 - Root detection logic:
   - `*parent-handle*` set AND `*current-handle*` not set → spawn case → parent = `*parent-handle*`
-  - `*current-handle*` set → inherited (llm-self) → parent = handle (same)
+  - `*current-handle*` set → inherited (!llm-self) → parent = handle (same)
   - Neither set → top-level → parent = nil
 - If not registered: `(register! handle default-inbox)`
 - Seed inbox: root → `reset!`, inherited → `compare-and-set!`
 - Call `-llm`
 
-**`llm.clj` — `self-fn` (llm-self):**
+**`llm.clj` — `self-fn` (!llm-self):**
 - Simplify to 1-arg and 2-arg (no hooks)
 - Remove `*spawn-ready*` guard
 
