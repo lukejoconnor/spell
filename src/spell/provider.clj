@@ -208,7 +208,7 @@
                          (if (str/blank? new-content)
                            [{:type "text" :text prompt :cache_control {:type "ephemeral"}}]
                            [{:type "text" :text cache-prefix :cache_control {:type "ephemeral"}}
-                            {:type "text" :text new-content}]))
+                            {:type "text" :text new-content :cache_control {:type "ephemeral"}}]))
                        prompt)
         messages (cond-> [{:role "user" :content user-content}]
                    effective-prefix (conj {:role "assistant" :content (str/trimr effective-prefix)}))
@@ -600,14 +600,18 @@
                     {:effort reasoning-effort})
         text-controls (when (= verbosity "low")
                         {:verbosity "low"})
+        instructions (str (if (str/blank? system-prompt)
+                            "You are a helpful assistant."
+                            system-prompt)
+                          "\n\nCustom tool call output mode:\n"
+                          "Return the full Spell suffix as the input of exactly one custom tool call named spell_suffix.\n"
+                          "Do not send assistant message text, markdown, or wrapper JSON.")
         tool (cond-> {:type "custom"
                       :name "spell_suffix"
                       :description "Spell suffix emitted as custom tool input"}
                grammar-format (assoc :format grammar-format))
         body (cond-> {:model model
-                      :instructions (if (str/blank? system-prompt)
-                                      "You are a helpful assistant."
-                                      system-prompt)
+                      :instructions instructions
                       :input [{:type "message"
                                :role "user"
                                :content [{:type "input_text"
@@ -662,7 +666,8 @@
     (parse-openai-responses-response (json/write-str @completed))))
 
 (defn- parse-chatgpt-codex-toolcall-response
-  "Parse a completed ChatGPT Codex response and require custom_tool_call output."
+  "Parse a completed ChatGPT Codex response.
+   Prefer custom_tool_call input; ignore assistant message text when no tool call is present."
   [completed]
   (let [usage (:usage completed)
         tool-input (some (fn [item]
@@ -670,18 +675,14 @@
                              (:input item)))
                          (:output completed))
         reasoning-tokens (get-in usage [:output_tokens_details :reasoning_tokens])]
-    (when (nil? tool-input)
-      (throw (ex-info "ChatGPT Codex mandatory tool-call provider received non-tool output"
-                      {:type :toolcall-required-missing
-                       :status 500
-                       :output (:output completed)})))
-    {:text tool-input
+    {:text (or tool-input "")
      :usage (cond-> {:input_tokens (get-in usage [:input_tokens] 0)
                      :output_tokens (get-in usage [:output_tokens] 0)}
               reasoning-tokens (assoc :reasoning_tokens reasoning-tokens))}))
 
 (defn- parse-chatgpt-codex-toolcall-stream
-  "Parse ChatGPT Codex Responses SSE stream, requiring custom_tool_call output."
+  "Parse ChatGPT Codex Responses SSE stream for tool-call mode.
+   If no custom tool call is present, returns empty text."
   [response-body]
   (let [failed (atom nil)
         completed (atom nil)]

@@ -640,7 +640,7 @@
       (is (= 9 (get-in result [:usage :input_tokens])))
       (is (= 3 (get-in result [:usage :output_tokens])))))
 
-  (testing "throws and marks retryable when no custom_tool_call is present"
+  (testing "ignores assistant message output when no custom_tool_call is present"
     (let [sse (str "event: response.completed\n"
                    "data: "
                    (json/write-str {:type "response.completed"
@@ -650,13 +650,10 @@
                                                :usage {:input_tokens 10
                                                        :output_tokens 4}}})
                    "\n\n")
-          ex (try
-               (#'provider/parse-chatgpt-codex-toolcall-stream sse)
-               nil
-               (catch Exception e e))]
-      (is ex)
-      (is (re-find #"mandatory tool-call provider received non-tool output" (ex-message ex)))
-      (is (= 500 (:status (ex-data ex))))))
+          result (#'provider/parse-chatgpt-codex-toolcall-stream sse)]
+      (is (= "" (:text result)))
+      (is (= 10 (get-in result [:usage :input_tokens])))
+      (is (= 4 (get-in result [:usage :output_tokens])))))
 
   (testing "throws on response.failed"
     (let [sse (str "event: response.failed\n"
