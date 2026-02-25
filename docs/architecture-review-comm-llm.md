@@ -47,7 +47,7 @@ Box's actual dependencies are minimal: `parse/balance-parens` (one call) and not
 
 | Concern | Lines | Key functions |
 |---------|-------|---------------|
-| Describe builtin | 21-28 | `describe` |
+| Describe builtin | 21-28 | `!describe` |
 | Prefix echo handling | 47-78 | `strip-code-fences`, `strip-prefix-echo` |
 | Eval pipeline | 84-131 | `make-inbox-fn` (recovery loop) |
 | Agent registration | 133-143 | `register-agent` |
@@ -72,7 +72,7 @@ The complexity is somewhat inherent (it *is* the wiring function), but several c
 
 4. **System prompt composition** (`compose-system-prompt`, `namespaces-section`, `format-section`, `generate-system-prompt`, lines 208-261): Pure string functions with no dependency on LLM machinery. Could be extracted if the file grows further.
 
-5. **`describe` function** (lines 21-28): Defined here "to avoid circular deps with core." It's a pure map lookup with no LLM dependency. Currently it needs to be importable by both `core.clj` and the `describe` macro in `macros.clj`. If `stdlib.clj` re-exported it, the circular dep concern might resolve more cleanly.
+5. **`!describe` macro support function** (lines 21-28): Defined here "to avoid circular deps with core." It's a pure map lookup with no LLM dependency. Currently it needs to be importable by both `core.clj` and the `!describe` macro in `macros.clj`. If `stdlib.clj` re-exported it, the circular dep concern might resolve more cleanly.
 
 ### The `the-llm` / comm coupling
 

@@ -2,7 +2,7 @@
   "Error recovery for Spell programs.
 
    Namespace recovery — deterministic symbol fixup (unbound or misqualified).
-   Quine-extension recovery — appends error info to the quine, re-enters via extend."
+   Quine-extension recovery — appends error info to the quine, re-enters via !extend."
   (:require [clojure.string :as str]
             [spell.eval :as eval]))
 

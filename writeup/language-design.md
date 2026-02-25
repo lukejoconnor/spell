@@ -72,7 +72,7 @@ A simplified implementation of `llm` is:
     (first (spell-eval completion {})))) ; evaluate and return value
 ```
 
-Every `llm` call is associated with a *handle* — a keyword like `:agent-42` that serves as its address for inter-agent communication (see *Inter-agent communication* below). The built-in `llm-self` calls `llm` recursively, and the child inherits the parent's handle. This means the entire `llm-self` call tree is one logical agent with one address; `spawn` is used to create agents with their own handles.
+Every `llm` call is associated with a *handle* — a keyword like `:agent-42` that serves as its address for inter-agent communication (see *Inter-agent communication* below). The built-in `!llm-self` calls `llm` recursively, and the child inherits the parent's handle. This means the entire `!llm-self` call tree is one logical agent with one address; `spawn` is used to create agents with their own handles.
 
 The completion is evaluated using the `spell-eval` function, which differs from Clojure's `eval` in three important ways. First, it is sandboxed; only a subset of Clojure built-ins are whitelisted, and dangerous functions (e.g., involving I/O) must be called as tools. Second, it supports special forms for self-reference (`quine` and `uneval`), discussed below. Third, it has different rules related to scoping: `spell-eval` takes an environment as an input parameter, and this environment is empty when `spell-eval` is called by `llm`. This way, Spell programs are self-contained, and the LLM---which sees only the program it is completing---is able to predict exactly how the code that it writes will behave. Moreover, Spell functions are dynamically scoped, for reasons that are discussed below.
 
@@ -159,10 +159,10 @@ The ReAct loop can be implemented in Spell using extensions:
 '(llm (cat (reopen (pr-str completion)) (format (tool-call))))
 ```
 
-This line calls a tool, formats its result into Spell code (for example, `(def tool-call-result "...")`), concatenates this to the current completion, and extends. For ergonomics, this is packaged into `call-now`, a macro:
+This line calls a tool, formats its result into Spell code (for example, `(def tool-call-result "...")`), concatenates this to the current completion, and extends. For ergonomics, this is packaged into `!call-now`, a macro:
 
 ```clojure
-'(call-now result-name (tool-call))
+'(!call-now result-name (tool-call))
 ```
 
 
@@ -187,13 +187,13 @@ LLM-written completions may throw exceptions, potentially crashing a long-runnin
 
 ## Concurrent agents
 
-`(agents/spawn llm-fn prompt)` starts an LLM function in a background future and returns its handle. An optional third argument specifies a fixed handle name: `(agents/spawn llm-fn prompt :name)`. The first argument must be an LLM function (created by `make-llm`) because `agents/spawn` depends on the LLM engine's handle registration mechanism. Each spawned agent is independent and communicates via `agents/send` and `agents/ask` (see *Inter-agent communication* below):
+`(agents/spawn llm-fn prompt)` starts an LLM function in a background future and returns its handle. An optional third argument specifies a fixed handle name: `(agents/spawn llm-fn prompt :name)`. The first argument must be an LLM function (created by `make-llm`) because `agents/spawn` depends on the LLM engine's handle registration mechanism. Each spawned agent is independent and communicates via `agents/send` and `agents/!ask` (see *Inter-agent communication* below):
 
 ```clojure
-(def a (agents/spawn llm-self "summarize document A, send result to (agents/parent-handle)"))
-(def b (agents/spawn llm-self "summarize document B, send result to (agents/parent-handle)"))
-'(agents/ask a "send your summary")
-;; next turn: '(agents/ask b "send your summary")
+(def a (agents/spawn !llm-self "summarize document A, send result to (agents/parent-handle)"))
+(def b (agents/spawn !llm-self "summarize document B, send result to (agents/parent-handle)"))
+'(agents/!ask a "send your summary")
+;; next turn: '(agents/!ask b "send your summary")
 ```
 
 
@@ -207,11 +207,11 @@ Inbox functions allow two forms of coordination in particular. First, LLM A can 
 
 : LLM A writes an inbox function and sends it to LLM B; this function is applied to the completion of LLM B. This single mechanism enables various communication patterns.
 
-When `llm` is called, it creates a globally mutable reference, the *inbox*, to its inbox function. Initially, the inbox function is `make-inbox-fn` — a function that closes over `eval` and handles parsing, evaluation, and error recovery. At any later time, another LLM can send a *message function* to the inbox, modifying the inbox function via the atomic operation `swap!`. The typical pattern is composition: a message function with a message `f` inputs an inbox function `inbxfn` and returns `(comp inbxfn f)`. The function `f` is typically a macro which inputs a completion and adds an expression. The built-in `create-msg` produces such functions; for example, `(create-msg 'msg {:from :Alice :body "Hello Bob!"})` returns a function that reopens a completion, appends `(quine msg {:from :Alice :body "Hello Bob!"})`, and triggers an `llm-self` extension. This message replaces Bob's trailing expression (extending his completion). Instead of doing what he was about to do, Bob is given this extra context and re-prompted via `llm-self`.
+When `llm` is called, it creates a globally mutable reference, the *inbox*, to its inbox function. Initially, the inbox function is `make-inbox-fn` — a function that closes over `eval` and handles parsing, evaluation, and error recovery. At any later time, another LLM can send a *message function* to the inbox, modifying the inbox function via the atomic operation `swap!`. The typical pattern is composition: a message function with a message `f` inputs an inbox function `inbxfn` and returns `(comp inbxfn f)`. The function `f` is typically a macro which inputs a completion and adds an expression. The built-in `create-msg` produces such functions; for example, `(create-msg 'msg {:from :Alice :body "Hello Bob!"})` returns a function that reopens a completion, appends `(quine msg {:from :Alice :body "Hello Bob!"})`, and triggers an `!llm-self` extension. This message replaces Bob's trailing expression (extending his completion). Instead of doing what he was about to do, Bob is given this extra context and re-prompted via `!llm-self`.
 
-The low-level primitive is `(agents/send f handle)`, which is fire-and-forget: it deposits a function into the target's inbox and wakes it. `agents/ask` builds on `agents/send` by coupling it with a block: `(agents/ask target msg)` sends a message to the target and then blocks until the target replies. `(agents/ask target)` (without a message) pokes the target and blocks. Every form of `agents/ask` wakes the target, which prevents deadlocks: if agent A asks B while B asks A, both sends cross and both agents unblock.
+The low-level primitive is `(agents/send f handle)`, which is fire-and-forget: it deposits a function into the target's inbox and wakes it. `agents/!ask` builds on `agents/send` by coupling it with a block: `(agents/!ask target msg)` sends a message to the target and then blocks until the target replies. `(agents/!ask target)` (without a message) pokes the target and blocks. Every form of `agents/!ask` wakes the target, which prevents deadlocks: if agent A asks B while B asks A, both sends cross and both agents unblock.
 
-Because `llm-self` calls inherit the parent's handle (see *`llm` and `spell-eval`*), each handle's call tree is serial — there is no concurrent access to the same inbox. Deadlock freedom follows from two properties: same-handle trees cannot deadlock with themselves (they are serial), and cross-handle dependencies use `agents/ask` (which always wakes the target).
+Because `!llm-self` calls inherit the parent's handle (see *`llm` and `spell-eval`*), each handle's call tree is serial — there is no concurrent access to the same inbox. Deadlock freedom follows from two properties: same-handle trees cannot deadlock with themselves (they are serial), and cross-handle dependencies use `agents/!ask` (which always wakes the target).
 
 Within `llm`, all of the logic except actually calling the LLM is packaged into a helper function, `box`, which awaits the LLM completion as a promise, then drains the inbox atomically, then applies the inbox function to the raw completion and returns the result. The reason for this separation is so that a handle can remain responsive while an agent is idle. When an agent's root box completes, its return value is sent to any agents still waiting on it; it then starts an *orphan box* — a non-root box with a sleep function as its inbox. The sleep function blocks on a signal; when woken by a message, it re-enters box with the new inbox function. This keeps the handle alive indefinitely. The other way an agent can enter the sleeping state is by calling `ask`, which uses the same sleep mechanism internally.
 
@@ -271,7 +271,7 @@ Functions are organized into namespaces — simple maps with a `:docs` key and f
 (math/sqrt 16)
 ```
 
-`(describe ns)` returns all documentation; `(describe ns :key)` returns documentation for a specific item. `make-llm` accepts a `:namespaces` map that determines which namespaces are available to a given LLM variant.
+`(!describe ns)` returns all documentation; `(!describe ns :key)` returns documentation for a specific item. `make-llm` accepts a `:namespaces` map that determines which namespaces are available to a given LLM variant.
 
 ### Deterministic parallelism
 
@@ -303,13 +303,13 @@ This pattern generalizes to any external event source: start a background thread
 
 ### Prompt cleaning
 
-User prompts are often messy — voice-to-text artifacts, typos, half-sentences, or ambiguous references. `patterns/clean-prompt` is a Spell function that cleans a raw prompt via `leaf-llm` (a plain text LLM with no code execution) and then executes the cleaned version via `llm-self`:
+User prompts are often messy — voice-to-text artifacts, typos, half-sentences, or ambiguous references. `patterns/clean-prompt` is a Spell function that cleans a raw prompt via `leaf-llm` (a plain text LLM with no code execution) and then executes the cleaned version via `!llm-self`:
 
 ```clojure
 '(patterns/clean-prompt "um so like find all files modified in last week and delete the tmp ones")
 ```
 
-This works because `patterns/clean-prompt` is a Spell function (data, not a closure), so it is portable across LLM boundaries. When called from a trailing expression, the effect guard makes `leaf-llm` and `llm-self` available. The pattern separates intent inference from execution: the leaf LLM rewrites the prompt without tools or code execution, and the resulting clean directive is passed to `llm-self` for execution with full capabilities.
+This works because `patterns/clean-prompt` is a Spell function (data, not a closure), so it is portable across LLM boundaries. When called from a trailing expression, the effect guard makes `leaf-llm` and `!llm-self` available. The pattern separates intent inference from execution: the leaf LLM rewrites the prompt without tools or code execution, and the resulting clean directive is passed to `!llm-self` for execution with full capabilities.
 
 ## Under the hood
 The implementation of Spell involves interaction between the following four parts:
@@ -324,8 +324,8 @@ When a user prompts Spell, it produces the following cascade:
 3. A root handle is registered with a default inbox function. An inbox function (produced by `make-inbox-fn`) is seeded into the inbox; it closes over `eval` and handles parsing, evaluation, and error recovery.
 4. The prompt and handle are passed to `call-llm`, which makes the API call and delivers the result to `box` as a promise.
 5. `box` awaits the promise, drains the inbox, and applies the inbox function to the raw completion.
-6. The program calls `llm-self`, which calls `call-llm`, which makes an API call and calls `box`, and so on.
+6. The program calls `!llm-self`, which calls `call-llm`, which makes an API call and calls `box`, and so on.
 
 Spell programs can make LLM calls in two ways:
-1. By calling `llm-self`. These calls are synchronous, and they always have the same handle. The child inherits the parent's handle and enters `box` as non-root (parent = handle), so no lifecycle cleanup occurs.
+1. By calling `!llm-self`. These calls are synchronous, and they always have the same handle. The child inherits the parent's handle and enters `box` as non-root (parent = handle), so no lifecycle cleanup occurs.
 2. By calling `spawn`. This registers a new handle synchronously, then starts the LLM function in a background future. The spawned agent enters `box` as root (parent ≠ handle).

@@ -37,7 +37,7 @@
   (testing "llm can call llm recursively (llm is effect-only)"
     ;; llm is an effect-builtin — must go through eval's second pass
     (let [call-count (atom 0)
-          responses ["'(cat \"hello \" (llm-self \"(eval '(do \"))"
+          responses ["'(cat \"hello \" (!llm-self \"(eval '(do \"))"
                      "\"world\"))"]]
       (let [{:keys [llm]} (th/make-test-llm
                             {:response-fn (fn [_]
@@ -171,14 +171,14 @@
                           :namespaces ns-map)]
       (is (= "helper-result" (llm "(eval (do '")))))
 
-  (testing "llm-self provides automatic self-recursion"
-    ;; llm-self is an effect-builtin: accessed via eval double-evaluation.
+  (testing "!llm-self provides automatic self-recursion"
+    ;; !llm-self is an effect-builtin: accessed via eval double-evaluation.
     (let [call-count (atom 0)
           {:keys [llm]} (th/make-test-llm
                           {:response-fn (fn [_]
                                           (let [n (swap! call-count inc)]
                                             (if (= n 1)
-                                              "(eval (do '(cat \"outer-\" (llm-self \"(do \"))))"
+                                              "(eval (do '(cat \"outer-\" (!llm-self \"(do \"))))"
                                               "\"inner-result\"")))}
                           :namespaces {})]
       (is (= "outer-inner-result" (llm "(do "))))))
@@ -773,14 +773,14 @@
 
   (testing "quine-extension recovery re-enters via extend"
     ;; Program is a quine with an error. Quine-extension recovery appends
-    ;; a new arg with error info + (extend completion). The second LLM call
+    ;; a new arg with error info + (!extend completion). The second LLM call
     ;; (via extend) provides the fix.
     (let [call-count (atom 0)
           {:keys [llm]} (th/make-test-llm
                           {:response-fn (fn [_]
                                           (let [n (swap! call-count inc)]
                                             (if (= n 1)
-                                              "undefined-symbol) '(extend completion))"  ; first call fails
+                                              "undefined-symbol) '(!extend completion))"  ; first call fails
                                               "(def fix 42))")))
                            :prefill? true}                       ; recovery extend returns fix
                           :namespaces {})]

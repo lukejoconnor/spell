@@ -22,4 +22,4 @@
 (think "planning the fix"
   (def fix-plan "Two bugs to fix:\n1. Line 30: role encoding — need to verify (name :admin) works in JSON roundtrip. Actually this might be a red herring since the test says nil, not wrong value.\n2. Line 62: select-keys not filtering properly — or perhaps the entire cond is falling through to wrong branch.\n\nLet me focus on what the test output actually says and propose concrete fixes."))
 
-'(compact completion))))
+'(!compact completion))))

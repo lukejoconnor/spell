@@ -41,11 +41,11 @@
                 "\n\n"))
          "Usage:\n"
          "  (io/sh \"ls\")              — call function directly\n"
-         "  '(describe io)              — namespace overview\n"
-         "  '(describe io :sh)          — detailed doc for specific function\n"
-         "  '(describe agents globals)  — multiple namespaces in one describe\n"
+         "  '(!describe io)              — namespace overview\n"
+         "  '(!describe io :sh)          — detailed doc for specific function\n"
+         "  '(!describe agents globals)  — multiple namespaces in one !describe call\n"
          "\n"
-         "describe is an extension — it fires as the trailing expression for that turn.\n"
+         "!describe is an extension — it fires as the trailing expression for that turn.\n"
          "Use it before calling an unfamiliar namespace.\n")))
 
 (defn- format-section

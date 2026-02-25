@@ -88,7 +88,7 @@
 
 Pre-initialized with :roles {} and :tasks [].
 All globals/ calls are effect functions — quote them in the trailing expression.
-Use (describe globals :fn-name) for detailed docs on any function."
+Use (!describe globals :fn-name) for detailed docs on any function."
           :get   "Get global value by key: (globals/get :roles)"
           :set   "Set global value: (globals/set :roles {}) — returns value"
           :update "Atomic read-modify-write: (globals/update :tasks (fn [t] (conj t item))) — returns new value"
@@ -104,7 +104,7 @@ Use (describe globals :fn-name) for detailed docs on any function."
   key: keyword
 
 Example:
-  '(call-now roles (globals/get :roles))
+  '(!call-now roles (globals/get :roles))
   ;; next turn: roles is bound to the current roles map"
 
     :set
@@ -143,7 +143,7 @@ Returns nil if the value is empty or the key doesn't exist.
 Thread-safe — use for work queues where multiple agents claim tasks.
 
 Example (worker claims a task):
-  '(call-now task (globals/pop :tasks))
+  '(!call-now task (globals/pop :tasks))
   ;; task is the first element, atomically removed from :tasks"
 
     :keys
@@ -152,7 +152,7 @@ Example (worker claims a task):
 (globals/keys)
 
 Example:
-  '(call-now ks (globals/keys))"
+  '(!call-now ks (globals/keys))"
 
     :all
     "Return the entire globals map.
@@ -160,7 +160,7 @@ Example:
 (globals/all)
 
 Example:
-  '(call-now state (globals/all))"
+  '(!call-now state (globals/all))"
 
     :wait-until
     "Block until a predicate on the globals map returns truthy.

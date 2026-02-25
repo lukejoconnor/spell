@@ -29,7 +29,7 @@ orchestration: if (:proof-result return) → accept, else → retry with failure
 - Data transformation (invariants must hold)
 - Any task where correctness is checkable even if generation is hard
 
-**Expressibility in Spell:** Partially expressible. An agent can use `call-now` to run tests and check results. What's missing is *structural enforcement* — a way to make verification non-optional. This could be a hook that intercepts return values and applies a proof function, rejecting failures. The `return-hook` mechanism is close but would need to trigger retries rather than just transforming values.
+**Expressibility in Spell:** Partially expressible. An agent can use `!call-now` to run tests and check results. What's missing is *structural enforcement* — a way to make verification non-optional. This could be a hook that intercepts return values and applies a proof function, rejecting failures. The `return-hook` mechanism is close but would need to trigger retries rather than just transforming values.
 
 **Key insight:** Verification is almost always cheaper than generation. A pattern that makes verification mandatory and automatic converts an unreliable generator into a reliable one via rejection sampling.
 
@@ -57,7 +57,7 @@ attempt 3: try task with both reflections → succeed
 - Multi-step tasks where early mistakes compound
 - Any task with clear success/failure signals
 
-**Expressibility in Spell:** Mostly expressible. The retry loop can use `llm-self` with accumulated reflections as context. What's awkward is that Spell's error recovery (`try`/`catch` + LLM fix) currently re-evaluates from scratch rather than accumulating episodic memory across attempts. A `reflect-and-retry` macro could wrap this pattern: catch failure → call `leaf-llm` to diagnose → prepend diagnosis to prompt → retry.
+**Expressibility in Spell:** Mostly expressible. The retry loop can use `!llm-self` with accumulated reflections as context. What's awkward is that Spell's error recovery (`try`/`catch` + LLM fix) currently re-evaluates from scratch rather than accumulating episodic memory across attempts. A `reflect-and-retry` macro could wrap this pattern: catch failure → call `leaf-llm` to diagnose → prepend diagnosis to prompt → retry.
 
 **Related work:** Reflexion (Shinn et al. 2023) achieved 97% on AlfWorld vs. 75% for base ReAct, using exactly this pattern.
 
@@ -86,7 +86,7 @@ all fail: escalate to reflexion loop with all failure diagnoses
 - Optimization (try different algorithms, keep the fastest)
 - Any task where the right approach isn't obvious upfront
 
-**Expressibility in Spell:** Mostly expressible. `agents/spawn` + `agents/ask` handles the forking. Cancellation is possible via `-send!`: when a winner is found, send a function to remaining agents that short-circuits evaluation (returns a sentinel or throws). This is cooperative cancellation — fires at the agent's next `box` entry (after its current LLM call completes). Still missing: a race-style primitive that returns the first result meeting a predicate, rather than waiting for all results. Currently `agents/ask [a b c]` waits for *all* targets; a `race` variant would commit on first verified result.
+**Expressibility in Spell:** Mostly expressible. `agents/spawn` + `agents/!ask` handles the forking. Cancellation is possible via `-send!`: when a winner is found, send a function to remaining agents that short-circuits evaluation (returns a sentinel or throws). This is cooperative cancellation — fires at the agent's next `box` entry (after its current LLM call completes). Still missing: a race-style primitive that returns the first result meeting a predicate, rather than waiting for all results. Currently `agents/!ask [a b c]` waits for *all* targets; a `race` variant would commit on first verified result.
 
 **Design tension:** Speculative branching trades compute cost for latency and quality. The agent needs a way to judge when the cost is worth it — i.e., when the task is hard enough and the strategies different enough to justify parallelism.
 
@@ -96,7 +96,7 @@ all fail: escalate to reflexion loop with all failure diagnoses
 
 **One-line:** When context fills up, compress the accumulated state into a summary and continue with fresh context.
 
-**Problem it solves:** Long tasks (multi-file edits, extended debugging sessions, large codebases) fill the context window. The agent loses access to early information and starts making inconsistent decisions. Spell's `extend` prunes rethought expressions but doesn't compress surviving content.
+**Problem it solves:** Long tasks (multi-file edits, extended debugging sessions, large codebases) fill the context window. The agent loses access to early information and starts making inconsistent decisions. Spell's `!extend` prunes rethought expressions but doesn't compress surviving content.
 
 **How it works:** At a natural breakpoint (or when context reaches a threshold), the agent pauses work and generates a structured summary of its current state: what's been done, what's been learned, what remains, and what key decisions have been made. It then starts a fresh agent with this summary as its initial context, plus any artifacts produced so far.
 
@@ -118,7 +118,7 @@ fresh agent: starts with summary + original task, continues work
 - Research tasks that involve reading many documents
 - Any task spanning more turns than the context window supports
 
-**Expressibility in Spell:** Partially expressible via `llm-self` with a compressed prompt. What's missing is *automatic* distillation — detecting when context is becoming a bottleneck and triggering compression without explicit agent action. Also missing: a structured protocol for what gets preserved vs. discarded. The `think`/`rethink` system handles local corrections but not global compression.
+**Expressibility in Spell:** Partially expressible via `!llm-self` with a compressed prompt. What's missing is *automatic* distillation — detecting when context is becoming a bottleneck and triggering compression without explicit agent action. Also missing: a structured protocol for what gets preserved vs. discarded. The `think`/`rethink` system handles local corrections but not global compression.
 
 **Key insight:** The distillation itself can be an LLM call (`leaf-llm` to summarize), making the compression lossy but intelligent — the agent decides what's important to preserve.
 
@@ -144,7 +144,7 @@ stage 3 (expensive): deep analysis of 4 files, generate and test fixes
 - Literature search (scan titles → read abstracts → read papers)
 - Any task where the search space is large but most candidates are irrelevant
 
-**Expressibility in Spell:** Fully expressible. This is a natural composition of `call-now` (for cheap tool calls), `llm-self` (for analysis), and sequential filtering. The pattern doesn't require new primitives — it's a strategy the agent can adopt. However, an agent without explicit instruction tends to go deep immediately rather than scanning broadly first. Making this a named pattern (like a macro or library function) would make it easier to invoke.
+**Expressibility in Spell:** Fully expressible. This is a natural composition of `!call-now` (for cheap tool calls), `!llm-self` (for analysis), and sequential filtering. The pattern doesn't require new primitives — it's a strategy the agent can adopt. However, an agent without explicit instruction tends to go deep immediately rather than scanning broadly first. Making this a named pattern (like a macro or library function) would make it easier to invoke.
 
 **Design note:** The funnel shape is the key insight. Each stage should be at least 3-5x cheaper than the next, and should eliminate at least half the candidates. If a stage doesn't narrow sufficiently, it wasn't cheap enough relative to its information gain.
 
@@ -176,7 +176,7 @@ conclude: H1 confirmed, fix = add empty-input guard
 - Performance investigation
 - Understanding unfamiliar code
 
-**Expressibility in Spell:** Expressible as a discipline rather than a primitive. The agent can use `think` to record hypotheses, `call-now` to run experiments, and `rethink` to update beliefs. What might be valuable is a `hypothesize` macro or protocol that structures this: maintain a list of hypotheses with status (active/confirmed/refuted), select the next experiment based on information gain, and terminate when confidence is sufficient. This would be a higher-level pattern built on existing primitives.
+**Expressibility in Spell:** Expressible as a discipline rather than a primitive. The agent can use `think` to record hypotheses, `!call-now` to run experiments, and `rethink` to update beliefs. What might be valuable is a `hypothesize` macro or protocol that structures this: maintain a list of hypotheses with status (active/confirmed/refuted), select the next experiment based on information gain, and terminate when confidence is sufficient. This would be a higher-level pattern built on existing primitives.
 
 **Key insight:** The structure isn't about the individual actions (which are just tool calls) but about the *decision procedure* for choosing which action to take next. Hypothesis-driven exploration is an *information-theoretic* strategy — each action maximizes expected information gain.
 
@@ -310,7 +310,7 @@ execute revised plan
 
 **Problem it solves:** A general-purpose agent uses the same (expensive) model for everything — simple string formatting, complex reasoning, routine tool calls, and creative problem-solving. Most subtasks don't need the most powerful model.
 
-**How it works:** The agent classifies subtask difficulty (either explicitly or via a routing heuristic) and delegates to the appropriate tier. Tier 1 is `leaf-llm` or a fast model for simple generation/classification. Tier 2 is the standard `llm-self` for moderate complexity. Tier 3 is a more powerful model (or extended thinking) for genuinely hard problems. If a lower tier fails or expresses low confidence, the task escalates to a higher tier.
+**How it works:** The agent classifies subtask difficulty (either explicitly or via a routing heuristic) and delegates to the appropriate tier. Tier 1 is `leaf-llm` or a fast model for simple generation/classification. Tier 2 is the standard `!llm-self` for moderate complexity. Tier 3 is a more powerful model (or extended thinking) for genuinely hard problems. If a lower tier fails or expresses low confidence, the task escalates to a higher tier.
 
 ```
 task: "Fix the bug and update documentation"
@@ -328,7 +328,7 @@ decompose:
 - Tasks where parts are trivial and parts are hard
 - Any scenario where model cost matters
 
-**Expressibility in Spell:** Partially expressible. `make-llm` can create LLM functions with different models, and these can be passed via namespaces or as builtins. The agent can choose between `llm-self`, `leaf-llm`, and custom LLM variants. What's missing: (1) a *routing* mechanism that automatically classifies difficulty, and (2) an *escalation* protocol for when a lower tier fails. Currently the agent must manually decide which tier to use. A `cascading-call` primitive could try tier 1 first and automatically escalate on failure.
+**Expressibility in Spell:** Partially expressible. `make-llm` can create LLM functions with different models, and these can be passed via namespaces or as builtins. The agent can choose between `!llm-self`, `leaf-llm`, and custom LLM variants. What's missing: (1) a *routing* mechanism that automatically classifies difficulty, and (2) an *escalation* protocol for when a lower tier fails. Currently the agent must manually decide which tier to use. A `cascading-call` primitive could try tier 1 first and automatically escalate on failure.
 
 **Design tension:** The routing decision itself costs compute. If routing is done by an LLM, the routing overhead may exceed the savings from using a cheaper model. Heuristic routing (based on prompt length, task type, or keyword matching) may be more practical.
 
@@ -398,7 +398,7 @@ result: comprehensive review covering all three dimensions
 - Risk assessment (different threat models)
 - Any task where multiple perspectives improve the outcome
 
-**Expressibility in Spell:** Expressible. Each agent can be spawned with different prompts or even different `make-llm` configurations. The synthesis step is a standard fan-in via `agents/ask [a b c]`. What's not built-in is the *diversity engineering* — the parent must explicitly construct diverse perspectives. A library of "lenses" (reusable perspective-shifting prompts) would make this pattern easier to invoke.
+**Expressibility in Spell:** Expressible. Each agent can be spawned with different prompts or even different `make-llm` configurations. The synthesis step is a standard fan-in via `agents/!ask [a b c]`. What's not built-in is the *diversity engineering* — the parent must explicitly construct diverse perspectives. A library of "lenses" (reusable perspective-shifting prompts) would make this pattern easier to invoke.
 
 **Key insight:** The value is in the diversity, not the quantity. Three genuinely different perspectives are worth more than ten copies of the same one. The hard part is engineering diversity that maps onto real, independent failure modes.
 
@@ -430,7 +430,7 @@ phase 3: commit to option B, implement fix
 - Research (maintain competing hypotheses)
 - Planning (don't fix the plan until you understand the constraints)
 
-**Expressibility in Spell:** Expressible as a discipline using existing primitives. Options can be stored as data in `def` bindings, and evidence can be gathered via `call-now`. The `think`/`rethink` system supports updating beliefs. What's missing is a structured representation of options-with-evidence that persists across extensions and supports automated reasoning about which option to investigate next. This overlaps with the hypothesis-driven pattern but focuses specifically on *delaying the decision* rather than *actively testing hypotheses*.
+**Expressibility in Spell:** Expressible as a discipline using existing primitives. Options can be stored as data in `def` bindings, and evidence can be gathered via `!call-now`. The `think`/`rethink` system supports updating beliefs. What's missing is a structured representation of options-with-evidence that persists across extensions and supports automated reasoning about which option to investigate next. This overlaps with the hypothesis-driven pattern but focuses specifically on *delaying the decision* rather than *actively testing hypotheses*.
 
 **Design tension:** Deferred commitment costs working memory (you must track all active options). In a context-limited agent, there's a natural pressure to commit early just to free up context. The interplay between this pattern and context distillation is important: you need efficient representations of uncommitted options.
 
@@ -453,9 +453,9 @@ Several patterns naturally combine:
 
 The `-send!` primitive is more powerful than it first appears — it can replace an agent's inbox with an arbitrary function, enabling cancellation, one-shot observation, and retry signaling. After accounting for this, the genuinely missing primitives are:
 
-1. **Persistent observation:** One-shot observation via `-send!` works, but surviving across `llm-self` turns requires either an async re-queue hack or a small change to `-llm` (compose with existing inbox instead of resetting it). A registry-level `:observer` slot would be the clean solution.
+1. **Persistent observation:** One-shot observation via `-send!` works, but surviving across `!llm-self` turns requires either an async re-queue hack or a small change to `-llm` (compose with existing inbox instead of resetting it). A registry-level `:observer` slot would be the clean solution.
 2. **File state management:** Checkpoint & backtrack for file-editing tasks needs file-level rollback. Git provides this via branches/stash, but the agent must orchestrate it manually through `io/sh`.
-3. **Race primitive:** Speculative branching wants a `race` variant of `agents/ask` that returns the first result meeting a predicate rather than waiting for all targets.
+3. **Race primitive:** Speculative branching wants a `race` variant of `agents/!ask` that returns the first result meeting a predicate rather than waiting for all targets.
 4. **Efficient blocking on state:** Polling `globals/` works but wastes cycles. A `globals/wait-until` using Clojure's `add-watch` would be event-driven.
 
 Previously flagged as gaps but expressible via `-send!`:
@@ -469,10 +469,10 @@ Previously flagged as gaps but expressible via `-send!`:
 Most patterns are expressible with current primitives — some as strategies (requiring no new code), others via `-send!` (requiring Clojure-level orchestration):
 
 **Strategy-level** (agent can adopt with existing builtins):
-- **Progressive Narrowing:** grep → read → analyze, using `call-now` at each stage
-- **Hypothesis-Driven Exploration:** `think` for hypotheses, `call-now` for experiments, `rethink` for updates
-- **Forward Simulation:** `leaf-llm` to predict consequences before `call-now` to execute
-- **Ensemble with Diversity:** `agents/spawn` with different prompts, `agents/ask [...]` to collect
+- **Progressive Narrowing:** grep → read → analyze, using `!call-now` at each stage
+- **Hypothesis-Driven Exploration:** `think` for hypotheses, `!call-now` for experiments, `rethink` for updates
+- **Forward Simulation:** `leaf-llm` to predict consequences before `!call-now` to execute
+- **Ensemble with Diversity:** `agents/spawn` with different prompts, `agents/!ask [...]` to collect
 - **Deferred Commitment:** maintain options as data, gather evidence, commit late
 - **Stigmergic Task Board:** `globals/pop` for claiming, `globals/update` for posting, polling for completion detection
 

@@ -69,7 +69,7 @@
 
 (def call-now-store
   "Global store for large values that shouldn't be inlined in continuations.
-   Maps string IDs to values. Used by call-now to avoid embedding huge strings
+   Maps string IDs to values. Used by !call-now to avoid embedding huge strings
    (like file contents) directly in the code the LLM sees."
   (atom {}))
 
@@ -79,14 +79,14 @@
   10000)
 
 (defn store-value!
-  "Store a value in the call-now store, return its ID."
+  "Store a value in the !call-now store, return its ID."
   [value]
   (let [id (str (gensym "ref-"))]
     (swap! call-now-store assoc id value)
     id))
 
 (defn stored
-  "Retrieve a value from the call-now store."
+  "Retrieve a value from the !call-now store."
   [id]
   (let [v (get @call-now-store id ::not-found)]
     (if (= v ::not-found)
@@ -137,7 +137,7 @@
       (str "(do " (pr-str numbered) " " (pr-str value) ")"))))
 
 (defn serialize-for-continuation
-  "Serialize a value for embedding in a call-now continuation.
+  "Serialize a value for embedding in a !call-now continuation.
    Small values are inlined via pr-str. Large strings are truncated with a note.
    Large non-strings are deep-truncated (string values within maps/seqs are
    individually truncated) then inlined. Only stored out-of-band if still too large.
@@ -447,7 +447,7 @@
                               "(eval (do "
                               (str/join " " (map pr-str body-forms))
                               " "))),
-   ;; Value store (for call-now out-of-band large values)
+   ;; Value store (for !call-now out-of-band large values)
    'stored stored,
    'serialize (fn
                ([value] (serialize-for-continuation value))

@@ -29,19 +29,19 @@ worker guesses correctly or runs out of guesses.
        " This is question/guess #" guess-num " of 20."))
 
 (defn check-guess [response secret]
-  (llm-self (wrap-cat "Does this response contain a correct guess of the word '" secret "'? "
+  (!llm-self (wrap-cat "Does this response contain a correct guess of the word '" secret "'? "
             "Response: '" response "' - Answer ONLY 'yes' or 'no'")))
 
 (defn play-round [secret history round-num]
   (if (> round-num 20)
     (cat "Game over! The worker ran out of guesses. The secret was: " secret)
     (do
-      (def worker-response (llm-self (make-worker-prompt history (str round-num))))
+      (def worker-response (!llm-self (make-worker-prompt history (str round-num))))
       (def is-correct (check-guess worker-response secret))
       (if (= is-correct "yes")
         (cat "Worker guessed correctly in " (str round-num) " rounds! The secret was: " secret)
         (do
-          (def checker-response (llm-self (make-checker-prompt secret worker-response)))
+          (def checker-response (!llm-self (make-checker-prompt secret worker-response)))
           (def new-history (cat history "\nQ" (str round-num) ": " worker-response
                                 "\nA" (str round-num) ": " checker-response))
           (play-round secret new-history (+ round-num 1)))))))

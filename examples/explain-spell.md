@@ -22,15 +22,15 @@ Opus produces a multi-agent debate: three child LLMs argue from different perspe
 (def question "Should programming languages prioritize simplicity or expressiveness?")
 
 (def advocate-simplicity
-  (llm-self (wrap-cat "You are an advocate for SIMPLICITY in programming languages. "
+  (!llm-self (wrap-cat "You are an advocate for SIMPLICITY in programming languages. "
                       "Argue your position in 2-3 sentences: " question)))
 
 (def advocate-expressiveness
-  (llm-self (wrap-cat "You are an advocate for EXPRESSIVENESS in programming languages. "
+  (!llm-self (wrap-cat "You are an advocate for EXPRESSIVENESS in programming languages. "
                       "Argue your position in 2-3 sentences: " question)))
 
 (def synthesis
-  (llm-self (wrap-cat "You are a wise synthesizer. Two advocates have debated. "
+  (!llm-self (wrap-cat "You are a wise synthesizer. Two advocates have debated. "
                       "Simplicity says: " advocate-simplicity " --- "
                       "Expressiveness says: " advocate-expressiveness " --- "
                       "Synthesize their views into a balanced 2-3 sentence conclusion.")))
@@ -49,7 +49,7 @@ Opus produces a multi-agent debate: three child LLMs argue from different perspe
 - **Multi-child orchestration**: Root spawns multiple independent children, then a final child synthesizes their outputs
 - **Role assignment via prompt**: Each child gets a different persona through its prompt string
 - **Self-reflection**: The LLM can describe its own capabilities and then demonstrate them
-- **Expansion**: `llm-self` auto-expands free variables from the current environment, making quoted expressions portable
+- **Expansion**: `!llm-self` auto-expands free variables from the current environment, making quoted expressions portable
 
 ## Notes
 

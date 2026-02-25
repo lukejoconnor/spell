@@ -13,7 +13,7 @@ Flip a coin programmatically. If it lands heads, pass this exact prompt onto a c
 ```clojure
 (def flip (math/rand-int 2))
 (if (= flip 0)
-  (cat "h" (llm-self prompt))  ; heads: recurse with same prompt
+  (cat "h" (!llm-self prompt))  ; heads: recurse with same prompt
   "t")                          ; tails: terminate
 ```
 
@@ -22,7 +22,7 @@ Each LLM instance rewrites the logic from scratch using the same prompt (bound v
 ## Key Concepts
 
 - **Randomness**: `(math/rand-int 2)` returns 0 or 1
-- **Recursion via prompt**: `(llm-self prompt)` passes the same prompt to a child (each child rewrites code)
+- **Recursion via prompt**: `(!llm-self prompt)` passes the same prompt to a child (each child rewrites code)
 - **Termination**: Base case (tails) stops the recursion
 - **Implicit return**: The `if` expression's value is the return value
 

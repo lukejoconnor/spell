@@ -19,7 +19,7 @@ Return Hello concatenated with child returning World
 ```
 === LLM Call (depth 0) ===
 Prompt: (quine completion (eval (do (quine prompt "Return Hello concatenated with child returning World")
-Response: (def thought "delegate World to child") (cat "Hello" (llm-self "Return World"))))
+Response: (def thought "delegate World to child") (cat "Hello" (!llm-self "Return World"))))
 
   === LLM Call (depth 1) ===
   Prompt: (quine completion (eval (do (quine prompt "Return World")
@@ -30,6 +30,6 @@ Result: HelloWorld
 
 ## Key Concepts
 
-- **Delegation**: `(llm-self "task")` calls a child LLM
+- **Delegation**: `(!llm-self "task")` calls a child LLM
 - **Concatenation**: `(cat str1 str2)` joins strings
 - **Implicit return**: The last expression in the `do` block is the return value
