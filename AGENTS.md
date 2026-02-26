@@ -68,10 +68,23 @@ Primary providers in day-to-day use:
 Other implemented providers:
 - OpenAI, Ollama, Kimi, Test (plus provider-file loading via `.provider.edn`)
 
+Each `.provider.edn` file includes a `:default-agent` key pointing to the transport-appropriate base agent.
+
+## Agents
+
+Three base agents (one per transport mode, no effect namespaces):
+- `config/agents/base-prefill.agent.edn` — Anthropic (prefill mode)
+- `config/agents/base-message.agent.edn` — message providers (no prefill)
+- `config/agents/base-toolcall.agent.edn` — tool-call providers
+
+Specialized agents inherit from a base and add namespaces:
+- `config/agents/cli.agent.edn` — CLI default (base-toolcall + io, futures, patterns, agents, globals)
+- `config/agents/bench/*.agent.edn` — benchmark agents (base-message or base-toolcall + io)
+
 ## CLI and API
 
-- CLI: use `-h` or `--help` for current flags and usage.
-- Programmatic entry point: `spell.api/run` with either `:prompt` or `:init`.
+- CLI: use `-h` or `--help` for current flags and usage. Default agent: `config/agents/cli.agent.edn`.
+- Programmatic entry point: `spell.api/run` with `:prompt` or `:init`. Requires explicit `:agent` argument.
 
 ## Key Files
 
@@ -93,7 +106,7 @@ Other implemented providers:
 | `config/agents/*.agent.edn` | Agent specs. |
 | `config/providers/*.provider.edn` | Declarative provider specs. |
 | `test/spell/*_test.clj` | Interpreter/runtime/provider tests. |
-| `benchmarking/CLAUDE.md` | Benchmark workflow and reporting guidance. |
+| `benchmarking/AGENTS.md` | Benchmark workflow and reporting guidance (in nested benchmarking repo). |
 | `notebook/TODO.md`, `notebook/DONE.md`, `notebook/INDEX.md` | Active tasks, completed tasks, and notebook index. |
 
 ## Architecture (Condensed)
@@ -109,5 +122,6 @@ Follow-up is tracked in TODO #132 to reassess whether this section should be rem
 
 ## Benchmarking
 
-See `benchmarking/CLAUDE.md` for benchmark commands, datasets, and reporting expectations.
+`benchmarking/` is a separate nested git repository (`benchmarking/.git`).
+See `benchmarking/AGENTS.md` for benchmark commands, datasets, and reporting expectations.
 Use `uv run` for Python benchmark tooling.
