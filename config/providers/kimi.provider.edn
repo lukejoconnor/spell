@@ -1,5 +1,6 @@
 {:type :kimi
  :api-key-env "MOONSHOT_API_KEY"
+ :default-agent "../agents/base-message.agent.edn"
  :costs {"kimi-k2.5"             [0.60 3.00]
          "kimi-k2-thinking-turbo" [1.15 8.00]
          "kimi-k2-thinking"      [0.60 2.50]

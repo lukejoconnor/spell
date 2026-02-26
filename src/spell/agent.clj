@@ -46,16 +46,6 @@
    'math stdlib/math
    'patterns stdlib/patterns})
 
-(def default-agent-def
-  "Built-in default agent definition.
-   Core namespaces (strings, math, builtins) are always available via make-llm.
-   Only effect namespaces need to be listed here."
-  {:name 'default
-   :doc "Default agent with standard tools"
-   :namespaces {'io 'stdlib/io
-                'futures 'stdlib/futures
-                'patterns 'stdlib/patterns}})
-
 (defn- resolve-stdlib-path
   "Resolve a stdlib/X or stdlib/X/Y path.
    Returns the namespace or nested item."
@@ -251,25 +241,18 @@
 
 (defn- resolve-inheritance
   "Resolve :base inheritance chain, returning fully merged agent def.
-   Removes :base from result.
-
-   Special base paths:
-   - spell:default → built-in default agent"
+   Removes :base from result."
   [agent-def base-dir]
   (if-let [base-path (:base agent-def)]
-    (let [base-path-str (str base-path)]
-      (if (= base-path-str "spell:default")
-        ;; Use built-in default
-        (dissoc (merge-agent-defs default-agent-def agent-def) :base)
-        ;; Load from file
-        (let [base-file (java.io.File. (if (str/starts-with? base-path-str "/")
-                                         base-path-str
-                                         (str base-dir "/" base-path-str)))
-              base-dir' (.getParent base-file)
-              base-def (read-agent-edn base-path-str base-dir)
-              resolved-base (resolve-inheritance base-def base-dir')]
-          ;; Merge child onto resolved base, remove :base key
-          (dissoc (merge-agent-defs resolved-base agent-def) :base))))
+    (let [base-path-str (str base-path)
+          base-file (java.io.File. (if (str/starts-with? base-path-str "/")
+                                     base-path-str
+                                     (str base-dir "/" base-path-str)))
+          base-dir' (.getParent base-file)
+          base-def (read-agent-edn base-path-str base-dir)
+          resolved-base (resolve-inheritance base-def base-dir')]
+      ;; Merge child onto resolved base, remove :base key
+      (dissoc (merge-agent-defs resolved-base agent-def) :base))
     ;; No base, return as-is
     agent-def))
 
@@ -552,30 +535,6 @@
      :provider resolved-provider        ; resolved provider instance (or nil)
      :resolve-namespaces-fn resolve-fn
      :resolve-llms-fn resolve-llms-fn'}))
-
-(defn- try-slurp
-  "Slurp file, returning nil if not found."
-  [path]
-  (try (slurp path) (catch Exception _ nil)))
-
-(defn default-agent-config
-  "Return config for the built-in default agent.
-   Used by CLI when no -a flag is specified."
-  []
-  (let [agent-def default-agent-def
-        {:keys [name doc namespaces format max-retries]} agent-def
-        resolve-fn (fn [make-llm-fn]
-                     (resolve-namespaces namespaces nil make-llm-fn))]
-    {:name name
-     :doc doc
-     :system (try-slurp "config/prompts/minimal.txt")
-     :model nil
-     :budget nil
-     :recover nil
-     :eval nil           ; nil means default (true)
-     :format (or format {:required [:result]})
-     :max-retries max-retries
-     :resolve-namespaces-fn resolve-fn}))
 
 (defn make-agent-llm
   "Create an llm+run map from an agent config.

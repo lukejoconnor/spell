@@ -1,6 +1,7 @@
 {:type :anthropic
  :api-key-env "ANTHROPIC_API_KEY"
  :max-tokens 16384
+ :default-agent "../agents/base-prefill.agent.edn"
  :costs {"claude-3-5-haiku"  [0.80 4.00]
          "claude-haiku-4-5"  [1.00 5.00]
          "claude-sonnet-5"   [3.00 15.00]

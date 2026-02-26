@@ -1,0 +1,14 @@
+;; CLI default agent: full capabilities for interactive use.
+;; Inherits transport-appropriate system prompt from base-toolcall.
+;; Used by the CLI when no -a/--agent is specified.
+
+{:base base-toolcall.agent.edn
+ :name cli
+ :doc "CLI default: full capabilities for interactive use"
+
+ :namespaces
+ {io       stdlib/io
+  futures  stdlib/futures
+  patterns stdlib/patterns
+  agents   stdlib/agents
+  globals  stdlib/globals}}

@@ -1,6 +1,6 @@
 ;; Default benchmark agent for FeatureBench coding tasks.
 
-{:base spell:default
+{:base ../../agents/base-message.agent.edn
  :name bench-featurebench
  :doc "Benchmark agent for FeatureBench patch generation"
 

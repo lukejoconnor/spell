@@ -1,0 +1,5 @@
+;; Toolcall variant of the general math benchmark agent.
+
+{:base general-toolcall.agent.edn
+ :name bench-general-math-toolcall
+ :doc "General math benchmark agent in mandatory tool-call mode"}

@@ -1,3 +1,4 @@
 {:type :ollama
  :base-url "http://localhost:11434"
+ :default-agent "../agents/base-message.agent.edn"
  :costs {}}

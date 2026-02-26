@@ -1,0 +1,6 @@
+;; Base agent for tool-call providers.
+;; No effect namespaces — just the transport-appropriate system prompt.
+
+{:name base-toolcall
+ :doc "Base agent for tool-call providers"
+ :system {:file "../prompts/minimal-no-prefill-toolcall.txt"}}

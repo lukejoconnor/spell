@@ -174,6 +174,18 @@
       :else
       {:exit-message (usage summary) :ok? false})))
 
+(def cli-provider-defaults
+  "Default base agent for each CLI provider key (no effect namespaces).
+   The CLI agent (cli.agent.edn) wraps these with full capabilities."
+  {"anthropic"  "config/agents/base-prefill.agent.edn"
+   "codex"      "config/agents/base-toolcall.agent.edn"
+   "chatgpt"    "config/agents/base-message.agent.edn"
+   "openai"     "config/agents/base-message.agent.edn"
+   "ollama"     "config/agents/base-message.agent.edn"
+   "kimi"       "config/agents/base-message.agent.edn"
+   "moonshot"   "config/agents/base-message.agent.edn"
+   "openclaw"   "config/agents/base-message.agent.edn"})
+
 (defn- make-provider [{:keys [test model max-tokens responses-api]}]
   (cond
     test
@@ -220,7 +232,7 @@
         (provider/anthropic-provider base-opts)))))
 
 (defn run-prompt
-  [prompt {:keys [depth verbose log budget trace agent thinking reasoning-effort verbosity
+  [prompt {:keys [depth verbose log budget trace agent model thinking reasoning-effort verbosity
                   suffix-grammar grammar-max-chars]
            :as opts}
    usage-atom]
@@ -230,10 +242,11 @@
                     :else depth)
         prov (make-provider opts)
         prefill? (and (provider/supports-prefill prov) (not thinking))
+        resolved-agent (or agent "config/agents/cli.agent.edn")
         log-writer (when log (io/writer (io/file log) :append true))]
     (api/run {:prompt prompt
               :provider prov
-              :agent agent
+              :agent resolved-agent
               :user? (some? (. System console))
               :verbose (or verbose (some? log))
               :log-writer log-writer

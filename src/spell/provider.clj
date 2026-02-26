@@ -1046,6 +1046,16 @@
                                  :response response :prefill? prefill?})
       (throw (ex-info (str "Unknown provider type: " type) {:type type})))))
 
+(defn provider-edn-default-agent
+  "Read :default-agent from a .provider.edn file. Returns path string or nil.
+   The path is relative to the provider file's directory."
+  [path]
+  (let [edn (edn/read-string (slurp path))
+        rel-path (:default-agent edn)]
+    (when rel-path
+      (let [base-dir (.getParent (java.io.File. path))]
+        (str base-dir "/" rel-path)))))
+
 (defn- load-provider-from-map
   "Create a provider from an inline config map (same keys as .provider.edn)."
   [{:keys [type api-key-env base-url model max-tokens costs use-responses-api auth-file account-id
@@ -1083,5 +1093,6 @@
   (cond
     (satisfies? LLMProvider spec) spec
     (string? spec) (load-provider (resolve-path spec base-dir))
+    (and (map? spec) (:file spec)) (load-provider (resolve-path (:file spec) base-dir))
     (map? spec) (load-provider-from-map spec)
     :else (throw (ex-info "Invalid provider spec" {:spec spec}))))

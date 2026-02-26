@@ -20,8 +20,8 @@
      :prompt — NL prompt (auto-wrapped into init program)
      :init   — complete Spell program string
 
-   Optional:
-     :agent    — path to .agent.edn (default: built-in)
+   Required:
+     :agent    — path to .agent.edn
      :trailing-expr — trailing expression string for prompt-wrapped init (default: \"(extend)\")
      :user?    — register :user handle (default: false)
      :user-reader — BufferedReader for user input (default: System/in)
@@ -47,10 +47,10 @@
     (throw (ex-info "Specify exactly one of :prompt or :init, not both" {})))
   (when-not (or prompt init)
     (throw (ex-info "Must specify :prompt or :init" {})))
+  (when-not agent
+    (throw (ex-info "Must specify :agent (path to .agent.edn file)" {})))
   (let [;; Load agent config
-        agent-config (cond-> (if agent
-                               (agent/load-agent-config agent)
-                               (agent/default-agent-config))
+        agent-config (cond-> (agent/load-agent-config agent)
                        ;; Inject provider into agent config (flows to make-llm closure)
                        provider (assoc :provider provider)
                        (some? prefill?) (assoc :prefill? prefill?)
