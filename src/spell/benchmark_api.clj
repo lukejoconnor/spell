@@ -31,7 +31,9 @@
           rest (subs s (inc idx))]
       (if (contains? provider-prefixes prefix)
         {:provider prefix :model rest}
-        {:provider nil :model s}))
+        (throw (ex-info (str "Unknown provider prefix: " (pr-str prefix)
+                             ". Known prefixes: " (str/join ", " (sort provider-prefixes)))
+                        {:prefix prefix :model-spec s}))))
     {:provider nil :model s}))
 
 (def model-aliases

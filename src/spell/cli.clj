@@ -18,11 +18,12 @@
    "gpt53"   "gpt-5.3"})
 
 (def provider-prefixes
-  #{"ollama" "chatgpt" "codex" "openclaw" "openai" "anthropic" "kimi" "moonshot"})
+  #{"ollama" "chatgpt" "codex" "codex-toolcall" "openclaw" "openai" "anthropic" "kimi" "moonshot" "test"})
 
 (defn parse-model-spec
   "Parse 'provider:model' into {:provider str :model str}.
-   If no known provider prefix, returns {:provider nil :model input}.
+   If no colon, returns {:provider nil :model input} (defaults to anthropic).
+   Throws on unrecognized provider prefix.
    Examples:
      ollama:smollm2:135m  -> {:provider \"ollama\" :model \"smollm2:135m\"}
      chatgpt:gpt-5.3-codex -> {:provider \"chatgpt\" :model \"gpt-5.3-codex\"}
@@ -33,7 +34,9 @@
           rest   (subs s (inc idx))]
       (if (contains? provider-prefixes prefix)
         {:provider prefix :model rest}
-        {:provider nil :model s}))
+        (throw (ex-info (str "Unknown provider prefix: " (pr-str prefix)
+                             ". Known prefixes: " (str/join ", " (sort provider-prefixes)))
+                        {:prefix prefix :model-spec s}))))
     {:provider nil :model s}))
 
 (defn resolve-model [model]
