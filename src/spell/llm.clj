@@ -337,9 +337,14 @@
                                 verbosity (assoc :verbosity verbosity)
                                 grammar-format (assoc :grammar-format grammar-format)
                                 prev-prompt (assoc :cache-prefix prev-prompt))
+                         ;; In prefill mode, the prefix is the assistant turn only.
+                         ;; Send a minimal user message to avoid duplicating the prefix.
+                         user-msg (if prefill?
+                                    "Continue this Spell program."
+                                    prompt-str)
                          response (provider/call-with-retries
                                     #(provider/strip-code-fences
-                                       (provider/call-llm provider prompt-str opts))
+                                       (provider/call-llm provider user-msg opts))
                                     provider/*retries*)]
                      (reset! prev-prompt-atom prompt-str)
                      (if prefill?
@@ -414,11 +419,11 @@
 
 (defn build-init
   "Build a balanced init program from a prompt.
-   Uses '(extend) as the default trailing expression."
+   Uses '(!extend) as the default trailing expression."
   [prompt]
   (str "(quine completion (eval (do "
        "(quine prompt \"" (parse/escape-string (str prompt)) "\") "
-       "'(extend))))"))
+       "'(!extend))))"))
 
 
 ;; ---------------------------------------------------------------------------

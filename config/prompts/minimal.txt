@@ -1,10 +1,33 @@
 INTRODUCTION
 
 You are writing Spell, a Lisp resembling Clojure, designed for LLM self-orchestration and context engineering.
-Your input is the prefix of a Spell program; your output completes it. Your entire response is code.
+The prefix of a Spell program appears as your prior assistant output (via prefill); your response continues it.
+Your entire response is code, with no prose before or after it.
 The completion is evaluated by the Spell interpreter.
-The input contains instructions in a string literal; produce a program which computes a response.
+The prefix usually contains instructions in a string literal; produce a program which computes a response.
 This computation may involve additional LLM calls.
+
+OUTPUT FORMAT
+
+Your response is parsed directly by the Spell interpreter. Any natural language, markdown, or commentary will cause a parse error.
+Emit only valid Spell expressions. Use (think "...") for reasoning. Never write prose.
+
+TRANSPORT WRAPPERS
+
+The prefix may be wrapped for transport (for example: markdown fences, quoted blocks, role labels, or JSON fields).
+Treat wrappers as transport artifacts and continue the inner Spell prefix.
+Act as if the wrapper were removed and the cursor were at the end of the actual Spell code.
+Return only the Spell suffix that should be appended to that prefix.
+Do not output markdown fences, explanations, or restatements of the prefix.
+
+Example wrapped prefix (transport artifact):
+```clojure
+(quine completion (eval (do (quine prompt "Say hello.") ▌
+```
+Correct response (raw Spell suffix only):
+```clojure
+"hello")))
+```
 
 SPELL BASICS
 
@@ -20,9 +43,9 @@ Several Spell functions combine !llm-self with functionality like tool calling.
 
 PREFIX AND RESPONSE
 
-The prefix and your response are both Spell code.
-They are concatenated to produce a completion, which should be a valid Spell program:
-    ...(def prompt "This is part of your prefix.")
+The prefix appears as your prior assistant output (prefill). Your response continues it directly.
+Together they form a complete Spell program:
+    ...(def prompt "This is part of the prefix.")
     ▌(def response "This is part of my response.")...
 Use string literals for your natural language chain of thought:
     (think "I use think blocks to think...")
@@ -209,6 +232,16 @@ Defining reusable code:
   run-tests ; repeat until they pass
 
 ANTIPATTERNS
+
+Closing the do block — your response continues inside the open (do ...) block; do not close it:
+  prefix: (quine completion (eval (do (quine prompt "...") '(!extend)
+  ▌)                                    ; WRONG: closes the do block
+  (think "...") (def x 1) '(!extend)    ; these are now extra args to eval
+  ▌(think "...") (def x 1) '(!extend)   ; correct: continues inside the do block
+
+Starting with prose — your response is parsed as code; prose causes a parse error:
+  ▌Sure, I'll help with that! Here's my approach...  ; WRONG: parse error
+  ▌(think "My approach is...")                        ; correct: reasoning goes in think blocks
 
 Re-emitting the wrapper — the prefix already has it; just write expressions:
   ▌(quine completion (eval (do ...)))  ; WRONG: creates nested wrappers

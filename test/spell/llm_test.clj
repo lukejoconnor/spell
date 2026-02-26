@@ -823,6 +823,7 @@
   (testing "reader error recovery passes raw text in _error"
     ;; Verify the LLM sees the broken raw text in the recovery prompt.
     ;; The second call's prompt should contain the original raw text.
+    ;; Uses prefill? false so the recovery prefix is the prompt arg (not in :prefix opt).
     (let [prompts (atom [])
           {:keys [llm]} (th/make-test-llm
                           {:response-fn (fn [prompt]
@@ -831,7 +832,7 @@
                                             (if (= n 1)
                                               "\\invalidchar)"
                                               "42)")))}
-                          :namespaces {})]
+                          :namespaces {} :prefill? false)]
       (llm "(quine completion (eval (do ")
       ;; The recovery prompt (second call) should mention the reader error
       (let [recovery-prompt (second @prompts)]

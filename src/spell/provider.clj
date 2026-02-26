@@ -579,7 +579,6 @@
                       :store false
                       :stream true
                       :include []}
-               max-tokens (assoc :max_output_tokens max-tokens)
                reasoning (assoc :reasoning reasoning)
                text-controls (assoc :text text-controls))
         request-builder (cond-> (-> (HttpRequest/newBuilder)
@@ -622,7 +621,6 @@
                       :store false
                       :stream true
                       :include []}
-               max-tokens (assoc :max_output_tokens max-tokens)
                reasoning (assoc :reasoning reasoning)
                text-controls (assoc :text text-controls))
         request-builder (cond-> (-> (HttpRequest/newBuilder)
