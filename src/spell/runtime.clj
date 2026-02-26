@@ -3,7 +3,7 @@
 
    box is the universal execution primitive: it waits for a completion source,
    drains inbox transforms, and passes the result to an inside-fn. ask sends a
-   message and blocks for reply. spawn-ask spawns an agent and blocks for its
+   message and blocks for reply. !spawn-ask spawns an agent and blocks for its
    message. send-msg-fn is low-level fire-and-forget. Every wait wakes the target,
    preventing deadlocks."
   (:refer-clojure :exclude [send])
@@ -424,7 +424,7 @@
 (defn spawn-ask
   "Spawn a child agent and block until it sends back a result.
    Combines spawn + block for safe use as a quoted trailing expression:
-     '(spawn-ask !llm-self \"do X and send result to (parent-handle)\")
+     '(agents/!spawn-ask !llm-self \"do X and send result to (parent-handle)\")
    The child must send its result via (send value (parent-handle)).
    Installs completion notifier so child's death wakes the parent."
   ([llm-fn prompt] (spawn-ask llm-fn prompt nil))
@@ -443,40 +443,75 @@
   {:short-docs "Inter-agent communication: spawn, !ask, send, reply."
    :docs {:guide "AGENTS — Inter-agent communication (effect namespace).
 
+  (agents/spawn llm-fn prompt) — start background agent and gives prompt (usually a string); returns spawned handle
+  (agents/spawn llm-fn prompt :handle-name) — also assigns handle name
+  (agents/send message target)     — send message (usually a string) to target
+  (agents/reply msg-map message)   — reply to msg-map, which must contain :from
   (agents/!ask target message)     — send message to target, block for reply
+  (agents/!ask target)             — poke target without message, block for reply
   (agents/!ask [a b c])            — multi-target: poke all, wake when all complete
-  (agents/reply-ask msg value)    — reply to msg, block for next message
-  (agents/reply msg value)        — reply to msg (fire-and-forget, ends conversation)
-  (agents/send value target)      — send value to target with auto-tagged :from (trailing send ends your turn)
-  (agents/spawn llm-fn prompt :name) — start background agent, returns handle
-  (agents/spawn-ask llm-fn prompt :name) — spawn agent, block until it sends back
-  (agents/current-handle)         — your handle (:main, :spawn-N, or named keyword)
-  (agents/parent-handle)          — handle of agent that spawned you (nil if main)
-  (agents/send-msg-fn f handle)   — low-level: send raw transform function to handle
+  (agents/!reply-ask msg-map message)   — reply to msg-map, block for next message
+  (agents/!spawn-ask llm-fn prompt) — spawn agent, block until it sends back
+  (agents/current-handle)          — your handle
+  (agents/parent-handle)           — handle of agent that spawned you (nil if you are main)
+  (agents/send-msg-fn f handle)    — low-level / not recommended
+
+Use (!describe agents :fn-name) for detailed docs on any function.
 
 Special handles:
   :main — the initial agent (entry point). Always present.
   :user — the human operator (only present in interactive terminal sessions).
   Check (globals/get :roles) to see if :user is available before asking.
 
+Messages arrive as def bindings: (def msg-N {:from sender :body val}).
+Reply using Spell code, not raw natural language.
+Agents other than :main persist after returning; a later message can wake them for another turn.
+
 Message preemption: if another agent sends you a message while your response
 is in flight, the message is appended as an extension and your trailing
 expression becomes inert. You get a new turn with the incoming message in scope.
+You may then re-run the trailing expression from your previous turn.
 
 All agents/ calls are effect functions — quote them in the trailing expression.
-Messages arrive as def bindings: (def msg-N {:from sender :body val}).
-Reply using Spell code (e.g. string literals, quoted effect expressions), not plain English outside quotes.
 Check (globals/get :roles) to discover available agents.
-Use (!describe agents :fn-name) for detailed docs on any function."
-          :!ask "(agents/!ask target message) — send message, block for reply; (agents/!ask [a b c]) pokes all, waits for all to complete"
-          :reply-ask "(agents/reply-ask msg value) — reply to msg, block for next message"
-          :reply "(agents/reply msg value) — reply to msg, fire-and-forget"
-          :send "(agents/send value target) — send value with auto-tagged :from; trailing send ends your turn"
-          :spawn "(agents/spawn llm-fn prompt :name) — start background agent, returns handle. llm-fn must be !llm-self (not leaf-llm)"
-          :spawn-ask "(agents/spawn-ask llm-fn prompt :name) — spawn agent, block until it sends back. llm-fn must be !llm-self (not leaf-llm)"
-          :current-handle "(agents/current-handle) — your handle (:main, :spawn-N, or named keyword)"
-          :parent-handle "(agents/parent-handle) — handle of spawning agent (nil if main)"
-          :send-msg-fn "(agents/send-msg-fn f handle) — low-level: send raw transform function"}
+
+Common mistakes:
+
+1. agents/send and passing turn when expecting a reply: this ends conversation, instead use agents/!ask
+2. agents/reply and passing turn: same problem
+3. agents/!ask followed by additional expressions: these do not evaluate, instead put them first
+4. hallucinating handles: use (agents/parent-handle), :user, :main, or look up (!print (globals/get :roles)) (if globals/ available)
+
+Multi-part example:
+
+1. Main: spawn a summarizer, keep working, then block with !ask.
+  ;; turn 1: start child + continue your own CoT
+  ...▌'(do (agents/spawn !llm-self
+         \"You are a summarizer. Read long-file.txt and send me a summary.\"
+         :summarizer)
+       (!extend))
+  ;; next turn:
+  ... ▌(think \"...\")(think \"Ok, I'll wait for summarizer now\")'(agents/!ask :summarizer)
+  ;; main blocks until child responds
+
+2. Summarizer child: use send to return result.
+  ...(quine prompt \"You are a summarizer. Read long-file.txt and send me a summary.\")
+  ▌'(!call-now file-contents (io/read-lines \"long-file.txt\"))
+  ;; next turn
+  ...(def file-contents \"...\")
+  ▌(def summary \"...\")
+  '(agents/send summary (agents/parent-handle))
+  ;; child turn ends after send
+
+3. Main: use !reply-ask to clarify and keep the conversation open.
+  ...'(agents/!ask :summarizer)
+  (def msg-0 {:from :summarizer :body {...}})
+  (think \"I have a question about the summary.\")
+  ▌'(agents/!reply-ask msg-0 \"What is the...\")
+  ;; child awakens; main blocks for child's response
+
+"
+          }
    :detail
    {:!ask
     "Request-reply communication primitive. Three forms:
@@ -522,11 +557,11 @@ incoming message in scope. Re-evaluate and re-issue if still appropriate.
   ...'(agents/!ask :B \"hello\") (def msg-0 {:from :C :body \"urgent\"})
   '(!llm-self (reopen completion))  ;; ask became inert data — it did not fire"
 
-    :reply-ask
+    :!reply-ask
     "Reply to a received message and block for the next response.
 Keeps the conversation open — sender gets your reply, you wait for theirs.
 
-(agents/reply-ask msg value)
+(agents/!reply-ask msg value)
   msg: the received message map (e.g. msg-0)
   value: your reply (any value)
 
@@ -535,7 +570,7 @@ Your next turn receives the sender's next message as a new def binding.
 
 Example (from a spawned agent's perspective):
   ;; received (def msg-0 {:from :main :body 100 :expects-response true})
-  '(agents/reply-ask msg-0 250)
+  '(agents/!reply-ask msg-0 250)
   ;; sends 250 back to :main, blocks for next message
   ;; next turn: (def msg-1 {:from :main :body 150 :expects-response true})"
 
@@ -547,7 +582,7 @@ Example (from a spawned agent's perspective):
   value: your reply (any value)
 
 Does not block. Use as the final message in a conversation.
-Use reply-ask instead when you want to continue back-and-forth.
+Use !reply-ask instead when you want to continue back-and-forth.
 
 Example:
   ;; received (def msg-0 {:from :main :body \"final offer: 200\" :expects-response true})
@@ -562,12 +597,11 @@ The recipient sees (def msg-N {:from your-handle :body val}).
   value: any value
   target: keyword handle
 
-Low-level primitive. Prefer ask/reply-ask/reply for conversations.
-Primary use: spawned child sending its result back to the parent.
 If send is your trailing expression, the message is sent and your turn ends.
 To continue after sending, use a trailing do with extend:
   '(do (agents/send value target) (!extend))
-or use reply-ask for request-reply conversations.
+For request-reply conversations, a more common pattern is:
+  '(agents/!ask target value)
 
 Example (from a spawned child):
   '(agents/send 42 (agents/parent-handle))"
@@ -580,14 +614,7 @@ Example (from a spawned child):
   llm-fn: !llm-self (not leaf-llm — leaf-llm has no agent lifecycle and will error)
   prompt: string prompt for the child agent
   :name: optional keyword handle (e.g. :seller). Default: auto-generated :spawn-N.
-
-The child runs independently with its own handle and communicates via messages.
-Use named handles for multi-turn conversations — keywords are self-evaluating
-and persist across extensions.
-
-Message timing: messages sent to a spawned agent arrive after its LLM call
-completes. Everything the child needs must be in the prompt.
-
+Include instructions to the child LLM in its prompt, usually not by sending a message.
 The prompt must be a string literal or wrap-cat expression so the child gets
 the completion wrapper. A bare quine lacks the wrapper and the child will
 fail with 'unbound symbol' on effect functions:
@@ -595,15 +622,17 @@ fail with 'unbound symbol' on effect functions:
   (quine p \"Do X\") '(agents/spawn !llm-self (wrap-cat p)) ; correct
   '(agents/spawn !llm-self \"Do X.\")                       ; correct
 
+The child runs independently with its own handle and can send messages to you or other agents.
+
 Example:
   '(do (agents/spawn !llm-self \"You negotiate prices.\" :seller)
        (agents/!ask :seller 100))"
 
-    :spawn-ask
+    :!spawn-ask
     "Spawn a child agent and block until it sends back a result.
 Combines spawn + block. One-shot delegation pattern.
 
-(agents/spawn-ask llm-fn prompt :name)
+(agents/!spawn-ask llm-fn prompt :name)
   llm-fn: !llm-self (not leaf-llm — leaf-llm has no agent lifecycle and will error)
   prompt: string or wrap-cat — must instruct child to send to (agents/parent-handle)
   :name: optional keyword handle (like agents/spawn)
@@ -612,7 +641,7 @@ Combines spawn + block. One-shot delegation pattern.
 Your next turn sees (def msg-N {:from child-handle :body result}).
 
 Example:
-  '(agents/spawn-ask !llm-self \"Compute 6*7 and (agents/send result (agents/parent-handle))\")
+  '(agents/!spawn-ask !llm-self \"Compute 6*7 and (agents/send result (agents/parent-handle))\")
   ;; next turn: (def msg-0 {:from :spawn-42 :body 42})"
 
     :current-handle
@@ -632,7 +661,7 @@ Use in spawned agents to send results back to the parent:
   '(agents/send result (agents/parent-handle))"
 
     :send-msg-fn
-    "Low-level fire-and-forget send. Most agents should use send, ask, or reply-* instead.
+    "Low-level fire-and-forget send. Most agents should use send, !ask, or !reply-ask instead.
 
 (agents/send-msg-fn f handle)
   f: function taking a raw completion string, returning a modified string
@@ -641,10 +670,10 @@ Use in spawned agents to send results back to the parent:
 Internal plumbing for the communication layer."}
    :send send
    :reply reply
-   :reply-ask reply-ask
+   :!reply-ask reply-ask
    :!ask ask-builtin
    :spawn spawn
-   :spawn-ask spawn-ask
+   :!spawn-ask spawn-ask
    :current-handle (fn [] *current-handle*)
    :parent-handle (fn [] (:parent-handle (get @registry *current-handle*)))
    :send-msg-fn send-msg-fn})

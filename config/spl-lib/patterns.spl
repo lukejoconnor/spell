@@ -74,7 +74,7 @@
 ;;   :files   - vector of relevant file paths
 
 (defn explore [query]
-  (agents/spawn-ask !llm-self
+  (agents/!spawn-ask !llm-self
     (cat "You are an exploration agent. Your task is to investigate the codebase and return structured findings.\n\n"
          "Use io/sh with grep, find, and io/read-file or io/read-lines to explore.\n"
          "Return a map with :answer (string summary) and :files (vector of relevant file paths).\n\n"

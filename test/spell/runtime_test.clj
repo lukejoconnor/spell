@@ -102,6 +102,14 @@
     (is (thrown-with-msg? Exception #"not inside an agent context"
           (runtime/ask-builtin :some-target)))))
 
+(deftest agents-namespace-ask-export-test
+  (testing "agents namespace exports !-prefixed ask variants"
+    (is (contains? runtime/agents-namespace :!ask))
+    (is (contains? runtime/agents-namespace :!reply-ask))
+    (is (contains? runtime/agents-namespace :!spawn-ask))
+    (is (not (contains? runtime/agents-namespace :reply-ask)))
+    (is (not (contains? runtime/agents-namespace :spawn-ask)))))
+
 (deftest send-test
   (testing "send sends def message with :from and :body to target"
     (let [h-sender :test-sender

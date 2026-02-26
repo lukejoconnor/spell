@@ -262,10 +262,11 @@ clean-prompt: Cleans up a raw prompt (voice-to-text, quick notes) via leaf-llm, 
 
 explore: One-shot delegation to a child exploration agent. Spawns a child that greps, reads, and analyzes, then returns structured findings.
   '(!call-now findings (patterns/explore \"Where is authentication handled?\"))
-  Returns {:answer \"...\" :files [\"src/auth.py\" ...]}\""
-          :check-result "(patterns/check-result prompt answer) — verify answer with leaf-llm, returns {:ok answer} or {:wrong msg}"
-          :clean-prompt "(patterns/clean-prompt raw-prompt) — clean up raw prompt via leaf-llm and execute it"
-          :explore "(patterns/explore question) — one-shot exploration agent, returns {:answer \"...\" :files [...]}"}
+  Returns {:answer \"...\" :files [\"src/auth.py\" ...]}\""}
+   :detail
+   {:check-result "(patterns/check-result prompt answer) — verify answer with leaf-llm, returns {:ok answer} or {:wrong msg}"
+    :clean-prompt "(patterns/clean-prompt raw-prompt) — clean up raw prompt via leaf-llm and execute it"
+    :explore "(patterns/explore question) — one-shot exploration agent, returns {:answer \"...\" :files [...]}"}
    ;; check-result: verify answer with leaf-llm (core builtin), return {:ok answer} or {:wrong msg}
    :check-result {:spell/fn true
                   :params ['prompt 'answer]
@@ -296,7 +297,7 @@ explore: One-shot delegation to a child exploration agent. Spawns a child that g
    ;; explore: one-shot delegation to a child exploration agent
    :explore {:spell/fn true
              :params ['query]
-             :body '((agents/spawn-ask !llm-self
+             :body '((agents/!spawn-ask !llm-self
                        (cat "You are an exploration agent. Your task is to investigate the codebase and return structured findings.\n\n"
                             "Use io/sh with grep, find, and io/read-file or io/read-lines to explore.\n"
                             "Return a map with :answer (string summary) and :files (vector of relevant file paths).\n\n"
@@ -330,22 +331,7 @@ Categories (use (!describe builtins :category) for full listing):
   error         — throw, gensym
 
 For namespace functions (io/, agents/, globals/, futures/, strings/, math/, patterns/), use (!describe <namespace>).
-Use (!describe builtins :fn-name) for individual function docs."
-          :special-forms "quote def do if let fn fn* expand quine loop recur for try"
-          :macros "when defn and or cond if-let when-let case as-> cond-> cond->> some-> some->> !call-now -> ->> future plet !print define defmacro !describe think rethink !extend !compact"
-          :effect "eval !llm-self leaf-llm describe-fn llm"
-          :math "+ - * / inc dec quot mod rem abs max min max-key min-key floor ceil rand rand-int rand-nth random-sample random-uuid +' -' *' inc' dec' parse-number even? odd? pos? neg? zero?"
-          :comparison "< > <= >= = not= compare not nil? empty? some? true? false? any? identity"
-          :types "string? number? list? seq? vector? set? map? fn? keyword? symbol? coll? sequential? int? boolean? name symbol keyword namespace type int long float double bigdec bigint rationalize parse-boolean boolean"
-          :strings "str pr-str subs cat format read-string re-find re-matches re-seq"
-          :collections "list list* vector set first second rest next last nth ffirst cons conj peek pop butlast count reverse seq vec subvec not-empty get assoc into concat find key val contains? disj"
-          :maps "keys vals merge merge-with update update-in get-in assoc-in dissoc select-keys reduce-kv update-keys update-vals sorted-map sorted-map-by sorted-set sorted-set-by"
-          :sequences "apply map map-indexed filter reduce keep keep-indexed some every? not-any? not-every? remove mapcat group-by sort sort-by find-first memoize reduced reductions tree-seq partition-by take drop take-last take-while drop-while take-nth drop-last split-at split-with range repeat repeatedly distinct flatten frequencies partition partition-all interleave interpose zipmap dedupe distinct? shuffle"
-          :combinators "comp partial juxt complement constantly every-pred some-fn fnil"
-          :bitwise "bit-and bit-or bit-xor bit-not bit-shift-left bit-shift-right unsigned-bit-shift-right bit-set bit-clear bit-flip bit-test bit-and-not"
-          :spell "spell-eval strip-parens reopen wrap-cat prune-and-reopen stored serialize deep-truncate"
-          :concurrency "future* await"
-          :error "throw gensym"}
+Use (!describe builtins :fn-name) for individual function docs."}
    :detail
    {;; ---- Category listings (full per-function descriptions) ----
     :special-forms
@@ -864,8 +850,10 @@ future/await/plet for deterministic parallel computation. These are for pure com
 
 Note: future, await, and plet are core builtins (no namespace prefix needed).
 Only await-all and pmap are in the futures/ namespace."
-          :await-all "(futures/await-all [f1 f2 ...]) — await multiple futures, returns vector of results"
-          :pmap "(futures/pmap f coll) — parallel map, applies f to each element concurrently"}
+          }
+   :detail
+   {:await-all "(futures/await-all [f1 f2 ...]) — await multiple futures, returns vector of results"
+    :pmap "(futures/pmap f coll) — parallel map, applies f to each element concurrently"}
    :await-all (fn [futures]
                 (when-not (sequential? futures)
                   (throw (ex-info "await-all: argument must be a collection" {:got futures})))
@@ -887,7 +875,7 @@ Only await-all and pmap are in the futures/ namespace."
 
 (def all-namespaces
   "Core standard library namespaces (always available, not gated by eval).
-   patterns is an effect namespace (its functions call leaf-llm, agents/spawn-ask).
+   patterns is an effect namespace (its functions call leaf-llm, agents/!spawn-ask).
    Note: seqs, fns, and bit- operations are in core-builtins (matching Clojure)."
   {'strings strings
    'math math})
