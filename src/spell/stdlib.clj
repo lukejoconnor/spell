@@ -314,7 +314,7 @@ explore: One-shot delegation to a child exploration agent. Spawns a child that g
 
 Categories (use (!describe builtins :category) for full listing):
   special-forms — quote, def, do, if, let, fn, expand, quine, loop, recur, for, try
-  macros        — when, defn, cond, case, ->, ->>, !call-now, print, !describe, think/rethink/!extend/!compact, ...
+  macros        — when, defn, cond, case, ->, ->>, !call-now, !print, !describe, think/rethink/!extend/!compact, ...
   effect        — eval, !llm-self, leaf-llm, describe-fn, llm (trailing expression only)
   math          — +, -, *, /, inc, dec, mod, abs, max, min, floor, ceil, rand, ...
   comparison    — <, >, =, not, nil?, empty?, identity, ...
@@ -332,7 +332,7 @@ Categories (use (!describe builtins :category) for full listing):
 For namespace functions (io/, agents/, globals/, futures/, strings/, math/, patterns/), use (!describe <namespace>).
 Use (!describe builtins :fn-name) for individual function docs."
           :special-forms "quote def do if let fn fn* expand quine loop recur for try"
-          :macros "when defn and or cond if-let when-let case as-> cond-> cond->> some-> some->> !call-now -> ->> future plet print define defmacro !describe think rethink !extend !compact"
+          :macros "when defn and or cond if-let when-let case as-> cond-> cond->> some-> some->> !call-now -> ->> future plet !print define defmacro !describe think rethink !extend !compact"
           :effect "eval !llm-self leaf-llm describe-fn llm"
           :math "+ - * / inc dec quot mod rem abs max min max-key min-key floor ceil rand rand-int rand-nth random-sample random-uuid +' -' *' inc' dec' parse-number even? odd? pos? neg? zero?"
           :comparison "< > <= >= = not= compare not nil? empty? some? true? false? any? identity"
@@ -382,7 +382,7 @@ Use (!describe builtins :fn-name) for individual function docs."
   ->> — thread-last; insert value as last argument through a chain of forms
   future — wrap expr in a thunk and launch as a parallel future; returns a future handle
   plet — parallel let; launch all bindings as futures and await all before entering body
-  print — evaluate exprs, extend completion with their serialized values as visible literals
+  !print — evaluate exprs, extend completion with their serialized values as visible literals
   define — Scheme-style alias for def; binds a symbol to a value
   defmacro — define a user-level macro; expander receives unevaluated argument forms
   !describe — extend completion with namespace documentation; accepts ns or ns :key
@@ -655,7 +655,7 @@ Unlike reopen (which just strips 3 trailing parens), prune-and-reopen:
 2. Removes expressions marked for pruning by rethink
 3. Rebuilds the prefix from the cleaned AST
 
-Used internally by !call-now, print, !describe, and !extend."
+Used internally by !call-now, !print, !describe, and !extend."
 
     :serialize
     "Serialize a value for embedding in a continuation string.
@@ -761,14 +761,17 @@ Example — inspect a computation:
   '(!call-now result (+ (* 3 17) (/ 100 4)))
   ;; next turn: result is bound to 76"
 
-    :print
+    :!print
     "Macro. Evaluate exprs and place their serialized values as bare literals in the
 continuation — like !call-now but without creating named bindings.
 
-'(print expr)
-'(print expr1 expr2 expr3)
+'(!print expr)
+'(!print expr1 expr2 expr3)
 
 Use to inspect values without polluting the namespace. Accepts any number of arguments."
+
+    :print
+    "Alias for !print. Prefer !print."
 
     :think
     "Macro. Label a reasoning step. Evaluates body for side effects (bindings), returns nil.
@@ -788,7 +791,7 @@ Example:
 (rethink label body...)
 (rethink N label body...)
 
-When the completion is next extended (via !extend, !call-now, print, or !describe),
+When the completion is next extended (via !extend, !call-now, !print, or !describe),
 the marked expressions are removed from the source. This keeps the context
 window clean after corrections.
 

@@ -2441,24 +2441,28 @@
       (is (= 'def (first expanded))))))
 
 ;; =============================================================================
-;; print macro (#85)
+;; !print macro (#85)
 ;; =============================================================================
 
 (deftest print-macro-expansion
-  (testing "print macro expands to let + !llm-self with serialize"
-    (let [expanded (macros/spell-macroexpand-1 '(print (+ 1 2)))]
+  (testing "!print macro expands to let + !llm-self with serialize"
+    (let [expanded (macros/spell-macroexpand-1 '(!print (+ 1 2)))]
       ;; Should be (let [temp (+ 1 2)] (!llm-self (str (reopen completion) (serialize temp) " ")))
       (is (= 'let (first expanded)))
       (let [body (nth expanded 2)]
         (is (= '!llm-self (first body))))))
 
-  (testing "print macro multi-arity"
-    (let [expanded (macros/spell-macroexpand-1 '(print a b c))]
+  (testing "!print macro multi-arity"
+    (let [expanded (macros/spell-macroexpand-1 '(!print a b c))]
       (is (= 'let (first expanded)))
       ;; bindings should have 6 elements (3 pairs)
       (is (= 6 (count (second expanded))))
       (let [body (nth expanded 2)]
-        (is (= '!llm-self (first body)))))))
+        (is (= '!llm-self (first body))))))
+
+  (testing "print remains a backward-compatible alias"
+    (let [expanded (macros/spell-macroexpand-1 '(print a))]
+      (is (= 'let (first expanded))))))
 
 ;; =============================================================================
 ;; Think / Rethink / Extend

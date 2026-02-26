@@ -138,7 +138,7 @@ This behavior is the reason for the eval-do-quote pattern.
 
 Extension-producing forms:
     '(!extend) ; simple extension
-    '(print any-expression) ; print the value of any-expression into your context window
+    '(!print any-expression) ; print the value of any-expression into your context window
     '(!call-now result-name any-expression) ; bind the value to result-name and print
     '(!describe some-namespace) ; print documentation
     '(agents/!ask :agent-handle query) ; see below
@@ -210,9 +210,16 @@ Multiple tool calls in one turn:
   '(!call-now files (io/sh "ls") content (io/read-file "main.py"))
   ;; for subagent exploration, see patterns/explore
 
-Synchronous self-delegation:
-  '(!call-now subtask-result (!llm-self "Do this subtask: ..."))
+Synchronous self-fork (valid, but less common):
+  '(!call-now subtask-result (!llm-self "Explore this subtask and return structured output."))
+  ;; call-now + !llm-self forks a child turn and waits now for its result
+  ;; use this when you want sub-agent style exploration, then continue yourself with the processed output
   ;; for asynchronous delegation, see agents/ namespace
+
+Common single-bang continuation patterns (more frequent):
+  '(!llm-self (reopen completion))   ; hand off your turn to yourself and continue there
+  '(!extend)                         ; continue with current context
+  '(!call-now files (io/sh "ls"))    ; do one tool step and continue next turn with result
 
 Rethinking tool calls:
   '(!call-now big-result ...)(def big-result ...)
@@ -263,11 +270,6 @@ Multiple extensions in one response — only the last quoted expression fires:
   '(!describe agents)
   '(!call-now files (io/sh "ls"))  ; only this fires; !describe is inert
   ; correct: just '(!describe agents) — see guide on your next turn
-
-Using bare trailing send when you intend to keep talking:
-  '(agents/send offer :seller)  ; sends message and your turn ends
-  '(do (agents/send offer :seller) (!extend))  ; keep running after send
-  '(agents/reply-ask msg-0 counteroffer)      ; for request-reply conversations
 
 Hallucinating tool call results inline — the system injects actual results after !call-now:
   '(!call-now content (io/read-file path))

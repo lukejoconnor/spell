@@ -268,19 +268,23 @@
       (list 'let fut-bindings
             (list* 'let await-bindings body)))))
 
-;; print: (print expr...) — evaluate exprs, extend completion with bare serialized values.
+;; !print: (!print expr...) — evaluate exprs, extend completion with bare serialized values.
 ;; Like (!call-now x x) but without creating a binding — values appear as
 ;; literals in the continuation so the LLM can see them.
-(defspellmacro 'print
-  (fn [& val-exprs]
-    (let [temps (mapv (fn [_] (gensym "print__")) val-exprs)
-          bindings (vec (mapcat vector temps val-exprs))
-          serialized (map (fn [t] (list 'serialize t)) temps)]
-      (list 'let bindings
-            (list '!llm-self
-                  (list* 'str
-                         (list 'prune-and-reopen 'completion)
-                         (concat (interpose " " serialized) [" "])))))))
+(defn- print-expander
+  [& val-exprs]
+  (let [temps (mapv (fn [_] (gensym "print__")) val-exprs)
+        bindings (vec (mapcat vector temps val-exprs))
+        serialized (map (fn [t] (list 'serialize t)) temps)]
+    (list 'let bindings
+          (list '!llm-self
+                (list* 'str
+                       (list 'prune-and-reopen 'completion)
+                       (concat (interpose " " serialized) [" "]))))))
+
+(defspellmacro '!print print-expander)
+;; Backward-compatible alias.
+(defspellmacro 'print print-expander)
 
 ;; define: Scheme-style alias for def
 (defspellmacro 'define
@@ -298,17 +302,17 @@
 ;;   (!describe ns)           — guide (or docs if no guide)
 ;;   (!describe ns :key)      — doc for specific item
 ;;   (!describe ns1 ns2 ...)  — multiple namespaces in one turn
-;; Expands to (print ...) so the child LLM sees the docs as a literal.
+;; Expands to (!print ...) so the child LLM sees the docs as a literal.
 (defspellmacro '!describe
   (fn [& args]
     (cond
       ;; (!describe ns)
       (= 1 (count args))
-      (list 'print (list 'describe-fn (first args)))
+      (list '!print (list 'describe-fn (first args)))
 
       ;; (!describe ns :key) — keyword means key lookup
       (and (= 2 (count args)) (keyword? (second args)))
-      (list 'print (list 'describe-fn (first args) (second args)))
+      (list '!print (list 'describe-fn (first args) (second args)))
 
       ;; (!describe ns1 ns2 ...) — multi-namespace
       :else
@@ -317,7 +321,7 @@
                              (list 'describe-fn ns-sym)
                              "\n\n"])
                           args)]
-        (list 'print (list* 'cat parts))))))
+        (list '!print (list* 'cat parts))))))
 
 ;; ->: (-> x (f a) (g b)) -> (g (f x a) b)
 (defspellmacro '->

@@ -164,7 +164,7 @@ This behavior is the reason for the eval-do-quote pattern.
 
 Extension-producing forms:
     '(!extend) ; simple extension
-    '(print any-expression) ; print the value of any-expression into your context window
+    '(!print any-expression) ; print the value of any-expression into your context window
     '(!call-now result-name any-expression) ; bind the value to result-name and print
     '(!describe some-namespace) ; print documentation
     '(agents/!ask :agent-handle query) ; see below
