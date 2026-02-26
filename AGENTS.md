@@ -24,7 +24,7 @@ Instead of an external harness controlling an agent loop, the LLM writes and ext
 Prompt text is used as both user message and assistant prefix. The model response is appended and the full text is parsed/evaluated as code.
 
 ### Completion Wrapper and Trailing Expression
-Natural-language prompting is wrapped as `(quine completion (eval (do ...)))`. The last expression in the `do` block is evaluated again by outer `eval`, so quoted trailing forms like `'(extend)` or `'(agents/ask ...)` execute.
+Natural-language prompting is wrapped as `(quine completion (eval (do ...)))`. The last expression in the `do` block is evaluated again by outer `eval`, so quoted trailing forms like `'(!extend)` or `'(agents/!ask ...)` execute.
 
 ### Think / Rethink / Extend
 `think` records a reasoning step, `rethink` marks previous sibling expressions for pruning, and `extend` continues with pruned context via `prune-and-reopen`.
@@ -32,36 +32,37 @@ Natural-language prompting is wrapped as `(quine completion (eval (do ...)))`. T
 ### Namespaces
 Spell has two namespace categories:
 - Core namespaces (`strings`, `math`, `builtins`) are always available.
-- Effect namespaces (`io`, `globals`, `agents`, `futures`, `patterns`, `llms`) are available in trailing-expression evaluation via `eval`.
+- Effect namespaces (`io`, `globals`, `agents`, `futures`, `patterns`) are available in trailing-expression evaluation via `eval`.
 
 Namespace maps use `:short-docs`, `:docs`, and optional `:detail`; `describe` surfaces this metadata in extensions.
 
 ## LLM Calls and Concurrency
 
 ### LLM Call Modes
-- `llm-self`: serial self-calls on the same handle and execution tree.
+- `!llm-self`: serial self-calls on the same handle and execution tree.
 - `agents/spawn`: asynchronous agent creation with a new handle.
 
 ### Concurrency Models
 - Deterministic computation concurrency: `future`, `await`, `plet`, `futures/pmap`.
-- Agent concurrency: `agents/spawn` plus coordination via `agents/ask` and `globals/*`.
+- Agent concurrency: `agents/spawn` plus coordination via `agents/!ask` and `globals/*`.
 
 These are intentionally separate: use futures for deterministic compute, and spawned agents for LLM-driven parallelism.
 
 ### Communication
-`agents/ask` supports request/reply (`target msg`, poke-only `target`, and multi-target `[a b c]`). `agents/send` is fire-and-forget. Communication works by composing an inbox function that transforms the recipient's completion before box evaluation.
+`agents/!ask` supports request/reply (`target msg`, poke-only `target`, and multi-target `[a b c]`). `agents/send` is fire-and-forget. Communication works by composing an inbox function that transforms the recipient's completion before box evaluation.
 
 ## Language Features
 
 - 13 special forms and 26 spell macros (`defspellmacro`), including user-defined macros via `defmacro`.
 - Vector destructuring (`&` rest, `:as`), `loop/recur` (including fn-level), `try/catch/throw`, `quine`, `compact`.
-- Prompt-aware orchestration forms including `think`, `rethink`, `extend`, `call-now`, and `describe`.
-- Inter-agent messaging (`spawn`, `ask`, `send`, reply variants), keyword handles, and message preemption semantics.
+- Prompt-aware orchestration forms including `think`, `rethink`, `!extend`, `!call-now`, and `!describe`.
+- Inter-agent messaging (`spawn`, `!ask`, `send`, reply variants), keyword handles, and message preemption semantics.
 
 ## Providers
 
 Primary providers in day-to-day use:
 - Anthropic (`anthropic-provider`)
+- Anthropic tool-call path (`anthropic-toolcall-provider`)
 - ChatGPT Codex messages path (`chatgpt-codex-provider`)
 - ChatGPT Codex tool-call path (`chatgpt-codex-toolcall-provider`)
 
@@ -76,6 +77,8 @@ Three base agents (one per transport mode, no effect namespaces):
 - `config/agents/base-prefill.agent.edn` — Anthropic (prefill mode)
 - `config/agents/base-message.agent.edn` — message providers (no prefill)
 - `config/agents/base-toolcall.agent.edn` — tool-call providers
+
+Agents with `:llms` in their `.agent.edn` also get an `llms/` namespace with named sub-LLM variants (dynamically generated, not a standard stdlib namespace).
 
 Specialized agents inherit from a base and add namespaces:
 - `config/agents/cli.agent.edn` — CLI default (base-toolcall + io, futures, patterns, agents, globals)
@@ -111,16 +114,9 @@ Specialized agents inherit from a base and add namespaces:
 | `benchmarking/AGENTS.md` | Benchmark workflow and reporting guidance (in nested benchmarking repo). |
 | `notebook/TODO.md`, `notebook/DONE.md`, `notebook/INDEX.md` | Active tasks, completed tasks, and notebook index. |
 
-## Architecture (Condensed)
+## Architecture
 
-Current model (kept intentionally short here):
-1. `spell-eval`: pure evaluator.
-2. `eval` builtin in llm pipeline: effectful second-pass evaluation for trailing expression.
-3. `runtime/box`: executes completion, drains inbox transforms, manages lifecycle/notifications.
-4. LLM call layer: provider invocation and delivery into runtime.
-5. `api/run`: top-level wiring for prompt/init + agent/provider config.
-
-Follow-up is tracked in TODO #132 to reassess whether this section should be removed once `writeup/language-design.md` fully covers implementation architecture.
+See `writeup/language-design.md` § "Under the hood" for implementation architecture (spell-eval, eval, box, -llm, make-llm). Note: this section is partially stale and needs updating to match current code (box signature, root lifecycle, bang-prefix API).
 
 ## Benchmarking
 

@@ -3,4 +3,5 @@
 
 {:name base-prefill
  :doc "Base agent for prefill providers (Anthropic)"
- :system {:file "../prompts/minimal.txt"}}
+ :system {:file "../prompts/minimal.txt"}
+ :llms []}

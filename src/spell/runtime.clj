@@ -58,7 +58,7 @@
 ;; Forward declarations
 ;; =============================================================================
 
-(declare box)
+(declare box ask-builtin)
 
 ;; =============================================================================
 ;; Inside-fn constructors
@@ -297,11 +297,7 @@
   "Reply to a message and block for response.
    Extracts sender from the message map, sends value, then blocks."
   [msg value]
-  (assert-agent-context! "reply-ask")
-  (let [target (:from msg)]
-    (send value target)
-    (install-completion-notifier target)
-    (block-for-message)))
+  (ask-builtin (:from msg) value))
 
 ;; =============================================================================
 ;; Ask
@@ -481,6 +477,9 @@ Common mistakes:
 2. agents/reply and passing turn: same problem
 3. agents/!ask followed by additional expressions: these do not evaluate, instead put them first
 4. hallucinating handles: use (agents/parent-handle), :user, :main, or look up (!print (globals/get :roles)) (if globals/ available)
+5. calling agents/* outside the quoted trailing expression (for example: (def h (agents/current-handle))); effect calls must run in trailing expression code
+
+In examples, ▌ marks cursor position in a completion. It is doc-only; do not type it into code.
 
 Multi-part example:
 

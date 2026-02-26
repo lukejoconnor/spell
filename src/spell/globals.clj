@@ -5,10 +5,14 @@
    Backed by a single atom. Pre-initialized with :roles and :tasks."
   (:require [spell.eval :as eval]))
 
+(def ^:private default-state
+  "Source of truth for globals that exist by default at startup/reset."
+  {:roles {}
+   :tasks []})
+
 (def ^:private store
   "Global shared state atom. Keys are keywords, values are arbitrary."
-  (atom {:roles {}
-         :tasks []}))
+  (atom default-state))
 
 (defn get-val
   "Get value for key. Returns nil if key doesn't exist."
@@ -68,7 +72,7 @@
 (defn reset-globals!
   "Reset globals to initial state. For CLI/test use."
   []
-  (clojure.core/reset! store {:roles {} :tasks []}))
+  (clojure.core/reset! store default-state))
 
 ;; ---------------------------------------------------------------------------
 ;; Namespace map (for make-llm integration)
@@ -86,16 +90,27 @@
   (globals/all)                  — return entire globals map
   (globals/wait-until pred)      — block until pred on globals map is true
 
-Pre-initialized with :roles {} and :tasks [].
+Common read patterns:
+  1) Bind to a local with !call-now:
+     '(!call-now roles (globals/get :roles))
+     ;; next turn: roles is available as a local binding
+
+  2) Print directly for quick inspection:
+     '(print \"roles=\" (globals/get :roles))
+
+Default special keys (defined in this namespace's default-state):
+  :roles {}  — shared role/handle registry by convention.
+               Example: {:researcher \"collect refs\" :writer \"draft\"}
+  :tasks []  — shared task queue by convention.
+               Example: [{:id 1 :desc \"read file\"} {:id 2 :desc \"summarize\"}]
+
+These defaults are conventions, not requirements.
+Do not assume :tasks (or any other workflow key) is populated unless agents chose to use it.
+No other keys are reserved by default; agents may create any additional keys.
+
 All globals/ calls are effect functions — quote them in the trailing expression.
 Use (!describe globals :fn-name) for detailed docs on any function."
-          :get   "Get global value by key: (globals/get :roles)"
-          :set   "Set global value: (globals/set :roles {}) — returns value"
-          :update "Atomic read-modify-write: (globals/update :tasks (fn [t] (conj t item))) — returns new value"
-          :pop   "Atomic remove-and-return first element: (globals/pop :tasks) — returns claimed item"
-          :keys  "List all global keys: (globals/keys)"
-          :all   "Return entire globals map: (globals/all)"
-          :wait-until "Block until predicate on globals map is true: (globals/wait-until (fn [state] (= 3 (count (:results state)))))"}
+          }
    :detail
    {:get
     "Read a global value by key. Returns nil if key doesn't exist.
@@ -103,9 +118,12 @@ Use (!describe globals :fn-name) for detailed docs on any function."
 (globals/get key)
   key: keyword
 
-Example:
+Example (bind result to local for later reasoning):
   '(!call-now roles (globals/get :roles))
-  ;; next turn: roles is bound to the current roles map"
+  ;; next turn: roles is bound to the current roles map
+
+Example (quick inspection in one expression):
+  '(print \"roles=\" (globals/get :roles))"
 
     :set
     "Set a global value. Returns the value.

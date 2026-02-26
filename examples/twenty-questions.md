@@ -1,15 +1,16 @@
 # Twenty Questions (Ralph Loop Pattern)
 
-Demonstrates the "Ralph loop" - a worker/checker pattern where two separate LLM roles collaborate. The worker doesn't know the answer; the checker does.
+Demonstrates a worker/checker pattern where two separate LLM roles collaborate. The worker doesn't know the answer; the checker does.
 
 ## Prompt
 
 ```
-Play 20 questions. You are the orchestrator who picks a secret word. Create two
-subagent roles: (1) a CHECKER who knows the secret and answers yes/no honestly,
-(2) a WORKER who does NOT know the secret and must guess by asking questions.
-The worker should adapt its questions based on previous answers. Loop until the
-worker guesses correctly or runs out of guesses.
+Play '20 questions'. You are the orchestrator who picks a secret animal. Create a WORKER 
+who does NOT know the secret and must guess by asking questions. Start
+by telling it that the answer is an animal and wait for its first guess.
+Then, communicate using !ask or !reply-ask.
+Loop until the worker guesses correctly or runs out of guesses.
+Use a guess limit of 8, not 20.
 ```
 
 ## Solution

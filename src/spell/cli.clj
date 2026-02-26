@@ -18,7 +18,8 @@
    "gpt53"   "gpt-5.3"})
 
 (def provider-prefixes
-  #{"ollama" "chatgpt" "codex" "codex-toolcall" "openclaw" "openai" "anthropic" "kimi" "moonshot" "test"})
+  #{"ollama" "chatgpt" "codex" "codex-toolcall" "openclaw" "openai"
+    "anthropic" "anthropic-toolcall" "kimi" "moonshot" "test"})
 
 (defn parse-model-spec
   "Parse 'provider:model' into {:provider str :model str}.
@@ -81,7 +82,7 @@
   [["-t" "--test" "Use dummy LLM provider (returns 'hello world')"]
    ["-e" "--example NAME" "Run a named example from examples/"]
    ["-a" "--agent FILE" "Use agent definition from .agent.edn file"]
-   ["-m" "--model MODEL" "Model spec: haiku, sonnet, opus, ollama:<model>, codex:<model>, chatgpt:<model>, openai:<model>, openclaw:<model>, user (default: codex:gpt-5.3)"]
+   ["-m" "--model MODEL" "Model spec: haiku, sonnet, opus, ollama:<model>, codex:<model>, chatgpt:<model>, anthropic-toolcall:<model>, openai:<model>, openclaw:<model>, user (default: codex:gpt-5.3)"]
    ["-d" "--depth DEPTH" "Max recursion depth (default: unlimited, 0 = unlimited)"
     :parse-fn #(Integer/parseInt %)
     :validate [#(>= % 0) "Must be non-negative"]]
@@ -220,7 +221,10 @@
 
         ;; anthropic (explicit or default)
         ("anthropic" nil)
-        (provider/anthropic-provider base-opts)))))
+        (provider/anthropic-provider base-opts)
+
+        "anthropic-toolcall"
+        (provider/anthropic-toolcall-provider base-opts)))))
 
 (defn run-prompt
   [prompt {:keys [depth verbose log budget trace agent model thinking reasoning-effort verbosity

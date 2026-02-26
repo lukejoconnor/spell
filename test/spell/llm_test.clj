@@ -421,6 +421,20 @@
           (is (= "gpt-5.3-codex" (:model p))))
         (finally
           (.delete auth-file)
+          (.delete provider-file)))))
+
+  (testing "load-provider supports anthropic-toolcall type"
+    (let [provider-file (java.io.File/createTempFile "provider-anthropic-toolcall-" ".provider.edn")]
+      (try
+        (spit provider-file (pr-str {:type :anthropic-toolcall
+                                     :model "claude-sonnet-4-5-20250929"}))
+        (with-redefs [provider/anthropic-toolcall-provider (fn [opts]
+                                                              {:provider :anthropic-toolcall
+                                                               :opts opts})]
+          (let [p (provider/load-provider (.getAbsolutePath provider-file))]
+            (is (= :anthropic-toolcall (:provider p)))
+            (is (= "claude-sonnet-4-5-20250929" (get-in p [:opts :model])))))
+        (finally
           (.delete provider-file))))))
 
 (deftest ollama-parse-response-test
@@ -531,6 +545,89 @@
                                                   :type "invalid_request_error"}})]
       (is (thrown-with-msg? Exception #"OpenAI Responses API error"
             (#'provider/parse-openai-responses-response response-body))))))
+
+(deftest anthropic-toolcall-provider-constructor-test
+  (testing "constructs with explicit api-key"
+    (let [p (provider/anthropic-toolcall-provider {:api-key "anthropic-key"
+                                                    :model "claude-sonnet-4-5-20250929"})]
+      (is (instance? spell.provider.AnthropicToolcallProvider p))
+      (is (= "anthropic-key" (:api-key p)))
+      (is (= "claude-sonnet-4-5-20250929" (:model p)))))
+
+  (testing "uses default model when omitted"
+    (let [p (provider/anthropic-toolcall-provider {:api-key "anthropic-key"})]
+      (is (= "claude-sonnet-4-5-20250929" (:model p))))))
+
+(deftest anthropic-toolcall-parse-test
+  (testing "parses completed response with spell_suffix tool_use"
+    (let [body (json/write-str {:content [{:type "tool_use"
+                                           :name "spell_suffix"
+                                           :input {:suffix "(def x 1)"}}]
+                                :usage {:input_tokens 11
+                                        :output_tokens 5
+                                        :cache_creation_input_tokens 7
+                                        :cache_read_input_tokens 3}})
+          result (#'provider/parse-anthropic-toolcall-response body)]
+      (is (= "(def x 1)" (:text result)))
+      (is (= 11 (get-in result [:usage :input_tokens])))
+      (is (= 5 (get-in result [:usage :output_tokens])))
+      (is (= 7 (get-in result [:usage :cache_creation_input_tokens])))
+      (is (= 3 (get-in result [:usage :cache_read_input_tokens])))))
+
+  (testing "throws when tool_use is missing"
+    (let [body (json/write-str {:content [{:type "text" :text "no tool call"}]
+                                :usage {:input_tokens 1 :output_tokens 1}})]
+      (is (thrown-with-msg? Exception #"missing spell_suffix tool_use"
+            (#'provider/parse-anthropic-toolcall-response body)))))
+
+  (testing "parses stream with input_json_delta"
+    (let [sse (str "event: message_start\n"
+                   "data: "
+                   (json/write-str {:type "message_start"
+                                    :message {:usage {:input_tokens 8
+                                                      :cache_creation_input_tokens 2
+                                                      :cache_read_input_tokens 1}}})
+                   "\n\n"
+                   "event: content_block_start\n"
+                   "data: "
+                   (json/write-str {:type "content_block_start"
+                                    :index 0
+                                    :content_block {:type "tool_use"
+                                                    :name "spell_suffix"
+                                                    :input {}}})
+                   "\n\n"
+                   "event: content_block_delta\n"
+                   "data: "
+                   (json/write-str {:type "content_block_delta"
+                                    :index 0
+                                    :delta {:type "input_json_delta"
+                                            :partial_json "{\"suffix\":\"(def y 2)\"}"}})
+                   "\n\n"
+                   "event: message_delta\n"
+                   "data: "
+                   (json/write-str {:type "message_delta"
+                                    :usage {:output_tokens 4}})
+                   "\n\n")
+          result (#'provider/parse-anthropic-toolcall-stream sse)]
+      (is (= "(def y 2)" (:text result)))
+      (is (= 8 (get-in result [:usage :input_tokens])))
+      (is (= 4 (get-in result [:usage :output_tokens])))
+      (is (= 2 (get-in result [:usage :cache_creation_input_tokens])))
+      (is (= 1 (get-in result [:usage :cache_read_input_tokens])))))
+
+  (testing "stream throws when spell_suffix tool_use is missing"
+    (let [sse (str "event: message_start\n"
+                   "data: "
+                   (json/write-str {:type "message_start"
+                                    :message {:usage {:input_tokens 1}}})
+                   "\n\n"
+                   "event: message_delta\n"
+                   "data: "
+                   (json/write-str {:type "message_delta"
+                                    :usage {:output_tokens 1}})
+                   "\n\n")]
+      (is (thrown-with-msg? Exception #"missing spell_suffix tool_use"
+            (#'provider/parse-anthropic-toolcall-stream sse))))))
 
 (deftest chatgpt-codex-provider-constructor-test
   (testing "constructs with explicit token override"
@@ -695,9 +792,13 @@
     (is (= {:provider "openai" :model "gpt-4o"}
            (cli/parse-model-spec "openai:gpt-4o"))))
 
-  (testing "unknown prefix treated as plain model name"
-    (is (= {:provider nil :model "custom:some-model"}
-           (cli/parse-model-spec "custom:some-model")))))
+  (testing "anthropic-toolcall provider prefix"
+    (is (= {:provider "anthropic-toolcall" :model "claude-sonnet-4-5-20250929"}
+           (cli/parse-model-spec "anthropic-toolcall:claude-sonnet-4-5-20250929"))))
+
+  (testing "unknown provider prefix throws"
+    (is (thrown-with-msg? Exception #"Unknown provider prefix"
+          (cli/parse-model-spec "custom:some-model")))))
 
 ;; =============================================================================
 ;; Budget tests
@@ -1059,6 +1160,10 @@
     (let [p (provider/anthropic-provider {:api-key "test" :model "claude-opus-4-5-20251101"})]
       (is (true? (provider/supports-prefill p)))))
 
+  (testing "Anthropic toolcall provider does not support prefill"
+    (let [p (provider/anthropic-toolcall-provider {:api-key "test"})]
+      (is (false? (provider/supports-prefill p)))))
+
   (testing "OpenAI provider does not support prefill"
     (let [p (provider/openai-provider {:api-key "test"})]
       (is (false? (provider/supports-prefill p)))))
@@ -1078,6 +1183,35 @@
   (testing "Kimi provider supports prefill"
     (let [p (provider/kimi-provider {:api-key "test"})]
       (is (true? (provider/supports-prefill p))))))
+
+;; =============================================================================
+;; User provider display tests
+;; =============================================================================
+
+(deftest user-provider-displays-prefill-prefix-test
+  (testing "user provider displays prefix content when prefill is used"
+    (let [p (provider/user-provider)
+          err (java.io.StringWriter.)
+          response (binding [*in* (java.io.BufferedReader. (java.io.StringReader. "suffix\n"))
+                             *err* err]
+                     (provider/call-llm p "Continue this Spell program."
+                                        {:prefix "(quine completion (eval (do (quine prompt \"Hello me!\")))"}))]
+      (is (= "suffix" response))
+      (is (str/includes? (str err) "=== PREFILL PREFIX ==="))
+      (is (str/includes? (str err) "Hello me!"))
+      (is (str/includes? (str err) "=== USER MESSAGE ===")))))
+
+(deftest user-provider-displays-prompt-without-prefill-test
+  (testing "user provider displays prompt directly when no prefix is provided"
+    (let [p (provider/user-provider)
+          err (java.io.StringWriter.)
+          response (binding [*in* (java.io.BufferedReader. (java.io.StringReader. "done\n"))
+                             *err* err]
+                     (provider/call-llm p "(eval (do " {}))]
+      (is (= "done" response))
+      (is (str/includes? (str err) "=== PROMPT ==="))
+      (is (str/includes? (str err) "(eval (do "))
+      (is (not (str/includes? (str err) "=== PREFILL PREFIX ==="))))))
 
 ;; =============================================================================
 ;; strip-prefix-echo tests

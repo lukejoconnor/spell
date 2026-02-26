@@ -48,6 +48,7 @@ Each provider .edn file includes a `:default-agent` key pointing to the transpor
 
 Supported `:type` values:
 - `:anthropic`
+- `:anthropic-toolcall`
 - `:openai`
 - `:chatgpt-codex`
 - `:chatgpt-codex-toolcall`

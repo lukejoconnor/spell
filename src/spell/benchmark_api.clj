@@ -9,7 +9,8 @@
   (:gen-class))
 
 (def provider-prefixes
-  #{"ollama" "chatgpt" "codex" "codex-toolcall" "openclaw" "openai" "anthropic" "kimi" "moonshot" "test"})
+  #{"ollama" "chatgpt" "codex" "codex-toolcall" "openclaw" "openai"
+    "anthropic" "anthropic-toolcall" "kimi" "moonshot" "test"})
 
 (def cli-options
   [["-r" "--request FILE" "Request JSON path, or '-' for stdin" :default "-"]
@@ -51,6 +52,7 @@
 
 (def provider-edn-by-prefix
   {"anthropic" "config/providers/anthropic.provider.edn"
+   "anthropic-toolcall" "config/providers/anthropic-toolcall.provider.edn"
    "chatgpt" "config/providers/chatgpt-codex.provider.edn"
    "codex" "config/providers/chatgpt-codex.provider.edn"
    "codex-toolcall" "config/providers/chatgpt-codex-toolcall.provider.edn"
@@ -137,6 +139,9 @@
 
       ("anthropic" nil)
       (provider/anthropic-provider base-opts)
+
+      "anthropic-toolcall"
+      (provider/anthropic-toolcall-provider base-opts)
 
       (throw (ex-info (str "Unknown provider prefix: " provider)
                       {:provider provider :model-spec model-spec})))))

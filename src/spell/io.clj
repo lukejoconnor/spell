@@ -568,37 +568,24 @@ Valid chained calls: '(do (io/cwd) (io/ls \".\") (io/read-file \"README.md\"))
 Invalid: (io/cwd)
 On first io use in a task, run '(!describe io).
 Use (!describe io :fn-name) for detailed docs on any function."
-          ;; File reading/writing
-          :slurp "Read entire file as string. Returns {:ok content} or {:error msg}."
-          :spit "Write to file. (spit path content) or (spit path content {:append true}). Returns {:ok path} or {:error msg}."
-          :slurp-bytes "Read file as byte array. Returns {:ok bytes} or {:error msg}."
-          :read-file "Read file with line numbers. Returns string \"1: line1\\n2: line2\\n...\" or {:error msg}. Optional start/end for range."
-          :read-lines "Read file as vector of raw line strings with line-offset metadata. Displays with line numbers via !call-now; evaluates to raw vector. Optional start/end for range."
-          :write-file "Write content to file. Creates parent dirs. Returns {:ok path} or {:error msg}."
-          ;; String replacement
-          :str-replace "Replace string in file. Unique by default; (str-replace path old new {:all true}) replaces all. Returns {:ok path} or {:error msg}."
-          :replace-lines "Replace lines. (replace-lines path start end content) for one edit, (replace-lines path [[s1 e1 c1] [s2 e2 c2]]) for multiple (atomic, no drift). Returns {:ok path} or {:error msg}."
-          ;; Directory operations
-          :exists? "Check if path exists."
-          :directory? "Check if path is a directory."
-          :ls "List directory contents. Returns vector of names or {:error msg}."
-          :mkdir "Create directory. Returns {:ok path} or {:error msg}."
-          :mkdirs "Create directory tree. Returns {:ok path} or {:error msg}."
-          :cwd "Get current working directory."
-          ;; File manipulation
-          :delete "Delete file or empty directory. Returns {:ok path} or {:error msg}."
-          :copy "Copy file. (copy src dest). Returns {:ok dest} or {:error msg}."
-          :move "Move/rename file. (move src dest). Returns {:ok dest} or {:error msg}."
-          :stat "Get file info. Returns {:size :modified :readable :writable :executable :directory} or {:error msg}."
-          :temp-file "Create temp file. Returns {:ok path} or {:error msg}."
-          ;; File watching
-          :watch-send "Watch directory in background, send events to handle when they occur. (watch-send path handle) or (watch-send path handle timeout-ms). Returns nil immediately. Message arrives with :from :watch-send."
-          ;; Process execution
-          :sh "Execute shell command. (sh cmd) or (sh cmd {:timeout secs}); :timeout 0 disables timeout for this call. Returns {:exit N :out \"...\" :err \"...\"}."
-          :exec "Execute command directly (no shell). (exec [\"cmd\" \"arg1\" ...]). Returns {:exit N :out \"...\" :err \"...\"}."
-          :env "Get env var(s). (env) returns all as map. (env \"PATH\") returns value or nil."}
+          }
    :detail
-   {:read-file
+   {:slurp-bytes "Read file as byte array. Returns {:ok bytes} or {:error msg}."
+    :write-file "Write content to file. Creates parent dirs. Returns {:ok path} or {:error msg}."
+    :exists? "Check if path exists."
+    :directory? "Check if path is a directory."
+    :ls "List directory contents. Returns vector of names or {:error msg}."
+    :mkdir "Create directory. Returns {:ok path} or {:error msg}."
+    :mkdirs "Create directory tree. Returns {:ok path} or {:error msg}."
+    :cwd "Get current working directory."
+    :delete "Delete file or empty directory. Returns {:ok path} or {:error msg}."
+    :copy "Copy file. (copy src dest). Returns {:ok dest} or {:error msg}."
+    :move "Move/rename file. (move src dest). Returns {:ok dest} or {:error msg}."
+    :stat "Get file info. Returns {:size :modified :readable :writable :executable :directory} or {:error msg}."
+    :temp-file "Create temp file. Returns {:ok path} or {:error msg}."
+    :env "Get env var(s). (env) returns all as map. (env \"PATH\") returns value or nil."
+
+    :read-file
     "Read file with line numbers. Returns a formatted string or {:error msg}.
 
 (io/read-file path)

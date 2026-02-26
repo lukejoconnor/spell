@@ -3,6 +3,7 @@
 
    Providers implement the LLMProvider protocol. Built-in providers:
    - anthropic-provider: Calls Claude API
+   - anthropic-toolcall-provider: Anthropic Messages API with mandatory spell_suffix tool output
    - openai-provider: Calls OpenAI API
    - chatgpt-codex-provider: Calls ChatGPT Codex Responses API
    - chatgpt-codex-toolcall-provider: ChatGPT Codex Responses with mandatory custom tool output
@@ -325,6 +326,184 @@
        (throw (ex-info "No API key provided. Set ANTHROPIC_API_KEY or pass :api-key"
                        {:env "ANTHROPIC_API_KEY"})))
      (->AnthropicProvider key model max-tokens (make-http-client) costs))))
+
+(defn- anthropic-toolcall-request
+  [api-key model prompt system-prompt max-tokens stream? thinking cache-prefix]
+  (let [min-chars (cache-min-chars model)
+        ;; Split user message for caching: stable prefix + new content
+        user-content (if (and cache-prefix
+                              (not (str/blank? cache-prefix))
+                              (str/starts-with? prompt cache-prefix)
+                              (>= (count cache-prefix) min-chars))
+                       (let [new-content (subs prompt (count cache-prefix))]
+                         (if (str/blank? new-content)
+                           [{:type "text" :text prompt :cache_control {:type "ephemeral"}}]
+                           [{:type "text" :text cache-prefix :cache_control {:type "ephemeral"}}
+                            {:type "text" :text new-content :cache_control {:type "ephemeral"}}]))
+                       prompt)
+        cached-system (when system-prompt
+                        [(cond-> {:type "text" :text system-prompt}
+                           (>= (count system-prompt) min-chars)
+                           (assoc :cache_control {:type "ephemeral"}))])
+        body (cond-> {:model model
+                      :max_tokens (if thinking
+                                    (or max-tokens 32768)
+                                    (or max-tokens 16384))
+                      :messages [{:role "user" :content user-content}]
+                      :tools [{:name "spell_suffix"
+                               :description "Return the full Spell suffix in input.suffix"
+                               :input_schema {:type "object"
+                                              :properties {:suffix {:type "string"}}
+                                              :required ["suffix"]
+                                              :additionalProperties false}}]
+                      :tool_choice {:type "any"}}
+               cached-system (assoc :system cached-system)
+               stream? (assoc :stream true)
+               thinking (assoc :thinking (if (number? thinking)
+                                          {:type "enabled" :budget_tokens thinking}
+                                          {:type "enabled" :budget_tokens 10000})))
+        request (-> (HttpRequest/newBuilder)
+                    (.uri (URI/create "https://api.anthropic.com/v1/messages"))
+                    (.header "Content-Type" "application/json")
+                    (.header "x-api-key" api-key)
+                    (.header "anthropic-version" "2023-06-01")
+                    (.POST (HttpRequest$BodyPublishers/ofString (json/write-str body)))
+                    (.build))]
+    request))
+
+(defn- tool-use->suffix
+  "Extract Spell suffix text from an Anthropic tool_use block."
+  [tool-use]
+  (let [input (:input tool-use)
+        suffix (cond
+                 (string? input) input
+                 (map? input) (:suffix input)
+                 :else nil)]
+    (when (string? suffix)
+      suffix)))
+
+(defn- parse-anthropic-toolcall-response
+  [response-body]
+  (let [parsed (json/read-str response-body :key-fn keyword)]
+    (if-let [error (:error parsed)]
+      (throw (ex-info "Anthropic API error" {:error error}))
+      (let [usage (:usage parsed)
+            tool-use (some (fn [block]
+                             (when (and (= "tool_use" (:type block))
+                                        (= "spell_suffix" (:name block)))
+                               block))
+                           (:content parsed))
+            suffix (tool-use->suffix tool-use)]
+        (when (nil? suffix)
+          (throw (ex-info "Anthropic mandatory tool-call response missing spell_suffix tool_use"
+                          {:type :missing-tool-call
+                           :provider :anthropic-toolcall
+                           :content (:content parsed)})))
+        {:text suffix
+         :usage {:input_tokens (:input_tokens usage 0)
+                 :output_tokens (:output_tokens usage 0)
+                 :cache_creation_input_tokens (:cache_creation_input_tokens usage 0)
+                 :cache_read_input_tokens (:cache_read_input_tokens usage 0)}}))))
+
+(defn- parse-anthropic-toolcall-stream
+  "Parse an Anthropic SSE stream for tool-call mode, extracting spell_suffix input."
+  [response-body]
+  (let [usage (atom {:input_tokens 0 :output_tokens 0
+                     :cache_creation_input_tokens 0 :cache_read_input_tokens 0})
+        tool-blocks (atom {})]
+    (doseq [line (str/split-lines response-body)]
+      (when (str/starts-with? line "data: ")
+        (let [data (subs line 6)]
+          (when (not= data "[DONE]")
+            (try
+              (let [parsed (json/read-str data :key-fn keyword)]
+                (case (:type parsed)
+                  "message_start"
+                  (let [u (get-in parsed [:message :usage])]
+                    (swap! usage merge
+                           {:input_tokens (:input_tokens u 0)
+                            :cache_creation_input_tokens (:cache_creation_input_tokens u 0)
+                            :cache_read_input_tokens (:cache_read_input_tokens u 0)}))
+
+                  "content_block_start"
+                  (let [idx (:index parsed)
+                        block (:content_block parsed)]
+                    (swap! tool-blocks assoc idx {:name (:name block)
+                                                  :input (:input block)
+                                                  :partial (StringBuilder.)}))
+
+                  "content_block_delta"
+                  (when (= "input_json_delta" (get-in parsed [:delta :type]))
+                    (let [idx (:index parsed)
+                          partial-json (get-in parsed [:delta :partial_json])]
+                      (when (string? partial-json)
+                        (when-let [sb (:partial (get @tool-blocks idx))]
+                          (.append ^StringBuilder sb partial-json)))))
+
+                  "message_delta"
+                  (when-let [u (:usage parsed)]
+                    (swap! usage assoc :output_tokens (:output_tokens u 0)))
+
+                  nil))
+              (catch Exception _ nil))))))
+    (let [tool-use (some (fn [[_ {:keys [name input partial]}]]
+                           (when (= "spell_suffix" name)
+                             (let [partial-json (when partial (.toString ^StringBuilder partial))
+                                   parsed-input (when (and partial-json (not (str/blank? partial-json)))
+                                                  (json/read-str partial-json :key-fn keyword))
+                                   effective-input (if (and (map? input) (map? parsed-input))
+                                                     (merge input parsed-input)
+                                                     (or parsed-input input))]
+                               {:input effective-input})))
+                         @tool-blocks)
+          suffix (tool-use->suffix tool-use)]
+      (when (nil? suffix)
+        (throw (ex-info "Anthropic mandatory tool-call stream missing spell_suffix tool_use"
+                        {:type :missing-tool-call
+                         :provider :anthropic-toolcall
+                         :body (subs response-body 0 (min 1000 (count response-body)))})))
+      {:text suffix :usage @usage})))
+
+(defrecord AnthropicToolcallProvider [api-key model max-tokens http-client costs]
+  LLMProvider
+  (call-llm [this prompt] (call-llm this prompt {}))
+  (call-llm [_ prompt opts]
+    (let [effective-model (or (:model opts) model)
+          thinking (:thinking opts)
+          effective-max-tokens (or max-tokens (if thinking 32768 16384))
+          ;; Use streaming for large max_tokens (API requires it for >16384) or thinking
+          stream? (or thinking (> effective-max-tokens 16384))
+          cache-prefix (:cache-prefix opts)
+          request (anthropic-toolcall-request api-key effective-model prompt (:system opts)
+                                              effective-max-tokens stream? thinking cache-prefix)
+          response (.send http-client request (HttpResponse$BodyHandlers/ofString))
+          status (.statusCode response)]
+      (if (<= 200 status 299)
+        (let [{:keys [text usage]} (if stream?
+                                     (parse-anthropic-toolcall-stream (.body response))
+                                     (parse-anthropic-toolcall-response (.body response)))]
+          (track-usage! effective-model usage costs)
+          text)
+        (throw (ex-info "Anthropic mandatory tool-call request failed"
+                        {:status status :body (.body response)})))))
+  (supports-prefill [_] false))
+
+(defn anthropic-toolcall-provider
+  "Create an Anthropic provider with mandatory spell_suffix tool output.
+
+   Options:
+   - :api-key - API key (default: ANTHROPIC_API_KEY env var)
+   - :model - Model name (default: claude-sonnet-4-5-20250929)
+   - :max-tokens - Max tokens per response (default: 16384)
+   - :costs - Cost table {model-prefix [input-per-M output-per-M]}"
+  ([] (anthropic-toolcall-provider {}))
+  ([{:keys [api-key model max-tokens costs]
+     :or {model "claude-sonnet-4-5-20250929"}}]
+   (let [key (or api-key (System/getenv "ANTHROPIC_API_KEY"))]
+     (when-not key
+       (throw (ex-info "No API key provided. Set ANTHROPIC_API_KEY or pass :api-key"
+                       {:env "ANTHROPIC_API_KEY"})))
+     (->AnthropicToolcallProvider key model max-tokens (make-http-client) costs))))
 
 ;; ---------------------------------------------------------------------------
 ;; Ollama Provider
@@ -952,8 +1131,16 @@
           (println "=== SYSTEM PROMPT ===")
           (println system)
           (println))
-        (println (str "=== " (if prefix "PROMPT (prefix)" "PROMPT") " ==="))
-        (println (unescape-for-display prompt))
+        (if prefix
+          (do
+            (println "=== PREFILL PREFIX ===")
+            (println (unescape-for-display prefix))
+            (println)
+            (println "=== USER MESSAGE ===")
+            (println (unescape-for-display prompt)))
+          (do
+            (println "=== PROMPT ===")
+            (println (unescape-for-display prompt))))
         (println)
         (println "=== YOUR COMPLETION (Ctrl-D to submit) ===")
         (flush))
@@ -1035,6 +1222,7 @@
                account-id (assoc :account-id account-id))]
     (case type
       :anthropic (anthropic-provider opts)
+      :anthropic-toolcall (anthropic-toolcall-provider opts)
       :openai    (openai-provider opts)
       :chatgpt-codex (chatgpt-codex-provider opts)
       :chatgpt-codex-toolcall (chatgpt-codex-toolcall-provider opts)
@@ -1069,6 +1257,7 @@
                account-id (assoc :account-id account-id))]
     (case type
       :anthropic (anthropic-provider opts)
+      :anthropic-toolcall (anthropic-toolcall-provider opts)
       :openai    (openai-provider opts)
       :chatgpt-codex (chatgpt-codex-provider opts)
       :chatgpt-codex-toolcall (chatgpt-codex-toolcall-provider opts)
