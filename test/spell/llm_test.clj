@@ -558,6 +558,24 @@
     (let [p (provider/anthropic-toolcall-provider {:api-key "anthropic-key"})]
       (is (= "claude-sonnet-4-5-20250929" (:model p))))))
 
+(deftest anthropic-cacheable-content-blocks-test
+  (testing "splits matching cache-prefix into cached prefix + delta blocks"
+    (is (= [{:type "text" :text "abc" :cache_control {:type "ephemeral"}}
+            {:type "text" :text "def" :cache_control {:type "ephemeral"}}]
+           (#'provider/cacheable-content-blocks "abcdef" "abc" 1))))
+
+  (testing "returns a single cached block when full-text equals cache-prefix"
+    (is (= [{:type "text" :text "abc" :cache_control {:type "ephemeral"}}]
+           (#'provider/cacheable-content-blocks "abc" "abc" 1))))
+
+  (testing "does not split when cache-prefix is below min threshold"
+    (is (= "abcdef"
+           (#'provider/cacheable-content-blocks "abcdef" "abc" 4))))
+
+  (testing "does not split when full-text does not start with cache-prefix"
+    (is (= "abcdef"
+           (#'provider/cacheable-content-blocks "abcdef" "zzz" 1)))))
+
 (deftest anthropic-toolcall-parse-test
   (testing "parses completed response with spell_suffix tool_use"
     (let [body (json/write-str {:content [{:type "tool_use"

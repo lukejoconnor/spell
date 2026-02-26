@@ -195,24 +195,36 @@
         (str/includes? model "haiku-3-5")) 8000
     :else 4000))
 
+(defn- cacheable-content-blocks
+  "Split content into cached prefix + delta blocks when possible.
+   Returns either the original string or a vector of text content blocks."
+  [full-text cache-prefix min-chars]
+  (if (and (string? full-text)
+           (string? cache-prefix)
+           (not (str/blank? cache-prefix))
+           (str/starts-with? full-text cache-prefix)
+           (>= (count cache-prefix) min-chars))
+    (let [new-content (subs full-text (count cache-prefix))]
+      (if (str/blank? new-content)
+        [{:type "text" :text full-text :cache_control {:type "ephemeral"}}]
+        [{:type "text" :text cache-prefix :cache_control {:type "ephemeral"}}
+         {:type "text" :text new-content :cache_control {:type "ephemeral"}}]))
+    full-text))
+
 (defn- anthropic-request [api-key model prompt system-prompt prefix max-tokens stream? thinking cache-prefix]
   (let [;; When thinking is active, don't use assistant prefill (incompatible)
         effective-prefix (when-not thinking prefix)
         ;; Only apply cache_control when content exceeds model's minimum threshold
         min-chars (cache-min-chars model)
         ;; Split user message for caching: stable prefix + new content
-        user-content (if (and cache-prefix
-                              (not (str/blank? cache-prefix))
-                              (str/starts-with? prompt cache-prefix)
-                              (>= (count cache-prefix) min-chars))
-                       (let [new-content (subs prompt (count cache-prefix))]
-                         (if (str/blank? new-content)
-                           [{:type "text" :text prompt :cache_control {:type "ephemeral"}}]
-                           [{:type "text" :text cache-prefix :cache_control {:type "ephemeral"}}
-                            {:type "text" :text new-content :cache_control {:type "ephemeral"}}]))
-                       prompt)
+        user-content (cacheable-content-blocks prompt cache-prefix min-chars)
+        ;; In prefill mode, cache against assistant content (trimmed to satisfy Anthropic).
+        assistant-content (when effective-prefix
+                            (cacheable-content-blocks (str/trimr effective-prefix)
+                                                      (some-> cache-prefix str/trimr)
+                                                      min-chars))
         messages (cond-> [{:role "user" :content user-content}]
-                   effective-prefix (conj {:role "assistant" :content (str/trimr effective-prefix)}))
+                   assistant-content (conj {:role "assistant" :content assistant-content}))
         ;; Use cache_control for system prompt when it exceeds model's minimum threshold
         cached-system (when system-prompt
                         [(cond-> {:type "text" :text system-prompt}
@@ -331,16 +343,7 @@
   [api-key model prompt system-prompt max-tokens stream? thinking cache-prefix]
   (let [min-chars (cache-min-chars model)
         ;; Split user message for caching: stable prefix + new content
-        user-content (if (and cache-prefix
-                              (not (str/blank? cache-prefix))
-                              (str/starts-with? prompt cache-prefix)
-                              (>= (count cache-prefix) min-chars))
-                       (let [new-content (subs prompt (count cache-prefix))]
-                         (if (str/blank? new-content)
-                           [{:type "text" :text prompt :cache_control {:type "ephemeral"}}]
-                           [{:type "text" :text cache-prefix :cache_control {:type "ephemeral"}}
-                            {:type "text" :text new-content :cache_control {:type "ephemeral"}}]))
-                       prompt)
+        user-content (cacheable-content-blocks prompt cache-prefix min-chars)
         cached-system (when system-prompt
                         [(cond-> {:type "text" :text system-prompt}
                            (>= (count system-prompt) min-chars)
