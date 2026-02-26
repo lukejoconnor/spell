@@ -18,7 +18,7 @@
 
 (deftest run-prompt-test
   (testing "run with :prompt triggers LLM call and returns result"
-    ;; build-init wraps "Return 42" into a quine with '(!extend).
+    ;; build-init wraps "Return 42" into a quine with '(extend).
     ;; extend calls !llm-self which calls the provider.
     ;; The response completes the program.
     (let [p (provider/test-provider {:response "(def x 42))"})

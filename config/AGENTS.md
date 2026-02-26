@@ -4,7 +4,7 @@ This directory contains runtime configuration used by Spell execution and benchm
 
 ## Scope
 
-- `agents/`: `.agent.edn` agent definitions (base, cli, benchmark-specific).
+- `agents/`: `.agent.edn` agent definitions (base + capability profiles).
 - `prompts/`: system prompt text variants.
 - `providers/`: declarative provider specs (`.provider.edn`).
 - `spl-lib/`: reusable Spell library files (`patterns.spl`).
@@ -22,7 +22,9 @@ Loaded by `src/spell/agent.clj`.
 
 **Specialized agents** inherit from a base and add namespaces:
 - `cli.agent.edn` — CLI default (base-toolcall + io, futures, patterns, agents, globals)
-- `bench/*.agent.edn` — benchmark agents (base-message or base-toolcall + io)
+- `io-prefill.agent.edn` — benchmark/runtime I/O profile for prefill providers
+- `io-message.agent.edn` — benchmark/runtime I/O profile for message providers
+- `io-toolcall.agent.edn` — benchmark/runtime I/O profile for mandatory toolcall providers
 
 Key semantics:
 - `:base` supports file-based inheritance; paths resolved relative to the current agent file.
@@ -80,14 +82,14 @@ Rules:
 ## Benchmarking Config Coupling
 
 Benchmark default agent selection is centralized in:
-- `benchmarking/src/agent_policy.py` (`DEFAULT_AGENT_POLICY` + mode/family resolution).
+- `benchmarking/src/agent_policy.py` (`DEFAULT_AGENT_POLICY` + provider/transport resolution).
 
-The matrix maps benchmark kind + dataset family + spell mode (`message` vs `toolcall`) to files in `config/agents/bench/`.
+The policy selects from generic I/O profiles in `config/agents/` based on model/provider transport.
 
 When changing benchmark agent config:
-1. Update `config/agents/bench/*` files.
+1. Update `config/agents/io-*.agent.edn` files if profile capabilities change.
 2. Update `benchmarking/src/agent_policy.py` defaults if paths or policy change.
-3. Keep toolcall variants consistent with their message counterparts.
+3. Keep transport variants aligned unless intentionally different.
 4. Verify both `bench.py` dry-run output and actual run resolution.
 
 ## Important Gotchas

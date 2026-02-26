@@ -47,6 +47,17 @@
 (defn- resolve-model [model]
   (get model-aliases model model))
 
+(def provider-edn-by-prefix
+  {"anthropic" "config/providers/anthropic.provider.edn"
+   "chatgpt" "config/providers/chatgpt-codex.provider.edn"
+   "codex" "config/providers/chatgpt-codex.provider.edn"
+   "codex-toolcall" "config/providers/chatgpt-codex-toolcall.provider.edn"
+   "openai" "config/providers/openai.provider.edn"
+   "ollama" "config/providers/ollama.provider.edn"
+   "openclaw" "config/providers/openclaw.provider.edn"
+   "kimi" "config/providers/kimi.provider.edn"
+   "moonshot" "config/providers/kimi.provider.edn"})
+
 (defn- normalize-keys [v]
   (cond
     (map? v)
@@ -128,6 +139,23 @@
       (throw (ex-info (str "Unknown provider prefix: " provider)
                       {:provider provider :model-spec model-spec})))))
 
+(defn- default-agent-from-request
+  "Resolve default agent path from provider .edn for this request."
+  [{:keys [model responses-api]}]
+  (let [model-spec (or model "anthropic:claude-sonnet-4-5-20250929")
+        {:keys [provider]} (parse-model-spec model-spec)
+        provider-prefix (or provider "anthropic")
+        provider-edn (cond
+                       (and (= provider-prefix "openai") responses-api)
+                       "config/providers/openai-responses.provider.edn"
+                       :else
+                       (get provider-edn-by-prefix provider-prefix))]
+    (or (when provider-edn
+          (provider/provider-edn-default-agent provider-edn))
+        ;; Test mode doesn't have a provider file; use message transport base.
+        (when (= provider-prefix "test")
+          "config/agents/base-message.agent.edn"))))
+
 (defn- response-ok [mode start-ns result-map]
   (let [latency-ms (/ (double (- (System/nanoTime) start-ns)) 1000000.0)
         usage-atom (:usage result-map)
@@ -172,10 +200,11 @@
       (catch Exception e
         (response-error "baseline" start-ns e)))))
 
-(defn- run-spell [{:keys [prompt init agent budget depth trace prefill trailing-expr
+(defn- run-spell [{:keys [prompt init agent budget depth trace prefill
                           thinking reasoning-effort verbosity suffix-grammar
                           grammar-max-chars retries] :as req}]
   (let [provider-inst (make-provider req)
+        resolved-agent (or agent (default-agent-from-request req))
         effective-prefill (if (contains? req :prefill)
                             prefill
                             (and (provider/supports-prefill provider-inst)
@@ -183,7 +212,7 @@
         start-ns (System/nanoTime)]
     (try
       (let [result (api/run (cond-> {:provider provider-inst
-                                     :agent agent
+                                     :agent resolved-agent
                                      :budget budget
                                      :depth depth
                                      :trace trace
@@ -191,7 +220,6 @@
                                      :thinking thinking
                                      :reasoning-effort reasoning-effort
                                      :verbosity verbosity
-                                     :trailing-expr trailing-expr
                                      :prefill? effective-prefill
                                      :suffix-grammar? suffix-grammar
                               :grammar-max-chars grammar-max-chars}

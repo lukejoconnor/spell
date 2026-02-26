@@ -1,8 +1,0 @@
-;; Toolcall variant of the general benchmark agent.
-
-{:base ../../agents/base-toolcall.agent.edn
- :name bench-general-toolcall
- :doc "General benchmark agent in mandatory tool-call mode"
-
- :namespaces
- {io stdlib/io}}

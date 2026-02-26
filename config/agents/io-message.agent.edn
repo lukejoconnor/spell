@@ -1,0 +1,8 @@
+;; I/O-capable profile for message transport providers.
+
+{:base base-message.agent.edn
+ :name io-message
+ :doc "Message transport agent with io namespace for benchmark/runtime file access"
+
+ :namespaces
+ {io stdlib/io}}

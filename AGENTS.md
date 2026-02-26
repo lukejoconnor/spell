@@ -79,7 +79,9 @@ Three base agents (one per transport mode, no effect namespaces):
 
 Specialized agents inherit from a base and add namespaces:
 - `config/agents/cli.agent.edn` — CLI default (base-toolcall + io, futures, patterns, agents, globals)
-- `config/agents/bench/*.agent.edn` — benchmark agents (base-message or base-toolcall + io)
+- `config/agents/io-prefill.agent.edn` — prefill transport + io profile
+- `config/agents/io-message.agent.edn` — message transport + io profile
+- `config/agents/io-toolcall.agent.edn` — toolcall transport + io profile
 
 ## CLI and API
 

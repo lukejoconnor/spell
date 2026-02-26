@@ -1,9 +1,0 @@
-;; Default benchmark agent for QA/math datasets.
-;; Kept intentionally minimal; benchmark subcommands set runtime controls.
-
-{:base ../../agents/base-message.agent.edn
- :name bench-general
- :doc "Benchmark agent for general QA/math datasets"
-
- :namespaces
- {io stdlib/io}}

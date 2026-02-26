@@ -174,18 +174,6 @@
       :else
       {:exit-message (usage summary) :ok? false})))
 
-(def cli-provider-defaults
-  "Default base agent for each CLI provider key (no effect namespaces).
-   The CLI agent (cli.agent.edn) wraps these with full capabilities."
-  {"anthropic"  "config/agents/base-prefill.agent.edn"
-   "codex"      "config/agents/base-toolcall.agent.edn"
-   "chatgpt"    "config/agents/base-message.agent.edn"
-   "openai"     "config/agents/base-message.agent.edn"
-   "ollama"     "config/agents/base-message.agent.edn"
-   "kimi"       "config/agents/base-message.agent.edn"
-   "moonshot"   "config/agents/base-message.agent.edn"
-   "openclaw"   "config/agents/base-message.agent.edn"})
-
 (defn- make-provider [{:keys [test model max-tokens responses-api]}]
   (cond
     test

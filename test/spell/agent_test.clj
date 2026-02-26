@@ -21,11 +21,10 @@
     (is (nil? (agent/resolve-llms nil llm/make-llm nil nil nil)))
     (is (nil? (agent/resolve-llms {} llm/make-llm nil nil nil)))))
 
-(deftest resolve-llms-inline-leaf-test
-  (testing "inline leaf spec resolves to callable function returning string"
-    (let [prov (provider/test-provider {:response "leaf response"})
-          llms-map {'summarizer {:eval false
-                                 :doc "Summarizes text"
+(deftest resolve-llms-inline-spec-test
+  (testing "inline spec resolves to callable function returning evaluated value"
+    (let [prov (provider/test-provider {:response "\"leaf response\")"})
+          llms-map {'summarizer {:doc "Summarizes text"
                                  :system "Summarize concisely."}}
           llms-ns (agent/resolve-llms llms-map llm/make-llm nil prov nil)]
       ;; Namespace structure
@@ -34,13 +33,12 @@
       (is (= "Summarizes text" (get-in llms-ns [:docs :summarizer])))
       ;; Callable
       (is (fn? (:summarizer llms-ns)))
-      (is (= "leaf response" ((:summarizer llms-ns) "test input"))))))
+      (is (= "leaf response" ((:summarizer llms-ns) "(do "))))))
 
 (deftest resolve-llms-inline-eval-test
   (testing "inline eval spec resolves to callable function returning evaluated result"
     (let [prov (provider/test-provider {:response "42)"})
-          llms-map {'coder {:eval true
-                            :doc "Writes Spell code"}}
+          llms-map {'coder {:doc "Writes Spell code"}}
           llms-ns (agent/resolve-llms llms-map llm/make-llm nil prov nil)]
       (is (fn? (:coder llms-ns)))
       (is (= 42 ((:coder llms-ns) "(do "))))))
@@ -54,12 +52,11 @@
 
 (deftest resolve-llms-format-wrapping-test
   (testing "format spec wraps with validation"
-    (let [prov (provider/test-provider {:response "{:category :animal :confidence 0.95}"})
-          llms-map {'classifier {:eval false
-                                 :doc "Classifies text"
+    (let [prov (provider/test-provider {:response "{:category :animal :confidence 0.95})"})
+          llms-map {'classifier {:doc "Classifies text"
                                  :format {:required [:category :confidence]}}}
           llms-ns (agent/resolve-llms llms-map llm/make-llm nil prov nil)]
-      (let [result ((:classifier llms-ns) "Is a cat an animal?")]
+      (let [result ((:classifier llms-ns) "(do ")]
         (is (map? result))
         (is (= :animal (:category result)))
         (is (= 0.95 (:confidence result)))))))
@@ -69,18 +66,18 @@
     ;; We can't easily test the actual model passed to provider without
     ;; inspecting internals, but we verify the function is created without error
     ;; when parent model is provided
-    (let [prov (provider/test-provider {:response "inherited"})
-          llms-map {'helper {:eval false :doc "Helper"}}
+    (let [prov (provider/test-provider {:response "\"inherited\")"})
+          llms-map {'helper {:doc "Helper"}}
           llms-ns (agent/resolve-llms llms-map llm/make-llm "claude-sonnet-4-5-20250929" prov nil)]
       (is (fn? (:helper llms-ns)))
-      (is (= "inherited" ((:helper llms-ns) "test"))))))
+      (is (= "inherited" ((:helper llms-ns) "(do "))))))
 
 (deftest resolve-llms-docs-populated-test
   (testing ":docs populated from :doc fields"
     (let [prov (provider/test-provider {:response "ok"})
-          llms-map {'alpha {:eval false :doc "Alpha agent"}
-                    'beta {:eval false :doc "Beta agent"}
-                    'gamma {:eval false}}
+          llms-map {'alpha {:doc "Alpha agent"}
+                    'beta {:doc "Beta agent"}
+                    'gamma {}}
           llms-ns (agent/resolve-llms llms-map llm/make-llm nil prov nil)]
       (is (= "Alpha agent" (get-in llms-ns [:docs :alpha])))
       (is (= "Beta agent" (get-in llms-ns [:docs :beta])))
@@ -94,27 +91,28 @@
           prov (provider/test-provider
                  {:response-fn (fn [prompt]
                                  (swap! call-log conj prompt)
-                                 ;; All leaf agents just return text
-                                 "result")})
-          llms-map {'a {:eval false :doc "Agent A"}
-                    'b {:eval false :doc "Agent B"}}
+                                 "\"result\")")})
+          llms-map {'a {:doc "Agent A"}
+                    'b {:doc "Agent B"}}
           llms-ns (agent/resolve-llms llms-map llm/make-llm nil prov nil)]
       ;; Both are callable
-      (is (= "result" ((:a llms-ns) "hello")))
-      (is (= "result" ((:b llms-ns) "world")))
+      (is (= "result" ((:a llms-ns) "(do ")))
+      (is (= "result" ((:b llms-ns) "(do ")))
       ;; Both got called
       (is (= 2 (count @call-log))))))
 
 (deftest resolve-llms-multiple-specs-test
   (testing "multiple specs in one llms map"
-    (let [prov (provider/test-provider {:response "response"})
-          llms-map {'leaf1 {:eval false :doc "Leaf 1" :system "System 1"}
-                    'leaf2 {:eval false :doc "Leaf 2" :system "System 2"}}
+    (let [prov (provider/test-provider {:response "\"response\")"})
+          llms-map {'leaf1 {:doc "Leaf 1" :system "System 1"}
+                    'leaf2 {:doc "Leaf 2" :system "System 2"}}
           llms-ns (agent/resolve-llms llms-map llm/make-llm nil prov nil)]
       (is (fn? (:leaf1 llms-ns)))
       (is (fn? (:leaf2 llms-ns)))
       (is (= "Leaf 1" (get-in llms-ns [:docs :leaf1])))
-      (is (= "Leaf 2" (get-in llms-ns [:docs :leaf2]))))))
+      (is (= "Leaf 2" (get-in llms-ns [:docs :leaf2])))
+      (is (= "response" ((:leaf1 llms-ns) "(do ")))
+      (is (= "response" ((:leaf2 llms-ns) "(do "))))))
 
 ;; =============================================================================
 ;; merge-agent-defs llms merging
@@ -123,25 +121,25 @@
 (deftest merge-agent-defs-llms-test
   (testing ":llms is scalar override — child wins entirely"
     (let [parent {:name 'parent
-                  :llms {'a {:eval false :doc "A"}}}
-          child {:llms {'b {:eval false :doc "B"}}}
+                  :llms {'a {:doc "A"}}}
+          child {:llms {'b {:doc "B"}}}
           merged (#'agent/merge-agent-defs parent child)]
-      (is (= {'b {:eval false :doc "B"}}
+      (is (= {'b {:doc "B"}}
              (:llms merged)))))
 
   (testing "child :llms replaces parent entirely"
     (let [parent {:name 'parent
-                  :llms {'a {:eval false :doc "A v1"}}}
-          child {:llms {'a {:eval false :doc "A v2"}}}
+                  :llms {'a {:doc "A v1"}}}
+          child {:llms {'a {:doc "A v2"}}}
           merged (#'agent/merge-agent-defs parent child)]
       (is (= "A v2" (get-in merged [:llms 'a :doc])))))
 
   (testing "no :llms in child → parent :llms preserved"
     (let [parent {:name 'parent
-                  :llms {'a {:eval false :doc "A"}}}
+                  :llms {'a {:doc "A"}}}
           child {:name 'child}
           merged (#'agent/merge-agent-defs parent child)]
-      (is (= {'a {:eval false :doc "A"}}
+      (is (= {'a {:doc "A"}}
              (:llms merged)))))
 
   (testing "no :llms in either -> no :llms key"
@@ -155,8 +153,8 @@
 (deftest resolve-llms-describe-integration-test
   (testing "llms namespace works with describe function"
     (let [prov (provider/test-provider {:response "ok"})
-          llms-map {'researcher {:eval false :doc "Researches topics"}
-                    'writer {:eval false :doc "Writes content"}}
+          llms-map {'researcher {:doc "Researches topics"}
+                    'writer {:doc "Writes content"}}
           llms-ns (agent/resolve-llms llms-map llm/make-llm nil prov nil)]
       ;; describe returns docs map (no :guide)
       (is (= {:researcher "Researches topics"
@@ -187,8 +185,7 @@
     (let [tmp-file (java.io.File/createTempFile "test-agent" ".agent.edn")]
       (try
         (spit tmp-file (pr-str {:name 'test-agent
-                                :llms {'helper {:eval false
-                                                :doc "Helper agent"}}}))
+                                :llms {'helper {:doc "Helper agent"}}}))
         (let [config (agent/load-agent-config (.getAbsolutePath tmp-file))]
           (is (some? (:resolve-llms-fn config)))
           (is (fn? (:resolve-llms-fn config))))
@@ -215,30 +212,28 @@
       (try
         ;; Write child agent file
         (spit child-file (pr-str {:name 'child-agent
-                                  :eval false
                                   :doc "Child from file"}))
-        (let [prov (provider/test-provider {:response "file-result"})
+        (let [prov (provider/test-provider {:response "\"file-result\")"})
               llms-map {'child (symbol "child-test.agent.edn")}
               llms-ns (agent/resolve-llms llms-map llm/make-llm nil prov dir)]
           (is (fn? (:child llms-ns)))
           (is (string? (get-in llms-ns [:docs :child])))
-          (is (= "file-result" ((:child llms-ns) "test"))))
+          (is (= "file-result" ((:child llms-ns) "(do "))))
         (finally
           (.delete child-file))))))
 
-(deftest resolve-namespace-value-agent-file-honors-eval-test
-  (testing ".agent.edn namespace value with :eval false loads as leaf function"
+(deftest resolve-namespace-value-agent-file-test
+  (testing ".agent.edn namespace value loads as evaluated llm function"
     (let [dir (System/getProperty "java.io.tmpdir")
           child-file (java.io.File. dir "ns-child-test.agent.edn")]
       (try
         (spit child-file (pr-str {:name 'ns-child
-                                  :eval false
                                   :system "Leaf system prompt"
                                   :provider {:type :ollama :model "mistral"}}))
         (let [v (#'agent/resolve-namespace-value (symbol "ns-child-test.agent.edn")
                                                  dir (atom {}) llm/make-llm)]
           (is (fn? v))
-          (is (true? (:spell/leaf (meta v)))))
+          (is (not (:spell/leaf (meta v)))))
         (finally
           (.delete child-file))))))
 
@@ -273,7 +268,7 @@
           non-agent (java.io.File. dir "readme.txt")]
       (try
         (spit f1 (pr-str {:name 'opus :doc "Opus agent"}))
-        (spit f2 (pr-str {:name 'leaf :doc "Leaf agent" :eval false}))
+        (spit f2 (pr-str {:name 'leaf :doc "Leaf agent" }))
         (spit f3 (pr-str {:name 'fast :doc "Fast agent"}))
         (spit non-agent "not an agent")
         (let [result (#'agent/discover-sibling-agents (.getAbsolutePath dir))]
@@ -316,7 +311,7 @@
              result))))
 
   (testing "map passes through"
-    (let [m {'x {:eval false :doc "X"}}]
+    (let [m {'x {:doc "X"}}]
       (is (= m (#'agent/normalize-llms-config m "/some/dir"))))))
 
 (deftest agent-name-from-file-test
@@ -332,7 +327,7 @@
           sibling-file (java.io.File. dir "helper.agent.edn")]
       (try
         (spit main-file (pr-str {:name 'main}))
-        (spit sibling-file (pr-str {:name 'helper :doc "Helper agent" :eval false}))
+        (spit sibling-file (pr-str {:name 'helper :doc "Helper agent" }))
         (let [config (agent/load-agent-config (.getAbsolutePath main-file))]
           ;; Should have resolve-llms-fn because siblings exist
           (is (some? (:resolve-llms-fn config)))
@@ -363,8 +358,8 @@
           b-file (java.io.File. dir "b.agent.edn")]
       (try
         (spit main-file (pr-str {:name 'main :llms ['a.agent.edn]}))
-        (spit a-file (pr-str {:name 'a :doc "Agent A" :eval false}))
-        (spit b-file (pr-str {:name 'b :doc "Agent B" :eval false}))
+        (spit a-file (pr-str {:name 'a :doc "Agent A" }))
+        (spit b-file (pr-str {:name 'b :doc "Agent B" }))
         (let [config (agent/load-agent-config (.getAbsolutePath main-file))
               prov (provider/test-provider {:response "ok"})
               llms-ns ((:resolve-llms-fn config) llm/make-llm nil prov)]
@@ -383,7 +378,7 @@
           helper-file (java.io.File. dir "helper.agent.edn")]
       (try
         (spit main-file (pr-str {:name 'main}))
-        (spit helper-file (pr-str {:name 'helper :doc "I help with things" :eval false}))
+        (spit helper-file (pr-str {:name 'helper :doc "I help with things" }))
         (let [config (agent/load-agent-config (.getAbsolutePath main-file))
               prov (provider/test-provider {:response "ok"})
               llms-ns ((:resolve-llms-fn config) llm/make-llm nil prov)]

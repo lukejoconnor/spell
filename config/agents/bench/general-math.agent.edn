@@ -1,5 +1,0 @@
-;; General benchmark math-focused agent.
-
-{:base general.agent.edn
- :name bench-general-math
- :doc "Benchmark agent for general math datasets"}
