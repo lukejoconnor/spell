@@ -884,9 +884,19 @@
   (testing "strips 'Function call failed: ' prefix"
     (is (= "Unbound symbol: foo"
            (spell.recovery/clean-error-message "Function call failed: Unbound symbol: foo"))))
+  (testing "extracts canonical message from noisy wrapped error"
+    (is (= "Unbound symbol: ee"
+           (spell.recovery/clean-error-message
+             "Function call failed: eval: Unbound symbol: ee {:trace [(!extend) (!extend completion) (def x 2)] :result {:env {:foo 1}}}"))))
   (testing "passes through other messages unchanged"
     (is (= "Unbound symbol: foo"
-           (spell.recovery/clean-error-message "Unbound symbol: foo")))))
+           (spell.recovery/clean-error-message "Unbound symbol: foo"))))
+  (testing "recovery-error-map preserves bounded raw context separately"
+    (let [m (spell.recovery/recovery-error-map
+              "Function call failed: eval: Unbound symbol: ee {:trace [(!extend)] :result {:env {:foo 1}}}")]
+      (is (= "Unbound symbol: ee" (:error m)))
+      (is (string? (:raw-error m)))
+      (is (str/includes? (:raw-error m) "Function call failed: eval:")))))
 
 (deftest effect-phase-recovery-gating-test
   (testing "body error triggers recovery, effects available in re-eval"
