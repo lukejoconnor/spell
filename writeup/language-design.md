@@ -182,7 +182,39 @@ With `expand`, the LLM only needs to reason about the environment of its own pro
 
 ## Error recovery
 
-LLM-written completions may throw exceptions, potentially crashing a long-running response. Spell provides a recovery mechanism which localizes the error and makes a new LLM call attempting to fix it. The main challenge is that Spell programs can have side effects (in particular, LLM calls), making re-evaluation dangerous. To address this, the `spell-eval` function memoizes the value of every expression it evaluates. When it encounters an error, it propagates an exception with the message (which includes which expression raised the exception), the environment at time of exception, and the memo at time of exception. An LLM attempts to fix the error by writing zero or more new expressions replacing the one that raised. Then, execution is resumed by running `spell-eval` on the patched program with the environment and memo from the partially completed program. When `spell-eval` encounteres a memoized expression, it substitutes the value from the memo instead of evaluating and possibly causing an undesired effect. This approach is analogous to a debugger that pauses when an exception is raised, allows the incorrect expression to be edited, and continues program execution. It interacts in the expected way with `quine` (the quine quotes the corrected expression).
+LLM-written completions may contain errors — unbound symbols, misqualified namespace references, malformed syntax, or runtime exceptions from built-in functions. Spell provides a recovery pipeline that allows most errors to be corrected, either deterministically or by the LLM itself.
+
+### Error representation
+
+`spell-eval` uses result maps rather than exceptions for evaluation errors:
+
+```
+Success: {:ok value :env env'}
+Error:   {:err message :env env :expr failing-expression}
+```
+
+This representation allows errors to propagate through the evaluation tree without unwinding the stack, preserving the environment at the point of failure. When an error occurs inside a function body, it propagates outward through calling functions, accumulating a `:trace` — a vector of the Spell-level function names through which the error passed. For errors originating in host (Clojure) functions, the error message includes the Spell-facing name of the function (taken from the calling expression) and any structured data from the exception, so that the error is described entirely in terms the LLM can act on rather than in terms of implementation internals.
+
+### Deterministic recovery: namespace fixup
+
+One common class of LLM error is using a function without qualifying its namespace — writing `distinct` instead of `seqs/distinct`, or `trim` instead of `strings/trim`. These errors can be fixed deterministically: the recovery system searches all available namespaces for the unbound or misqualified symbol, and if exactly one match exists, substitutes it and re-evaluates.
+
+### LLM-driven error recovery
+
+When deterministic fixup fails, Spell falls back to an LLM-driven recovery. The mechanism reuses the extension machinery described above. The current program is already a quine (it has access to its own source via `completion`). Recovery appends a new `eval` block to the quine containing an error map and an `!extend`:
+
+```clojure
+(eval (do (def _error {:error "Handle not registered: \"hi\" (expected keyword)"
+                       :in '(!ask "hi" :target)
+                       :trace [my-helper]})
+          '(!extend completion)))
+```
+
+The LLM sees this error definition in its extended completion and is re-prompted via `!extend`. It can inspect `_error`, understand what went wrong, and write corrective code. Because the error is appended to the quine rather than replacing it, all prior context — the chain of thought, previous bindings, tool results — remains visible. Recovery is limited to a small number of attempts (currently two) to prevent infinite loops.
+
+### LLM-driven reader recovery
+
+A separate recovery path handles parse errors — unbalanced parentheses, malformed literals, or other syntax that the reader cannot process. These errors are caught before evaluation begins. In this case, the raw (unparseable) completion text is embedded as a string, rather than as code, in a fresh recovery quine along with the parse error message. The LLM sees what it wrote (as a string, since it cannot be read as code) and the error, and gets a fresh `!extend` to try again.
 
 
 ## Concurrent agents

@@ -11,11 +11,27 @@
 ;; ---------------------------------------------------------------------------
 
 (defn clean-error-message
-  "Strip wrapping noise from error messages (e.g. 'Function call failed: ')."
+  "Strip wrapping noise from error messages.
+   Removes 'Function call failed: <spell-name>: ' prefix and trailing ' {...}' ex-data."
   [err-str]
-  (cond-> err-str
-    (str/starts-with? err-str eval/fn-call-prefix)
-    (subs (count eval/fn-call-prefix))))
+  (let [;; Strip fn-call prefix
+        s (cond-> err-str
+            (str/starts-with? err-str eval/fn-call-prefix)
+            (subs (count eval/fn-call-prefix)))
+        ;; Strip spell-name prefix (e.g. 'agents/send: ')
+        ;; Find the first known error prefix and strip everything before it
+        s (if-let [idx (some #(str/index-of s %)
+                              [eval/unbound-symbol-prefix eval/namespace-lookup-prefix])]
+            (subs s idx)
+            s)
+        ;; Strip trailing ex-data map (e.g. ' {:handle "hi"}')
+        s (if-let [idx (str/last-index-of s " {")]
+            (let [after (subs s idx)]
+              (if (str/ends-with? after "}")
+                (subs s 0 idx)
+                s))
+            s)]
+    s))
 
 ;; ---------------------------------------------------------------------------
 ;; Namespace recovery (deterministic)

@@ -91,10 +91,11 @@
     (let [quine-arg-count (- (count (seq program)) 2)]
       (if (< quine-arg-count (+ 1 max-recovery-attempts))
         ;; Construct recovery quine: append new eval block with error info
-        (let [error-map (cond-> {:error (recovery/clean-error-message (:err result))
-                                 :expr (list 'quote (:expr result))}
+        (let [error-map (cond-> {:error (recovery/clean-error-message (:err result))}
                           (:containing-form result)
-                          (assoc :in (list 'quote (:containing-form result))))
+                          (assoc :in (list 'quote (:containing-form result)))
+                          (:trace result)
+                          (assoc :trace (:trace result)))
               recovery-arg (list 'eval
                              (list 'do
                                (list 'def '_error error-map)

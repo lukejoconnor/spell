@@ -1,5 +1,6 @@
 (ns spell.eval-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest is testing]]
             [spell.eval :as eval :refer [spell-eval run-spell]]
             [spell.macros :as macros]
             [spell.stdlib :as stdlib]
@@ -1156,6 +1157,23 @@
       (is (eval/err? result))
       ;; env should have x defined
       (is (= 1 (get (:env result) 'x))))))
+
+(deftest fn-call-error-includes-spell-name-and-data-test
+  (testing "Clojure fn error shows Spell name and ex-data"
+    (let [bad-fn (fn [x] (throw (ex-info "not found" {:key x})))
+          result (spell-eval '(bad-fn "hi") {'bad-fn bad-fn})]
+      (is (eval/err? result))
+      (is (str/includes? (:err result) "bad-fn"))
+      (is (str/includes? (:err result) "{:key \"hi\"}")))))
+
+(deftest spell-fn-error-trace-test
+  (testing "error propagating through Spell fns builds :trace"
+    (let [result (spell-eval '(do (defn inner [x] (boom x))
+                                  (defn outer [x] (inner x))
+                                  (outer 1))
+                             {})]
+      (is (eval/err? result))
+      (is (= '[inner outer] (:trace result))))))
 
 ;; =============================================================================
 ;; Loop/recur tests

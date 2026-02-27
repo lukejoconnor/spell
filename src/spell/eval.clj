@@ -1140,7 +1140,7 @@
                 (let [local-env (into e (bind-params (:params f) current-args))
                       body-result (eval-seq (:body f) local-env)]
                   (if (err? body-result)
-                    body-result
+                    (update body-result :trace (fnil conj []) (first expr))
                     (if (and (map? (:ok body-result)) (:spell/recur (:ok body-result)))
                       ;; recur: rebind params, re-enter function body
                       (recur (:vals (:ok body-result)))
@@ -1157,8 +1157,11 @@
                       ex-type (throw ex)
                       ;; Spell throw — preserve thrown value for try/catch
                       thrown {:err (ex-message ex) :thrown thrown :env e :expr expr}
-                      ;; Other errors — wrap as eval error
-                      :else (err (str fn-call-prefix (ex-message ex)) e expr)))))))
+                      ;; Other errors — wrap as eval error with Spell name + ex-data
+                      :else (let [data (not-empty (dissoc (ex-data ex) :spell/thrown :result))
+                                  msg (str fn-call-prefix (first expr) ": " (ex-message ex)
+                                           (when data (str " " (pr-str data))))]
+                              (err msg e expr))))))))
           (let [result (spell-eval (first remaining) e)]
             (if (err? result)
               result
