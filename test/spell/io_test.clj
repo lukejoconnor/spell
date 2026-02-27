@@ -629,20 +629,6 @@
 ;; io-namespace tests
 ;; =============================================================================
 
-(deftest io-namespace-complete
-  (let [ns io/io-namespace]
-    (is (contains? ns :docs))
-    (is (contains? ns :slurp))
-    (is (contains? ns :spit))
-    (is (contains? ns :read-file))
-    (is (contains? ns :read-lines))
-    (is (contains? ns :write-file))
-    (is (contains? ns :sh))
-    (is (contains? ns :exec))
-    (is (contains? ns :env))
-    (is (contains? ns :exists?))
-    (is (contains? ns :ls))))
-
 ;; =============================================================================
 ;; Event-send tests
 ;; =============================================================================

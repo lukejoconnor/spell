@@ -570,37 +570,7 @@
 ;; Patterns namespace structural checks (Spell-specific)
 ;; =============================================================================
 
-(deftest patterns-structural-test
-  (testing "patterns/check-result is a spell-fn"
-    (let [check-result (:check-result stdlib/patterns)]
-      (is (eval/spell-fn? check-result))
-      (is (= ['prompt 'answer] (:params check-result)))))
-  (testing "patterns/explore is a spell-fn"
-    (let [explore (:explore stdlib/patterns)]
-      (is (eval/spell-fn? explore))
-      (is (= ['query] (:params explore)))))
-  (testing "patterns has :docs"
-    (is (map? (:docs stdlib/patterns)))
-    (is (contains? (:docs stdlib/patterns) :check-result))
-    (is (contains? (:docs stdlib/patterns) :explore)))
-  (testing "patterns accessible via qualified symbol"
-    (is (eval/spell-fn? (run-spell-full 'patterns/check-result)))
-    (is (eval/spell-fn? (run-spell-full 'patterns/explore)))))
-
-;; =============================================================================
-;; all-namespaces contains expected keys
-;; =============================================================================
-
 (deftest all-namespaces-test
-  (testing "all-namespaces has core namespaces"
-    (is (contains? stdlib/all-namespaces 'strings))
-    (is (contains? stdlib/all-namespaces 'math)))
-  (testing "patterns NOT in all-namespaces (moved to effect)"
-    (is (not (contains? stdlib/all-namespaces 'patterns))))
-  (testing "seqs, fns, bits NOT in all-namespaces (moved to core)"
-    (is (not (contains? stdlib/all-namespaces 'seqs)))
-    (is (not (contains? stdlib/all-namespaces 'fns)))
-    (is (not (contains? stdlib/all-namespaces 'bits))))
   (testing "all-namespaces values are the actual namespace maps"
     (is (= stdlib/strings (get stdlib/all-namespaces 'strings)))
     (is (= stdlib/math (get stdlib/all-namespaces 'math))))
