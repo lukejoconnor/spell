@@ -79,8 +79,8 @@
 ;; ---------------------------------------------------------------------------
 
 (def globals-namespace
-  {:short-docs "Shared mutable state visible to all agents."
-   :docs {:guide "GLOBALS — Shared state visible to all agents (effect namespace).
+  {:short-docs "Shared state visible to all agents."
+   :docs {:guide "GLOBALS — Shared state visible to all agents.
 
   (globals/get key)              — read a global by key
   (globals/set key value)        — write a global (returns the value)
@@ -90,26 +90,51 @@
   (globals/all)                  — return entire globals map
   (globals/wait-until pred)      — block until pred on globals map is true
 
+Use (!describe globals :fn-name) for detailed docs on any function.
+All globals/ calls are effect functions — quote them in the trailing expression.
+
 Common read patterns:
   1) Bind to a local with !call-now:
      '(!call-now roles (globals/get :roles))
      ;; next turn: roles is available as a local binding
 
   2) Print directly for quick inspection:
-     '(print \"roles=\" (globals/get :roles))
+     '(!print (globals/get :roles))
 
-Default special keys (defined in this namespace's default-state):
-  :roles {}  — shared role/handle registry by convention.
-               Example: {:researcher \"collect refs\" :writer \"draft\"}
-  :tasks []  — shared task queue by convention.
-               Example: [{:id 1 :desc \"read file\"} {:id 2 :desc \"summarize\"}]
+Default special keys:
+  :roles {}  — Agent registry for handle lookup.
+               Convention: {:main \"Orchestrator\" :spawn-1 \"Worker for CLI\" :spawn-2 \"Worker for unit testing\"}
+  :tasks []  — shared task queue.
+               Convention: [{:id 1 :desc \"read file\"} {:id 2 :desc \"summarize\"}]
 
-These defaults are conventions, not requirements.
-Do not assume :tasks (or any other workflow key) is populated unless agents chose to use it.
-No other keys are reserved by default; agents may create any additional keys.
+These defaults are conventions, not requirements, and are unpopulated by default. Agents may create additional keys.
 
-All globals/ calls are effect functions — quote them in the trailing expression.
-Use (!describe globals :fn-name) for detailed docs on any function."
+Common mistakes:
+
+1. calling globals/* outside the quoted trailing expression: (globals/get :roles) does nothing at eval time; must be quoted
+2. forgetting !call-now: '(globals/get :roles) returns the value; use '(!call-now roles (globals/get :roles)) if you want to see it
+3. hallucinating handles: instead, look them up in roles/ (also see agents/parent-handle and agents/current-handle)
+
+
+Multi-part example — worker pool with a shared task queue:
+▌ marks cursor position and is doc-only; do not type it into code.
+
+1. Main: populate the queue and spawn workers.
+  ...▌'(do (globals/set :results [])
+       (globals/set :tasks [{:id 1 :desc \"summarize A\"} {:id 2 :desc \"summarize B\"}])
+       (agents/spawn !llm-self \"You are a worker. Pop tasks from globals :tasks and process them.\" :w1)
+       (agents/spawn !llm-self \"You are a worker. Pop tasks from globals :tasks and process them.\" :w2)
+       (globals/wait-until (fn [s] (= 2 (count (:results s))))))
+
+2. Worker w1: claim a task atomically.
+  ...▌'(!call-now task (globals/pop :tasks))
+  ;; next turn: task is {:id 1 :desc \"summarize A\"} (or nil if queue empty)
+
+3. Worker w1: post result back.
+  ...(def task {:id 1 :desc \"summarize A\"})
+  ▌(def summary \"A is about...\")
+  '(globals/update :results (fn [r] (conj (or r []) {:id 1 :summary summary})))
+"
           }
    :detail
    {:get

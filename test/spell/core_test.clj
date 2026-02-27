@@ -72,7 +72,7 @@
         (try
           (run-spell (list 'io/write-file test-file "a\nb\nc\nd\ne"))
           (is (= "2: b\n3: c"
-                 (run-spell (list 'io/read-file test-file 2 3))))
+                 (run-spell (list 'io/read-file test-file 2 4))))
           (finally
             (jio/delete-file test-file true)))))
 

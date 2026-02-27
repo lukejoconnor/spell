@@ -76,7 +76,7 @@
 
 (defn read-file
   "Read file with line numbers. Returns a formatted string with numbered lines,
-   or {:error msg}. Optionally takes start and end line numbers (1-indexed, inclusive)."
+   or {:error msg}. Optionally takes start and end line numbers (1-indexed, half-open [start, end))."
   ([path]
    (try
      (let [content (slurp path)]
@@ -96,9 +96,9 @@
          (let [lines (str/split-lines content)
                n (count lines)
                start (max 1 (min start n))
-               end (max start (min end n))]
+               end (max start (min end (inc n)))]
            (format-lines (map (fn [i] [(inc i) (nth lines i)])
-                              (range (dec start) end))))))
+                              (range (dec start) (dec end)))))))
      (catch java.io.FileNotFoundException _
        {:error (str "File not found: " path)})
      (catch Exception e
@@ -107,7 +107,7 @@
 (defn read-lines
   "Read file as a vector of raw line strings with :spell/line-offset metadata.
    Returns (with-meta [\"line1\" \"line2\" ...] {:spell/line-offset 1}) or {:error msg}.
-   Optionally takes start and end line numbers (1-indexed, inclusive, clamped to bounds)."
+   Optionally takes start and end line numbers (1-indexed, half-open [start, end))."
   ([path]
    (try
      (let [content (slurp path)]
@@ -126,8 +126,8 @@
          (let [lines (str/split-lines content)
                n (count lines)
                start (max 1 (min start n))
-               end (max start (min end n))]
-           (with-meta (subvec (vec lines) (dec start) end)
+               end (max start (min end (inc n)))]
+           (with-meta (subvec (vec lines) (dec start) (dec end))
                       {:spell/line-offset start}))))
      (catch java.io.FileNotFoundException _
        {:error (str "File not found: " path)})
@@ -200,29 +200,29 @@
          {:error (str "Error: " (.getMessage e))})))))
 
 (defn- validate-edit
-  "Validate a single [start end content] edit against n lines. Returns error string or nil."
+  "Validate a single [start end content] edit against n lines (half-open). Returns error string or nil."
   [n [start end _]]
   (cond
-    (or (< start 1) (> start n))
+    (or (< start 1) (> start (inc n)))
     (str "Start line " start " out of range (file has " n " lines)")
 
-    (or (< end start) (> end n))
+    (or (< end start) (> end (inc n)))
     (str "End line " end " out of range (start=" start ", file has " n " lines)")))
 
 (defn- edits-overlap?
-  "Check if any two edits in sorted seq overlap."
+  "Check if any two edits in sorted seq overlap (half-open ranges)."
   [edits]
   (some (fn [[[_ end1 _] [start2 _ _]]]
-          (<= start2 end1))
+          (< start2 end1))
         (partition 2 1 edits)))
 
 (defn- apply-edits
   "Apply edits to lines vector in reverse order (highest line numbers first).
-   Each edit is [start end content]. Returns new lines vector."
+   Each edit is [start end content] with half-open range [start, end). Returns new lines vector."
   [lines edits]
   (reduce (fn [ls [start end new-content]]
             (let [before (subvec ls 0 (dec start))
-                  after (subvec ls end)
+                  after (subvec ls (dec end))
                   new-lines (if (empty? new-content)
                               []
                               (str/split-lines new-content))]
@@ -231,10 +231,11 @@
           (reverse (sort-by first edits))))
 
 (defn replace-lines
-  "Replace lines in a file (1-indexed, inclusive). Two forms:
-   (replace-lines path start end content) — single edit
+  "Replace lines in a file (1-indexed, half-open [start, end)). Two forms:
+   (replace-lines path start end content) — single edit, replaces lines start..end-1
    (replace-lines path [[start end content] ...]) — multiple edits, applied atomically
-   Empty content string deletes the lines. Returns {:ok path} or {:error msg}."
+   start == end inserts before that line. Empty content string deletes the range.
+   Returns {:ok path} or {:error msg}."
   ([path edits]
    (try
      (let [content (slurp path)
@@ -537,48 +538,36 @@
 (def io-namespace
   "The io/ namespace map for Spell agents."
   {:short-docs "File operations, shell commands, and process execution."
-   :docs {:guide "IO — File operations, process execution, and file watching (effect namespace).
+   :docs {:guide "IO — File operations, shell commands, process execution and file watching.
 
-  (io/read-file path)              — read file with line numbers as string
-  (io/read-lines path)             — read file as vector of line strings
-  (io/slurp path)                  — read entire file as string
-  (io/write-file path content)     — write content to file (creates dirs)
-  (io/spit path content)           — write to file; opts {:append true}
-  (io/str-replace path old new)    — replace string in file; opts {:all true}
-  (io/replace-lines path start end content) — replace line range
-  (io/sh command)                  — execute shell command, returns {:exit :out :err}
-  (io/sh command {:timeout 10})    — per-call timeout override in seconds (0 disables)
-  (io/exec [cmd arg1 ...])         — execute command directly (no shell)
-  (io/ls path)                     — list directory contents
-  (io/exists? path)                — check if path exists
-  (io/stat path)                   — get file info map
-  (io/delete path)                 — delete file or empty directory
-  (io/copy src dest)               — copy file
-  (io/move src dest)               — move/rename file
-  (io/mkdir path)                  — create directory
-  (io/mkdirs path)                 — create directory tree
-  (io/cwd)                         — get current working directory
-  (io/env)                         — get all env vars; (io/env \"PATH\") for one
-  (io/temp-file)                   — create temp file
-  (io/watch-send path handle)      — watch directory, send events to handle
+  (io/read-lines path)                      — read file as vector of line strings with line-offset metadata
+  (io/read-lines path start end)             — line range [start, end) Python-style half-open
+  (io/read-file path)                        — read file as numbered-lines string
+  (io/read-file path start end)              — [start, end) half-open
+  (io/str-replace path old new)              — replace string in file (must appear exactly once)
+  (io/str-replace path old new {:all true})  — replace all occurrences
+  (io/replace-lines path start end content)  — deletes lines in half-open range [start, end)
+  (io/replace-lines path start start content) — inserts content before line start
+  (io/replace-lines path [[s e c] ...])      — multi-edit (line numbers refer to original file)
+  (io/sh command)                            — execute shell command, returns {:exit :out :err}
+  (io/sh command {:timeout 10})              — timeout in seconds (0 disables)
+  (io/exec [cmd arg1 ...])                   — execute command directly (no shell)
+  (io/watch-send path handle)                — watch directory, send events as message to handle
+
+Functions identical to Clojure: slurp, spit, write-file, ls, exists?, directory?, stat, delete, copy, move, mkdir, mkdirs, cwd, env, temp-file.
 
 Use (!describe io :fn-name) for detailed docs on any function.
-
-Reading vs editing:
-  read-file returns numbered lines (good for showing context).
-  read-lines returns a raw vector (good for programmatic manipulation).
-  slurp returns the full file as a plain string.
-  str-replace is for single-string edits; replace-lines for line-range edits.
-
 All io/ calls are effect functions — quote them in the trailing expression.
+
+Reading: read-file returns numbered lines (good for context); read-lines returns a raw vector (good for programmatic use); slurp returns the full file as a plain string.
+Editing: str-replace for single-string edits; replace-lines for line-range edits.
 
 Common mistakes:
 
 1. calling io/* outside the quoted trailing expression: (io/read-file \"x\") does nothing; must be '(io/read-file \"x\") or '(do ... (io/read-file \"x\") ...)
 2. forgetting !call-now when you need the result: '(io/read-file \"x\") evaluates but the result is lost; use '(!call-now contents (io/read-file \"x\"))
-3. using io/sh for everything: prefer io/read-file, io/ls, io/exists? over (io/sh \"cat file\"), (io/sh \"ls dir\"), (io/sh \"test -f file\")
-4. ignoring :error returns: most io functions return {:error msg} on failure, not exceptions; check the result
-5. replace-lines with drifted line numbers in multi-edit: pass all edits as a vector of triples; line numbers refer to the ORIGINAL file
+3. using io/sh for everything: prefer io/read-file over (io/sh \"cat file\"), (io/ls \"dir\") over (io/sh \"ls dir\"), etc
+4. using str-replace for large edits: token inefficient, prefer replace-lines
 
 In examples, ▌ marks cursor position in a completion. It is doc-only; do not type it into code.
 
@@ -590,13 +579,28 @@ Multi-part example — read a file, edit it, verify the edit:
 2. Next turn: code is bound. Identify the line range, replace it.
   ...(def code \"1: def greet():\\n2:     print('hello')\\n...\")
   ▌(think \"Line 2 needs updating.\")
-  '(do (io/replace-lines \"main.py\" 2 2 \"    print('goodbye')\")
-       (!call-now updated (io/read-file \"main.py\" 1 5)))
+  '(do (io/replace-lines \"main.py\" 2 3 \"    print('goodbye')\")
+       (!call-now updated (io/read-file \"main.py\" 1 6)))
 
 3. Next turn: verify the edit landed.
   ...(def updated \"1: def greet():\\n2:     print('goodbye')\\n...\")
-  ▌(think \"Edit confirmed.\")
-  '(!extend)
+  ▌...
+
+Multi-part example — read a file, discard from context and only keep a few lines:
+1. Read whole file.
+  ...▌'(!call-now code (io/read-file \"main.py\"))
+
+2. Next turn: source file is filling context window.
+  ...(def code \"1: ... 1000: ...\")
+  ▌(rethink \"The function is defined on lines 100-110.\")
+  '(!call-now fn-def (io/read-file \"main.py\" 100 111))
+
+3. Next turn: context window is clean.
+  ...
+  (think \"The function is defined on lines 100-110.\")
+  '(!call-now fn-def (io/read-file \"main.py\" 100 111))
+  (def fn-def \"100: ... 110: ...\")
+  ▌...
 "
           }
    :detail
@@ -621,13 +625,13 @@ Multi-part example — read a file, edit it, verify the edit:
 (io/read-file path)
 (io/read-file path start end)
   path: file path
-  start, end: 1-indexed, inclusive line range (clamped to file bounds)
+  start, end: 1-indexed, half-open [start, end) (clamped to file bounds)
 
 Returns a string with numbered lines: \"1: first line\\n2: second line\\n...\"
 Returns {:error msg} on failure.
 
 Use the range form to extract a subset for a child:
-  '(!call-now code (io/read-file \"main.py\" 40 60))
+  '(!call-now code (io/read-file \"main.py\" 40 61))
 
 For raw content without line numbers, use io/slurp:
   (:ok (io/slurp \"file.txt\"))"
@@ -638,35 +642,39 @@ For raw content without line numbers, use io/slurp:
 (io/read-lines path)
 (io/read-lines path start end)
   path: file path
-  start, end: 1-indexed, inclusive (clamped to file bounds)
+  start, end: 1-indexed, half-open [start, end) (clamped to file bounds)
 
 Returns a vector of raw strings with metadata {:spell/line-offset N}.
 When serialized via !call-now, displays with line numbers for readability,
 but the binding evaluates to the raw vector.
 
-  '(!call-now code (io/read-lines \"main.py\" 40 60))
+  '(!call-now code (io/read-lines \"main.py\" 40 61))
   ;; child sees numbered display, but code is a plain vector
   (nth code 0)           ;; first line as string
   (subvec code 0 5)      ;; first 5 lines
   (count code)            ;; number of lines"
 
     :replace-lines
-    "Replace lines in a file (1-indexed, inclusive). Two forms:
+    "Replace lines in a file (1-indexed, half-open [start, end)). Two forms:
 
 (io/replace-lines path start end content)
-  Single edit. Replaces lines start through end with content string.
+  Single edit. Replaces lines start through end-1. Same as Python lines[start-1:end-1].
+  start == end is an insert before that line (empty range, nothing deleted).
 
 (io/replace-lines path [[start end content] ...])
   Multiple edits, applied atomically. Line numbers refer to the ORIGINAL file —
   no drift between edits. Edits must not have overlapping ranges.
 
-Empty content string deletes the lines. Returns {:ok path} or {:error msg}.
+Empty content string deletes the range. Returns {:ok path} or {:error msg}.
 
-Example — single edit:
-  (io/replace-lines \"main.py\" 42 44 \"    x = fixed_value\\n    return x\")
+Example — replace lines 42-44:
+  (io/replace-lines \"main.py\" 42 45 \"    x = fixed_value\\n    return x\")
+
+Example — insert before line 10 (no lines deleted):
+  (io/replace-lines \"main.py\" 10 10 \"    # new comment\")
 
 Example — multiple edits (no drift):
-  (io/replace-lines \"main.py\" [[10 12 \"new block 1\"] [25 30 \"new block 2\"]])"
+  (io/replace-lines \"main.py\" [[10 13 \"new block 1\"] [25 31 \"new block 2\"]])"
 
     :str-replace
     "Replace a string in a file. By default, old-str must appear exactly once.

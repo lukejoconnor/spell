@@ -268,7 +268,7 @@
     (let [{:keys [llm]} (th/make-test-llm {:response "(describe-fn patterns :guide))"})]
       (let [result (llm "(eval '(do ")]
         (is (string? result))
-        (is (str/includes? result "PATTERNS NAMESPACE")))))
+        (is (str/includes? result "PATTERNS")))))
 
   (testing "agents namespace has :guide"
     (let [guide (stdlib/describe (deref (resolve 'spell.runtime/agents-namespace)) :guide)]

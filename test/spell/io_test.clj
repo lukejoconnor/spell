@@ -58,13 +58,13 @@
     (spit path content)
     (testing "middle range"
       (is (= "2: line2\n3: line3"
-             (io/read-file path 2 3))))
+             (io/read-file path 2 4))))
     (testing "single line"
       (is (= "4: line4"
-             (io/read-file path 4 4))))
+             (io/read-file path 4 5))))
     (testing "full range"
       (is (= "1: line1\n2: line2\n3: line3\n4: line4\n5: line5"
-             (io/read-file path 1 5))))
+             (io/read-file path 1 6))))
     (testing "clamped to bounds"
       (is (= "4: line4\n5: line5"
              (io/read-file path 4 100))))))
@@ -89,7 +89,7 @@
   (let [path (str test-dir "/read-lines-range.txt")
         content "line1\nline2\nline3\nline4\nline5"]
     (spit path content)
-    (let [result (io/read-lines path 2 4)]
+    (let [result (io/read-lines path 2 5)]
       (is (= ["line2" "line3" "line4"] result))
       (is (= 2 (:spell/line-offset (meta result)))))))
 
@@ -114,7 +114,7 @@
         (is (= ["line2" "line3"] result))
         (is (= 2 (:spell/line-offset (meta result))))))
     (testing "start clamped to 1"
-      (let [result (io/read-lines path 0 2)]
+      (let [result (io/read-lines path 0 3)]
         (is (= ["line1" "line2"] result))
         (is (= 1 (:spell/line-offset (meta result))))))))
 
@@ -281,31 +281,37 @@
 (deftest replace-lines-single
   (let [path (str test-dir "/rl-single.txt")]
     (spit path "aaa\nbbb\nccc\n")
-    (is (= {:ok path} (io/replace-lines path 2 2 "BBB")))
+    (is (= {:ok path} (io/replace-lines path 2 3 "BBB")))
     (is (= "aaa\nBBB\nccc\n" (slurp path)))))
 
 (deftest replace-lines-range
   (let [path (str test-dir "/rl-range.txt")]
     (spit path "line1\nline2\nline3\nline4\nline5\n")
-    (is (= {:ok path} (io/replace-lines path 2 4 "new2\nnew3")))
+    (is (= {:ok path} (io/replace-lines path 2 5 "new2\nnew3")))
     (is (= "line1\nnew2\nnew3\nline5\n" (slurp path)))))
 
 (deftest replace-lines-delete
   (let [path (str test-dir "/rl-delete.txt")]
     (spit path "keep\nremove\nkeep\n")
-    (is (= {:ok path} (io/replace-lines path 2 2 "")))
+    (is (= {:ok path} (io/replace-lines path 2 3 "")))
     (is (= "keep\nkeep\n" (slurp path)))))
+
+(deftest replace-lines-insert
+  (let [path (str test-dir "/rl-insert.txt")]
+    (spit path "aaa\nccc\n")
+    (is (= {:ok path} (io/replace-lines path 2 2 "bbb")))
+    (is (= "aaa\nbbb\nccc\n" (slurp path)))))
 
 (deftest replace-lines-first-line
   (let [path (str test-dir "/rl-first.txt")]
     (spit path "old\nrest\n")
-    (is (= {:ok path} (io/replace-lines path 1 1 "new")))
+    (is (= {:ok path} (io/replace-lines path 1 2 "new")))
     (is (= "new\nrest\n" (slurp path)))))
 
 (deftest replace-lines-last-line
   (let [path (str test-dir "/rl-last.txt")]
     (spit path "rest\nold\n")
-    (is (= {:ok path} (io/replace-lines path 2 2 "new")))
+    (is (= {:ok path} (io/replace-lines path 2 3 "new")))
     (is (= "rest\nnew\n" (slurp path)))))
 
 (deftest replace-lines-out-of-range
@@ -315,17 +321,17 @@
       (is (contains? (io/replace-lines path 0 1 "x") :error))
       (is (contains? (io/replace-lines path 5 5 "x") :error)))
     (testing "end out of range"
-      (is (contains? (io/replace-lines path 1 5 "x") :error)))))
+      (is (contains? (io/replace-lines path 1 6 "x") :error)))))
 
 (deftest replace-lines-file-not-found
-  (let [result (io/replace-lines (str test-dir "/missing.txt") 1 1 "x")]
+  (let [result (io/replace-lines (str test-dir "/missing.txt") 1 2 "x")]
     (is (contains? result :error))
     (is (re-find #"not found" (:error result)))))
 
 (deftest replace-lines-preserves-no-trailing-newline
   (let [path (str test-dir "/rl-no-nl.txt")]
     (spit path "aaa\nbbb\nccc")
-    (is (= {:ok path} (io/replace-lines path 2 2 "BBB")))
+    (is (= {:ok path} (io/replace-lines path 2 3 "BBB")))
     (is (= "aaa\nBBB\nccc" (slurp path)))))
 
 ;; =============================================================================
@@ -337,7 +343,7 @@
     (let [path (str test-dir "/rl-multi.txt")]
       (spit path "aaa\nbbb\nccc\nddd\neee\n")
       (is (= {:ok path}
-             (io/replace-lines path [[2 2 "BBB"] [4 4 "DDD"]])))
+             (io/replace-lines path [[2 3 "BBB"] [4 5 "DDD"]])))
       (is (= "aaa\nBBB\nccc\nDDD\neee\n" (slurp path))))))
 
 (deftest replace-lines-multi-different-sizes
@@ -346,7 +352,7 @@
       (spit path "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
       ;; Replace lines 2-3 with one line, and lines 7-9 with four lines
       (is (= {:ok path}
-             (io/replace-lines path [[2 3 "two-three"] [7 9 "A\nB\nC\nD"]])))
+             (io/replace-lines path [[2 4 "two-three"] [7 10 "A\nB\nC\nD"]])))
       (is (= "1\ntwo-three\n4\n5\n6\nA\nB\nC\nD\n10\n" (slurp path))))))
 
 (deftest replace-lines-multi-delete-and-replace
@@ -354,7 +360,7 @@
     (let [path (str test-dir "/rl-multi-del.txt")]
       (spit path "keep\ndelete\nkeep\nchange\nkeep\n")
       (is (= {:ok path}
-             (io/replace-lines path [[2 2 ""] [4 4 "CHANGED"]])))
+             (io/replace-lines path [[2 3 ""] [4 5 "CHANGED"]])))
       (is (= "keep\nkeep\nCHANGED\nkeep\n" (slurp path))))))
 
 (deftest replace-lines-multi-three-edits
@@ -363,7 +369,7 @@
       (spit path "a\nb\nc\nd\ne\nf\ng\n")
       ;; Pass out of order — should still work
       (is (= {:ok path}
-             (io/replace-lines path [[6 6 "F"] [2 2 "B"] [4 4 "D"]])))
+             (io/replace-lines path [[6 7 "F"] [2 3 "B"] [4 5 "D"]])))
       (is (= "a\nB\nc\nD\ne\nF\ng\n" (slurp path))))))
 
 (deftest replace-lines-multi-adjacent
@@ -371,14 +377,14 @@
     (let [path (str test-dir "/rl-multi-adj.txt")]
       (spit path "a\nb\nc\nd\n")
       (is (= {:ok path}
-             (io/replace-lines path [[1 2 "AB"] [3 4 "CD"]])))
+             (io/replace-lines path [[1 3 "AB"] [3 5 "CD"]])))
       (is (= "AB\nCD\n" (slurp path))))))
 
 (deftest replace-lines-multi-overlap-error
   (testing "overlapping ranges return error"
     (let [path (str test-dir "/rl-multi-overlap.txt")]
       (spit path "a\nb\nc\nd\ne\n")
-      (let [result (io/replace-lines path [[1 3 "X"] [2 4 "Y"]])]
+      (let [result (io/replace-lines path [[1 4 "X"] [2 5 "Y"]])]
         (is (contains? result :error))
         (is (re-find #"overlap" (:error result)))))))
 
@@ -386,14 +392,14 @@
   (testing "any edit out of range returns error"
     (let [path (str test-dir "/rl-multi-bounds.txt")]
       (spit path "a\nb\nc\n")
-      (is (contains? (io/replace-lines path [[1 1 "A"] [5 5 "X"]]) :error)))))
+      (is (contains? (io/replace-lines path [[1 2 "A"] [5 6 "X"]]) :error)))))
 
 (deftest replace-lines-multi-single-edit
   (testing "vector with one edit works like the 4-arg form"
     (let [path (str test-dir "/rl-multi-one.txt")]
       (spit path "a\nb\nc\n")
       (is (= {:ok path}
-             (io/replace-lines path [[2 2 "B"]])))
+             (io/replace-lines path [[2 3 "B"]])))
       (is (= "a\nB\nc\n" (slurp path))))))
 
 (deftest replace-lines-multi-preserves-no-trailing-newline
@@ -401,7 +407,7 @@
     (let [path (str test-dir "/rl-multi-no-nl.txt")]
       (spit path "a\nb\nc\nd\ne")
       (is (= {:ok path}
-             (io/replace-lines path [[2 2 "B"] [4 4 "D"]])))
+             (io/replace-lines path [[2 3 "B"] [4 5 "D"]])))
       (is (= "a\nB\nc\nD\ne" (slurp path))))))
 
 ;; =============================================================================

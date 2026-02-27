@@ -249,7 +249,13 @@ All functions take and return numbers. Use (!describe math :fn-name) for any fun
 (def patterns
   "Reusable orchestration patterns (Spell-specific)."
   {:short-docs "Reusable orchestration patterns: check-result, clean-prompt, explore."
-   :docs {:guide "PATTERNS NAMESPACE
+   :docs {:guide "PATTERNS — Reusable orchestration patterns (effect namespace).
+
+  (patterns/check-result prompt answer)  — verify answer with leaf-llm
+  (patterns/clean-prompt raw-text)       — clean up messy text, then execute it
+  (patterns/explore question)            — one-shot codebase exploration agent
+
+Use (!describe patterns :fn-name) for detailed docs on any function.
 
 check-result: Verifies an answer using leaf-llm. Returns {:ok answer} or {:wrong msg}.
   (patterns/check-result \"What is 2+2?\" 4)            ;; => {:ok 4}
@@ -262,7 +268,29 @@ clean-prompt: Cleans up a raw prompt (voice-to-text, quick notes) via leaf-llm, 
 
 explore: One-shot delegation to a child exploration agent. Spawns a child that greps, reads, and analyzes, then returns structured findings.
   '(!call-now findings (patterns/explore \"Where is authentication handled?\"))
-  Returns {:answer \"...\" :files [\"src/auth.py\" ...]}\""}
+  Returns {:answer \"...\" :files [\"src/auth.py\" ...]}
+
+All patterns/ calls are effect functions — quote them in the trailing expression.
+
+Common mistakes:
+
+1. calling check-result outside the trailing expression: must be quoted like all effect calls
+2. forgetting !call-now with explore: '(patterns/explore \"...\") runs the agent but you lose the return value; use '(!call-now findings (patterns/explore \"...\"))
+3. using explore for simple tasks: explore spawns a child agent — overkill for a quick io/read-file or io/sh
+
+In examples, ▌ marks cursor position in a completion. It is doc-only; do not type it into code.
+
+Example — verify then correct:
+
+1. Compute an answer and check it.
+  ...(def answer 42)
+  ▌'(!call-now verdict (patterns/check-result \"What is 6 * 9?\" answer))
+
+2. Next turn: handle the verdict.
+  ...(def verdict {:wrong \"6 * 9 = 54, not 42\"})
+  ▌(def answer 54)
+  '(!call-now verdict (patterns/check-result \"What is 6 * 9?\" answer))
+"}
    :detail
    {:check-result "(patterns/check-result prompt answer) — verify answer with leaf-llm, returns {:ok answer} or {:wrong msg}"
     :clean-prompt "(patterns/clean-prompt raw-prompt) — clean up raw prompt via leaf-llm and execute it"
@@ -330,8 +358,18 @@ Categories (use (!describe builtins :category) for full listing):
   concurrency   — future*, await
   error         — throw, gensym
 
+Use (!describe builtins :category) for full listing of any category.
+Use (!describe builtins :fn-name) for individual function docs.
 For namespace functions (io/, agents/, globals/, futures/, strings/, math/, patterns/), use (!describe <namespace>).
-Use (!describe builtins :fn-name) for individual function docs."}
+
+Common mistakes:
+
+1. calling effect builtins outside the trailing expression: !llm-self, leaf-llm, eval, and describe-fn are effect functions; they must appear in the quoted trailing expression or inside !call-now / !print
+2. confusing def with let: def binds in the environment (visible to later expressions); let creates local scope
+3. forgetting quote on the trailing expression: the last expression must be quoted so the outer eval can run it with effect bindings
+4. str vs cat vs pr-str: str joins arguments as strings; cat is an alias; pr-str serializes as Spell-readable data (vectors, maps, etc.)
+5. using read-string on untrusted input: read-string parses Spell code; only use it on data you control
+"}
    :detail
    {;; ---- Category listings (full per-function descriptions) ----
     :special-forms
@@ -838,9 +876,7 @@ Example:
 (def futures-namespace
   "Parallel computation namespace — effect-guarded (trailing expression only)."
   {:short-docs "Parallel computation: future, await, pmap."
-   :docs {:guide "FUTURES
-
-future/await/plet for deterministic parallel computation. These are for pure computation only — never use them for LLM calls (they'd share the parent handle and contend over the box).
+   :docs {:guide "FUTURES — Deterministic parallel computation (effect namespace).
 
   (future expr)          — run expr in background, returns a future
   (await f)              — block until future f completes, returns value
@@ -848,8 +884,33 @@ future/await/plet for deterministic parallel computation. These are for pure com
   (plet [a expr1 b expr2] body)   — parallel let: compute bindings concurrently
   (futures/pmap f coll)            — parallel map: applies f to each element concurrently
 
-Note: future, await, and plet are core builtins (no namespace prefix needed).
-Only await-all and pmap are in the futures/ namespace."
+Use (!describe futures :fn-name) for detailed docs on any function.
+
+future, await, and plet are core builtins (no namespace prefix needed).
+Only await-all and pmap require the futures/ prefix.
+
+These are for pure computation only — never use them for LLM calls.
+LLM calls in futures would share the parent handle and contend over the box.
+For LLM-driven parallelism, use agents/spawn instead.
+
+All futures/ calls are effect functions — quote them in the trailing expression.
+
+Common mistakes:
+
+1. using future for LLM calls: (future (!llm-self \"...\")) causes handle contention; use agents/spawn for parallel LLM work
+2. forgetting to await: a future runs in the background; its result is only available after (await f) or via plet
+3. calling futures/pmap with effect functions: pmap is for pure computation; mapping over io or agent calls will fail or race
+4. unnecessary future+await: (await (future expr)) is just expr with overhead; use futures when you have multiple independent computations
+
+In examples, ▌ marks cursor position in a completion. It is doc-only; do not type it into code.
+
+Example — parallel computation with plet:
+
+  ...▌(plet [a (reduce + (range 1000000))
+           b (reduce * (range 1 21))]
+      (def total (+ a b)))
+  '(!extend)
+"
           }
    :detail
    {:await-all "(futures/await-all [f1 f2 ...]) — await multiple futures, returns vector of results"
