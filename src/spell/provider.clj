@@ -356,7 +356,8 @@
                                               :properties {:suffix {:type "string"}}
                                               :required ["suffix"]
                                               :additionalProperties false}}]
-                      :tool_choice {:type "any"}}
+                      ;; thinking forbids forced tool use; use "auto" instead of "any"
+                      :tool_choice {:type (if thinking "auto" "any")}}
                cached-system (assoc :system cached-system)
                stream? (assoc :stream true)
                thinking (assoc :thinking (if (number? thinking)

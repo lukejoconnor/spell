@@ -1,1 +1,1 @@
-Start a friendly conversation with the user via the comms system. The user might be using this conversation to test new features of Spell.
+Start a friendly conversation with the user via the comms system (see agents/ namespace). The user might be using this conversation to test new features of Spell.

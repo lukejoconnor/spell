@@ -844,6 +844,66 @@
           (let [completed-val (deref @(:completed (get @runtime/registry child-h)) 100 :timeout)]
             (is (= "done:test" completed-val))))))))
 
+;; =============================================================================
+;; Spawn-ask + child extension test
+;; =============================================================================
+
+(deftest spawn-ask-child-extend-no-premature-wake-test
+  (testing "spawn-ask parent does NOT wake when child extends (only on final completion)"
+    ;; Scenario: parent calls spawn-ask, child receives the ask message,
+    ;; child does an !llm-self (extension) before producing final result.
+    ;; The parent must NOT wake until the child's root box fully completes.
+    ;;
+    ;; We use a gate (child-may-finish) to hold the child in its extension
+    ;; so we can observe the parent state mid-extension.
+    (let [call-count (atom 0)
+          child-extended (promise)
+          child-may-finish (promise)
+          child-responses
+          (fn [prompt]
+            (let [n (swap! call-count inc)]
+              (cond
+                ;; Turn 1: initial spawn prompt
+                (= n 1)
+                "(def status :started) '(!extend)))"
+
+                ;; Turn 2: extension — signal we extended, then BLOCK until test releases us
+                (= n 2)
+                (do (deliver child-extended true)
+                    (deref child-may-finish 10000 :timeout)
+                    "(def status :extended) '(!extend)))")
+
+                ;; Turn 3: final — send result to parent
+                :else
+                "'(agents/send (agents/parent-handle) :child-done)))")))]
+      (let [{child-llm :llm} (th/make-test-llm {:response-fn child-responses})
+            parent-h :sa-ext-parent
+            parent-raw "(quine completion (eval (do )))"
+            parent-woke (atom nil)]
+        (runtime/register! parent-h)
+        (let [parent-future
+              (future
+                (binding [runtime/*current-handle* parent-h
+                          runtime/*current-raw* parent-raw
+                          runtime/*current-eval-fn* (fn [raw]
+                                                      (reset! parent-woke raw)
+                                                      raw)]
+                  (runtime/spawn-ask child-llm "(eval (do ")))]
+          ;; Wait for child to reach extension (turn 2 blocks on gate)
+          (is (= true (deref child-extended 5000 :timeout))
+              "child should have reached extension")
+          ;; Child is now blocked mid-extension. Check parent state.
+          (Thread/sleep 100)
+          (is (nil? @parent-woke)
+              "parent must not wake prematurely when child is mid-extension")
+          ;; Release the child to finish
+          (deliver child-may-finish true)
+          ;; Parent should eventually wake with the child's send
+          (let [result (deref parent-future 10000 :timeout)]
+            (is (string? result))
+            (is (some? @parent-woke)
+                "parent should wake after child fully completes")))))))
+
 (deftest effect-guard-allows-in-second-pass-test
   (testing "dangerous fns work through double-evaluation (eval special form)"
     ;; agents/!ask resolves through eval double-evaluation but fails at runtime

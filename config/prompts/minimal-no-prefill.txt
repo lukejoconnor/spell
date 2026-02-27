@@ -34,6 +34,7 @@ REASONING HANDOFF
 
 Hidden model reasoning may not be available on later turns.
 Persist decision-critical reasoning in source code with think/rethink.
+At the start of every turn, first write a short (think "...") summary of any internal reasoning you need to keep; otherwise it will not propagate to your next turn.
 Before a trailing quoted expression that calls tools, delegates, or extends, write a short think handoff:
 - current goal
 - why this next action is chosen

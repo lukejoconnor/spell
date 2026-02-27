@@ -10,8 +10,8 @@
 (def model-aliases
   {"haiku"   "claude-haiku-4-5-20251001"
    "sonnet"  "claude-sonnet-4-5-20250929"
-   "opus"    "claude-opus-4-5-20251101"
-   "opus46"  "claude-opus-4-6"
+   "opus"    "claude-opus-4-6"
+   "opus45"  "claude-opus-4-5-20251101"
    "o3"      "o3"
    "o4-mini" "o4-mini"
    "gpt52"   "gpt-5.2"
@@ -82,7 +82,7 @@
   [["-t" "--test" "Use dummy LLM provider (returns 'hello world')"]
    ["-e" "--example NAME" "Run a named example from examples/"]
    ["-a" "--agent FILE" "Use agent definition from .agent.edn file"]
-   ["-m" "--model MODEL" "Model spec: haiku, sonnet, opus, ollama:<model>, codex:<model>, chatgpt:<model>, anthropic-toolcall:<model>, openai:<model>, openclaw:<model>, user (default: codex:gpt-5.3)"]
+   ["-m" "--model MODEL" "Model spec: haiku, sonnet, opus, opus45, ollama:<model>, codex:<model>, chatgpt:<model>, anthropic:<model>, openai:<model>, openclaw:<model>, user (default: codex:gpt-5.3)"]
    ["-d" "--depth DEPTH" "Max recursion depth (default: unlimited, 0 = unlimited)"
     :parse-fn #(Integer/parseInt %)
     :validate [#(>= % 0) "Must be non-negative"]]
@@ -219,12 +219,12 @@
         "openclaw"
         (provider/load-provider "config/providers/openclaw.provider.edn")
 
-        ;; anthropic (explicit or default)
-        ("anthropic" nil)
-        (provider/anthropic-provider base-opts)
+        ;; anthropic-toolcall is the default for bare model names
+        ("anthropic-toolcall" nil)
+        (provider/anthropic-toolcall-provider base-opts)
 
-        "anthropic-toolcall"
-        (provider/anthropic-toolcall-provider base-opts)))))
+        "anthropic"
+        (provider/anthropic-provider base-opts)))))
 
 (defn run-prompt
   [prompt {:keys [depth verbose log budget trace agent model thinking reasoning-effort verbosity
@@ -235,6 +235,9 @@
                     (nil? depth) nil    ; default: no depth limit
                     (zero? depth) nil   ; 0 also means unlimited
                     :else depth)
+        resolved-model (some-> model parse-model-spec :model resolve-model)
+        opus? (and resolved-model (str/includes? resolved-model "opus"))
+        thinking (or thinking (when opus? 16384))
         prov (make-provider opts)
         prefill? (and (provider/supports-prefill prov) (not thinking))
         resolved-agent (or agent "config/agents/cli.agent.edn")
