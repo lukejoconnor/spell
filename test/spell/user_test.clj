@@ -118,6 +118,29 @@
             (is (.contains ^String result ":from :user"))
             (is (.contains ^String result ":body \"hello from user\""))))))))
 
+(deftest expects-reply-sends-immediately-test
+  (testing "expects-reply path sends immediately (no trailing agents/send in completion text)"
+    ;; Directly exercise user-call-fn with an expects-response message.
+    ;; The reply should be sent via runtime/send immediately, and the returned
+    ;; completion suffix should split top-level forms without embedding send code.
+    (runtime/register! :user)
+    (runtime/register! :target)
+    (.put @#'user/stdin-queue "immediate-reply")
+    (let [prompt "(quine completion (eval (do (def msg-1 {:from :target :expects-response true}) )))"
+          suffix (binding [runtime/*current-handle* :user]
+                   (#'user/user-call-fn prompt))
+          received (atom nil)
+          p (promise)]
+      (is (string? suffix))
+      (is (not (.contains ^String suffix "agents/send"))
+          "send should happen immediately, not via trailing expression code")
+      (is (.contains ^String suffix "(quine completion (eval (do "))
+      (deliver p "(quine completion (eval (do )))")
+      (runtime/box :target p (fn [raw] (reset! received raw) raw))
+      (is (string? @received))
+      (is (.contains ^String @received ":from :user"))
+      (is (.contains ^String @received ":body \"immediate-reply\"")))))
+
 ;; Sequential asks: skipped — mock readers respond too fast for reliable
 ;; concurrent box lifecycle testing. Not reproducible with real LLM agents.
 

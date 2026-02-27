@@ -62,6 +62,17 @@
       ;; make-awake-fn drains empty inbox (identity), so raw passes through
       (is (= "got:hello" (runtime/box handle p (runtime/make-awake-fn handle eval-fn)))))))
 
+(deftest reopen-last-top-level-form-test
+  (testing "reopen targets the last top-level quine and preserves prior forms"
+    (let [raw "(quine completion (eval (do (def first-msg \"kept\") nil ))) (quine completion (eval (do (def second-msg \"open-me\") )))"
+          reopened (#'runtime/reopen raw)]
+      (is (.contains ^String reopened "(def first-msg \"kept\")"))
+      (is (.contains ^String reopened "(def second-msg \"open-me\")"))
+      (is (.endsWith ^String reopened "(def second-msg \"open-me\") "))
+      (is (.contains ^String reopened "nil))) (quine completion (eval (do"))
+      (is (not (.endsWith ^String reopened "nil "))
+          "reopen should leave the first form closed and reopen the last one"))))
+
 (deftest has-box-invariant-test
   (testing "has-box is false after box completes"
     (let [handle :test-hasbox
@@ -898,6 +909,57 @@
             (is (string? result))
             (is (some? @parent-woke)
                 "parent should wake after child fully completes")))))))
+
+(deftest stale-signal-after-inbox-drain-test
+  (testing "block-for-message blocks when inbox was drained by box (no spurious wake from stale signal)"
+    ;; Scenario: an agent is inside a box waiting on a completion promise.
+    ;; While it waits, a message arrives via -send! (composing into inbox
+    ;; AND delivering the signal). When the completion arrives, box drains
+    ;; the inbox — picking up the message. The agent processes it and then
+    ;; calls block-for-message. At that point, the signal from -send! is
+    ;; stale (already delivered, never consumed). block-for-message should
+    ;; NOT spuriously wake from this stale signal.
+    (let [handle :stale-sig
+          raw "(quine completion (eval (do )))"
+          completion (promise)
+          reached-block (promise)
+          block-result (promise)
+          call-count (atom 0)
+          eval-fn (fn [raw]
+                    (let [n (swap! call-count inc)]
+                      (if (= n 1)
+                        ;; First call: we processed the inbox message.
+                        ;; Now block-for-message — should actually block.
+                        (do (deliver reached-block true)
+                            (runtime/block-for-message))
+                        ;; Second call: woke from block. Return raw.
+                        (do (deliver block-result raw)
+                            raw))))]
+      (runtime/register! handle)
+      ;; Simulate: message arrives while waiting for completion.
+      ;; -send! composes into inbox AND delivers signal.
+      (runtime/-send! handle (fn [r] (str r "(def x 1) ")))
+      ;; Deliver the completion (simulating LLM response arriving).
+      (deliver completion raw)
+      ;; Start box in a future — it will drain inbox (picking up the message)
+      ;; and call eval-fn, which calls block-for-message.
+      (future (runtime/box handle completion (runtime/make-awake-fn eval-fn)))
+      ;; Wait for agent to reach block-for-message
+      (is (= true (deref reached-block 2000 :timeout))
+          "agent should reach block-for-message")
+      ;; Give it time — if signal is stale, block-for-message wakes immediately
+      (Thread/sleep 300)
+      ;; block-result should NOT be delivered yet (agent should be blocked)
+      (is (not (realized? block-result))
+          "block-for-message should not have returned (stale signal)")
+      ;; Now send a real message to wake it
+      (runtime/-send! handle (fn [r] (str r "(def y 2) ")))
+      ;; Agent should wake from the real message
+      (let [result (deref block-result 2000 :timeout)]
+        (is (not= :timeout result)
+            "agent should wake from real message")
+        (is (.contains ^String result "(def y 2)")
+            "woken raw should contain the new message")))))
 
 (deftest effect-guard-allows-in-second-pass-test
   (testing "dangerous fns work through double-evaluation (eval special form)"

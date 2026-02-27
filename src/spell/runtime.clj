@@ -194,19 +194,25 @@
 (defn- reopen
   "Reopen a completion wrapper by parsing to AST, pruning rethink-marked
    expressions, and rebuilding an open prefix.
+   If multiple top-level forms are present, reopens the LAST form and keeps
+   earlier top-level forms as inert context.
    Handles excess trailing parens safely (the LLM may write too many closers).
    Falls back to string-level strip-3 for non-quine forms."
   [s]
   (let [balanced (parse/balance-parens s)
-        form     (first (parse/read-all balanced))]
+        forms    (parse/read-all balanced)
+        form     (last forms)]
     (if (and (seq? form) (= 'quine (first form)))
-      (let [elements   (vec (seq form))
+      (let [prior-forms (butlast forms)
+            elements   (vec (seq form))
             inert-args (subvec elements 2 (max 2 (dec (count elements))))
             last-arg   (last elements)
             pruned-last (macros/prune-rethinks last-arg)
             [_ do-form] (seq pruned-last)
             body-forms (rest do-form)]
-        (str "(quine completion "
+        (str (when (seq prior-forms)
+               (str (str/join " " (map pr-str prior-forms)) " "))
+             "(quine completion "
              (when (seq inert-args)
                (str (str/join " " (map pr-str inert-args)) " "))
              "(eval (do "
