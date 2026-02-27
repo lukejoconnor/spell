@@ -18,8 +18,8 @@
    "gpt53"   "gpt-5.3"})
 
 (def provider-prefixes
-  #{"ollama" "chatgpt" "codex" "codex-toolcall" "openclaw" "openai"
-    "anthropic" "anthropic-toolcall" "kimi" "moonshot" "test"})
+  #{"ollama" "codex-msg" "codex-tc" "openclaw" "openai"
+    "anthropic-pf" "anthropic-tc" "kimi" "moonshot" "test"})
 
 (defn parse-model-spec
   "Parse 'provider:model' into {:provider str :model str}.
@@ -82,7 +82,7 @@
   [["-t" "--test" "Use dummy LLM provider (returns 'hello world')"]
    ["-e" "--example NAME" "Run a named example from examples/"]
    ["-a" "--agent FILE" "Use agent definition from .agent.edn file"]
-   ["-m" "--model MODEL" "Model spec: haiku, sonnet, opus, opus45, ollama:<model>, codex:<model>, chatgpt:<model>, anthropic:<model>, openai:<model>, openclaw:<model>, user (default: codex:gpt-5.3)"]
+   ["-m" "--model MODEL" "Model spec: haiku, sonnet, opus, opus45, ollama:<model>, codex-tc:<model>, codex-msg:<model>, anthropic-pf:<model>, anthropic-tc:<model>, openai:<model>, openclaw:<model>, user (default: codex-tc:gpt-5.3)"]
    ["-d" "--depth DEPTH" "Max recursion depth (default: unlimited, 0 = unlimited)"
     :parse-fn #(Integer/parseInt %)
     :validate [#(>= % 0) "Must be non-negative"]]
@@ -131,7 +131,7 @@
           "  spell -t 'Test prompt'"
           "  spell -m haiku 'Add 1 and 2'"
           "  spell -m ollama:llama3.2 'Return 42'"
-          "  spell -m chatgpt:gpt-5.3-codex 'Return 42'"
+          "  spell -m codex-msg:gpt-5.3-codex 'Return 42'"
           "  spell -m openai:gpt-4o 'Return 42'"
           "  spell examples/hello-world.spl"
           "  spell -e hello-world"
@@ -189,10 +189,10 @@
     :else
     (let [{:keys [provider model]} (if model
                                      (parse-model-spec model)
-                                     {:provider "codex" :model "gpt-5.3"})
+                                     {:provider "codex-tc" :model "gpt-5.3"})
           resolved-model (when model (resolve-model model))
           ;; ChatGPT/Codex backend exposes gpt-5.3 as gpt-5.3-codex.
-          resolved-model (if (and (#{"chatgpt" "codex"} provider)
+          resolved-model (if (and (#{"codex-msg" "codex-tc"} provider)
                                   (= resolved-model "gpt-5.3"))
                            "gpt-5.3-codex"
                            resolved-model)
@@ -203,11 +203,11 @@
         "ollama"
         (provider/ollama-provider base-opts)
 
-        "chatgpt"
-        (provider/chatgpt-codex-provider base-opts)
+        "codex-msg"
+        (provider/codex-msg-provider base-opts)
 
-        "codex"
-        (provider/chatgpt-codex-toolcall-provider base-opts)
+        "codex-tc"
+        (provider/codex-tc-provider base-opts)
 
         "openai"
         (provider/openai-provider (cond-> base-opts
@@ -219,12 +219,12 @@
         "openclaw"
         (provider/load-provider "config/providers/openclaw.provider.edn")
 
-        ;; anthropic-toolcall is the default for bare model names
-        ("anthropic-toolcall" nil)
-        (provider/anthropic-toolcall-provider base-opts)
+        ;; anthropic-tc is the default for bare model names
+        ("anthropic-tc" nil)
+        (provider/anthropic-tc-provider base-opts)
 
-        "anthropic"
-        (provider/anthropic-provider base-opts)))))
+        "anthropic-pf"
+        (provider/anthropic-pf-provider base-opts)))))
 
 (defn run-prompt
   [prompt {:keys [depth verbose log budget trace agent model thinking reasoning-effort verbosity

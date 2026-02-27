@@ -1,7 +1,7 @@
 ;; I/O-capable profile for prefill transport providers.
 
-{:base base-prefill.agent.edn
- :name io-prefill
+{:base base-pf.agent.edn
+ :name io-pf
  :doc "Prefill transport agent with io namespace for benchmark/runtime file access"
 
  :namespaces

@@ -16,15 +16,15 @@ This directory contains runtime configuration used by Spell execution and benchm
 Loaded by `src/spell/agent.clj`.
 
 **Base agents** (one per transport mode, no effect namespaces):
-- `base-prefill.agent.edn` — Anthropic (prefill mode), uses `minimal.txt`
-- `base-message.agent.edn` — message providers (no prefill), uses `minimal-no-prefill.txt`
-- `base-toolcall.agent.edn` — tool-call providers, uses `minimal-no-prefill-toolcall.txt`
+- `base-pf.agent.edn` — Anthropic (prefill mode), uses `minimal.txt`
+- `base-msg.agent.edn` — message providers (no prefill), uses `minimal-no-prefill.txt`
+- `base-tc.agent.edn` — tool-call providers, uses `minimal-no-prefill-toolcall.txt`
 
 **Specialized agents** inherit from a base and add namespaces:
-- `cli.agent.edn` — CLI default (base-toolcall + io, futures, patterns, agents, globals)
-- `io-prefill.agent.edn` — benchmark/runtime I/O profile for prefill providers
-- `io-message.agent.edn` — benchmark/runtime I/O profile for message providers
-- `io-toolcall.agent.edn` — benchmark/runtime I/O profile for mandatory toolcall providers
+- `cli.agent.edn` — CLI default (base-tc + io, futures, patterns, agents, globals)
+- `io-pf.agent.edn` — benchmark/runtime I/O profile for prefill providers
+- `io-msg.agent.edn` — benchmark/runtime I/O profile for message providers
+- `io-tc.agent.edn` — benchmark/runtime I/O profile for mandatory toolcall providers
 
 Key semantics:
 - `:base` supports file-based inheritance; paths resolved relative to the current agent file.
@@ -47,11 +47,11 @@ Loaded by `spell.provider/load-provider`.
 Each provider .edn file includes a `:default-agent` key pointing to the transport-appropriate base agent. This is used by `spell.provider/provider-edn-default-agent` for API-level default resolution.
 
 Supported `:type` values:
-- `:anthropic`
-- `:anthropic-toolcall`
+- `:anthropic-pf`
+- `:anthropic-tc`
 - `:openai`
-- `:chatgpt-codex`
-- `:chatgpt-codex-toolcall`
+- `:codex-msg`
+- `:codex-tc`
 - `:ollama`
 - `:kimi`
 - `:test`
@@ -95,6 +95,6 @@ When changing benchmark agent config:
 
 ## Important Gotchas
 
-- CLI default agent is `config/agents/cli.agent.edn` (inherits from `base-toolcall.agent.edn`).
+- CLI default agent is `config/agents/cli.agent.edn` (inherits from `base-tc.agent.edn`).
 - `spell.api/run` requires an explicit `:agent` argument — there is no built-in fallback.
 - `benchmarking/` is a separate nested git repo (`benchmarking/.git`), so config changes affecting benchmark defaults may require coordinated commits in both repos.

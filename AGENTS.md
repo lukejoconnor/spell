@@ -61,10 +61,10 @@ These are intentionally separate: use futures for deterministic compute, and spa
 ## Providers
 
 Primary providers in day-to-day use:
-- Anthropic (`anthropic-provider`)
-- Anthropic tool-call path (`anthropic-toolcall-provider`)
-- ChatGPT Codex messages path (`chatgpt-codex-provider`)
-- ChatGPT Codex tool-call path (`chatgpt-codex-toolcall-provider`)
+- Anthropic prefill (`anthropic-pf-provider`)
+- Anthropic tool-call (`anthropic-tc-provider`)
+- Codex messages (`codex-msg-provider`)
+- Codex tool-call (`codex-tc-provider`)
 
 Other implemented providers:
 - OpenAI, Ollama, Kimi, Test (plus provider-file loading via `.provider.edn`)
@@ -74,17 +74,17 @@ Each `.provider.edn` file includes a `:default-agent` key pointing to the transp
 ## Agents
 
 Three base agents (one per transport mode, no effect namespaces):
-- `config/agents/base-prefill.agent.edn` — Anthropic (prefill mode)
-- `config/agents/base-message.agent.edn` — message providers (no prefill)
-- `config/agents/base-toolcall.agent.edn` — tool-call providers
+- `config/agents/base-pf.agent.edn` — Anthropic (prefill mode)
+- `config/agents/base-msg.agent.edn` — message providers (no prefill)
+- `config/agents/base-tc.agent.edn` — tool-call providers
 
 Agents with `:llms` in their `.agent.edn` also get an `llms/` namespace with named sub-LLM variants (dynamically generated, not a standard stdlib namespace).
 
 Specialized agents inherit from a base and add namespaces:
-- `config/agents/cli.agent.edn` — CLI default (base-toolcall + io, futures, patterns, agents, globals)
-- `config/agents/io-prefill.agent.edn` — prefill transport + io profile
-- `config/agents/io-message.agent.edn` — message transport + io profile
-- `config/agents/io-toolcall.agent.edn` — toolcall transport + io profile
+- `config/agents/cli.agent.edn` — CLI default (base-tc + io, futures, patterns, agents, globals)
+- `config/agents/io-pf.agent.edn` — prefill transport + io profile
+- `config/agents/io-msg.agent.edn` — message transport + io profile
+- `config/agents/io-tc.agent.edn` — toolcall transport + io profile
 
 ## CLI and API
 

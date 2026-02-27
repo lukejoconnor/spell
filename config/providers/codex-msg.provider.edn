@@ -1,6 +1,6 @@
-{:type :chatgpt-codex
+{:type :codex-msg
  :base-url "https://chatgpt.com/backend-api/codex"
  :auth-file "~/.codex/auth.json"
  :model "gpt-5.3-codex"
  :max-tokens 16384
- :default-agent "../agents/base-message.agent.edn"}
+ :default-agent "../agents/base-msg.agent.edn"}

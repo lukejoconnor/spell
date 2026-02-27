@@ -1,8 +1,8 @@
 ;; CLI default agent: full capabilities for interactive use.
-;; Inherits transport-appropriate system prompt from base-toolcall.
+;; Inherits transport-appropriate system prompt from base-tc.
 ;; Used by the CLI when no -a/--agent is specified.
 
-{:base base-toolcall.agent.edn
+{:base base-tc.agent.edn
  :name cli
  :doc "CLI default: full capabilities for interactive use"
 

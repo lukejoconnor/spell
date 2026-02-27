@@ -14,7 +14,7 @@
 ;; Basic run tests
 ;; =============================================================================
 
-(def test-agent "config/agents/base-message.agent.edn")
+(def test-agent "config/agents/base-msg.agent.edn")
 
 (deftest run-prompt-test
   (testing "run with :prompt triggers LLM call and returns result"

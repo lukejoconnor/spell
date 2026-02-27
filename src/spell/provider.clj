@@ -2,11 +2,11 @@
   "LLM provider abstraction and token tracking.
 
    Providers implement the LLMProvider protocol. Built-in providers:
-   - anthropic-provider: Calls Claude API
-   - anthropic-toolcall-provider: Anthropic Messages API with mandatory spell_suffix tool output
+   - anthropic-pf-provider: Calls Claude API (prefill transport)
+   - anthropic-tc-provider: Anthropic Messages API with mandatory spell_suffix tool output
    - openai-provider: Calls OpenAI API
-   - chatgpt-codex-provider: Calls ChatGPT Codex Responses API
-   - chatgpt-codex-toolcall-provider: ChatGPT Codex Responses with mandatory custom tool output
+   - codex-msg-provider: Calls ChatGPT Codex Responses API (message transport)
+   - codex-tc-provider: ChatGPT Codex Responses with mandatory custom tool output
    - ollama-provider: Calls local Ollama API
    - test-provider: Declarative test provider with flexible response matching"
   (:require [clojure.data.json :as json]
@@ -195,7 +195,7 @@
         (str/includes? model "haiku-3-5")) 8000
     :else 4000))
 
-(defn- anthropic-request [api-key model prompt system-prompt prefix max-tokens stream? thinking cache-prefix]
+(defn- anthropic-pf-request [api-key model prompt system-prompt prefix max-tokens stream? thinking cache-prefix]
   (let [;; When thinking is active, don't use assistant prefill (incompatible)
         effective-prefix (when-not thinking prefix)
         ;; Only apply cache_control when content exceeds model's minimum threshold
@@ -237,7 +237,7 @@
                     (.build))]
     request))
 
-(defn- parse-anthropic-response [response-body]
+(defn- parse-anthropic-pf-response [response-body]
   (let [parsed (json/read-str response-body :key-fn keyword)]
     (if-let [error (:error parsed)]
       (throw (ex-info "Anthropic API error" {:error error}))
@@ -252,7 +252,7 @@
                  :cache_creation_input_tokens (:cache_creation_input_tokens usage 0)
                  :cache_read_input_tokens (:cache_read_input_tokens usage 0)}}))))
 
-(defn- parse-anthropic-stream
+(defn- parse-anthropic-pf-stream
   "Parse an Anthropic SSE stream, accumulating text and usage."
   [response-body]
   (let [text (StringBuilder.)
@@ -284,7 +284,7 @@
               (catch Exception _ nil))))))
     {:text (.toString text) :usage @usage}))
 
-(defrecord AnthropicProvider [api-key model max-tokens http-client costs]
+(defrecord AnthropicPfProvider [api-key model max-tokens http-client costs]
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt opts]
@@ -294,14 +294,14 @@
           ;; Use streaming for large max_tokens (API requires it for >16384) or thinking
           stream? (or thinking (> effective-max-tokens 16384))
           cache-prefix (:cache-prefix opts)
-          request (anthropic-request api-key effective-model prompt (:system opts) (:prefix opts)
-                                    effective-max-tokens stream? thinking cache-prefix)
+          request (anthropic-pf-request api-key effective-model prompt (:system opts) (:prefix opts)
+                                       effective-max-tokens stream? thinking cache-prefix)
           response (.send http-client request (HttpResponse$BodyHandlers/ofString))
           status (.statusCode response)]
       (if (<= 200 status 299)
         (let [{:keys [text usage]} (if stream?
-                                     (parse-anthropic-stream (.body response))
-                                     (parse-anthropic-response (.body response)))]
+                                     (parse-anthropic-pf-stream (.body response))
+                                     (parse-anthropic-pf-response (.body response)))]
           (track-usage! effective-model usage costs)
           text)
         (throw (ex-info "Anthropic API request failed"
@@ -310,7 +310,7 @@
     ;; Opus 4.6 does not support assistant prefill (returns 400 error)
     (not (str/includes? (str model) "opus-4-6"))))
 
-(defn anthropic-provider
+(defn anthropic-pf-provider
   "Create an Anthropic provider.
 
    Options:
@@ -318,16 +318,16 @@
    - :model - Model name (default: claude-sonnet-4-20250514)
    - :max-tokens - Max tokens per response (default: 16384)
    - :costs - Cost table {model-prefix [input-per-M output-per-M]}"
-  ([] (anthropic-provider {}))
+  ([] (anthropic-pf-provider {}))
   ([{:keys [api-key model max-tokens costs]
      :or {model "claude-sonnet-4-5-20250929"}}]
    (let [key (or api-key (System/getenv "ANTHROPIC_API_KEY"))]
      (when-not key
        (throw (ex-info "No API key provided. Set ANTHROPIC_API_KEY or pass :api-key"
                        {:env "ANTHROPIC_API_KEY"})))
-     (->AnthropicProvider key model max-tokens (make-http-client) costs))))
+     (->AnthropicPfProvider key model max-tokens (make-http-client) costs))))
 
-(defn- anthropic-toolcall-request
+(defn- anthropic-tc-request
   [api-key model prompt system-prompt max-tokens stream? thinking cache-prefix]
   (let [min-chars (cache-min-chars model)
         ;; Split user message for caching: stable prefix + new content
@@ -383,7 +383,7 @@
     (when (string? suffix)
       suffix)))
 
-(defn- parse-anthropic-toolcall-response
+(defn- parse-anthropic-tc-response
   [response-body]
   (let [parsed (json/read-str response-body :key-fn keyword)]
     (if-let [error (:error parsed)]
@@ -398,7 +398,7 @@
         (when (nil? suffix)
           (throw (ex-info "Anthropic mandatory tool-call response missing spell_suffix tool_use"
                           {:type :missing-tool-call
-                           :provider :anthropic-toolcall
+                           :provider :anthropic-tc
                            :content (:content parsed)})))
         {:text suffix
          :usage {:input_tokens (:input_tokens usage 0)
@@ -406,7 +406,7 @@
                  :cache_creation_input_tokens (:cache_creation_input_tokens usage 0)
                  :cache_read_input_tokens (:cache_read_input_tokens usage 0)}}))))
 
-(defn- parse-anthropic-toolcall-stream
+(defn- parse-anthropic-tc-stream
   "Parse an Anthropic SSE stream for tool-call mode, extracting spell_suffix input."
   [response-body]
   (let [usage (atom {:input_tokens 0 :output_tokens 0
@@ -461,11 +461,11 @@
       (when (nil? suffix)
         (throw (ex-info "Anthropic mandatory tool-call stream missing spell_suffix tool_use"
                         {:type :missing-tool-call
-                         :provider :anthropic-toolcall
+                         :provider :anthropic-tc
                          :body (subs response-body 0 (min 1000 (count response-body)))})))
       {:text suffix :usage @usage})))
 
-(defrecord AnthropicToolcallProvider [api-key model max-tokens http-client costs]
+(defrecord AnthropicTcProvider [api-key model max-tokens http-client costs]
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt opts]
@@ -475,21 +475,21 @@
           ;; Use streaming for large max_tokens (API requires it for >16384) or thinking
           stream? (or thinking (> effective-max-tokens 16384))
           cache-prefix (:cache-prefix opts)
-          request (anthropic-toolcall-request api-key effective-model prompt (:system opts)
-                                              effective-max-tokens stream? thinking cache-prefix)
+          request (anthropic-tc-request api-key effective-model prompt (:system opts)
+                                        effective-max-tokens stream? thinking cache-prefix)
           response (.send http-client request (HttpResponse$BodyHandlers/ofString))
           status (.statusCode response)]
       (if (<= 200 status 299)
         (let [{:keys [text usage]} (if stream?
-                                     (parse-anthropic-toolcall-stream (.body response))
-                                     (parse-anthropic-toolcall-response (.body response)))]
+                                     (parse-anthropic-tc-stream (.body response))
+                                     (parse-anthropic-tc-response (.body response)))]
           (track-usage! effective-model usage costs)
           text)
         (throw (ex-info "Anthropic mandatory tool-call request failed"
                         {:status status :body (.body response)})))))
   (supports-prefill [_] false))
 
-(defn anthropic-toolcall-provider
+(defn anthropic-tc-provider
   "Create an Anthropic provider with mandatory spell_suffix tool output.
 
    Options:
@@ -497,14 +497,14 @@
    - :model - Model name (default: claude-sonnet-4-5-20250929)
    - :max-tokens - Max tokens per response (default: 16384)
    - :costs - Cost table {model-prefix [input-per-M output-per-M]}"
-  ([] (anthropic-toolcall-provider {}))
+  ([] (anthropic-tc-provider {}))
   ([{:keys [api-key model max-tokens costs]
      :or {model "claude-sonnet-4-5-20250929"}}]
    (let [key (or api-key (System/getenv "ANTHROPIC_API_KEY"))]
      (when-not key
        (throw (ex-info "No API key provided. Set ANTHROPIC_API_KEY or pass :api-key"
                        {:env "ANTHROPIC_API_KEY"})))
-     (->AnthropicToolcallProvider key model max-tokens (make-http-client) costs))))
+     (->AnthropicTcProvider key model max-tokens (make-http-client) costs))))
 
 ;; ---------------------------------------------------------------------------
 ;; Ollama Provider
@@ -734,7 +734,7 @@
                         {:path path}
                         e))))))
 
-(defn- chatgpt-codex-request
+(defn- codex-msg-request
   [api-key account-id base-url model prompt system-prompt max-tokens reasoning-effort verbosity grammar-format]
   (let [reasoning (when reasoning-effort
                     {:effort reasoning-effort})
@@ -773,7 +773,7 @@
                     (.build))]
     request))
 
-(defn- chatgpt-codex-toolcall-request
+(defn- codex-tc-request
   [api-key account-id base-url model prompt system-prompt max-tokens reasoning-effort verbosity grammar-format]
   (let [reasoning (when reasoning-effort
                     {:effort reasoning-effort})
@@ -815,7 +815,7 @@
                     (.build))]
     request))
 
-(defn- parse-chatgpt-codex-stream
+(defn- parse-codex-msg-stream
   "Parse ChatGPT Codex Responses SSE stream, returning {:text :usage}."
   [response-body]
   (let [failed (atom nil)
@@ -843,7 +843,7 @@
                       {:body (subs response-body 0 (min 1000 (count response-body)))})))
     (parse-openai-responses-response (json/write-str @completed))))
 
-(defn- parse-chatgpt-codex-toolcall-response
+(defn- parse-codex-tc-response
   "Parse a completed ChatGPT Codex response.
    Prefer custom_tool_call input; ignore assistant message text when no tool call is present."
   [completed]
@@ -858,7 +858,7 @@
                      :output_tokens (get-in usage [:output_tokens] 0)}
               reasoning-tokens (assoc :reasoning_tokens reasoning-tokens))}))
 
-(defn- parse-chatgpt-codex-toolcall-stream
+(defn- parse-codex-tc-stream
   "Parse ChatGPT Codex Responses SSE stream for tool-call mode.
    If no custom tool call is present, returns empty text."
   [response-body]
@@ -885,9 +885,9 @@
     (when-not @completed
       (throw (ex-info "ChatGPT Codex Responses stream missing response.completed"
                       {:body (subs response-body 0 (min 1000 (count response-body)))})))
-    (parse-chatgpt-codex-toolcall-response @completed)))
+    (parse-codex-tc-response @completed)))
 
-(defrecord ChatGPTCodexProvider [api-key account-id base-url model max-tokens http-client costs]
+(defrecord CodexMsgProvider [api-key account-id base-url model max-tokens http-client costs]
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt opts]
@@ -895,19 +895,19 @@
           grammar-format (:grammar-format opts)
           reasoning-effort (:reasoning-effort opts)
           verbosity (:verbosity opts)
-          request (chatgpt-codex-request api-key account-id base-url effective-model prompt
-                                         (:system opts) max-tokens reasoning-effort verbosity grammar-format)
+          request (codex-msg-request api-key account-id base-url effective-model prompt
+                                    (:system opts) max-tokens reasoning-effort verbosity grammar-format)
           response (.send http-client request (HttpResponse$BodyHandlers/ofString))
           status (.statusCode response)]
       (if (<= 200 status 299)
-        (let [{:keys [text usage]} (parse-chatgpt-codex-stream (.body response))]
+        (let [{:keys [text usage]} (parse-codex-msg-stream (.body response))]
           (track-usage! effective-model usage costs)
           text)
         (throw (ex-info "ChatGPT Codex Responses request failed"
                         {:status status :body (.body response)})))))
   (supports-prefill [_] false))
 
-(defrecord ChatGPTCodexToolcallProvider [api-key account-id base-url model max-tokens http-client costs]
+(defrecord CodexTcProvider [api-key account-id base-url model max-tokens http-client costs]
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt opts]
@@ -915,20 +915,20 @@
           grammar-format (:grammar-format opts)
           reasoning-effort (:reasoning-effort opts)
           verbosity (:verbosity opts)
-          request (chatgpt-codex-toolcall-request api-key account-id base-url effective-model prompt
-                                                  (:system opts) max-tokens reasoning-effort verbosity grammar-format)
+          request (codex-tc-request api-key account-id base-url effective-model prompt
+                                    (:system opts) max-tokens reasoning-effort verbosity grammar-format)
           response (.send http-client request (HttpResponse$BodyHandlers/ofString))
           status (.statusCode response)]
       (if (<= 200 status 299)
-        (let [{:keys [text usage]} (parse-chatgpt-codex-toolcall-stream (.body response))]
+        (let [{:keys [text usage]} (parse-codex-tc-stream (.body response))]
           (track-usage! effective-model usage costs)
           text)
         (throw (ex-info "ChatGPT Codex mandatory tool-call request failed"
                         {:status status :body (.body response)})))))
   (supports-prefill [_] false))
 
-(defn chatgpt-codex-provider
-  "Create a ChatGPT subscription-backed Codex provider.
+(defn codex-msg-provider
+  "Create a ChatGPT subscription-backed Codex provider (message transport).
 
    Options:
    - :api-key     - bearer token override (default: read from :auth-file)
@@ -938,7 +938,7 @@
    - :model       - Model name (default: gpt-5.3-codex)
    - :max-tokens  - Max output tokens
    - :costs       - Cost table {model-prefix [input-per-M output-per-M]}"
-  ([] (chatgpt-codex-provider {}))
+  ([] (codex-msg-provider {}))
   ([{:keys [api-key account-id auth-file base-url model max-tokens costs]
      :or {auth-file "~/.codex/auth.json"
           base-url "https://chatgpt.com/backend-api/codex"
@@ -952,9 +952,9 @@
      (when (str/blank? token)
        (throw (ex-info "No ChatGPT token available. Log in with codex or pass :api-key"
                        {:auth-file (expand-home auth-file)})))
-     (->ChatGPTCodexProvider token effective-account-id url model max-tokens (make-http-client) costs))))
+     (->CodexMsgProvider token effective-account-id url model max-tokens (make-http-client) costs))))
 
-(defn chatgpt-codex-toolcall-provider
+(defn codex-tc-provider
   "Create a ChatGPT subscription-backed Codex provider with mandatory custom tool output.
 
    Options:
@@ -965,7 +965,7 @@
    - :model       - Model name (default: gpt-5.3-codex)
    - :max-tokens  - Max output tokens
    - :costs       - Cost table {model-prefix [input-per-M output-per-M]}"
-  ([] (chatgpt-codex-toolcall-provider {}))
+  ([] (codex-tc-provider {}))
   ([{:keys [api-key account-id auth-file base-url model max-tokens costs]
      :or {auth-file "~/.codex/auth.json"
           base-url "https://chatgpt.com/backend-api/codex"
@@ -979,7 +979,7 @@
      (when (str/blank? token)
        (throw (ex-info "No ChatGPT token available. Log in with codex or pass :api-key"
                        {:auth-file (expand-home auth-file)})))
-     (->ChatGPTCodexToolcallProvider token effective-account-id url model max-tokens (make-http-client) costs))))
+     (->CodexTcProvider token effective-account-id url model max-tokens (make-http-client) costs))))
 
 ;; ---------------------------------------------------------------------------
 ;; Kimi Provider (Moonshot AI)
@@ -1126,8 +1126,7 @@
           prefix (:prefix opts)]
       ;; Display context on stderr (keeps stdout clean for program output)
       (binding [*out* *err*]
-        (print "\033[2J\033[H")
-        (flush)
+        (println "\n════════════════════════════════════════")
         (when system
           (println "=== SYSTEM PROMPT ===")
           (println system)
@@ -1222,11 +1221,11 @@
                auth-file (assoc :auth-file auth-file)
                account-id (assoc :account-id account-id))]
     (case type
-      :anthropic (anthropic-provider opts)
-      :anthropic-toolcall (anthropic-toolcall-provider opts)
+      :anthropic-pf (anthropic-pf-provider opts)
+      :anthropic-tc (anthropic-tc-provider opts)
       :openai    (openai-provider opts)
-      :chatgpt-codex (chatgpt-codex-provider opts)
-      :chatgpt-codex-toolcall (chatgpt-codex-toolcall-provider opts)
+      :codex-msg (codex-msg-provider opts)
+      :codex-tc  (codex-tc-provider opts)
       :ollama    (ollama-provider opts)
       :kimi      (kimi-provider opts)
       :test      (test-provider {:responses responses :response-rules response-rules
@@ -1257,11 +1256,11 @@
                auth-file (assoc :auth-file auth-file)
                account-id (assoc :account-id account-id))]
     (case type
-      :anthropic (anthropic-provider opts)
-      :anthropic-toolcall (anthropic-toolcall-provider opts)
+      :anthropic-pf (anthropic-pf-provider opts)
+      :anthropic-tc (anthropic-tc-provider opts)
       :openai    (openai-provider opts)
-      :chatgpt-codex (chatgpt-codex-provider opts)
-      :chatgpt-codex-toolcall (chatgpt-codex-toolcall-provider opts)
+      :codex-msg (codex-msg-provider opts)
+      :codex-tc  (codex-tc-provider opts)
       :ollama    (ollama-provider opts)
       :kimi      (kimi-provider opts)
       :test      (test-provider {:responses responses :response-rules response-rules

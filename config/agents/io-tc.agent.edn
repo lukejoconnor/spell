@@ -1,7 +1,7 @@
 ;; I/O-capable profile for mandatory tool-call transport providers.
 
-{:base base-toolcall.agent.edn
- :name io-toolcall
+{:base base-tc.agent.edn
+ :name io-tc
  :doc "Tool-call transport agent with io namespace for benchmark/runtime file access"
 
  :namespaces

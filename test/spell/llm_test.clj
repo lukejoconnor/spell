@@ -296,48 +296,48 @@
                                         :model "qwen2.5:32b"} nil)]
       (is (= "qwen2.5:32b" (:model p)))))
 
-  (testing "load-provider supports chatgpt-codex type"
-    (let [auth-file (java.io.File/createTempFile "provider-chatgpt-auth-" ".json")
-          provider-file (java.io.File/createTempFile "provider-chatgpt-" ".provider.edn")]
+  (testing "load-provider supports codex-msg type"
+    (let [auth-file (java.io.File/createTempFile "provider-codex-msg-auth-" ".json")
+          provider-file (java.io.File/createTempFile "provider-codex-msg-" ".provider.edn")]
       (try
         (spit auth-file (json/write-str {:tokens {:access_token "test-token"
                                                   :account_id "acc-1"}}))
-        (spit provider-file (pr-str {:type :chatgpt-codex
+        (spit provider-file (pr-str {:type :codex-msg
                                      :auth-file (.getAbsolutePath auth-file)
                                      :model "gpt-5.3-codex"}))
         (let [p (provider/load-provider (.getAbsolutePath provider-file))]
-          (is (instance? spell.provider.ChatGPTCodexProvider p))
+          (is (instance? spell.provider.CodexMsgProvider p))
           (is (= "gpt-5.3-codex" (:model p))))
         (finally
           (.delete auth-file)
           (.delete provider-file)))))
 
-  (testing "load-provider supports chatgpt-codex-toolcall type"
-    (let [auth-file (java.io.File/createTempFile "provider-chatgpt-toolcall-auth-" ".json")
-          provider-file (java.io.File/createTempFile "provider-chatgpt-toolcall-" ".provider.edn")]
+  (testing "load-provider supports codex-tc type"
+    (let [auth-file (java.io.File/createTempFile "provider-codex-tc-auth-" ".json")
+          provider-file (java.io.File/createTempFile "provider-codex-tc-" ".provider.edn")]
       (try
         (spit auth-file (json/write-str {:tokens {:access_token "test-token"
                                                   :account_id "acc-1"}}))
-        (spit provider-file (pr-str {:type :chatgpt-codex-toolcall
+        (spit provider-file (pr-str {:type :codex-tc
                                      :auth-file (.getAbsolutePath auth-file)
                                      :model "gpt-5.3-codex"}))
         (let [p (provider/load-provider (.getAbsolutePath provider-file))]
-          (is (instance? spell.provider.ChatGPTCodexToolcallProvider p))
+          (is (instance? spell.provider.CodexTcProvider p))
           (is (= "gpt-5.3-codex" (:model p))))
         (finally
           (.delete auth-file)
           (.delete provider-file)))))
 
-  (testing "load-provider supports anthropic-toolcall type"
-    (let [provider-file (java.io.File/createTempFile "provider-anthropic-toolcall-" ".provider.edn")]
+  (testing "load-provider supports anthropic-tc type"
+    (let [provider-file (java.io.File/createTempFile "provider-anthropic-tc-" ".provider.edn")]
       (try
-        (spit provider-file (pr-str {:type :anthropic-toolcall
+        (spit provider-file (pr-str {:type :anthropic-tc
                                      :model "claude-sonnet-4-5-20250929"}))
-        (with-redefs [provider/anthropic-toolcall-provider (fn [opts]
-                                                              {:provider :anthropic-toolcall
-                                                               :opts opts})]
+        (with-redefs [provider/anthropic-tc-provider (fn [opts]
+                                                       {:provider :anthropic-tc
+                                                        :opts opts})]
           (let [p (provider/load-provider (.getAbsolutePath provider-file))]
-            (is (= :anthropic-toolcall (:provider p)))
+            (is (= :anthropic-tc (:provider p)))
             (is (= "claude-sonnet-4-5-20250929" (get-in p [:opts :model])))))
         (finally
           (.delete provider-file))))))
@@ -451,19 +451,19 @@
       (is (thrown-with-msg? Exception #"OpenAI Responses API error"
             (#'provider/parse-openai-responses-response response-body))))))
 
-(deftest anthropic-toolcall-provider-constructor-test
+(deftest anthropic-tc-provider-constructor-test
   (testing "constructs with explicit api-key and model"
-    (let [p (provider/anthropic-toolcall-provider {:api-key "anthropic-key"
-                                                    :model "claude-sonnet-4-5-20250929"})]
-      (is (instance? spell.provider.AnthropicToolcallProvider p))
+    (let [p (provider/anthropic-tc-provider {:api-key "anthropic-key"
+                                              :model "claude-sonnet-4-5-20250929"})]
+      (is (instance? spell.provider.AnthropicTcProvider p))
       (is (= "anthropic-key" (:api-key p)))
       (is (= "claude-sonnet-4-5-20250929" (:model p)))))
 
   (testing "uses a default model when omitted"
-    (let [p (provider/anthropic-toolcall-provider {:api-key "anthropic-key"})]
+    (let [p (provider/anthropic-tc-provider {:api-key "anthropic-key"})]
       (is (some? (:model p))))))
 
-(deftest anthropic-toolcall-parse-test
+(deftest anthropic-tc-parse-test
   (testing "parses completed response with spell_suffix tool_use"
     (let [body (json/write-str {:content [{:type "tool_use"
                                            :name "spell_suffix"
@@ -472,7 +472,7 @@
                                         :output_tokens 5
                                         :cache_creation_input_tokens 7
                                         :cache_read_input_tokens 3}})
-          result (#'provider/parse-anthropic-toolcall-response body)]
+          result (#'provider/parse-anthropic-tc-response body)]
       (is (= "(def x 1)" (:text result)))
       (is (= 11 (get-in result [:usage :input_tokens])))
       (is (= 5 (get-in result [:usage :output_tokens])))
@@ -483,7 +483,7 @@
     (let [body (json/write-str {:content [{:type "text" :text "no tool call"}]
                                 :usage {:input_tokens 1 :output_tokens 1}})]
       (is (thrown-with-msg? Exception #"missing spell_suffix tool_use"
-            (#'provider/parse-anthropic-toolcall-response body)))))
+            (#'provider/parse-anthropic-tc-response body)))))
 
   (testing "parses stream with input_json_delta"
     (let [sse (str "event: message_start\n"
@@ -513,7 +513,7 @@
                    (json/write-str {:type "message_delta"
                                     :usage {:output_tokens 4}})
                    "\n\n")
-          result (#'provider/parse-anthropic-toolcall-stream sse)]
+          result (#'provider/parse-anthropic-tc-stream sse)]
       (is (= "(def y 2)" (:text result)))
       (is (= 8 (get-in result [:usage :input_tokens])))
       (is (= 4 (get-in result [:usage :output_tokens])))
@@ -532,61 +532,61 @@
                                     :usage {:output_tokens 1}})
                    "\n\n")]
       (is (thrown-with-msg? Exception #"missing spell_suffix tool_use"
-            (#'provider/parse-anthropic-toolcall-stream sse))))))
+            (#'provider/parse-anthropic-tc-stream sse))))))
 
-(deftest chatgpt-codex-provider-constructor-test
+(deftest codex-msg-provider-constructor-test
   (testing "constructs with explicit token override"
-    (let [p (provider/chatgpt-codex-provider {:api-key "chatgpt-token"
-                                              :account-id "acc_123"})]
-      (is (instance? spell.provider.ChatGPTCodexProvider p))
+    (let [p (provider/codex-msg-provider {:api-key "chatgpt-token"
+                                          :account-id "acc_123"})]
+      (is (instance? spell.provider.CodexMsgProvider p))
       (is (= "chatgpt-token" (:api-key p)))
       (is (= "acc_123" (:account-id p)))
       (is (some? (:base-url p)))
       (is (some? (:model p)))))
 
   (testing "loads token and account id from auth file"
-    (let [tmp (java.io.File/createTempFile "chatgpt-auth-" ".json")]
+    (let [tmp (java.io.File/createTempFile "codex-msg-auth-" ".json")]
       (try
         (spit tmp (json/write-str {:tokens {:access_token "from-file-token"
                                             :account_id "from-file-account"}}))
-        (let [p (provider/chatgpt-codex-provider {:auth-file (.getAbsolutePath tmp)})]
+        (let [p (provider/codex-msg-provider {:auth-file (.getAbsolutePath tmp)})]
           (is (= "from-file-token" (:api-key p)))
           (is (= "from-file-account" (:account-id p))))
         (finally
           (.delete tmp)))))
 
   (testing "strips trailing slash from base-url"
-    (let [p (provider/chatgpt-codex-provider {:api-key "chatgpt-token"
-                                              :base-url "https://chatgpt.com/backend-api/codex/"})]
+    (let [p (provider/codex-msg-provider {:api-key "chatgpt-token"
+                                          :base-url "https://chatgpt.com/backend-api/codex/"})]
       (is (= "https://chatgpt.com/backend-api/codex" (:base-url p))))))
 
-(deftest chatgpt-codex-toolcall-provider-constructor-test
+(deftest codex-tc-provider-constructor-test
   (testing "constructs with explicit token override"
-    (let [p (provider/chatgpt-codex-toolcall-provider {:api-key "chatgpt-token"
-                                                       :account-id "acc_123"})]
-      (is (instance? spell.provider.ChatGPTCodexToolcallProvider p))
+    (let [p (provider/codex-tc-provider {:api-key "chatgpt-token"
+                                          :account-id "acc_123"})]
+      (is (instance? spell.provider.CodexTcProvider p))
       (is (= "chatgpt-token" (:api-key p)))
       (is (= "acc_123" (:account-id p)))
       (is (some? (:base-url p)))
       (is (some? (:model p)))))
 
   (testing "loads token and account id from auth file"
-    (let [tmp (java.io.File/createTempFile "chatgpt-toolcall-auth-" ".json")]
+    (let [tmp (java.io.File/createTempFile "codex-tc-auth-" ".json")]
       (try
         (spit tmp (json/write-str {:tokens {:access_token "from-file-token"
                                             :account_id "from-file-account"}}))
-        (let [p (provider/chatgpt-codex-toolcall-provider {:auth-file (.getAbsolutePath tmp)})]
+        (let [p (provider/codex-tc-provider {:auth-file (.getAbsolutePath tmp)})]
           (is (= "from-file-token" (:api-key p)))
           (is (= "from-file-account" (:account-id p))))
         (finally
           (.delete tmp)))))
 
   (testing "strips trailing slash from base-url"
-    (let [p (provider/chatgpt-codex-toolcall-provider {:api-key "chatgpt-token"
-                                                       :base-url "https://chatgpt.com/backend-api/codex/"})]
+    (let [p (provider/codex-tc-provider {:api-key "chatgpt-token"
+                                          :base-url "https://chatgpt.com/backend-api/codex/"})]
       (is (= "https://chatgpt.com/backend-api/codex" (:base-url p))))))
 
-(deftest chatgpt-codex-stream-parse-test
+(deftest codex-msg-stream-parse-test
   (testing "parses response.completed with assistant message output"
     (let [sse (str "event: response.completed\n"
                    "data: "
@@ -597,7 +597,7 @@
                                                :usage {:input_tokens 10
                                                        :output_tokens 4}}})
                    "\n\n")
-          result (#'provider/parse-chatgpt-codex-stream sse)]
+          result (#'provider/parse-codex-msg-stream sse)]
       (is (= "OK" (:text result)))
       (is (= 10 (get-in result [:usage :input_tokens])))
       (is (= 4 (get-in result [:usage :output_tokens])))))
@@ -612,7 +612,7 @@
                                                :usage {:input_tokens 9
                                                        :output_tokens 3}}})
                    "\n\n")
-          result (#'provider/parse-chatgpt-codex-stream sse)]
+          result (#'provider/parse-codex-msg-stream sse)]
       (is (= "(def x 1)" (:text result)))
       (is (= 9 (get-in result [:usage :input_tokens])))
       (is (= 3 (get-in result [:usage :output_tokens])))))
@@ -624,9 +624,9 @@
                                     :response {:error {:message "bad auth"}}})
                    "\n\n")]
       (is (thrown-with-msg? Exception #"ChatGPT Codex Responses API error"
-            (#'provider/parse-chatgpt-codex-stream sse))))))
+            (#'provider/parse-codex-msg-stream sse))))))
 
-(deftest chatgpt-codex-toolcall-stream-parse-test
+(deftest codex-tc-stream-parse-test
   (testing "parses custom_tool_call output"
     (let [sse (str "event: response.completed\n"
                    "data: "
@@ -637,7 +637,7 @@
                                                :usage {:input_tokens 9
                                                        :output_tokens 3}}})
                    "\n\n")
-          result (#'provider/parse-chatgpt-codex-toolcall-stream sse)]
+          result (#'provider/parse-codex-tc-stream sse)]
       (is (= "(def x 1)" (:text result)))
       (is (= 9 (get-in result [:usage :input_tokens])))
       (is (= 3 (get-in result [:usage :output_tokens])))))
@@ -652,7 +652,7 @@
                                                :usage {:input_tokens 10
                                                        :output_tokens 4}}})
                    "\n\n")
-          result (#'provider/parse-chatgpt-codex-toolcall-stream sse)]
+          result (#'provider/parse-codex-tc-stream sse)]
       (is (= "" (:text result)))
       (is (= 10 (get-in result [:usage :input_tokens])))
       (is (= 4 (get-in result [:usage :output_tokens])))))
@@ -664,7 +664,7 @@
                                     :response {:error {:message "bad auth"}}})
                    "\n\n")]
       (is (thrown-with-msg? Exception #"ChatGPT Codex Responses API error"
-            (#'provider/parse-chatgpt-codex-toolcall-stream sse))))))
+            (#'provider/parse-codex-tc-stream sse))))))
 
 ;; =============================================================================
 ;; CLI parse-model-spec tests
@@ -683,23 +683,21 @@
     (is (= {:provider "ollama" :model "smollm2:135m"}
            (cli/parse-model-spec "ollama:smollm2:135m"))))
 
-  (testing "chatgpt provider prefix"
-    (is (= {:provider "chatgpt" :model "gpt-4o"}
-           (cli/parse-model-spec "chatgpt:gpt-4o")))
-    (is (= {:provider "chatgpt" :model "gpt-4o-mini"}
-           (cli/parse-model-spec "chatgpt:gpt-4o-mini"))))
+  (testing "codex-msg provider prefix"
+    (is (= {:provider "codex-msg" :model "gpt-5.3-codex"}
+           (cli/parse-model-spec "codex-msg:gpt-5.3-codex"))))
 
-  (testing "codex provider prefix"
-    (is (= {:provider "codex" :model "gpt-5.3-codex"}
-           (cli/parse-model-spec "codex:gpt-5.3-codex"))))
+  (testing "codex-tc provider prefix"
+    (is (= {:provider "codex-tc" :model "gpt-5.3-codex"}
+           (cli/parse-model-spec "codex-tc:gpt-5.3-codex"))))
 
   (testing "openai provider prefix"
     (is (= {:provider "openai" :model "gpt-4o"}
            (cli/parse-model-spec "openai:gpt-4o"))))
 
-  (testing "anthropic-toolcall provider prefix"
-    (is (= {:provider "anthropic-toolcall" :model "claude-sonnet-4-5-20250929"}
-           (cli/parse-model-spec "anthropic-toolcall:claude-sonnet-4-5-20250929"))))
+  (testing "anthropic-tc provider prefix"
+    (is (= {:provider "anthropic-tc" :model "claude-sonnet-4-5-20250929"}
+           (cli/parse-model-spec "anthropic-tc:claude-sonnet-4-5-20250929"))))
 
   (testing "unknown provider prefix throws"
     (is (thrown-with-msg? Exception #"Unknown provider prefix"
@@ -1045,8 +1043,8 @@
 ;; =============================================================================
 
 (deftest supports-prefill-test
-  (testing "Anthropic toolcall provider does not support prefill"
-    (let [p (provider/anthropic-toolcall-provider {:api-key "test"})]
+  (testing "Anthropic tc provider does not support prefill"
+    (let [p (provider/anthropic-tc-provider {:api-key "test"})]
       (is (false? (provider/supports-prefill p)))))
 
   (testing "OpenAI provider does not support prefill"
