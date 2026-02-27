@@ -217,10 +217,12 @@
 (defn- create-msg
   "Create a function that reopens a completion, appends (def name value),
    and appends an !llm-self extension so the recipient continues thinking.
+   Injects a think annotation so the agent knows the message preempted its
+   trailing expression (if active) or awakened it (if sleeping).
    Internal plumbing for signaling (waiting-for, spawn-result)."
   [name value]
   (fn [raw]
-    (str (reopen raw) "(def " name " " (eval/serialize-for-continuation value) ") '(!llm-self (prune-and-reopen completion)) ")))
+    (str (reopen raw) "(think \"[preempted or awakened by " name "]\") (def " name " " (eval/serialize-for-continuation value) ") '(!llm-self (prune-and-reopen completion)) ")))
 
 (defn send
   "Send a message to target with auto-tagged sender handle.
@@ -460,7 +462,10 @@ Agents other than :main persist after returning; a later message can wake them f
 
 Message preemption: if another agent sends you a message while your response
 is in flight, the message is appended as an extension and your trailing
-expression becomes inert. You get a new turn with the incoming message in scope.
+expression becomes inert. A (think \"[preempted or awakened by msg-N]\")
+annotation precedes the message def. 'Preempted' means your trailing expression
+did not fire; 'awakened' means you were sleeping and the message woke you.
+You get a new turn with the incoming message in scope.
 You may then re-run the trailing expression from your previous turn.
 
 All agents/ calls are effect functions — quote them in the trailing expression.
@@ -543,14 +548,16 @@ Example — fan-out, wait for all:
 
 Message preemption: if another agent sends you a message while your response
 is in flight, the message is appended as an extension. Your trailing expression
-(e.g. this ask) becomes inert — it does not fire. You get a new turn with the
-incoming message in scope. Re-evaluate and re-issue if still appropriate.
+(e.g. this ask) becomes inert — it does not fire. A think annotation marks
+the event. You get a new turn with the incoming message in scope.
+Re-evaluate and re-issue if still appropriate.
 
   ...▌
   '(agents/!ask :B \"hello\")
   ;; agent C sends a message before your ask fires; your completion becomes:
-  ...'(agents/!ask :B \"hello\") (def msg-0 {:from :C :body \"urgent\"})
-  '(!llm-self (reopen completion))  ;; ask became inert data — it did not fire"
+  ...'(agents/!ask :B \"hello\") (think \"[preempted or awakened by msg-0]\")
+  (def msg-0 {:from :C :body \"urgent\"})
+  '(!llm-self (prune-and-reopen completion))  ;; ask became inert data — it did not fire"
 
     :!reply-ask
     "Reply to a received message and block for the next response.
