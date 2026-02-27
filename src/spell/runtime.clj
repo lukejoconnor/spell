@@ -9,6 +9,7 @@
   (:refer-clojure :exclude [send])
   (:require [clojure.string :as str]
             [spell.eval :as eval]
+            [spell.macros :as macros]
             [spell.parse :as parse]))
 
 ;; =============================================================================
@@ -199,7 +200,8 @@
 ;; =============================================================================
 
 (defn- reopen
-  "Reopen a completion wrapper by parsing to AST and rebuilding an open prefix.
+  "Reopen a completion wrapper by parsing to AST, pruning rethink-marked
+   expressions, and rebuilding an open prefix.
    Handles excess trailing parens safely (the LLM may write too many closers).
    Falls back to string-level strip-3 for non-quine forms."
   [s]
@@ -209,7 +211,8 @@
       (let [elements   (vec (seq form))
             inert-args (subvec elements 2 (max 2 (dec (count elements))))
             last-arg   (last elements)
-            [_ do-form] (seq last-arg)
+            pruned-last (macros/prune-rethinks last-arg)
+            [_ do-form] (seq pruned-last)
             body-forms (rest do-form)]
         (str "(quine completion "
              (when (seq inert-args)
@@ -225,7 +228,7 @@
    Internal plumbing for signaling (waiting-for, spawn-result)."
   [name value]
   (fn [raw]
-    (str (reopen raw) "(def " name " " (eval/serialize-for-continuation value) ") '(!llm-self (reopen completion)) ")))
+    (str (reopen raw) "(def " name " " (eval/serialize-for-continuation value) ") '(!llm-self (prune-and-reopen completion)) ")))
 
 (defn send
   "Send a message to target with auto-tagged sender handle.
