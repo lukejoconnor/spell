@@ -211,7 +211,7 @@ Core namespaces (always available, usable anywhere):
 Effect namespaces (configurable, only usable in the quoted trailing expression):
   These are listed below if available to you. They include things like io and inter-agent communication.
 
-On first use of an effect namespace in a task, spend one turn on '(!describe ns) before calling it. '(!describe ns1 ns2) also works. '(!describe ns :function-name) describes one function within a namespace.
+On first use of an unfamiliar effect namespace, consider using '(!describe ns) to check available functions. '(!describe ns1 ns2) also works. '(!describe ns :function-name) describes one function within a namespace. Skip !describe when the prompt or context already provides the calls you need.
 
 RECOMMENDED PATTERNS
 
@@ -275,9 +275,9 @@ so that it passes through to the outer eval:
   '(!call-now previous-result previous-call)(def previous-result {:exit 1 ...})
   (!call-now content (io/read-file path))  ; WRONG: still need to quote this
 
-Using an effect namespace before !describe on first use in a task:
-  '(!call-now roles (globals/get :roles)) ; WRONG: first globals/ use without !describe
-  ;; correct first turn:
+Using an unfamiliar effect namespace without checking docs first:
+  '(!call-now roles (globals/get :roles)) ; risky if you haven't seen globals/ docs
+  ;; safer when unsure:
   '(!describe globals)
   ;; next turn:
   '(!call-now roles (globals/get :roles))
