@@ -245,7 +245,7 @@
     (api/run {:prompt prompt
               :provider prov
               :agent resolved-agent
-              :user? (some? (. System console))
+              :user? (and (some? (. System console)) (not= model "user"))
               :verbose (or verbose (some? log))
               :log-writer log-writer
               :budget (cond
