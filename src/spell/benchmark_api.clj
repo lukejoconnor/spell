@@ -9,8 +9,8 @@
   (:gen-class))
 
 (def provider-prefixes
-  #{"ollama" "chatgpt" "codex" "codex-toolcall" "openclaw" "openai"
-    "anthropic" "anthropic-toolcall" "kimi" "moonshot" "test"})
+  #{"ollama" "codex-msg" "codex-tc" "openclaw" "openai"
+    "anthropic-pf" "anthropic-tc" "kimi" "moonshot" "test"})
 
 (def cli-options
   [["-r" "--request FILE" "Request JSON path, or '-' for stdin" :default "-"]
@@ -51,16 +51,15 @@
   (get model-aliases model model))
 
 (def provider-edn-by-prefix
-  {"anthropic" "config/providers/anthropic.provider.edn"
-   "anthropic-toolcall" "config/providers/anthropic-toolcall.provider.edn"
-   "chatgpt" "config/providers/chatgpt-codex.provider.edn"
-   "codex" "config/providers/chatgpt-codex.provider.edn"
-   "codex-toolcall" "config/providers/chatgpt-codex-toolcall.provider.edn"
-   "openai" "config/providers/openai.provider.edn"
-   "ollama" "config/providers/ollama.provider.edn"
-   "openclaw" "config/providers/openclaw.provider.edn"
-   "kimi" "config/providers/kimi.provider.edn"
-   "moonshot" "config/providers/kimi.provider.edn"})
+  {"anthropic-pf"  "config/providers/anthropic-pf.provider.edn"
+   "anthropic-tc"  "config/providers/anthropic-tc.provider.edn"
+   "codex-msg"     "config/providers/codex-msg.provider.edn"
+   "codex-tc"      "config/providers/codex-tc.provider.edn"
+   "openai"        "config/providers/openai.provider.edn"
+   "ollama"        "config/providers/ollama.provider.edn"
+   "openclaw"      "config/providers/openclaw.provider.edn"
+   "kimi"          "config/providers/kimi.provider.edn"
+   "moonshot"      "config/providers/kimi.provider.edn"})
 
 (defn- normalize-keys [v]
   (cond
@@ -104,10 +103,12 @@
     :else (pr-str v)))
 
 (defn- make-provider [{:keys [model max-tokens responses-api] :as _req}]
-  (let [model-spec (or model "anthropic:claude-sonnet-4-5-20250929")
+  (when-not model
+    (throw (ex-info "model is required in benchmark request" {:field "model"})))
+  (let [model-spec model
         {:keys [provider model]} (parse-model-spec model-spec)
         resolved-model (resolve-model model)
-        resolved-model (if (and (contains? #{"chatgpt" "codex"} provider)
+        resolved-model (if (and (contains? #{"codex-msg" "codex-tc"} provider)
                                 (= resolved-model "gpt-5.3"))
                          "gpt-5.3-codex"
                          resolved-model)
@@ -118,11 +119,11 @@
       "ollama"
       (provider/ollama-provider base-opts)
 
-      ("chatgpt" "codex")
-      (provider/chatgpt-codex-provider base-opts)
+      "codex-msg"
+      (provider/codex-msg-provider base-opts)
 
-      "codex-toolcall"
-      (provider/chatgpt-codex-toolcall-provider base-opts)
+      "codex-tc"
+      (provider/codex-tc-provider base-opts)
 
       "openai"
       (provider/openai-provider (cond-> base-opts
@@ -137,11 +138,11 @@
       "test"
       (provider/test-provider {:response "\"hello world\""})
 
-      ("anthropic" nil)
-      (provider/anthropic-provider base-opts)
+      ("anthropic-pf" nil)
+      (provider/anthropic-pf-provider base-opts)
 
-      "anthropic-toolcall"
-      (provider/anthropic-toolcall-provider base-opts)
+      "anthropic-tc"
+      (provider/anthropic-tc-provider base-opts)
 
       (throw (ex-info (str "Unknown provider prefix: " provider)
                       {:provider provider :model-spec model-spec})))))
@@ -149,9 +150,10 @@
 (defn- default-agent-from-request
   "Resolve default agent path from provider .edn for this request."
   [{:keys [model responses-api]}]
-  (let [model-spec (or model "anthropic:claude-sonnet-4-5-20250929")
-        {:keys [provider]} (parse-model-spec model-spec)
-        provider-prefix (or provider "anthropic")
+  (when-not model
+    (throw (ex-info "model is required to resolve default agent" {:field "model"})))
+  (let [{:keys [provider]} (parse-model-spec model)
+        provider-prefix (or provider "anthropic-pf")
         provider-edn (cond
                        (and (= provider-prefix "openai") responses-api)
                        "config/providers/openai-responses.provider.edn"
@@ -161,7 +163,7 @@
           (provider/provider-edn-default-agent provider-edn))
         ;; Test mode doesn't have a provider file; use message transport base.
         (when (= provider-prefix "test")
-          "config/agents/base-message.agent.edn"))))
+          "config/agents/base-msg.agent.edn"))))
 
 (defn- response-ok [mode start-ns result-map]
   (let [latency-ms (/ (double (- (System/nanoTime) start-ns)) 1000000.0)
