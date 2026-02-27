@@ -853,14 +853,18 @@
                              (:input item)))
                          (:output completed))
         reasoning-tokens (get-in usage [:output_tokens_details :reasoning_tokens])]
-    {:text (or tool-input "")
+    (when-not tool-input
+      (throw (ex-info "Codex toolcall response missing custom_tool_call"
+                      {:output (:output completed)})))
+    {:text tool-input
      :usage (cond-> {:input_tokens (get-in usage [:input_tokens] 0)
                      :output_tokens (get-in usage [:output_tokens] 0)}
               reasoning-tokens (assoc :reasoning_tokens reasoning-tokens))}))
 
+
 (defn- parse-codex-tc-stream
   "Parse ChatGPT Codex Responses SSE stream for tool-call mode.
-   If no custom tool call is present, returns empty text."
+   Throws if no custom_tool_call is present (protocol violation)."
   [response-body]
   (let [failed (atom nil)
         completed (atom nil)]
