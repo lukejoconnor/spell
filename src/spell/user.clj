@@ -276,6 +276,7 @@
         eval-builtin (llm/make-eval variant-builtins effect-builtins)
         config {:variant-builtins variant-builtins
                 :eval-builtin eval-builtin
+                :allow-multiple-top-level? true
                 :recover-fn nil}]
     (llm/make-inbox-fn config (atom nil))))
 
