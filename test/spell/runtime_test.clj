@@ -896,6 +896,37 @@
             (is (some? @parent-woke)
                 "parent should wake after child fully completes")))))))
 
+(deftest stale-signal-after-inbox-drain-test
+  (testing "block-for-message blocks when inbox was drained by box (no spurious wake from stale signal)"
+    (let [handle :stale-sig
+          raw "(quine completion (eval (do )))"
+          completion (promise)
+          reached-block (promise)
+          block-result (promise)
+          call-count (atom 0)
+          eval-fn (fn [raw]
+                    (let [n (swap! call-count inc)]
+                      (if (= n 1)
+                        (do (deliver reached-block true)
+                            (runtime/block-for-message))
+                        (do (deliver block-result raw)
+                            raw))))]
+      (runtime/register! handle)
+      (runtime/-send! handle (fn [r] (str r "(def x 1) ")))
+      (deliver completion raw)
+      (future (runtime/box handle completion (runtime/make-awake-fn eval-fn)))
+      (is (= true (deref reached-block 2000 :timeout))
+          "agent should reach block-for-message")
+      (Thread/sleep 300)
+      (is (not (realized? block-result))
+          "block-for-message should not have returned (stale signal)")
+      (runtime/-send! handle (fn [r] (str r "(def y 2) ")))
+      (let [result (deref block-result 2000 :timeout)]
+        (is (not= :timeout result)
+            "agent should wake from real message")
+        (is (.contains ^String result "(def y 2)")
+            "woken raw should contain the new message")))))
+
 (deftest effect-guard-allows-in-second-pass-test
   (testing "dangerous fns work through double-evaluation (eval special form)"
     ;; agents/!ask resolves through eval double-evaluation but fails at runtime

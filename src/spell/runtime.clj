@@ -157,6 +157,12 @@
         (when-not (compare-and-set! has-box false true)
           (throw (ex-info "Box already active for handle" {:handle handle})))
         (let [[transform _] (reset-vals! inbox identity)]
+          ;; If we drained a non-empty inbox, the signal may be stale
+          ;; (delivered by -send! while we were waiting on the completion).
+          ;; Reset it so make-asleep-fn doesn't wake spuriously.
+          (when (not= transform identity)
+            (let [{:keys [signal]} (get @registry handle)]
+              (reset! signal (promise))))
           (reset! has-box false)
           (let [transformed (transform raw)]
             (binding [*current-handle* handle
