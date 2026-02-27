@@ -54,6 +54,30 @@
           result (llm "(do ")]
       (is (= "from llm" result)))))
 
+(deftest inbox-top-level-form-gating-test
+  (let [variant-builtins (merge eval/core-builtins
+                                {'describe-fn stdlib/describe}
+                                llm/core-namespaces)
+        eval-builtin (llm/make-eval variant-builtins {})]
+    (testing "multiple top-level forms are rejected by default"
+      (let [inbox-fn (llm/make-inbox-fn {:variant-builtins variant-builtins
+                                         :eval-builtin eval-builtin
+                                         :recover-fn nil}
+                                        (atom nil))]
+        (try
+          (inbox-fn "(def x 1) (+ x 1)")
+          (is false "Expected multiple top-level forms error")
+          (catch Exception e
+            (is (= :multiple-top-level-forms (:type (ex-data e))))))))
+
+    (testing "multiple top-level forms can be explicitly allowed"
+      (let [inbox-fn (llm/make-inbox-fn {:variant-builtins variant-builtins
+                                         :eval-builtin eval-builtin
+                                         :allow-multiple-top-level? true
+                                         :recover-fn nil}
+                                        (atom nil))]
+        (is (= 2 (inbox-fn "(def x 1) (+ x 1)")))))))
+
 ;; =============================================================================
 ;; File I/O task tests
 ;; =============================================================================

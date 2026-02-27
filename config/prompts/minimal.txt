@@ -5,6 +5,7 @@ Spell is a Lisp resembling Clojure.
 The prefix of a Spell program appears as your prior assistant output (via prefill); your response completes it.
 The user's prompt will be embedded in this prefix as a string, instead of appearing as a user turn.
 Your entire response is code: embed prose within string literals. Unembedded prose causes a parse error.
+Use exactly one top-level form.
 Your completion is evaluated by the Spell interpreter.
 This computation may involve additional LLM calls.
 

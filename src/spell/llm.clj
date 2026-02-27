@@ -152,7 +152,7 @@
    Closes over eval-builtin from config. Calls balance-parens because
    send transforms can produce unbalanced strings (reopen strips parens).
    trace-data-atom, when non-nil, receives {:program} for tracing."
-  [{:keys [variant-builtins eval-builtin recover-fn]} trace-data-atom]
+  [{:keys [variant-builtins eval-builtin recover-fn allow-multiple-top-level?]} trace-data-atom]
   (fn [raw]
     (let [raw       (parse/balance-parens raw)
           [forms parse-err] (try [(parse/read-all raw) nil]
@@ -163,7 +163,13 @@
           (try-reader-recovery raw parse-err variant-builtins eval-builtin)
           (throw parse-err))
         ;; Normal path: eval and recovery
-        (let [program   (if (> (count (vec forms)) 1) (list* 'do forms) (first forms))
+        (let [forms-v   (vec forms)
+              form-count (count forms-v)
+              _         (when (and (> form-count 1) (not allow-multiple-top-level?))
+                          (throw (ex-info "Multiple top-level forms are not allowed"
+                                          {:type :multiple-top-level-forms
+                                           :count form-count})))
+              program   (if (> form-count 1) (list* 'do forms-v) (first forms-v))
               indent    (apply str (repeat eval/*llm-depth* "  "))
               result    (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
                                  eval/*raw-text*       raw
