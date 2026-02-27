@@ -120,7 +120,7 @@
       (runtime/register! h-sender)
       (runtime/register! h-target)
       (binding [runtime/*current-handle* h-sender]
-        (runtime/send 42 h-target))
+        (runtime/send h-target 42))
       ;; Process the message through box
       (deliver p "(quine completion (eval (do )))")
       (runtime/box h-target p inside-fn)
@@ -381,7 +381,7 @@
                           ;; just need to use box to run
                           (let [parent (:parent-handle (get @runtime/registry handle))
                                 inside-fn (fn [_raw]
-                                          (runtime/send 42 parent)
+                                          (runtime/send parent 42)
                                           :done)
                                 p (promise)]
                             (deliver p "(quine completion (eval (do )))")
@@ -731,7 +731,7 @@
         (Thread/sleep 50)
         ;; Send explicit reply to parent (wakes parent, consumes signal)
         (binding [runtime/*current-handle* h-child]
-          (runtime/send "explicit-reply" h-parent))
+          (runtime/send h-parent "explicit-reply"))
         ;; Parent should wake with the explicit reply
         (let [result (deref result-future 5000 :timeout)]
           (is (string? result))
@@ -782,7 +782,7 @@
   (testing "effect builtins are unbound in eval's first pass (do block)"
     ;; agents/ — communication effects (namespace-qualified)
     (is (thrown-with-msg? Exception #"Unbound symbol: agents"
-          (eval/run-spell '(agents/send 42 :nobody))))
+          (eval/run-spell '(agents/send :nobody 42))))
     (is (thrown-with-msg? Exception #"Unbound symbol: agents"
           (eval/run-spell '(agents/spawn identity "test"))))
     (is (thrown-with-msg? Exception #"Unbound symbol: agents"

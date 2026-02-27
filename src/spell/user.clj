@@ -59,7 +59,7 @@
             (when (= "" (str/trim line))
               (when (compare-and-set! signal-pending false true)
                 (binding [runtime/*current-handle* :stdin-watch]
-                  (runtime/send :stdin-signal :user))))
+                  (runtime/send :user :stdin-signal))))
             (recur)))))))
 
 ;; =============================================================================
@@ -139,7 +139,7 @@
    new quine — fires via double-eval on first pass, becomes inert data
    when the next expression is appended."
   [value target]
-  (str "'(agents/send " (eval/serialize-for-continuation value) " " target ") "))
+  (str "'(agents/send " target " " (eval/serialize-for-continuation value) ") "))
 
 ;; =============================================================================
 ;; IO helpers

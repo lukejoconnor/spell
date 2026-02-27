@@ -231,7 +231,7 @@
   "Send a message to target with auto-tagged sender handle.
    Injects (def <gensym> {:from sender :body val}) into recipient's completion.
    The recipient sees the def binding with the message map."
-  [value target]
+  [target value]
   (let [name (symbol (gensym "msg-"))
         from *current-handle*]
     (send-msg-fn (create-msg name {:from from :body value}) target)))
@@ -272,7 +272,7 @@
   "Reply to a message (fire-and-forget).
    Extracts sender from the message map and sends value back."
   [msg value]
-  (send value (:from msg)))
+  (send (:from msg) value))
 
 ;; =============================================================================
 ;; Block-for-message (internal)
@@ -421,7 +421,7 @@
   "Spawn a child agent and block until it sends back a result.
    Combines spawn + block for safe use as a quoted trailing expression:
      '(agents/!spawn-ask !llm-self \"do X and send result to (parent-handle)\")
-   The child must send its result via (send value (parent-handle)).
+   The child must send its result via (send (parent-handle) value).
    Installs completion notifier so child's death wakes the parent."
   ([llm-fn prompt] (spawn-ask llm-fn prompt nil))
   ([llm-fn prompt handle-name]
@@ -441,7 +441,7 @@
 
   (agents/spawn llm-fn prompt) — start background agent and gives prompt (usually a string); returns spawned handle
   (agents/spawn llm-fn prompt :handle-name) — also assigns handle name
-  (agents/send message target)     — send message (usually a string) to target
+  (agents/send target message)     — send message (usually a string) to target
   (agents/reply msg-map message)   — reply to msg-map, which must contain :from
   (agents/!ask target message)     — send message to target, block for reply
   (agents/!ask target)             — poke target without message, block for reply
@@ -478,6 +478,7 @@ Common mistakes:
 3. agents/!ask followed by additional expressions: these do not evaluate, instead put them first
 4. hallucinating handles: use (agents/parent-handle), :user, :main, or look up (!print (globals/get :roles)) (if globals/ available)
 5. calling agents/* outside the quoted trailing expression (for example: (def h (agents/current-handle))); effect calls must run in trailing expression code
+6. agents/send argument order: it is (agents/send target message), consistent with (agents/!ask target message).
 
 In examples, ▌ marks cursor position in a completion. It is doc-only; do not type it into code.
 
@@ -499,7 +500,7 @@ Multi-part example:
   ;; next turn
   ...(def file-contents \"...\")
   ▌(def summary \"...\")
-  '(agents/send summary (agents/parent-handle))
+  '(agents/send (agents/parent-handle) summary)
   ;; child turn ends after send
 
 3. Main: use !reply-ask to clarify and keep the conversation open.
@@ -592,18 +593,18 @@ Example:
     "Send a value to a target handle with auto-tagged sender.
 The recipient sees (def msg-N {:from your-handle :body val}).
 
-(agents/send value target)
-  value: any value
+(agents/send target value)
   target: keyword handle
+  value: any value
 
 If send is your trailing expression, the message is sent and your turn ends.
 To continue after sending, use a trailing do with extend:
-  '(do (agents/send value target) (!extend))
+  '(do (agents/send target value) (!extend))
 For request-reply conversations, a more common pattern is:
   '(agents/!ask target value)
 
 Example (from a spawned child):
-  '(agents/send 42 (agents/parent-handle))"
+  '(agents/send (agents/parent-handle) 42)"
 
     :spawn
     "Start an agent in a background future. Returns its handle immediately.
@@ -640,7 +641,7 @@ Combines spawn + block. One-shot delegation pattern.
 Your next turn sees (def msg-N {:from child-handle :body result}).
 
 Example:
-  '(agents/!spawn-ask !llm-self \"Compute 6*7 and (agents/send result (agents/parent-handle))\")
+  '(agents/!spawn-ask !llm-self \"Compute 6*7 and (agents/send (agents/parent-handle) result)\")
   ;; next turn: (def msg-0 {:from :spawn-42 :body 42})"
 
     :current-handle
@@ -657,7 +658,7 @@ or the keyword you specified when spawned (e.g. :seller)."
 (agents/parent-handle)
 
 Use in spawned agents to send results back to the parent:
-  '(agents/send result (agents/parent-handle))"
+  '(agents/send (agents/parent-handle) result)"
 
     :send-msg-fn
     "Low-level fire-and-forget send. Most agents should use send, !ask, or !reply-ask instead.

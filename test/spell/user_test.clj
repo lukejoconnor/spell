@@ -134,7 +134,7 @@
       (Thread/sleep 100)
       (runtime/register! :ff-sender)
       (binding [runtime/*current-handle* :ff-sender]
-        (runtime/send "goodbye!" :user))
+        (runtime/send :user "goodbye!"))
       ;; Fire-and-forget should process without blocking on stdin.
       ;; The user agent quine-restarts immediately (no > prompt).
       ;; If it blocked, deref would timeout.

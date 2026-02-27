@@ -441,12 +441,12 @@
       (try
         (let [result (event-fn)]
           (cond
-            (:ok result) (runtime/send (:ok result) handle)
+            (:ok result) (runtime/send handle (:ok result))
             (:abort result) nil))
         (catch Exception e
           (binding [*out* *err*]
             (println (str "event-send error for " handle ": " (.getMessage e))))
-          (runtime/send {:error (.getMessage e)} handle)))))
+          (runtime/send handle {:error (.getMessage e)})))))
   nil)
 
 (defn watch-send
@@ -562,12 +562,42 @@
   (io/temp-file)                   — create temp file
   (io/watch-send path handle)      — watch directory, send events to handle
 
-All io/ calls are effect functions. Call them only in the quoted trailing expression.
-Valid single call: '(io/cwd)
-Valid chained calls: '(do (io/cwd) (io/ls \".\") (io/read-file \"README.md\"))
-Invalid: (io/cwd)
-On first io use in a task, run '(!describe io).
-Use (!describe io :fn-name) for detailed docs on any function."
+Use (!describe io :fn-name) for detailed docs on any function.
+
+Reading vs editing:
+  read-file returns numbered lines (good for showing context).
+  read-lines returns a raw vector (good for programmatic manipulation).
+  slurp returns the full file as a plain string.
+  str-replace is for single-string edits; replace-lines for line-range edits.
+
+All io/ calls are effect functions — quote them in the trailing expression.
+
+Common mistakes:
+
+1. calling io/* outside the quoted trailing expression: (io/read-file \"x\") does nothing; must be '(io/read-file \"x\") or '(do ... (io/read-file \"x\") ...)
+2. forgetting !call-now when you need the result: '(io/read-file \"x\") evaluates but the result is lost; use '(!call-now contents (io/read-file \"x\"))
+3. using io/sh for everything: prefer io/read-file, io/ls, io/exists? over (io/sh \"cat file\"), (io/sh \"ls dir\"), (io/sh \"test -f file\")
+4. ignoring :error returns: most io functions return {:error msg} on failure, not exceptions; check the result
+5. replace-lines with drifted line numbers in multi-edit: pass all edits as a vector of triples; line numbers refer to the ORIGINAL file
+
+In examples, ▌ marks cursor position in a completion. It is doc-only; do not type it into code.
+
+Multi-part example — read a file, edit it, verify the edit:
+
+1. Read the file to see current contents.
+  ...▌'(!call-now code (io/read-file \"main.py\"))
+
+2. Next turn: code is bound. Identify the line range, replace it.
+  ...(def code \"1: def greet():\\n2:     print('hello')\\n...\")
+  ▌(think \"Line 2 needs updating.\")
+  '(do (io/replace-lines \"main.py\" 2 2 \"    print('goodbye')\")
+       (!call-now updated (io/read-file \"main.py\" 1 5)))
+
+3. Next turn: verify the edit landed.
+  ...(def updated \"1: def greet():\\n2:     print('goodbye')\\n...\")
+  ▌(think \"Edit confirmed.\")
+  '(!extend)
+"
           }
    :detail
    {:slurp-bytes "Read file as byte array. Returns {:ok bytes} or {:error msg}."
