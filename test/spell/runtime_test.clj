@@ -21,8 +21,7 @@
   (testing "register! creates registry entry"
     (runtime/register! :h1)
     (is (contains? @runtime/registry :h1))
-    (is (some? (:inbox (get @runtime/registry :h1))))
-    (is (some? (:signal (get @runtime/registry :h1))))
+    (is (some? (:state (get @runtime/registry :h1))))
     (is (some? (:has-box (get @runtime/registry :h1))))
     (is (some? (:completed (get @runtime/registry :h1)))))
 
@@ -653,7 +652,7 @@
       ;; Simulate: a send happened before box entry
       (runtime/send-msg-fn sent-fn handle)
       ;; inbox should have the sent function
-      (let [inbox-before @(:inbox (get @runtime/registry handle))]
+      (let [inbox-before (:inbox-fn @(:state (get @runtime/registry handle)))]
         (is (some? inbox-before) "inbox should have the sent function"))
       ;; make-awake-fn drains inbox: sent-fn("hello") = "sent:hello"
       ;; eval-fn("sent:hello") = "evaluated:sent:hello"
@@ -667,7 +666,7 @@
           p (promise)]
       (runtime/register! handle)
       ;; inbox is identity (no pending sends)
-      (is (= identity @(:inbox (get @runtime/registry handle))))
+      (is (= identity (:inbox-fn @(:state (get @runtime/registry handle)))))
       ;; make-awake-fn drains empty inbox (identity), raw passes through
       (deliver p "hello")
       (is (= "evaluated:hello" (runtime/box handle p (runtime/make-awake-fn handle eval-fn)))))))
@@ -761,24 +760,25 @@
   (testing "deliver-msg-fn delivers to unrealized signal"
     (let [handle :dmf-unrealized]
       (runtime/register! handle)
-      (let [sig @(:signal (get @runtime/registry handle))]
+      (let [sig (:signal @(:state (get @runtime/registry handle)))]
         (runtime/deliver-msg-fn handle sig (fn [raw] (str "msg:" raw)))
         ;; Signal should be delivered
         (is (realized? sig))
         ;; Inbox should have the transform
-        (is (some? @(:inbox (get @runtime/registry handle))))))))
+        (is (some? (:inbox-fn @(:state (get @runtime/registry handle)))))))))
 
 (deftest deliver-msg-fn-realized-noop-test
-  (testing "deliver-msg-fn no-ops on already-realized signal"
+  (testing "deliver-msg-fn no-ops on replaced signal"
     (let [handle :dmf-realized]
       (runtime/register! handle)
-      (let [sig @(:signal (get @runtime/registry handle))]
-        ;; Deliver the signal first (simulate agent waking from something else)
-        (deliver sig :wake)
-        ;; Now deliver-msg-fn should be a no-op
+      (let [sig (:signal @(:state (get @runtime/registry handle)))]
+        ;; Replace the signal (simulate agent waking from make-awake-fn reset)
+        (swap! (:state (get @runtime/registry handle))
+          assoc :signal (promise))
+        ;; Now deliver-msg-fn should be a no-op (signal is no longer identical)
         (runtime/deliver-msg-fn handle sig (fn [raw] (str "msg:" raw)))
         ;; Inbox should still be identity (no transform composed)
-        (is (= identity @(:inbox (get @runtime/registry handle))))))))
+        (is (= identity (:inbox-fn @(:state (get @runtime/registry handle)))))))))
 
 ;; =============================================================================
 ;; Effect guard tests

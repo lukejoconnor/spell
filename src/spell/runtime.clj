@@ -17,7 +17,7 @@
 ;; =============================================================================
 
 (def registry
-  "Global registry: handle -> {:inbox (atom identity), :signal (atom (promise)),
+  "Global registry: handle -> {:state (atom {:inbox-fn identity, :signal (promise)}),
                                 :has-box (atom false),
                                 :completed (atom (promise)),
                                 :parent-handle kw-or-nil}"
@@ -32,8 +32,7 @@
    (when (contains? @registry handle)
      (throw (ex-info "Handle already registered" {:handle handle})))
    (swap! registry assoc handle
-          {:inbox             (atom identity)
-           :signal            (atom (promise))
+          {:state             (atom {:inbox-fn identity, :signal (promise)})
            :has-box           (atom false)
            :parent-handle     parent-handle
            :completed         (atom (promise))})))
@@ -68,14 +67,13 @@
 (defn make-awake-fn
   "Create an inside-fn that drains inbox, resets signal, and calls eval-fn.
    This is the single drain point per wake cycle (phase 3 entry).
-   Drain and signal reset happen adjacently and atomically w.r.t. the
-   agent's execution — no other code runs between them."
+   Drain and signal reset happen atomically via a single reset-vals! on
+   the combined :state atom — no race window between the two operations."
   [handle eval-fn]
   (fn [raw]
-    (let [{:keys [inbox signal]} (get @registry handle)
-          [transform _] (reset-vals! inbox identity)
-          _ (reset! signal (promise))
-          transformed (transform raw)]
+    (let [state (:state (get @registry handle))
+          [{:keys [inbox-fn]} _] (reset-vals! state {:inbox-fn identity, :signal (promise)})
+          transformed (inbox-fn raw)]
       (binding [*current-eval-fn* eval-fn]
         (eval-fn transformed)))))
 
@@ -86,8 +84,8 @@
    by the enclosing box before sleep are preserved on fast-reply paths."
   [handle eval-fn]
   (fn [raw]
-    (let [{:keys [signal]} (get @registry handle)]
-      (deref @signal)
+    (let [state (:state (get @registry handle))]
+      (deref (:signal @state))
       (box handle raw (make-awake-fn handle eval-fn)))))
 
 (defn- make-root-fn
@@ -161,13 +159,16 @@
 
 (defn -send!
   "Low-level send: compose transform-fn into inbox with FIFO ordering,
-   then deliver signal."
+   then deliver signal. Both operations happen atomically via swap-vals!
+   on the combined :state atom."
   [handle transform-fn]
-  (let [{:keys [inbox signal]} (get @registry handle)]
-    (when-not inbox
+  (let [state (:state (get @registry handle))]
+    (when-not state
       (throw (ex-info "Handle not registered" {:handle handle})))
-    (swap! inbox (fn [cur] (comp transform-fn cur)))
-    (deliver @signal :wake)))
+    (let [[old _] (swap-vals! state
+                    (fn [{:keys [inbox-fn] :as s}]
+                      (assoc s :inbox-fn (comp transform-fn inbox-fn))))]
+      (deliver (:signal old) :wake))))
 
 (defn send-msg-fn
   "Send function f to agent at handle.
@@ -179,13 +180,18 @@
 
 (defn deliver-msg-fn
   "Like send-msg-fn but delivers to a specific signal promise.
-   No-op if the promise was already delivered (agent woke from
-   something else)."
-  [handle signal-promise msg-fn]
-  (when-not (realized? signal-promise)
-    (let [{:keys [inbox]} (get @registry handle)]
-      (swap! inbox (fn [cur] (comp msg-fn cur)))
-      (deliver signal-promise :wake))))
+   No-op if the signal has been replaced (agent woke from something else).
+   Uses swap-vals! with identical? check inside — the compose and staleness
+   check are a single CAS, eliminating the TOCTOU race."
+  [handle captured-signal msg-fn]
+  (let [state (:state (get @registry handle))
+        [old _] (swap-vals! state
+                  (fn [{:keys [inbox-fn signal] :as s}]
+                    (if (identical? signal captured-signal)
+                      (assoc s :inbox-fn (comp msg-fn inbox-fn))
+                      s)))]
+    (when (identical? (:signal old) captured-signal)
+      (deliver captured-signal :wake))))
 
 ;; =============================================================================
 ;; Create-msg helper
@@ -253,7 +259,7 @@
   "Install stale notifier: sends target's completion result to self.
    Captures current :signal at install time; no-ops if self wakes first."
   [target]
-  (let [my-signal @(:signal (get @registry *current-handle*))]
+  (let [my-signal (:signal @(:state (get @registry *current-handle*)))]
     (install-notifier
       (fn [handle result]
         (deliver-msg-fn handle my-signal
@@ -321,7 +327,7 @@
       (send-msg-fn (create-msg name ask-msg) target)))
   ;; Install a single notifier that waits for all targets to complete
   (let [handle *current-handle*
-        my-signal @(:signal (get @registry handle))
+        my-signal (:signal @(:state (get @registry handle)))
         completed-promises (mapv #(-> @registry (get %) :completed deref) targets)]
     (future
       (let [results (mapv (fn [target cp] {:from target :body @cp})
