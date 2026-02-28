@@ -119,7 +119,7 @@
       (let [pa (promise)]
         (deliver pa agent-raw)
         (let [fa (future (runtime/box asking-agent pa
-                           (runtime/make-awake-fn agent-eval-fn)))]
+                           (runtime/make-awake-fn asking-agent agent-eval-fn)))]
           (deref agent-started 2000 :timeout)
 
           ;; The agent should get back the pre-typed line as its "answer"
@@ -186,7 +186,7 @@
       (let [pa (promise)]
         (deliver pa "(quine completion (eval (do )))")
         (future (runtime/box :agent-a pa
-                  (runtime/make-awake-fn agent-a-eval-fn)))
+                  (runtime/make-awake-fn :agent-a agent-a-eval-fn)))
 
         ;; Wait for agent-a to issue the ask
         (is (.await latch 3 TimeUnit/SECONDS) "agent-a should have started")
@@ -264,7 +264,7 @@
         (let [pa (promise)]
           (deliver pa agent-raw)
           (let [fa (future (runtime/box asking-agent pa
-                             (runtime/make-awake-fn agent-eval-fn)))]
+                             (runtime/make-awake-fn asking-agent agent-eval-fn)))]
             (deref agent-started 2000 :timeout)
 
             (let [result (deref fa 5000 :timeout)]
@@ -751,7 +751,7 @@
       (deliver completion victim-completion)
 
       ;; Run box with full eval pipeline
-      (runtime/box :victim completion (runtime/make-awake-fn inbox-fn))
+      (runtime/box :victim completion (runtime/make-awake-fn :victim inbox-fn))
 
       ;; Give :target time to process messages
       (Thread/sleep 300)
@@ -805,7 +805,7 @@
       ;; completion and appends a new extension. The original trailing
       ;; '(agents/send :target "important") becomes dead code.
       (try
-        (runtime/box :victim completion (runtime/make-awake-fn inbox-fn))
+        (runtime/box :victim completion (runtime/make-awake-fn :victim inbox-fn))
         (catch Exception _
           ;; The !llm-self in the preempted extension will fail because our mock
           ;; returns nil (not a valid completion). That's fine — the point is

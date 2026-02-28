@@ -960,7 +960,7 @@
       (deliver completion raw)
       ;; Start box in a future — it will drain inbox (picking up the message)
       ;; and call eval-fn, which calls block-for-message.
-      (future (runtime/box handle completion (runtime/make-awake-fn eval-fn)))
+      (future (runtime/box handle completion (runtime/make-awake-fn handle eval-fn)))
       ;; Wait for agent to reach block-for-message
       (is (= true (deref reached-block 2000 :timeout))
           "agent should reach block-for-message")
