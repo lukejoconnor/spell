@@ -1,11 +1,11 @@
 (ns spell.runtime
   "Agent runtime: box execution primitive, registry, message passing, spawn/ask.
 
-   box is the universal execution primitive: it waits for a completion source,
-   drains inbox transforms, and passes the result to an inside-fn. ask sends a
-   message and blocks for reply. !spawn-ask spawns an agent and blocks for its
-   message. send-msg-fn is low-level fire-and-forget. Every wait wakes the target,
-   preventing deadlocks."
+   Single-drain model: box waits for a completion source and calls an inside-fn.
+   Inbox drain + signal reset happen once per wake cycle in make-awake-fn
+   (phase 3 entry). ask sends a message and blocks for reply. !spawn-ask spawns
+   an agent and blocks for its message. send-msg-fn is low-level fire-and-forget.
+   Every wait wakes the target, preventing deadlocks."
   (:refer-clojure :exclude [send])
   (:require [clojure.string :as str]
             [spell.eval :as eval]
@@ -66,55 +66,48 @@
 ;; =============================================================================
 
 (defn make-awake-fn
-  "Create an inside-fn that binds *current-eval-fn* and calls eval-fn.
-   Used when an agent is actively processing (not sleeping)."
-  [eval-fn]
+  "Create an inside-fn that drains inbox, resets signal, and calls eval-fn.
+   This is the single drain point per wake cycle (phase 3 entry).
+   Drain and signal reset happen adjacently and atomically w.r.t. the
+   agent's execution — no other code runs between them."
+  [handle eval-fn]
   (fn [raw]
-    (binding [*current-eval-fn* eval-fn]
-      (eval-fn raw))))
+    (let [{:keys [inbox signal]} (get @registry handle)
+          [transform _] (reset-vals! inbox identity)
+          _ (reset! signal (promise))
+          transformed (transform raw)]
+      (binding [*current-eval-fn* eval-fn]
+        (eval-fn transformed)))))
 
 (defn- make-asleep-fn
   "Create an inside-fn that blocks on signal, then re-enters box awake.
+   No drain or signal reset here — that happens in make-awake-fn (phase 3).
    Uses the raw parameter (not *current-raw*) so that transforms applied
    by the enclosing box before sleep are preserved on fast-reply paths."
   [handle eval-fn]
   (fn [raw]
     (let [{:keys [signal]} (get @registry handle)]
       (deref @signal)
-      (reset! signal (promise))
-      (box handle raw (make-awake-fn eval-fn)))))
-
-(defn- reset-signal-for-orphan!
-  "Reset signal to a fresh promise before starting an orphan box.
-   If the inbox has unconsumed messages, re-deliver so the orphan wakes.
-   Without this, a stale signal (delivered during active execution but
-   consumed by a concurrent box) causes the orphan to wake spuriously
-   and replay the entire program — creating a zombie continuation."
-  [handle]
-  (let [{:keys [signal inbox]} (get @registry handle)
-        new-signal (promise)]
-    (reset! signal new-signal)
-    (when (not= @inbox identity)
-      (deliver new-signal :wake))))
+      (box handle raw (make-awake-fn handle eval-fn)))))
 
 (defn- make-root-fn
   "Wrap an inside-fn with root lifecycle: completed delivery + orphan creation.
    After inside-fn returns (or throws), delivers completed and starts an
-   asleep orphan box for the next lifecycle round."
+   asleep orphan box for the next lifecycle round.
+   No signal reset needed — make-awake-fn resets signal at phase 3 entry,
+   and the orphan's asleep-fn will block on the signal created there."
   [handle eval-fn inside-fn]
   (fn [raw]
     (try
       (let [result (inside-fn raw)]
         (deliver @(:completed (get @registry handle)) result)
         (reset! (:completed (get @registry handle)) (promise))
-        (reset-signal-for-orphan! handle)
         (future (box handle *current-raw*
                   (make-root-fn handle eval-fn (make-asleep-fn handle eval-fn))))
         result)
       (catch Exception e
         (deliver @(:completed (get @registry handle)) nil)
         (reset! (:completed (get @registry handle)) (promise))
-        (reset-signal-for-orphan! handle)
         (future (box handle *current-raw*
                   (make-root-fn handle eval-fn (make-asleep-fn handle eval-fn))))
         (throw e)))))
@@ -140,13 +133,14 @@
 ;; =============================================================================
 
 (defn box
-  "Core execution primitive. Awaits completion, drains inbox transforms,
-   applies inside-fn to the (possibly transformed) raw string.
+  "Core execution primitive. Awaits completion, CAS has-box, and calls
+   inside-fn with the raw string. Inbox drain happens in make-awake-fn
+   (single-drain model: one drain per wake cycle, at the start of phase 3).
    Takes handle, a completion source (promise, future, or raw string),
    and an inside-fn that processes the raw string."
   [handle completion-source inside-fn]
-  (let [{:keys [inbox has-box]} (get @registry handle)]
-    (when-not inbox
+  (let [{:keys [has-box]} (get @registry handle)]
+    (when-not has-box
       (throw (ex-info "Handle not registered" {:handle handle})))
     (let [raw-or-ex (if (instance? clojure.lang.IDeref completion-source)
                       (deref completion-source)
@@ -156,12 +150,10 @@
       (let [raw (parse/balance-parens raw-or-ex)]
         (when-not (compare-and-set! has-box false true)
           (throw (ex-info "Box already active for handle" {:handle handle})))
-        (let [[transform _] (reset-vals! inbox identity)]
-          (reset! has-box false)
-          (let [transformed (transform raw)]
-            (binding [*current-handle* handle
-                      *current-raw*    raw]
-              (inside-fn transformed))))))))
+        (reset! has-box false)
+        (binding [*current-handle* handle
+                  *current-raw*    raw]
+          (inside-fn raw))))))
 
 ;; =============================================================================
 ;; Send
