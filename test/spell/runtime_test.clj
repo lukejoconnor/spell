@@ -21,8 +21,7 @@
   (testing "register! creates registry entry"
     (runtime/register! :h1)
     (is (contains? @runtime/registry :h1))
-    (is (some? (:inbox (get @runtime/registry :h1))))
-    (is (some? (:signal (get @runtime/registry :h1))))
+    (is (some? (:state (get @runtime/registry :h1))))
     (is (some? (:has-box (get @runtime/registry :h1))))
     (is (some? (:completed (get @runtime/registry :h1)))))
 
@@ -61,6 +60,17 @@
       (deliver p "hello")
       ;; make-awake-fn drains empty inbox (identity), so raw passes through
       (is (= "got:hello" (runtime/box handle p (runtime/make-awake-fn handle eval-fn)))))))
+
+(deftest reopen-last-top-level-form-test
+  (testing "reopen targets the last top-level quine and preserves prior forms"
+    (let [raw "(quine completion (eval (do (def first-msg \"kept\") nil ))) (quine completion (eval (do (def second-msg \"open-me\") )))"
+          reopened (#'runtime/reopen raw)]
+      (is (.contains ^String reopened "(def first-msg \"kept\")"))
+      (is (.contains ^String reopened "(def second-msg \"open-me\")"))
+      (is (.endsWith ^String reopened "(def second-msg \"open-me\") "))
+      (is (.contains ^String reopened "nil))) (quine completion (eval (do"))
+      (is (not (.endsWith ^String reopened "nil "))
+          "reopen should leave the first form closed and reopen the last one"))))
 
 (deftest has-box-invariant-test
   (testing "has-box is false after box completes"
@@ -642,7 +652,7 @@
       ;; Simulate: a send happened before box entry
       (runtime/send-msg-fn sent-fn handle)
       ;; inbox should have the sent function
-      (let [inbox-before @(:inbox (get @runtime/registry handle))]
+      (let [inbox-before (:inbox-fn @(:state (get @runtime/registry handle)))]
         (is (some? inbox-before) "inbox should have the sent function"))
       ;; make-awake-fn drains inbox: sent-fn("hello") = "sent:hello"
       ;; eval-fn("sent:hello") = "evaluated:sent:hello"
@@ -656,7 +666,7 @@
           p (promise)]
       (runtime/register! handle)
       ;; inbox is identity (no pending sends)
-      (is (= identity @(:inbox (get @runtime/registry handle))))
+      (is (= identity (:inbox-fn @(:state (get @runtime/registry handle)))))
       ;; make-awake-fn drains empty inbox (identity), raw passes through
       (deliver p "hello")
       (is (= "evaluated:hello" (runtime/box handle p (runtime/make-awake-fn handle eval-fn)))))))
@@ -750,24 +760,42 @@
   (testing "deliver-msg-fn delivers to unrealized signal"
     (let [handle :dmf-unrealized]
       (runtime/register! handle)
-      (let [sig @(:signal (get @runtime/registry handle))]
+      (let [sig (:signal @(:state (get @runtime/registry handle)))]
         (runtime/deliver-msg-fn handle sig (fn [raw] (str "msg:" raw)))
         ;; Signal should be delivered
         (is (realized? sig))
         ;; Inbox should have the transform
-        (is (some? @(:inbox (get @runtime/registry handle))))))))
+        (is (some? (:inbox-fn @(:state (get @runtime/registry handle)))))))))
 
-(deftest deliver-msg-fn-realized-noop-test
-  (testing "deliver-msg-fn no-ops on already-realized signal"
+(deftest deliver-msg-fn-replaced-signal-noop-test
+  (testing "deliver-msg-fn no-ops on replaced signal"
     (let [handle :dmf-realized]
       (runtime/register! handle)
-      (let [sig @(:signal (get @runtime/registry handle))]
-        ;; Deliver the signal first (simulate agent waking from something else)
-        (deliver sig :wake)
-        ;; Now deliver-msg-fn should be a no-op
+      (let [sig (:signal @(:state (get @runtime/registry handle)))]
+        ;; Replace the signal (simulate agent waking from make-awake-fn reset)
+        (swap! (:state (get @runtime/registry handle))
+          assoc :signal (promise))
+        ;; Now deliver-msg-fn should be a no-op (signal is no longer identical)
         (runtime/deliver-msg-fn handle sig (fn [raw] (str "msg:" raw)))
         ;; Inbox should still be identity (no transform composed)
-        (is (= identity @(:inbox (get @runtime/registry handle))))))))
+        (is (= identity (:inbox-fn @(:state (get @runtime/registry handle)))))))))
+
+(deftest deliver-msg-fn-realized-signal-noop-test
+  (testing "deliver-msg-fn no-ops on already-realized captured signal"
+    (let [handle :dmf-stale-realized]
+      (runtime/register! handle)
+      (let [sig (:signal @(:state (get @runtime/registry handle)))]
+        ;; Simulate wake happened before notifier callback runs.
+        (deliver sig :wake)
+        ;; deliver-msg-fn should not compose stale payload into inbox.
+        (runtime/deliver-msg-fn handle sig (fn [raw] (str raw "(def stale true) ")))
+        (is (= identity (:inbox-fn @(:state (get @runtime/registry handle)))))
+        ;; And should remain no-op when the handle wakes again later.
+        (let [p (promise)]
+          (deliver p "(quine completion (eval (do )))")
+          (is (not (.contains ^String
+                              (runtime/box handle p (runtime/make-awake-fn handle identity))
+                              "stale"))))))))
 
 ;; =============================================================================
 ;; Effect guard tests
@@ -898,6 +926,57 @@
             (is (string? result))
             (is (some? @parent-woke)
                 "parent should wake after child fully completes")))))))
+
+(deftest stale-signal-after-inbox-drain-test
+  (testing "block-for-message blocks when inbox was drained by box (no spurious wake from stale signal)"
+    ;; Scenario: an agent is inside a box waiting on a completion promise.
+    ;; While it waits, a message arrives via -send! (composing into inbox
+    ;; AND delivering the signal). When the completion arrives, box drains
+    ;; the inbox — picking up the message. The agent processes it and then
+    ;; calls block-for-message. At that point, the signal from -send! is
+    ;; stale (already delivered, never consumed). block-for-message should
+    ;; NOT spuriously wake from this stale signal.
+    (let [handle :stale-sig
+          raw "(quine completion (eval (do )))"
+          completion (promise)
+          reached-block (promise)
+          block-result (promise)
+          call-count (atom 0)
+          eval-fn (fn [raw]
+                    (let [n (swap! call-count inc)]
+                      (if (= n 1)
+                        ;; First call: we processed the inbox message.
+                        ;; Now block-for-message — should actually block.
+                        (do (deliver reached-block true)
+                            (runtime/block-for-message))
+                        ;; Second call: woke from block. Return raw.
+                        (do (deliver block-result raw)
+                            raw))))]
+      (runtime/register! handle)
+      ;; Simulate: message arrives while waiting for completion.
+      ;; -send! composes into inbox AND delivers signal.
+      (runtime/-send! handle (fn [r] (str r "(def x 1) ")))
+      ;; Deliver the completion (simulating LLM response arriving).
+      (deliver completion raw)
+      ;; Start box in a future — it will drain inbox (picking up the message)
+      ;; and call eval-fn, which calls block-for-message.
+      (future (runtime/box handle completion (runtime/make-awake-fn handle eval-fn)))
+      ;; Wait for agent to reach block-for-message
+      (is (= true (deref reached-block 2000 :timeout))
+          "agent should reach block-for-message")
+      ;; Give it time — if signal is stale, block-for-message wakes immediately
+      (Thread/sleep 300)
+      ;; block-result should NOT be delivered yet (agent should be blocked)
+      (is (not (realized? block-result))
+          "block-for-message should not have returned (stale signal)")
+      ;; Now send a real message to wake it
+      (runtime/-send! handle (fn [r] (str r "(def y 2) ")))
+      ;; Agent should wake from the real message
+      (let [result (deref block-result 2000 :timeout)]
+        (is (not= :timeout result)
+            "agent should wake from real message")
+        (is (.contains ^String result "(def y 2)")
+            "woken raw should contain the new message")))))
 
 (deftest effect-guard-allows-in-second-pass-test
   (testing "dangerous fns work through double-evaluation (eval special form)"

@@ -666,7 +666,7 @@
       (is (= 9 (get-in result [:usage :input_tokens])))
       (is (= 3 (get-in result [:usage :output_tokens])))))
 
-  (testing "ignores assistant message output when no custom_tool_call is present"
+  (testing "throws when no custom_tool_call is present"
     (let [sse (str "event: response.completed\n"
                    "data: "
                    (json/write-str {:type "response.completed"
@@ -675,11 +675,9 @@
                                                          :content [{:type "output_text" :text "OK"}]}]
                                                :usage {:input_tokens 10
                                                        :output_tokens 4}}})
-                   "\n\n")
-          result (#'provider/parse-codex-tc-stream sse)]
-      (is (= "" (:text result)))
-      (is (= 10 (get-in result [:usage :input_tokens])))
-      (is (= 4 (get-in result [:usage :output_tokens])))))
+                   "\n\n")]
+      (is (thrown-with-msg? Exception #"missing custom_tool_call"
+            (#'provider/parse-codex-tc-stream sse)))))
 
   (testing "throws on response.failed"
     (let [sse (str "event: response.failed\n"

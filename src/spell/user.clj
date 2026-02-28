@@ -130,18 +130,6 @@
     (catch Exception _e nil)))
 
 ;; =============================================================================
-;; Send code builder
-;; =============================================================================
-
-(defn- build-send-code
-  "Build a trailing expression for sending a message to a target.
-   Placed after quine-restart, it becomes the trailing expression of the
-   new quine — fires via double-eval on first pass, becomes inert data
-   when the next expression is appended."
-  [value target]
-  (str "'(agents/send " target " " (eval/serialize-for-continuation value) ") "))
-
-;; =============================================================================
 ;; IO helpers
 ;; =============================================================================
 
@@ -167,6 +155,14 @@
    Quine evaluates only the last arg — old evals become inert context (visible but not executed)."
   ")) (eval (do ")
 
+(def ^:private split-top-level-restart
+  "Close the current top-level quine with inert nil, then open a fresh
+   top-level dummy quine:
+   (quine completion (eval (do ...old... nil)))
+   (quine completion (eval (do ...new...))
+   This keeps user-originated sends out of trailing-expression preemption paths."
+  "nil ))) (quine completion (eval (do ")
+
 (defn- display-messages!
   "Print messages to stderr, updating last-sender as we go."
   [messages]
@@ -182,10 +178,6 @@
   "The 'API call' for the user agent.
    Takes a prompt string (the reopened completion) and returns a response string
    (code to append). Analogous to call-fn in make-llm.
-
-   Send code goes after quine-restart, landing in the new eval as a trailing
-   expression — fires via double-eval on first pass, becomes inert when the
-   next expression is appended.
 
    Three cases, checked in order (using only NEW messages):
    1. stdin-signal present: user pressed Enter → prompt for message, send
@@ -216,16 +208,22 @@
                   [explicit-recipient msg] (parse-user-input input)
                   target (resolve-recipient explicit-recipient @last-sender)]
               (reset! last-sender target)
-              (str quine-restart (build-send-code msg target))))
+              ;; Send immediately from Clojure so user messages cannot be
+              ;; preempted as inert trailing expressions.
+              (runtime/send target msg)
+              split-top-level-restart))
 
           ;; Case 2: Agent asked — expects reply
           expects-reply?
           (do
             (display-messages! new-msgs)
             (binding [*out* *err*] (print "> ") (flush))
-            (let [input (take-nonempty-line!)
-                  send-code (apply str (map #(build-send-code input %) from-handles))]
-              (str quine-restart send-code)))
+            (let [input (take-nonempty-line!)]
+              ;; Mirror stdin-signal behavior: send immediately to each asker,
+              ;; then continue in a fresh dummy top-level wrapper.
+              (doseq [handle from-handles]
+                (runtime/send handle input))
+              split-top-level-restart))
 
           ;; Case 3: Fire-and-forget — no stdin read needed
           :else

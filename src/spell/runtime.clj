@@ -17,7 +17,7 @@
 ;; =============================================================================
 
 (def registry
-  "Global registry: handle -> {:inbox (atom identity), :signal (atom (promise)),
+  "Global registry: handle -> {:state (atom {:inbox-fn identity, :signal (promise)}),
                                 :has-box (atom false),
                                 :completed (atom (promise)),
                                 :parent-handle kw-or-nil}"
@@ -32,8 +32,7 @@
    (when (contains? @registry handle)
      (throw (ex-info "Handle already registered" {:handle handle})))
    (swap! registry assoc handle
-          {:inbox             (atom identity)
-           :signal            (atom (promise))
+          {:state             (atom {:inbox-fn identity, :signal (promise)})
            :has-box           (atom false)
            :parent-handle     parent-handle
            :completed         (atom (promise))})))
@@ -68,14 +67,13 @@
 (defn make-awake-fn
   "Create an inside-fn that drains inbox, resets signal, and calls eval-fn.
    This is the single drain point per wake cycle (phase 3 entry).
-   Drain and signal reset happen adjacently and atomically w.r.t. the
-   agent's execution — no other code runs between them."
+   Drain and signal reset happen atomically via a single reset-vals! on
+   the combined :state atom — no race window between the two operations."
   [handle eval-fn]
   (fn [raw]
-    (let [{:keys [inbox signal]} (get @registry handle)
-          [transform _] (reset-vals! inbox identity)
-          _ (reset! signal (promise))
-          transformed (transform raw)]
+    (let [state (:state (get @registry handle))
+          [{:keys [inbox-fn]} _] (reset-vals! state {:inbox-fn identity, :signal (promise)})
+          transformed (inbox-fn raw)]
       (binding [*current-eval-fn* eval-fn]
         (eval-fn transformed)))))
 
@@ -86,8 +84,8 @@
    by the enclosing box before sleep are preserved on fast-reply paths."
   [handle eval-fn]
   (fn [raw]
-    (let [{:keys [signal]} (get @registry handle)]
-      (deref @signal)
+    (let [state (:state (get @registry handle))]
+      (deref (:signal @state))
       (box handle raw (make-awake-fn handle eval-fn)))))
 
 (defn- make-root-fn
@@ -161,13 +159,16 @@
 
 (defn -send!
   "Low-level send: compose transform-fn into inbox with FIFO ordering,
-   then deliver signal."
+   then deliver signal. Both operations happen atomically via swap-vals!
+   on the combined :state atom."
   [handle transform-fn]
-  (let [{:keys [inbox signal]} (get @registry handle)]
-    (when-not inbox
+  (let [state (:state (get @registry handle))]
+    (when-not state
       (throw (ex-info "Handle not registered" {:handle handle})))
-    (swap! inbox (fn [cur] (comp transform-fn cur)))
-    (deliver @signal :wake)))
+    (let [[old _] (swap-vals! state
+                    (fn [{:keys [inbox-fn] :as s}]
+                      (assoc s :inbox-fn (comp transform-fn inbox-fn))))]
+      (deliver (:signal old) :wake))))
 
 (defn send-msg-fn
   "Send function f to agent at handle.
@@ -179,13 +180,19 @@
 
 (defn deliver-msg-fn
   "Like send-msg-fn but delivers to a specific signal promise.
-   No-op if the promise was already delivered (agent woke from
-   something else)."
-  [handle signal-promise msg-fn]
-  (when-not (realized? signal-promise)
-    (let [{:keys [inbox]} (get @registry handle)]
-      (swap! inbox (fn [cur] (comp msg-fn cur)))
-      (deliver signal-promise :wake))))
+   No-op if the signal has been replaced OR already delivered (agent woke
+   from something else). Uses swap-vals! so staleness/realization check and
+   inbox composition happen in one atomic state transition."
+  [handle captured-signal msg-fn]
+  (let [state (:state (get @registry handle))
+        [old new] (swap-vals! state
+                    (fn [{:keys [inbox-fn signal] :as s}]
+                      (if (and (identical? signal captured-signal)
+                               (not (realized? signal)))
+                        (assoc s :inbox-fn (comp msg-fn inbox-fn))
+                        s)))]
+    (when-not (identical? old new)
+      (deliver captured-signal :wake))))
 
 ;; =============================================================================
 ;; Create-msg helper
@@ -194,19 +201,25 @@
 (defn- reopen
   "Reopen a completion wrapper by parsing to AST, pruning rethink-marked
    expressions, and rebuilding an open prefix.
+   If multiple top-level forms are present, reopens the LAST form and keeps
+   earlier top-level forms as inert context.
    Handles excess trailing parens safely (the LLM may write too many closers).
    Falls back to string-level strip-3 for non-quine forms."
   [s]
   (let [balanced (parse/balance-parens s)
-        form     (first (parse/read-all balanced))]
+        forms    (parse/read-all balanced)
+        form     (last forms)]
     (if (and (seq? form) (= 'quine (first form)))
-      (let [elements   (vec (seq form))
+      (let [prior-forms (butlast forms)
+            elements   (vec (seq form))
             inert-args (subvec elements 2 (max 2 (dec (count elements))))
             last-arg   (last elements)
             pruned-last (macros/prune-rethinks last-arg)
             [_ do-form] (seq pruned-last)
             body-forms (rest do-form)]
-        (str "(quine completion "
+        (str (when (seq prior-forms)
+               (str (str/join " " (map pr-str prior-forms)) " "))
+             "(quine completion "
              (when (seq inert-args)
                (str (str/join " " (map pr-str inert-args)) " "))
              "(eval (do "
@@ -217,10 +230,12 @@
 (defn- create-msg
   "Create a function that reopens a completion, appends (def name value),
    and appends an !llm-self extension so the recipient continues thinking.
+   Injects a think annotation so the agent knows the message preempted its
+   trailing expression (if active) or awakened it (if sleeping).
    Internal plumbing for signaling (waiting-for, spawn-result)."
   [name value]
   (fn [raw]
-    (str (reopen raw) "(def " name " " (eval/serialize-for-continuation value) ") '(!llm-self (prune-and-reopen completion)) ")))
+    (str (reopen raw) "(think \"[preempted or awakened by " name "]\") (def " name " " (eval/serialize-for-continuation value) ") '(!llm-self (prune-and-reopen completion)) ")))
 
 (defn send
   "Send a message to target with auto-tagged sender handle.
@@ -245,7 +260,7 @@
   "Install stale notifier: sends target's completion result to self.
    Captures current :signal at install time; no-ops if self wakes first."
   [target]
-  (let [my-signal @(:signal (get @registry *current-handle*))]
+  (let [my-signal (:signal @(:state (get @registry *current-handle*)))]
     (install-notifier
       (fn [handle result]
         (deliver-msg-fn handle my-signal
@@ -313,7 +328,7 @@
       (send-msg-fn (create-msg name ask-msg) target)))
   ;; Install a single notifier that waits for all targets to complete
   (let [handle *current-handle*
-        my-signal @(:signal (get @registry handle))
+        my-signal (:signal @(:state (get @registry handle)))
         completed-promises (mapv #(-> @registry (get %) :completed deref) targets)]
     (future
       (let [results (mapv (fn [target cp] {:from target :body @cp})
@@ -460,7 +475,10 @@ Agents other than :main persist after returning; a later message can wake them f
 
 Message preemption: if another agent sends you a message while your response
 is in flight, the message is appended as an extension and your trailing
-expression becomes inert. You get a new turn with the incoming message in scope.
+expression becomes inert. A (think \"[preempted or awakened by msg-N]\")
+annotation precedes the message def. 'Preempted' means your trailing expression
+did not fire; 'awakened' means you were sleeping and the message woke you.
+You get a new turn with the incoming message in scope.
 You may then re-run the trailing expression from your previous turn.
 
 All agents/ calls are effect functions — quote them in the trailing expression.
@@ -543,14 +561,16 @@ Example — fan-out, wait for all:
 
 Message preemption: if another agent sends you a message while your response
 is in flight, the message is appended as an extension. Your trailing expression
-(e.g. this ask) becomes inert — it does not fire. You get a new turn with the
-incoming message in scope. Re-evaluate and re-issue if still appropriate.
+(e.g. this ask) becomes inert — it does not fire. A think annotation marks
+the event. You get a new turn with the incoming message in scope.
+Re-evaluate and re-issue if still appropriate.
 
   ...▌
   '(agents/!ask :B \"hello\")
   ;; agent C sends a message before your ask fires; your completion becomes:
-  ...'(agents/!ask :B \"hello\") (def msg-0 {:from :C :body \"urgent\"})
-  '(!llm-self (reopen completion))  ;; ask became inert data — it did not fire"
+  ...'(agents/!ask :B \"hello\") (think \"[preempted or awakened by msg-0]\")
+  (def msg-0 {:from :C :body \"urgent\"})
+  '(!llm-self (prune-and-reopen completion))  ;; ask became inert data — it did not fire"
 
     :!reply-ask
     "Reply to a received message and block for the next response.
