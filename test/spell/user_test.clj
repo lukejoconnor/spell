@@ -119,10 +119,11 @@
             (is (.contains ^String result ":body \"hello from user\""))))))))
 
 (deftest expects-reply-sends-immediately-test
-  (testing "expects-reply path sends immediately (no trailing agents/send in completion text)"
+  (testing "expects-reply path sends immediately and routes via parse-user-input"
     ;; Directly exercise user-call-fn with an expects-response message.
     ;; The reply should be sent via runtime/send immediately, and the returned
     ;; completion suffix should split top-level forms without embedding send code.
+    ;; Plain input (no :handle prefix) goes to last-sender (the asker).
     (runtime/register! :user)
     (runtime/register! :target)
     (.put @#'user/stdin-queue "immediate-reply")
@@ -136,10 +137,29 @@
           "send should happen immediately, not via trailing expression code")
       (is (.contains ^String suffix "(quine completion (eval (do "))
       (deliver p "(quine completion (eval (do )))")
-      (runtime/box :target p (fn [raw] (reset! received raw) raw))
+      (runtime/box :target p (runtime/make-awake-fn :target (fn [raw] (reset! received raw) raw)))
       (is (string? @received))
       (is (.contains ^String @received ":from :user"))
       (is (.contains ^String @received ":body \"immediate-reply\"")))))
+
+(deftest expects-reply-routes-to-explicit-handle-test
+  (testing "user can route reply to a different handle via :handle prefix"
+    ;; Agent :asker asks :user, but user types ":other hello" — message
+    ;; should arrive at :other, not :asker.
+    (runtime/register! :user)
+    (runtime/register! :asker)
+    (runtime/register! :other)
+    (.put @#'user/stdin-queue ":other hello from user")
+    (let [prompt "(quine completion (eval (do (def msg-1 {:from :asker :expects-response true}) )))"
+          _ (binding [runtime/*current-handle* :user]
+              (#'user/user-call-fn prompt))
+          received (atom nil)
+          p (promise)]
+      (deliver p "(quine completion (eval (do )))")
+      (runtime/box :other p (runtime/make-awake-fn :other (fn [raw] (reset! received raw) raw)))
+      (is (string? @received))
+      (is (.contains ^String @received ":from :user"))
+      (is (.contains ^String @received ":body \"hello from user\"")))))
 
 ;; Sequential asks: skipped — mock readers respond too fast for reliable
 ;; concurrent box lifecycle testing. Not reproducible with real LLM agents.

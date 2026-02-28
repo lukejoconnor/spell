@@ -179,17 +179,16 @@
    Takes a prompt string (the reopened completion) and returns a response string
    (code to append). Analogous to call-fn in make-llm.
 
-   Three cases, checked in order (using only NEW messages):
-   1. stdin-signal present: user pressed Enter → prompt for message, send
-   2. expects-reply? (agent asked): print messages, read reply, send
-   3. fire-and-forget: print messages, quine-restart (no stdin read)"
+   Two cases, checked in order (using only NEW messages):
+   1. stdin-signal or expects-reply: display messages, show agent list,
+      read input, parse :target routing, send to resolved recipient.
+   2. fire-and-forget: display messages, quine-restart (no stdin read)."
   [prompt-str]
   (let [balanced    (parse/balance-parens prompt-str)
         all-entries (or (extract-messages balanced) [])
         new-entries (remove #(@seen-msg-names (:name %)) all-entries)
         new-msgs    (mapv :msg new-entries)
         agent-msgs    (vec (remove #(= :stdin-watch (:from %)) new-msgs))
-        from-handles  (->> agent-msgs (keep :from) distinct vec)
         expects-reply? (some :expects-response new-msgs)
         stdin-signal?  (some #(= :stdin-watch (:from %)) new-msgs)
         result
@@ -198,34 +197,20 @@
           (empty? new-entries)
           "nil "
 
-          ;; Case 1: User-initiated (stdin signal)
-          stdin-signal?
+          ;; Interactive: user pressed Enter or agent asked for reply
+          (or stdin-signal? expects-reply?)
           (do
-            (reset! signal-pending false)
+            (when stdin-signal? (reset! signal-pending false))
             (when (seq agent-msgs)
               (display-messages! agent-msgs))
             (let [input (prompt-and-read)
                   [explicit-recipient msg] (parse-user-input input)
                   target (resolve-recipient explicit-recipient @last-sender)]
               (reset! last-sender target)
-              ;; Send immediately from Clojure so user messages cannot be
-              ;; preempted as inert trailing expressions.
               (runtime/send target msg)
               split-top-level-restart))
 
-          ;; Case 2: Agent asked — expects reply
-          expects-reply?
-          (do
-            (display-messages! new-msgs)
-            (binding [*out* *err*] (print "> ") (flush))
-            (let [input (take-nonempty-line!)]
-              ;; Mirror stdin-signal behavior: send immediately to each asker,
-              ;; then continue in a fresh dummy top-level wrapper.
-              (doseq [handle from-handles]
-                (runtime/send handle input))
-              split-top-level-restart))
-
-          ;; Case 3: Fire-and-forget — no stdin read needed
+          ;; Fire-and-forget — no stdin read needed
           :else
           (do
             (display-messages! new-msgs)
