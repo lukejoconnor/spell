@@ -247,7 +247,7 @@
    Uses make-awake-fn to construct the inside-fn from the eval-fn."
   [eval-fn handle parent-handle prompt-str]
   (let [completion (promise)
-        awake-fn (runtime/make-awake-fn eval-fn)]
+        awake-fn (runtime/make-awake-fn handle eval-fn)]
     (future
       (try
         (let [response (user-call-fn prompt-str)]

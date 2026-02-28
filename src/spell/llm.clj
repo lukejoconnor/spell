@@ -410,7 +410,7 @@
                           prompt-str (wrap-nl prompt')
                           trace-data (atom nil)
                           inbox-fn   (make-inbox-fn config' trace-data)
-                          awake-fn   (runtime/make-awake-fn inbox-fn)]
+                          awake-fn   (runtime/make-awake-fn handle inbox-fn)]
                       (when-not (runtime/handle? handle)
                         (runtime/register! handle))
                       (-llm config' handle awake-fn (when root? inbox-fn) prompt-str trace-data))))]
@@ -419,7 +419,7 @@
      :run (fn run-init [init-string]
             (let [handle   :main
                   inbox-fn (make-inbox-fn config' (atom nil))
-                  awake-fn (runtime/make-awake-fn inbox-fn)]
+                  awake-fn (runtime/make-awake-fn handle inbox-fn)]
               (when-not (runtime/handle? handle)
                 (runtime/register! handle))
               (runtime/run-root-box handle init-string awake-fn inbox-fn)))}))

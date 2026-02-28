@@ -111,7 +111,7 @@
       (runtime/register! h-agent)
       (let [pa (promise)]
         (deliver pa agent-raw)
-        (let [fa (future (runtime/box h-agent pa (runtime/make-awake-fn agent-eval-fn)))]
+        (let [fa (future (runtime/box h-agent pa (runtime/make-awake-fn h-agent agent-eval-fn)))]
           (deref agent-started 2000 :timeout)
           (let [result (deref fa 5000 :timeout)]
             (is (string? result))
@@ -195,4 +195,4 @@
       (let [pa (promise)]
         (deliver pa "(quine completion (eval (do )))")
         (is (thrown? Exception
-              (runtime/box h-agent pa (runtime/make-awake-fn agent-eval-fn))))))))
+              (runtime/box h-agent pa (runtime/make-awake-fn h-agent agent-eval-fn))))))))
