@@ -141,6 +141,29 @@
             i
             (recur (inc i))))))))
 
+(defn- unescape-recipient-markers
+  "Treat escaped recipient markers as literals in message text.
+   Supported escapes: \\:."
+  [s]
+  (let [n (count s)
+        sb (StringBuilder.)]
+    (loop [i 0]
+      (if (>= i n)
+        (.toString sb)
+        (let [ch (.charAt s i)]
+          (if (and (= \\ ch) (< (inc i) n))
+            (let [next-ch (.charAt s (inc i))]
+              (if (= \: next-ch)
+                (do
+                  (.append sb next-ch)
+                  (recur (+ i 2)))
+                (do
+                  (.append sb ch)
+                  (recur (inc i)))))
+            (do
+              (.append sb ch)
+              (recur (inc i)))))))))
+
 (defn parse-user-inputs
   "Parse one input line into routed message segments.
    \"hello\" -> [{:recipients nil :msg \"hello\"}]
@@ -154,13 +177,13 @@
     (if (str/blank? s)
       []
       (let [first-start (or (find-next-recipient-spec-start s 0) (count s))
-            bare (str/trim (subs s 0 first-start))
+            bare (unescape-recipient-markers (str/trim (subs s 0 first-start)))
             init (if (str/blank? bare) [] [{:recipients nil :msg bare}])]
         (loop [i first-start segments init]
           (if-let [[recipients after-spec] (parse-recipient-spec-at s i)]
             (let [next-start (find-next-recipient-spec-start s after-spec)
                   end (or next-start (count s))
-                  msg (str/trim (subs s after-spec end))
+                  msg (unescape-recipient-markers (str/trim (subs s after-spec end)))
                   next-segments (if (str/blank? msg)
                                   segments
                                   (conj segments {:recipients recipients :msg msg}))]
@@ -168,8 +191,10 @@
                 (recur next-start next-segments)
                 (if (seq next-segments)
                   next-segments
-                  [{:recipients nil :msg s}])))
-            (if (seq segments) segments [{:recipients nil :msg s}])))))))
+                  [{:recipients nil :msg (unescape-recipient-markers s)}])))
+            (if (seq segments)
+              segments
+              [{:recipients nil :msg (unescape-recipient-markers s)}])))))))
 (defn parse-user-input
   "Backward-compatible single-message parser.
    Returns [recipient-or-nil message] using the first parsed segment."

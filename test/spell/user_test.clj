@@ -62,7 +62,19 @@
     (is (= [{:recipients nil :msg "hi"}
             {:recipients [:main] :msg "foo"}
             {:recipients [:other] :msg "bar"}]
-           (user/parse-user-inputs "hi :main foo :other bar")))))
+           (user/parse-user-inputs "hi :main foo :other bar"))))
+
+  (testing "escaped single recipient marker remains literal text"
+    (is (= [{:recipients nil :msg "hello :main"}]
+           (user/parse-user-inputs "hello \\:main"))))
+
+  (testing "escaped recipient marker at start remains literal text"
+    (is (= [{:recipients nil :msg ":main do not route"}]
+           (user/parse-user-inputs "\\:main do not route"))))
+
+  (testing "escaped marker inside routed message does not split segments"
+    (is (= [{:recipients [:main] :msg "status :other"}]
+           (user/parse-user-inputs ":main status \\:other")))))
 
 (deftest resolve-recipient-test
   (testing "explicit takes priority"
