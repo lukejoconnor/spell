@@ -51,7 +51,18 @@
   (testing "mixed group and single target forms"
     (is (= [{:recipients [:main :other] :msg "first"}
             {:recipients [:third] :msg "second"}]
-           (user/parse-user-inputs "(:main :other) first :third second")))))
+           (user/parse-user-inputs "(:main :other) first :third second"))))
+
+  (testing "bare reply followed by recipient spec"
+    (is (= [{:recipients nil :msg "hello"}
+            {:recipients [:main] :msg "do something"}]
+           (user/parse-user-inputs "hello :main do something"))))
+
+  (testing "bare reply followed by multiple recipient specs"
+    (is (= [{:recipients nil :msg "hi"}
+            {:recipients [:main] :msg "foo"}
+            {:recipients [:other] :msg "bar"}]
+           (user/parse-user-inputs "hi :main foo :other bar")))))
 
 (deftest resolve-recipient-test
   (testing "explicit takes priority"

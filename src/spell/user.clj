@@ -162,24 +162,23 @@
   (let [s (str/trim input)]
     (if (str/blank? s)
       []
-      (let [first-start (find-next-recipient-spec-start s 0)]
-        (if (not= first-start 0)
-          [{:recipients nil :msg s}]
-          (loop [i 0 segments []]
-            (if-let [[recipients after-spec] (parse-recipient-spec-at s i)]
-              (let [next-start (find-next-recipient-spec-start s after-spec)
-                    end (or next-start (count s))
-                    msg (str/trim (subs s after-spec end))
-                    next-segments (if (str/blank? msg)
-                                    segments
-                                    (conj segments {:recipients recipients :msg msg}))]
-                (if next-start
-                  (recur next-start next-segments)
-                  (if (seq next-segments)
-                    next-segments
-                    [{:recipients nil :msg s}])))
-              [{:recipients nil :msg s}])))))))
-
+      (let [first-start (or (find-next-recipient-spec-start s 0) (count s))
+            bare (str/trim (subs s 0 first-start))
+            init (if (str/blank? bare) [] [{:recipients nil :msg bare}])]
+        (loop [i first-start segments init]
+          (if-let [[recipients after-spec] (parse-recipient-spec-at s i)]
+            (let [next-start (find-next-recipient-spec-start s after-spec)
+                  end (or next-start (count s))
+                  msg (str/trim (subs s after-spec end))
+                  next-segments (if (str/blank? msg)
+                                  segments
+                                  (conj segments {:recipients recipients :msg msg}))]
+              (if next-start
+                (recur next-start next-segments)
+                (if (seq next-segments)
+                  next-segments
+                  [{:recipients nil :msg s}])))
+            (if (seq segments) segments [{:recipients nil :msg s}])))))))
 (defn parse-user-input
   "Backward-compatible single-message parser.
    Returns [recipient-or-nil message] using the first parsed segment."
@@ -260,11 +259,11 @@
   [messages]
   (binding [*out* *err*]
     (doseq [{:keys [from body expects-response]} messages]
-      (when from
-        (reset! last-sender from))
       (cond
-        body             (println (str "[agent " from "] " body))
-        expects-response (println (str "[agent " from " is waiting for input]"))))))
+        body             (do (reset! last-sender from)
+                             (println (str "[agent " from "] " body)))
+        expects-response (do (reset! last-sender from)
+                             (println (str "[agent " from " is waiting for input]")))))))
 
 (defn- user-call-fn
   "The 'API call' for the user agent.
