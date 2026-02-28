@@ -60,6 +60,17 @@
 
 (declare box ask-builtin)
 
+(defn- resolve-completion-source
+  "Resolve completion source (promise/future/raw) to a raw value.
+   Throws if the resolved value is an exception."
+  [completion-source]
+  (let [raw-or-ex (if (instance? clojure.lang.IDeref completion-source)
+                    (deref completion-source)
+                    completion-source)]
+    (when (instance? Exception raw-or-ex)
+      (throw raw-or-ex))
+    raw-or-ex))
+
 ;; =============================================================================
 ;; Inside-fn constructors
 ;; =============================================================================
@@ -111,20 +122,23 @@
         (throw e)))))
 
 (defn run-root-box
-  "Public entry point for root lifecycle. Wraps box with make-root-fn and
-   handles completion-source exceptions (before inside-fn ran)."
+  "Public entry point for root lifecycle.
+   Separates failure domains:
+   - completion-source failures (before inside-fn ran) are handled here
+   - inside-fn failures are handled by make-root-fn."
   [handle completion-source inside-fn eval-fn]
-  (let [root-fn (make-root-fn handle eval-fn inside-fn)]
-    (try
-      (box handle completion-source root-fn)
-      (catch Exception e
-        ;; completion-source exception (before inside-fn ran) — make-root-fn didn't fire
-        (when-not (realized? @(:completed (get @registry handle)))
-          (deliver @(:completed (get @registry handle)) nil)
-          (reset! (:completed (get @registry handle)) (promise))
-          (future (box handle ""
-                    (make-root-fn handle eval-fn (make-asleep-fn handle eval-fn)))))
-        (throw e)))))
+  (let [root-fn (make-root-fn handle eval-fn inside-fn)
+        resolved (try
+                   (resolve-completion-source completion-source)
+                   (catch Exception e
+                     ;; completion-source exception (before inside-fn ran)
+                     (when-not (realized? @(:completed (get @registry handle)))
+                       (deliver @(:completed (get @registry handle)) nil)
+                       (reset! (:completed (get @registry handle)) (promise))
+                       (future (box handle ""
+                                 (make-root-fn handle eval-fn (make-asleep-fn handle eval-fn)))))
+                     (throw e)))]
+    (box handle resolved root-fn)))
 
 ;; =============================================================================
 ;; Box
@@ -140,18 +154,13 @@
   (let [{:keys [has-box]} (get @registry handle)]
     (when-not has-box
       (throw (ex-info "Handle not registered" {:handle handle})))
-    (let [raw-or-ex (if (instance? clojure.lang.IDeref completion-source)
-                      (deref completion-source)
-                      completion-source)]
-      (when (instance? Exception raw-or-ex)
-        (throw raw-or-ex))
-      (let [raw (parse/balance-parens raw-or-ex)]
-        (when-not (compare-and-set! has-box false true)
-          (throw (ex-info "Box already active for handle" {:handle handle})))
-        (reset! has-box false)
-        (binding [*current-handle* handle
-                  *current-raw*    raw]
-          (inside-fn raw))))))
+    (let [raw (parse/balance-parens (resolve-completion-source completion-source))]
+      (when-not (compare-and-set! has-box false true)
+        (throw (ex-info "Box already active for handle" {:handle handle})))
+      (reset! has-box false)
+      (binding [*current-handle* handle
+                *current-raw*    raw]
+        (inside-fn raw)))))
 
 ;; =============================================================================
 ;; Send

@@ -199,6 +199,26 @@
       (is (thrown-with-msg? Exception #"API error"
             (runtime/box handle p identity))))))
 
+(deftest run-root-box-completion-source-exception-restarts-lifecycle-test
+  (testing "completion-source exception is handled before entry and root lifecycle restarts"
+    (let [handle :test-root-completion-ex
+          eval-count (atom 0)
+          eval-fn (fn [raw]
+                    (swap! eval-count inc)
+                    raw)
+          p (promise)]
+      (runtime/register! handle)
+      (let [cp @(:completed (get @runtime/registry handle))]
+        (deliver p (ex-info "boom" {}))
+        (is (thrown-with-msg? Exception #"boom"
+              (runtime/run-root-box handle p (runtime/make-awake-fn handle eval-fn) eval-fn)))
+        (is (= nil (deref cp 100 :timeout)))
+        ;; Pre-entry failure should still spawn the sleeping orphan for next turn.
+        (Thread/sleep 100)
+        (runtime/-send! handle identity)
+        (Thread/sleep 200)
+        (is (= 1 @eval-count))))))
+
 ;; =============================================================================
 ;; Integration tests (with TestProvider)
 ;; =============================================================================
