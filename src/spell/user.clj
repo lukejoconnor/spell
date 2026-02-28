@@ -74,15 +74,6 @@
       (throw (ex-info "EOF on user input" {})))
     line))
 
-(defn- take-nonempty-line!
-  "Block until a non-empty line is available. Skips blank lines."
-  []
-  (loop []
-    (let [line (take-line!)]
-      (if (= "" (str/trim line))
-        (recur)
-        line))))
-
 ;; =============================================================================
 ;; Pure functions
 ;; =============================================================================
@@ -162,24 +153,23 @@
   (let [s (str/trim input)]
     (if (str/blank? s)
       []
-      (let [first-start (find-next-recipient-spec-start s 0)]
-        (if (not= first-start 0)
-          [{:recipients nil :msg s}]
-          (loop [i 0 segments []]
-            (if-let [[recipients after-spec] (parse-recipient-spec-at s i)]
-              (let [next-start (find-next-recipient-spec-start s after-spec)
-                    end (or next-start (count s))
-                    msg (str/trim (subs s after-spec end))
-                    next-segments (if (str/blank? msg)
-                                    segments
-                                    (conj segments {:recipients recipients :msg msg}))]
-                (if next-start
-                  (recur next-start next-segments)
-                  (if (seq next-segments)
-                    next-segments
-                    [{:recipients nil :msg s}])))
-              [{:recipients nil :msg s}])))))))
-
+      (let [first-start (or (find-next-recipient-spec-start s 0) (count s))
+            bare (str/trim (subs s 0 first-start))
+            init (if (str/blank? bare) [] [{:recipients nil :msg bare}])]
+        (loop [i first-start segments init]
+          (if-let [[recipients after-spec] (parse-recipient-spec-at s i)]
+            (let [next-start (find-next-recipient-spec-start s after-spec)
+                  end (or next-start (count s))
+                  msg (str/trim (subs s after-spec end))
+                  next-segments (if (str/blank? msg)
+                                  segments
+                                  (conj segments {:recipients recipients :msg msg}))]
+              (if next-start
+                (recur next-start next-segments)
+                (if (seq next-segments)
+                  next-segments
+                  [{:recipients nil :msg s}])))
+            (if (seq segments) segments [{:recipients nil :msg s}])))))))
 (defn parse-user-input
   "Backward-compatible single-message parser.
    Returns [recipient-or-nil message] using the first parsed segment."
@@ -225,8 +215,16 @@
 ;; IO helpers
 ;; =============================================================================
 
+(defn- drain-blank-lines!
+  "Remove blank lines from the head of the queue (signal residue)."
+  []
+  (while (let [head (.peek stdin-queue)]
+           (and (some? head) (not= head ::eof) (str/blank? head)))
+    (.poll stdin-queue)))
+
 (defn- prompt-and-read
-  "Print recipients + prompt, read a non-empty line from the queue."
+  "Print recipients + prompt, read a line from the queue.
+   Returns nil on blank input (user cancels text entry)."
   []
   (let [recipients (lookup-recipients)]
     (binding [*out* *err*]
@@ -235,7 +233,8 @@
           (println (str "  " handle (when desc (str " — " desc))))))
       (print "> ")
       (flush))
-    (take-nonempty-line!)))
+    (let [line (take-line!)]
+      (when-not (str/blank? line) line))))
 
 ;; =============================================================================
 ;; User call function (the "API call" equivalent)
@@ -260,11 +259,11 @@
   [messages]
   (binding [*out* *err*]
     (doseq [{:keys [from body expects-response]} messages]
-      (when from
-        (reset! last-sender from))
       (cond
-        body             (println (str "[agent " from "] " body))
-        expects-response (println (str "[agent " from " is waiting for input]"))))))
+        body             (do (reset! last-sender from)
+                             (println (str "[agent " from "] " body)))
+        expects-response (do (reset! last-sender from)
+                             (println (str "[agent " from " is waiting for input]")))))))
 
 (defn- user-call-fn
   "The 'API call' for the user agent.
@@ -292,22 +291,26 @@
           ;; Interactive: user pressed Enter or agent asked for reply
           (or stdin-signal? expects-reply?)
           (do
-            (when stdin-signal? (reset! signal-pending false))
+            (when stdin-signal?
+              (reset! signal-pending false)
+              (drain-blank-lines!))
             (when (seq agent-msgs)
               (display-messages! agent-msgs))
-            (let [input (prompt-and-read)
-                  segments (parse-user-inputs input)]
-              (reduce
-                (fn [default-target {:keys [recipients msg]}]
-                  (let [targets (or recipients
-                                    [(resolve-recipient nil default-target)])]
-                    (doseq [target targets]
-                      (runtime/send target msg)
-                      (reset! last-sender target))
-                    (or (last targets) default-target)))
-                @last-sender
-                segments)
-              split-top-level-restart))
+            (if-let [input (prompt-and-read)]
+              (let [segments (parse-user-inputs input)]
+                (reduce
+                  (fn [default-target {:keys [recipients msg]}]
+                    (let [targets (or recipients
+                                      [(resolve-recipient nil default-target)])]
+                      (doseq [target targets]
+                        (runtime/send target msg)
+                        (reset! last-sender target))
+                      (or (last targets) default-target)))
+                  @last-sender
+                  segments)
+                split-top-level-restart)
+              ;; Blank input — cancel text entry, return to idle
+              quine-restart))
 
           ;; Fire-and-forget — no stdin read needed
           :else

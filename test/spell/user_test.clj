@@ -51,7 +51,18 @@
   (testing "mixed group and single target forms"
     (is (= [{:recipients [:main :other] :msg "first"}
             {:recipients [:third] :msg "second"}]
-           (user/parse-user-inputs "(:main :other) first :third second")))))
+           (user/parse-user-inputs "(:main :other) first :third second"))))
+
+  (testing "bare reply followed by recipient spec"
+    (is (= [{:recipients nil :msg "hello"}
+            {:recipients [:main] :msg "do something"}]
+           (user/parse-user-inputs "hello :main do something"))))
+
+  (testing "bare reply followed by multiple recipient specs"
+    (is (= [{:recipients nil :msg "hi"}
+            {:recipients [:main] :msg "foo"}
+            {:recipients [:other] :msg "bar"}]
+           (user/parse-user-inputs "hi :main foo :other bar")))))
 
 (deftest resolve-recipient-test
   (testing "explicit takes priority"
@@ -221,6 +232,20 @@
       (runtime/box :b p-b (runtime/make-awake-fn :b (fn [raw] (reset! received-b raw) raw)))
       (is (.contains ^String @received-a ":body \"shared\""))
       (is (.contains ^String @received-b ":body \"shared\"")))))
+
+(deftest blank-input-cancels-text-entry-test
+  (testing "blank input returns quine-restart without sending"
+    (runtime/register! :user)
+    (runtime/register! :asker)
+    ;; Queue a blank line — simulates user pressing Enter to cancel
+    (.put @#'user/stdin-queue "")
+    (let [prompt "(quine completion (eval (do (def msg-1 {:from :asker :expects-response true}) )))"
+          suffix (binding [runtime/*current-handle* :user]
+                   (#'user/user-call-fn prompt))]
+      (is (string? suffix))
+      ;; Should return quine-restart (")) (eval (do "), not split-top-level-restart
+      (is (= ")) (eval (do " suffix)
+          "blank input should cancel with quine-restart, not split-top-level-restart"))))
 
 ;; Sequential asks: skipped — mock readers respond too fast for reliable
 ;; concurrent box lifecycle testing. Not reproducible with real LLM agents.
