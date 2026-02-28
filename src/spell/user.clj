@@ -87,14 +87,106 @@
 ;; Pure functions
 ;; =============================================================================
 
-(defn parse-user-input
-  "Parse user input into [recipient message].
-   \":main hello\" → [:main \"hello\"]
-   \"hello\"       → [nil \"hello\"]"
+(defn- parse-keyword-at
+  "Parse keyword token at index i. Returns [kw next-index] or nil."
+  [s i]
+  (let [n (count s)]
+    (when (and (< i n) (= \: (.charAt s i)))
+      (let [j (loop [k (inc i)]
+                (if (or (>= k n)
+                        (Character/isWhitespace (.charAt s k))
+                        (= \) (.charAt s k)))
+                  k
+                  (recur (inc k))))
+            token (subs s i j)]
+        (when (> (count token) 1)
+          [(keyword (subs token 1)) j])))))
+
+(defn- parse-recipient-spec-at
+  "Parse recipient spec at index i.
+   Supports :handle and (:a :b) forms.
+   Returns [recipients next-index] or nil."
+  [s i]
+  (let [n (count s)]
+    (when (< i n)
+      (let [ch (.charAt s i)]
+        (cond
+          (= \: ch)
+          (when-let [[kw j] (parse-keyword-at s i)]
+            [[kw] j])
+
+          (= \( ch)
+          (loop [k (inc i) recipients []]
+            (let [k (loop [p k]
+                      (if (and (< p n) (Character/isWhitespace (.charAt s p)))
+                        (recur (inc p))
+                        p))]
+              (cond
+                (>= k n) nil
+                (= \) (.charAt s k))
+                (when (seq recipients)
+                  [recipients (inc k)])
+                :else
+                (if-let [[kw next-k] (parse-keyword-at s k)]
+                  (recur next-k (conj recipients kw))
+                  nil))))
+
+          :else nil)))))
+
+(defn- find-next-recipient-spec-start
+  "Find the next index >= from where a recipient spec starts."
+  [s from]
+  (let [n (count s)]
+    (loop [i from]
+      (cond
+        (>= i n) nil
+        :else
+        (let [ch (.charAt s i)
+              boundary? (or (zero? i) (Character/isWhitespace (.charAt s (dec i))))
+              starter? (or (= \: ch) (= \( ch))
+              parsed (when (and boundary? starter?)
+                       (parse-recipient-spec-at s i))]
+          (if parsed
+            i
+            (recur (inc i))))))))
+
+(defn parse-user-inputs
+  "Parse one input line into routed message segments.
+   \"hello\" -> [{:recipients nil :msg \"hello\"}]
+   \":main hi :other yo\" ->
+     [{:recipients [:main] :msg \"hi\"}
+      {:recipients [:other] :msg \"yo\"}]
+   \"(:main :other) hi\" ->
+     [{:recipients [:main :other] :msg \"hi\"}]"
   [input]
-  (if-let [[_ handle-str msg] (re-matches #":(\S+)\s+(.*)" input)]
-    [(keyword handle-str) msg]
-    [nil input]))
+  (let [s (str/trim input)]
+    (if (str/blank? s)
+      []
+      (let [first-start (find-next-recipient-spec-start s 0)]
+        (if (not= first-start 0)
+          [{:recipients nil :msg s}]
+          (loop [i 0 segments []]
+            (if-let [[recipients after-spec] (parse-recipient-spec-at s i)]
+              (let [next-start (find-next-recipient-spec-start s after-spec)
+                    end (or next-start (count s))
+                    msg (str/trim (subs s after-spec end))
+                    next-segments (if (str/blank? msg)
+                                    segments
+                                    (conj segments {:recipients recipients :msg msg}))]
+                (if next-start
+                  (recur next-start next-segments)
+                  (if (seq next-segments)
+                    next-segments
+                    [{:recipients nil :msg s}])))
+              [{:recipients nil :msg s}])))))))
+
+(defn parse-user-input
+  "Backward-compatible single-message parser.
+   Returns [recipient-or-nil message] using the first parsed segment."
+  [input]
+  (let [{:keys [recipients msg]} (first (parse-user-inputs input))
+        recipient (when (= 1 (count recipients)) (first recipients))]
+    [recipient msg]))
 
 (defn resolve-recipient
   "Resolve the actual recipient. Uses explicit if provided,
@@ -179,17 +271,16 @@
    Takes a prompt string (the reopened completion) and returns a response string
    (code to append). Analogous to call-fn in make-llm.
 
-   Three cases, checked in order (using only NEW messages):
-   1. stdin-signal present: user pressed Enter → prompt for message, send
-   2. expects-reply? (agent asked): print messages, read reply, send
-   3. fire-and-forget: print messages, quine-restart (no stdin read)"
+   Two cases, checked in order (using only NEW messages):
+   1. stdin-signal or expects-reply: display messages, show agent list,
+      read input, parse :target routing, send to resolved recipient.
+   2. fire-and-forget: display messages, quine-restart (no stdin read)."
   [prompt-str]
   (let [balanced    (parse/balance-parens prompt-str)
         all-entries (or (extract-messages balanced) [])
         new-entries (remove #(@seen-msg-names (:name %)) all-entries)
         new-msgs    (mapv :msg new-entries)
         agent-msgs    (vec (remove #(= :stdin-watch (:from %)) new-msgs))
-        from-handles  (->> agent-msgs (keep :from) distinct vec)
         expects-reply? (some :expects-response new-msgs)
         stdin-signal?  (some #(= :stdin-watch (:from %)) new-msgs)
         result
@@ -198,34 +289,27 @@
           (empty? new-entries)
           "nil "
 
-          ;; Case 1: User-initiated (stdin signal)
-          stdin-signal?
+          ;; Interactive: user pressed Enter or agent asked for reply
+          (or stdin-signal? expects-reply?)
           (do
-            (reset! signal-pending false)
+            (when stdin-signal? (reset! signal-pending false))
             (when (seq agent-msgs)
               (display-messages! agent-msgs))
             (let [input (prompt-and-read)
-                  [explicit-recipient msg] (parse-user-input input)
-                  target (resolve-recipient explicit-recipient @last-sender)]
-              (reset! last-sender target)
-              ;; Send immediately from Clojure so user messages cannot be
-              ;; preempted as inert trailing expressions.
-              (runtime/send target msg)
+                  segments (parse-user-inputs input)]
+              (reduce
+                (fn [default-target {:keys [recipients msg]}]
+                  (let [targets (or recipients
+                                    [(resolve-recipient nil default-target)])]
+                    (doseq [target targets]
+                      (runtime/send target msg)
+                      (reset! last-sender target))
+                    (or (last targets) default-target)))
+                @last-sender
+                segments)
               split-top-level-restart))
 
-          ;; Case 2: Agent asked — expects reply
-          expects-reply?
-          (do
-            (display-messages! new-msgs)
-            (binding [*out* *err*] (print "> ") (flush))
-            (let [input (take-nonempty-line!)]
-              ;; Mirror stdin-signal behavior: send immediately to each asker,
-              ;; then continue in a fresh dummy top-level wrapper.
-              (doseq [handle from-handles]
-                (runtime/send handle input))
-              split-top-level-restart))
-
-          ;; Case 3: Fire-and-forget — no stdin read needed
+          ;; Fire-and-forget — no stdin read needed
           :else
           (do
             (display-messages! new-msgs)
