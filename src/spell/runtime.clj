@@ -180,17 +180,18 @@
 
 (defn deliver-msg-fn
   "Like send-msg-fn but delivers to a specific signal promise.
-   No-op if the signal has been replaced (agent woke from something else).
-   Uses swap-vals! with identical? check inside — the compose and staleness
-   check are a single CAS, eliminating the TOCTOU race."
+   No-op if the signal has been replaced OR already delivered (agent woke
+   from something else). Uses swap-vals! so staleness/realization check and
+   inbox composition happen in one atomic state transition."
   [handle captured-signal msg-fn]
   (let [state (:state (get @registry handle))
-        [old _] (swap-vals! state
-                  (fn [{:keys [inbox-fn signal] :as s}]
-                    (if (identical? signal captured-signal)
-                      (assoc s :inbox-fn (comp msg-fn inbox-fn))
-                      s)))]
-    (when (identical? (:signal old) captured-signal)
+        [old new] (swap-vals! state
+                    (fn [{:keys [inbox-fn signal] :as s}]
+                      (if (and (identical? signal captured-signal)
+                               (not (realized? signal)))
+                        (assoc s :inbox-fn (comp msg-fn inbox-fn))
+                        s)))]
+    (when-not (identical? old new)
       (deliver captured-signal :wake))))
 
 ;; =============================================================================

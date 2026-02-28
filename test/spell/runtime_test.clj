@@ -767,7 +767,7 @@
         ;; Inbox should have the transform
         (is (some? (:inbox-fn @(:state (get @runtime/registry handle)))))))))
 
-(deftest deliver-msg-fn-realized-noop-test
+(deftest deliver-msg-fn-replaced-signal-noop-test
   (testing "deliver-msg-fn no-ops on replaced signal"
     (let [handle :dmf-realized]
       (runtime/register! handle)
@@ -779,6 +779,23 @@
         (runtime/deliver-msg-fn handle sig (fn [raw] (str "msg:" raw)))
         ;; Inbox should still be identity (no transform composed)
         (is (= identity (:inbox-fn @(:state (get @runtime/registry handle)))))))))
+
+(deftest deliver-msg-fn-realized-signal-noop-test
+  (testing "deliver-msg-fn no-ops on already-realized captured signal"
+    (let [handle :dmf-stale-realized]
+      (runtime/register! handle)
+      (let [sig (:signal @(:state (get @runtime/registry handle)))]
+        ;; Simulate wake happened before notifier callback runs.
+        (deliver sig :wake)
+        ;; deliver-msg-fn should not compose stale payload into inbox.
+        (runtime/deliver-msg-fn handle sig (fn [raw] (str raw "(def stale true) ")))
+        (is (= identity (:inbox-fn @(:state (get @runtime/registry handle)))))
+        ;; And should remain no-op when the handle wakes again later.
+        (let [p (promise)]
+          (deliver p "(quine completion (eval (do )))")
+          (is (not (.contains ^String
+                              (runtime/box handle p (runtime/make-awake-fn handle identity))
+                              "stale"))))))))
 
 ;; =============================================================================
 ;; Effect guard tests
