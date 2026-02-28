@@ -34,6 +34,25 @@
   (testing "colon without space is not a recipient"
     (is (= [nil ":notseparated"] (user/parse-user-input ":notseparated")))))
 
+(deftest parse-user-inputs-test
+  (testing "single plain message"
+    (is (= [{:recipients nil :msg "hello"}]
+           (user/parse-user-inputs "hello"))))
+
+  (testing "multiple routed segments in one line"
+    (is (= [{:recipients [:main] :msg "hi"}
+            {:recipients [:other] :msg "yo"}]
+           (user/parse-user-inputs ":main hi :other yo"))))
+
+  (testing "recipient group targets multiple handles"
+    (is (= [{:recipients [:main :other] :msg "shared"}]
+           (user/parse-user-inputs "(:main :other) shared"))))
+
+  (testing "mixed group and single target forms"
+    (is (= [{:recipients [:main :other] :msg "first"}
+            {:recipients [:third] :msg "second"}]
+           (user/parse-user-inputs "(:main :other) first :third second")))))
+
 (deftest resolve-recipient-test
   (testing "explicit takes priority"
     (is (= :seller (user/resolve-recipient :seller :main))))
@@ -160,6 +179,48 @@
       (is (string? @received))
       (is (.contains ^String @received ":from :user"))
       (is (.contains ^String @received ":body \"hello from user\"")))))
+
+(deftest expects-reply-routes-multiple-segments-test
+  (testing "one input line can send multiple routed messages"
+    (runtime/register! :user)
+    (runtime/register! :asker)
+    (runtime/register! :other)
+    (runtime/register! :third)
+    (.put @#'user/stdin-queue ":other hello :third world")
+    (let [prompt "(quine completion (eval (do (def msg-1 {:from :asker :expects-response true}) )))"
+          _ (binding [runtime/*current-handle* :user]
+              (#'user/user-call-fn prompt))
+          received-other (atom nil)
+          received-third (atom nil)
+          p-other (promise)
+          p-third (promise)]
+      (deliver p-other "(quine completion (eval (do )))")
+      (deliver p-third "(quine completion (eval (do )))")
+      (runtime/box :other p-other (runtime/make-awake-fn :other (fn [raw] (reset! received-other raw) raw)))
+      (runtime/box :third p-third (runtime/make-awake-fn :third (fn [raw] (reset! received-third raw) raw)))
+      (is (.contains ^String @received-other ":body \"hello\""))
+      (is (.contains ^String @received-third ":body \"world\"")))))
+
+(deftest expects-reply-recipient-groups-test
+  (testing "recipient groups fan out one message to multiple targets"
+    (runtime/register! :user)
+    (runtime/register! :asker)
+    (runtime/register! :a)
+    (runtime/register! :b)
+    (.put @#'user/stdin-queue "(:a :b) shared")
+    (let [prompt "(quine completion (eval (do (def msg-7 {:from :asker :expects-response true}) )))"
+          _ (binding [runtime/*current-handle* :user]
+              (#'user/user-call-fn prompt))
+          received-a (atom nil)
+          received-b (atom nil)
+          p-a (promise)
+          p-b (promise)]
+      (deliver p-a "(quine completion (eval (do )))")
+      (deliver p-b "(quine completion (eval (do )))")
+      (runtime/box :a p-a (runtime/make-awake-fn :a (fn [raw] (reset! received-a raw) raw)))
+      (runtime/box :b p-b (runtime/make-awake-fn :b (fn [raw] (reset! received-b raw) raw)))
+      (is (.contains ^String @received-a ":body \"shared\""))
+      (is (.contains ^String @received-b ":body \"shared\"")))))
 
 ;; Sequential asks: skipped — mock readers respond too fast for reliable
 ;; concurrent box lifecycle testing. Not reproducible with real LLM agents.
