@@ -53,8 +53,8 @@ These are intentionally separate: use futures for deterministic compute, and spa
 
 ## Language Features
 
-- 13 special forms and 26 spell macros (`defspellmacro`), including user-defined macros via `defmacro`.
-- Vector destructuring (`&` rest, `:as`), `loop/recur` (including fn-level), `try/catch/throw`, `quine`, `compact`.
+- 13 special forms and 27 spell macros (`defspellmacro`), including user-defined macros via `defmacro`.
+- Vector destructuring (`&` rest, `:as`), `loop/recur` (including fn-level), `try/catch/throw`, `quine`, `!compact`.
 - Prompt-aware orchestration forms including `think`, `rethink`, `!extend`, `!call-now`, and `!describe`.
 - Inter-agent messaging (`spawn`, `!ask`, `send`, reply variants), keyword handles, and message preemption semantics.
 
@@ -67,7 +67,7 @@ Primary providers in day-to-day use:
 - Codex tool-call (`codex-tc-provider`)
 
 Other implemented providers:
-- OpenAI, Ollama, Kimi, Test (plus provider-file loading via `.provider.edn`)
+- OpenAI, OpenAI Responses, OpenClaw, Ollama, Kimi, Test (plus provider-file loading via `.provider.edn`)
 
 Each `.provider.edn` file includes a `:default-agent` key pointing to the transport-appropriate base agent.
 
