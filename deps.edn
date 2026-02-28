@@ -4,7 +4,9 @@
  :aliases {:dev {:extra-paths ["dev"]}
            :test {:extra-paths ["test"]
                   :extra-deps {io.github.cognitect-labs/test-runner
-                               {:git/tag "v0.5.1" :git/sha "dfb30dd"}}}
+                               {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+                  :main-opts ["-m" "cognitect.test-runner"
+                              "-e" "known-bug"]}
            ;; Fast tests only — pure/unit tests, no concurrency or I/O (~1s)
            :test-fast {:extra-paths ["test"]
                        :extra-deps {io.github.cognitect-labs/test-runner

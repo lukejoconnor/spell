@@ -683,8 +683,8 @@
       ;; Deliver completion
       (deliver completion victim-completion)
 
-      ;; Run box — inside-fn sees the transformed raw
-      (runtime/box :victim completion inside-fn)
+      ;; Run box — make-awake-fn drains inbox, inside-fn sees transformed raw
+      (runtime/box :victim completion (runtime/make-awake-fn :victim inside-fn))
 
       ;; Verify the transform was applied
       (is (some? @transformed-raw) "inside-fn should have been called")
@@ -1074,11 +1074,12 @@
       (runtime/-send! handle (fn [raw] (str "transformed:" raw)))
       (deliver p1 "msg1")
       (deliver p2 "msg2")
-      ;; First box call drains inbox (gets the transform)
-      (let [f1 (future (runtime/box handle p1 inside-fn))]
+      ;; First box call drains inbox via make-awake-fn (gets the transform)
+      (let [awake-fn (runtime/make-awake-fn handle inside-fn)
+            f1 (future (runtime/box handle p1 awake-fn))]
         (Thread/sleep 50) ;; Let f1 drain inbox and release has-box
         ;; Second box call drains inbox (gets identity — transform already consumed)
-        (let [f2 (future (runtime/box handle p2 inside-fn))]
+        (let [f2 (future (runtime/box handle p2 awake-fn))]
           (Thread/sleep 50)
           (deliver gate true)
           (deref f1 3000 :timeout)
