@@ -74,15 +74,6 @@
       (throw (ex-info "EOF on user input" {})))
     line))
 
-(defn- take-nonempty-line!
-  "Block until a non-empty line is available. Skips blank lines."
-  []
-  (loop []
-    (let [line (take-line!)]
-      (if (= "" (str/trim line))
-        (recur)
-        line))))
-
 ;; =============================================================================
 ;; Pure functions
 ;; =============================================================================
@@ -224,8 +215,16 @@
 ;; IO helpers
 ;; =============================================================================
 
+(defn- drain-blank-lines!
+  "Remove blank lines from the head of the queue (signal residue)."
+  []
+  (while (let [head (.peek stdin-queue)]
+           (and (some? head) (not= head ::eof) (str/blank? head)))
+    (.poll stdin-queue)))
+
 (defn- prompt-and-read
-  "Print recipients + prompt, read a non-empty line from the queue."
+  "Print recipients + prompt, read a line from the queue.
+   Returns nil on blank input (user cancels text entry)."
   []
   (let [recipients (lookup-recipients)]
     (binding [*out* *err*]
@@ -234,7 +233,8 @@
           (println (str "  " handle (when desc (str " — " desc))))))
       (print "> ")
       (flush))
-    (take-nonempty-line!)))
+    (let [line (take-line!)]
+      (when-not (str/blank? line) line))))
 
 ;; =============================================================================
 ;; User call function (the "API call" equivalent)
@@ -291,22 +291,26 @@
           ;; Interactive: user pressed Enter or agent asked for reply
           (or stdin-signal? expects-reply?)
           (do
-            (when stdin-signal? (reset! signal-pending false))
+            (when stdin-signal?
+              (reset! signal-pending false)
+              (drain-blank-lines!))
             (when (seq agent-msgs)
               (display-messages! agent-msgs))
-            (let [input (prompt-and-read)
-                  segments (parse-user-inputs input)]
-              (reduce
-                (fn [default-target {:keys [recipients msg]}]
-                  (let [targets (or recipients
-                                    [(resolve-recipient nil default-target)])]
-                    (doseq [target targets]
-                      (runtime/send target msg)
-                      (reset! last-sender target))
-                    (or (last targets) default-target)))
-                @last-sender
-                segments)
-              split-top-level-restart))
+            (if-let [input (prompt-and-read)]
+              (let [segments (parse-user-inputs input)]
+                (reduce
+                  (fn [default-target {:keys [recipients msg]}]
+                    (let [targets (or recipients
+                                      [(resolve-recipient nil default-target)])]
+                      (doseq [target targets]
+                        (runtime/send target msg)
+                        (reset! last-sender target))
+                      (or (last targets) default-target)))
+                  @last-sender
+                  segments)
+                split-top-level-restart)
+              ;; Blank input — cancel text entry, return to idle
+              quine-restart))
 
           ;; Fire-and-forget — no stdin read needed
           :else

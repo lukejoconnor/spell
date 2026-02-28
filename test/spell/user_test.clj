@@ -233,6 +233,20 @@
       (is (.contains ^String @received-a ":body \"shared\""))
       (is (.contains ^String @received-b ":body \"shared\"")))))
 
+(deftest blank-input-cancels-text-entry-test
+  (testing "blank input returns quine-restart without sending"
+    (runtime/register! :user)
+    (runtime/register! :asker)
+    ;; Queue a blank line — simulates user pressing Enter to cancel
+    (.put @#'user/stdin-queue "")
+    (let [prompt "(quine completion (eval (do (def msg-1 {:from :asker :expects-response true}) )))"
+          suffix (binding [runtime/*current-handle* :user]
+                   (#'user/user-call-fn prompt))]
+      (is (string? suffix))
+      ;; Should return quine-restart (")) (eval (do "), not split-top-level-restart
+      (is (= ")) (eval (do " suffix)
+          "blank input should cancel with quine-restart, not split-top-level-restart"))))
+
 ;; Sequential asks: skipped — mock readers respond too fast for reliable
 ;; concurrent box lifecycle testing. Not reproducible with real LLM agents.
 
