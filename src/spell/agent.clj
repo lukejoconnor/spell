@@ -27,7 +27,8 @@
             [spell.llm :as llm]
             [spell.provider :as provider]
             [spell.stdlib :as stdlib]
-            [spell.io :as io]))
+            [spell.io :as io]
+            [spell.web :as web]))
 
 ;; =============================================================================
 ;; Stdlib resolution
@@ -38,6 +39,7 @@
    Note: io/ is effectful and can be omitted in custom agent profiles.
    Seqs, fns, and bit- ops are in core-builtins (matching Clojure)."
   {'io io/io-namespace
+   'web web/web-namespace
    'globals globals/globals-namespace
    'agents runtime/agents-namespace
    'futures stdlib/futures-namespace
