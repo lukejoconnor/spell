@@ -27,7 +27,7 @@
               </div>
               </body></html>"]
     (with-redefs [web/http-get-text (fn [_ _ _] {:ok html})]
-      (let [result (web/search "clojure" {:max-results 2})]
+      (let [result (web/search "clojure" {:max-results 2 :backend :duckduckgo})]
         (is (contains? result :ok))
         (is (= 2 (count (:ok result))))
         (is (= "Functions - Clojure" (get-in result [:ok 0 :title])))
@@ -35,6 +35,66 @@
                (get-in result [:ok 0 :url])))
         (is (= "https://example.com/transducers"
                (get-in result [:ok 1 :url])))))))
+
+(deftest search-detects-duckduckgo-captcha
+  (let [captcha-html "<html><body>
+                      <div class='anomaly-modal__mask'>
+                        <div class='anomaly-modal__modal'>
+                          <div class='anomaly-modal__title'>Unfortunately, bots use DuckDuckGo too.</div>
+                          <div class='anomaly-modal__description'>Please complete the following challenge.</div>
+                        </div>
+                      </div>
+                      </body></html>"]
+    (with-redefs [web/http-get-text (fn [_ _ _] {:ok captcha-html})]
+      (let [result (web/search "test query" {:backend :duckduckgo})]
+        (is (contains? result :error))
+        (is (str/includes? (:error result) "CAPTCHA"))))))
+
+(deftest search-serper-parses-response
+  (let [serper-response {:organic [{:title "Clojure - Functional Programming"
+                                    :link "https://clojure.org"
+                                    :snippet "Clojure is a dynamic functional language."
+                                    :position 1}
+                                   {:title "Learn Clojure"
+                                    :link "https://clojure.org/guides/learn"
+                                    :snippet "Getting started with Clojure."
+                                    :position 2}]
+                         :searchParameters {:q "clojure"}}
+        cfg-file (java.io.File/createTempFile "spell-web-serper-" ".edn")]
+    (try
+      (spit cfg-file "{:search {:serper-api-key \"test-key-123\"}}")
+      (with-redefs [web/http-post-json (fn [url headers body _]
+                                         (is (= "https://google.serper.dev/search" url))
+                                         (is (= "test-key-123" (get headers "X-API-KEY")))
+                                         {:ok serper-response})]
+        (binding [web/*config-path* (.getAbsolutePath cfg-file)]
+          (let [result (web/search "clojure" {:backend :serper})]
+            (is (contains? result :ok))
+            (is (= 2 (count (:ok result))))
+            (is (= "Clojure - Functional Programming" (get-in result [:ok 0 :title])))
+            (is (= "https://clojure.org" (get-in result [:ok 0 :url])))
+            (is (= "Clojure is a dynamic functional language." (get-in result [:ok 0 :snippet])))
+            (is (= "https://clojure.org/guides/learn" (get-in result [:ok 1 :url]))))))
+      (finally
+        (.delete cfg-file)))))
+
+(deftest search-serper-requires-api-key
+  (binding [web/*config-path* "/dev/null"]
+    (let [result (web/search "test" {:backend :serper})]
+      (is (contains? result :error))
+      (is (str/includes? (:error result) "SERPER_API_KEY")))))
+
+(deftest search-serper-handles-api-error
+  (let [cfg-file (java.io.File/createTempFile "spell-web-serper-" ".edn")]
+    (try
+      (spit cfg-file "{:search {:serper-api-key \"bad-key\"}}")
+      (with-redefs [web/http-post-json (fn [_ _ _ _] {:error "HTTP 401 from https://google.serper.dev/search: Unauthorized"})]
+        (binding [web/*config-path* (.getAbsolutePath cfg-file)]
+          (let [result (web/search "test" {:backend :serper})]
+            (is (contains? result :error))
+            (is (str/includes? (:error result) "401")))))
+      (finally
+        (.delete cfg-file)))))
 
 (deftest fetch-jina-truncates-content
   (let [content (apply str (repeat 3000 "x"))]

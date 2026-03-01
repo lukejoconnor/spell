@@ -1,8 +1,9 @@
 ;; Optional config for spell.web namespace.
-;; Safe default: DuckDuckGo search + Jina fetch + raw fallback.
+;; Search auto-selects :serper when SERPER_API_KEY env var is set.
+;; Override with {:search {:backend :serper}} or {:search {:backend :duckduckgo}}.
+;; Serper API key: set SERPER_API_KEY env var or :serper-api-key below.
 
-{:search {:backend :duckduckgo
-          :max-results 5
+{:search {:max-results 5
           :region "us-en"}
 
  :fetch {:backend :jina
