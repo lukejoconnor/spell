@@ -8,6 +8,7 @@
             [spell.llm :as llm-engine]
             [spell.eval :as eval]
             [spell.io :as io]
+            [spell.web :as web]
             [spell.stdlib :as stdlib]))
 
 ;; Re-export from spell.eval
@@ -44,6 +45,7 @@
    Core namespaces (strings, math, builtins) are always available via make-llm
    and don't need to be listed here."
   {'io io/io-namespace
+   'web web/web-namespace
    'globals globals/globals-namespace
    'agents runtime/agents-namespace
    'futures stdlib/futures-namespace

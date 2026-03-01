@@ -8,6 +8,7 @@
 
  :namespaces
  {io       stdlib/io
+  web      stdlib/web
   futures  stdlib/futures
   patterns stdlib/patterns
   agents   stdlib/agents

@@ -2,8 +2,9 @@
 
 {:base base-msg.agent.edn
  :name io-msg
- :doc "Message transport agent with io namespace for benchmark/runtime file access"
+ :doc "Message transport agent with io+web namespaces for benchmark/runtime access"
 
  :namespaces
- {io stdlib/io}
+ {io stdlib/io
+  web stdlib/web}
  :llms []}
