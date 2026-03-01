@@ -54,11 +54,23 @@
    Used by block-for-message and spawn to break circular dependencies."
   nil)
 
+(def ^:dynamic *default-spawn-llm*
+  "Default llm function used by prompt-only spawn/spawn-ask forms.
+   Bound by eval to the current !llm-self."
+  nil)
+
 ;; =============================================================================
 ;; Forward declarations
 ;; =============================================================================
 
 (declare box ask-builtin)
+
+(defn- default-spawn-llm
+  "Resolve default llm for prompt-only spawn/spawn-ask forms."
+  [caller]
+  (or *default-spawn-llm*
+      (throw (ex-info (str caller ": no default !llm-self available")
+                      {:caller caller}))))
 
 (defn- resolve-completion-source
   "Resolve completion source (promise/future/raw) to a raw value.
@@ -322,19 +334,10 @@
 ;; Ask
 ;; =============================================================================
 
-(defn- ask-multi
-  "Multi-target ask: poke all targets, wake when all have completed.
-   Installs a single notifier that derefs each target's :completed promise
-   in series, then delivers a combined result message."
+(defn- wait-for-target-completions
+  "Install a single stale notifier that waits for all target completions
+   and delivers one combined message to self."
   [targets]
-  (assert-agent-context! "ask")
-  (when (empty? targets)
-    (throw (ex-info "ask: empty target list" {})))
-  ;; Send poke messages to all targets
-  (doseq [target targets]
-    (let [name (symbol (gensym "msg-"))
-          ask-msg {:from *current-handle* :expects-response true}]
-      (send-msg-fn (create-msg name ask-msg) target)))
   ;; Install a single notifier that waits for all targets to complete
   (let [handle *current-handle*
         my-signal (:signal @(:state (get @registry handle)))
@@ -343,7 +346,19 @@
       (let [results (mapv (fn [target cp] {:from target :body @cp})
                           targets completed-promises)]
         (deliver-msg-fn handle my-signal
-          (create-msg (symbol (gensym "msg-")) {:from targets :body results})))))
+          (create-msg (symbol (gensym "msg-")) {:from targets :body results}))))))
+
+(defn- ask-multi
+  "Multi-target ask: poke all targets, wake when all have completed.
+   Installs a single notifier that derefs each target's :completed promise
+   in series, then delivers a combined result message."
+  [targets]
+  ;; Send poke messages to all targets
+  (doseq [target targets]
+    (let [name (symbol (gensym "msg-"))
+          ask-msg {:from *current-handle* :expects-response true}]
+      (send-msg-fn (create-msg name ask-msg) target)))
+  (wait-for-target-completions targets)
   (block-for-message))
 
 (defn ask-builtin
@@ -356,7 +371,11 @@
    Every form of ask wakes the target, preventing deadlocks."
   ([target]
    (if (sequential? target)
-     (ask-multi target)
+     (do
+       (assert-agent-context! "ask")
+       (when (empty? target)
+         (throw (ex-info "ask: empty target list" {})))
+       (ask-multi target))
      (ask-builtin target nil)))
   ([target msg]
    (assert-agent-context! "ask")
@@ -401,12 +420,18 @@
   "Start an agent in a background future. Returns its handle immediately.
    The handle is addressable. The child must explicitly send
    its result if needed; use ask-based patterns to collect spawn results.
+   1-arity and prompt-first forms default llm-fn to !llm-self in eval context.
    llm-fn must accept (prompt handle) — 2-arity. leaf-llm is not compatible
    (it has no agent lifecycle); use !llm-self instead.
    Stores parent handle in registry so the child can find its spawner.
    Registers synchronously so the handle is live before spawn returns.
    Optional handle-name (keyword) sets a fixed handle instead of auto-generating."
-  ([llm-fn prompt] (spawn llm-fn prompt nil))
+  ([prompt]
+   (spawn (default-spawn-llm "spawn") prompt nil))
+  ([a b]
+   (if (fn? a)
+     (spawn a b nil)
+     (spawn (default-spawn-llm "spawn") a b)))
   ([llm-fn prompt handle-name]
    (when (:spell/leaf (meta llm-fn))
      (throw (ex-info "leaf-llm cannot be used with agents/spawn (no agent lifecycle) — use !llm-self instead"
@@ -436,13 +461,53 @@
                 (throw e)))))))
      handle)))
 
+(defn- spawn-from-multi-spec
+  "Spawn child from a multi-spawn-ask entry.
+   Supports explicit entries:
+     [llm-fn prompt]
+     [llm-fn prompt handle-name]
+   and default-llm entries:
+     prompt
+     [prompt handle-name]"
+  [spec]
+  (if (vector? spec)
+    (case (count spec)
+      2 (let [[a b] spec]
+          (if (fn? a)
+            (spawn a b)
+            (spawn (default-spawn-llm "spawn-ask") a b)))
+      3 (let [[a b c] spec]
+          (if (fn? a)
+            (spawn a b c)
+            (throw (ex-info "spawn-ask: explicit 3-item entries must be [llm-fn prompt handle-name]"
+                            {:spec spec}))))
+      (throw (ex-info "spawn-ask: each vector entry must be [llm-fn prompt], [llm-fn prompt handle-name], or [prompt handle-name]"
+                      {:spec spec})))
+    (spawn (default-spawn-llm "spawn-ask") spec)))
+
 (defn spawn-ask
-  "Spawn a child agent and block until it sends back a result.
+  "Spawn child agent(s) and block until completion messages arrive.
+   Prompt-only forms default llm-fn to !llm-self in eval context.
+   Vector form spawns multiple children, then waits for all completions
+   without sending wakeup messages to those children.
    Combines spawn + block for safe use as a quoted trailing expression:
      '(agents/!spawn-ask !llm-self \"do X and send result to (parent-handle)\")
    The child must send its result via (send (parent-handle) value).
    Installs completion notifier so child's death wakes the parent."
-  ([llm-fn prompt] (spawn-ask llm-fn prompt nil))
+  ([arg]
+   (assert-agent-context! "spawn-ask")
+   (if (vector? arg)
+     (do
+       (when (empty? arg)
+         (throw (ex-info "spawn-ask: empty spawn spec list" {})))
+       (let [children (mapv spawn-from-multi-spec arg)]
+         (wait-for-target-completions children)
+         (block-for-message)))
+     (spawn-ask (default-spawn-llm "spawn-ask") arg nil)))
+  ([a b]
+   (if (fn? a)
+     (spawn-ask a b nil)
+     (spawn-ask (default-spawn-llm "spawn-ask") a b)))
   ([llm-fn prompt handle-name]
    (assert-agent-context! "spawn-ask")
    (let [child (spawn llm-fn prompt handle-name)]
@@ -458,15 +523,21 @@
   {:short-docs "Inter-agent communication: spawn, !ask, send, reply."
    :docs {:guide "AGENTS — Inter-agent communication (effect namespace).
 
-  (agents/spawn llm-fn prompt) — start background agent and gives prompt (usually a string); returns spawned handle
-  (agents/spawn llm-fn prompt :handle-name) — also assigns handle name
+  (agents/spawn prompt)         — start background agent with !llm-self
+  (agents/spawn prompt :handle-name) — same, with explicit handle name
+  (agents/spawn llm-fn prompt)  — start background agent with explicit llm-fn
+  (agents/spawn llm-fn prompt :handle-name) — explicit llm-fn + explicit handle name
   (agents/send target message)     — send message (usually a string) to target
   (agents/reply msg-map message)   — reply to msg-map, which must contain :from
   (agents/!ask target message)     — send message to target, block for reply
   (agents/!ask target)             — poke target without message, block for reply
   (agents/!ask [a b c])            — multi-target: poke all, wake when all complete
   (agents/!reply-ask msg-map message)   — reply to msg-map, block for next message
-  (agents/!spawn-ask llm-fn prompt) — spawn agent, block until it sends back
+  (agents/!spawn-ask prompt) — spawn with !llm-self, block until it sends back
+  (agents/!spawn-ask prompt :handle-name) — same, with explicit handle name
+  (agents/!spawn-ask llm-fn prompt) — spawn with explicit llm-fn, block until it sends back
+  (agents/!spawn-ask [[llm-fn prompt] [llm-fn prompt :name] ...]) — spawn many, wait for all completions (no ask wakeup poke)
+  (agents/!spawn-ask [prompt-a prompt-b ...]) — spawn many with !llm-self, wait for all completions (no ask wakeup poke)
   (agents/current-handle)          — your handle
   (agents/parent-handle)           — handle of agent that spawned you (nil if you are main)
   (agents/send-msg-fn f handle)    — low-level / not recommended
@@ -635,6 +706,8 @@ Example (from a spawned child):
 
 (agents/spawn llm-fn prompt)
 (agents/spawn llm-fn prompt :name)
+(agents/spawn prompt)
+(agents/spawn prompt :name)
   llm-fn: !llm-self (not leaf-llm — leaf-llm has no agent lifecycle and will error)
   prompt: string prompt for the child agent
   :name: optional keyword handle (e.g. :seller). Default: auto-generated :spawn-N.
@@ -653,9 +726,11 @@ Example:
        (agents/!ask :seller 100))"
 
     :!spawn-ask
-    "Spawn a child agent and block until it sends back a result.
+    "Spawn child agent(s) and block for result message(s).
 Combines spawn + block. One-shot delegation pattern.
 
+(agents/!spawn-ask prompt)
+(agents/!spawn-ask prompt :name)
 (agents/!spawn-ask llm-fn prompt :name)
   llm-fn: !llm-self (not leaf-llm — leaf-llm has no agent lifecycle and will error)
   prompt: string or wrap-cat — must instruct child to send to (agents/parent-handle)
@@ -663,6 +738,14 @@ Combines spawn + block. One-shot delegation pattern.
   (see agents/spawn docs for why the prompt must not be a bare quine)
 
 Your next turn sees (def msg-N {:from child-handle :body result}).
+
+(agents/!spawn-ask [[llm-a prompt-a] [llm-b prompt-b :b] ...])
+  Each entry mirrors agents/spawn arities: [llm-fn prompt], [llm-fn prompt :name], or [prompt :name].
+  Non-vector entries are treated as prompt-only entries with !llm-self:
+  (agents/!spawn-ask [prompt-a prompt-b prompt-c])
+  Spawns all children concurrently, then waits for all completions.
+  Unlike (agents/!ask [targets]), this does NOT send wakeup/poke messages to targets.
+  Your next turn sees :body as a vector of {:from child-handle :body result}.
 
 Example:
   '(agents/!spawn-ask !llm-self \"Compute 6*7 and (agents/send (agents/parent-handle) result)\")

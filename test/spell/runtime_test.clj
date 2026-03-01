@@ -423,6 +423,152 @@
           (is (string? result))
           (is (.contains ^String result ":body 42")))))))
 
+(deftest spawn-default-llm-arity-test
+  (testing "spawn(prompt) uses bound default !llm-self"
+    (let [parent-h :spawn-default-parent
+          default-llm (fn [prompt _handle] (str "done:" prompt))]
+      (runtime/register! parent-h)
+      (binding [runtime/*current-handle* parent-h
+                runtime/*default-spawn-llm* default-llm]
+        (let [child-h (runtime/spawn "prompt-default")]
+          (is (keyword? child-h))
+          (is (= "done:prompt-default"
+                 (deref @(:completed (get @runtime/registry child-h)) 5000 :timeout)))))))
+
+  (testing "spawn(prompt) throws when default !llm-self is unavailable"
+    (is (thrown-with-msg? Exception #"no default !llm-self available"
+          (runtime/spawn "no-default")))))
+
+(deftest spawn-ask-multi-specs-waits-for-all-children-test
+  (testing "spawn-ask with two child specs wakes once with combined completion results"
+    (let [parent-h :sa-multi-parent
+          parent-raw "(quine completion (eval (do )))"
+          child-a-started (promise)
+          child-b-started (promise)
+          child-a-may-finish (promise)
+          child-b-may-finish (promise)
+          parent-wake-count (atom 0)
+          child-a-fn (fn [_prompt _handle]
+                       (deliver child-a-started true)
+                       (deref child-a-may-finish 5000 :timeout)
+                       :child-a-result)
+          child-b-fn (fn [_prompt _handle]
+                       (deliver child-b-started true)
+                       (deref child-b-may-finish 5000 :timeout)
+                       :child-b-result)
+          _ (runtime/register! parent-h)
+          parent-result
+          (future
+            (binding [runtime/*current-handle* parent-h
+                      runtime/*current-raw* parent-raw
+                      runtime/*current-eval-fn* (fn [raw]
+                                                  (swap! parent-wake-count inc)
+                                                  raw)]
+              (runtime/spawn-ask [[child-a-fn "prompt-a" :sa-multi-child-a]
+                                  [child-b-fn "prompt-b" :sa-multi-child-b]])))]
+      (is (= true (deref child-a-started 5000 :timeout)))
+      (is (= true (deref child-b-started 5000 :timeout)))
+      ;; Only child A is allowed to complete here; parent must stay blocked for child B.
+      (deliver child-a-may-finish true)
+      (is (= :timeout (deref parent-result 200 :timeout))
+          "parent should not wake until both child completions are available")
+      (deliver child-b-may-finish true)
+      (let [result (deref parent-result 5000 :timeout)]
+        (is (string? result))
+        ;; Combined result should include both children and both completion bodies.
+        (is (.contains ^String result ":from :sa-multi-child-a"))
+        (is (.contains ^String result ":from :sa-multi-child-b"))
+        (is (.contains ^String result ":body :child-a-result"))
+        (is (.contains ^String result ":body :child-b-result"))
+        (is (= 1 @parent-wake-count)
+            "parent should wake exactly once for the combined notifier message")))))
+
+(deftest spawn-ask-multi-specs-stale-notifier-does-not-wake-next-block-test
+  (testing "early explicit message wakes parent; stale notifier from original spawn-ask must not wake later block"
+    (let [parent-h :sa-stale-parent
+          parent-raw "(quine completion (eval (do )))"
+          child-a-sent-early (promise)
+          child-a-may-finish (promise)
+          child-b-may-finish (promise)
+          child-c-started (promise)
+          child-c-may-finish (promise)
+          parent-wake-count (atom 0)
+          first-result-ready (promise)
+          child-a-fn (fn [_prompt handle]
+                       ;; Child A sends an explicit message before either original child completes.
+                       (binding [runtime/*current-handle* handle]
+                         (runtime/send parent-h :early-from-a))
+                       (deliver child-a-sent-early true)
+                       (deref child-a-may-finish 5000 :timeout)
+                       :child-a-final)
+          child-b-fn (fn [_prompt _handle]
+                       (deref child-b-may-finish 5000 :timeout)
+                       :child-b-final)
+          child-c-fn (fn [_prompt _handle]
+                       (deliver child-c-started true)
+                       (deref child-c-may-finish 5000 :timeout)
+                       :child-c-final)
+          _ (runtime/register! parent-h)
+          parent-future
+          (future
+            (binding [runtime/*current-handle* parent-h
+                      runtime/*current-raw* parent-raw
+                      runtime/*current-eval-fn* (fn [raw]
+                                                  (swap! parent-wake-count inc)
+                                                  raw)]
+              (let [first-result
+                    (runtime/spawn-ask [[child-a-fn "prompt-a" :sa-stale-child-a]
+                                        [child-b-fn "prompt-b" :sa-stale-child-b]])
+                    _ (deliver first-result-ready first-result)
+                    second-result
+                    (runtime/spawn-ask [[child-c-fn "prompt-c" :sa-stale-child-c]])]
+                {:first first-result
+                 :second second-result})))]
+      (is (= true (deref child-a-sent-early 5000 :timeout)))
+      (let [first-result (deref first-result-ready 5000 :timeout)]
+        (is (string? first-result))
+        (is (.contains ^String first-result ":body :early-from-a"))
+        (is (.contains ^String first-result ":from :sa-stale-child-a")))
+      (is (= true (deref child-c-started 5000 :timeout))
+          "parent should move on to a second blocking wait for child C")
+      ;; Complete the original two children after the second wait has started.
+      (deliver child-a-may-finish true)
+      (deliver child-b-may-finish true)
+      ;; If stale notifier handling is correct, old [A B] completion cannot wake this wait.
+      (is (= :timeout (deref parent-future 200 :timeout))
+          "parent must stay blocked; old notifier signal should be stale")
+      (is (= 1 @parent-wake-count)
+          "only the early explicit wake should have happened so far")
+      (deliver child-c-may-finish true)
+      (let [{:keys [second]} (deref parent-future 5000 :timeout)]
+        (is (string? second))
+        ;; Parent wakes from child C completion, not from old [A B] notifier.
+        (is (.contains ^String second ":from :sa-stale-child-c"))
+        (is (.contains ^String second ":body :child-c-final"))
+        (is (not (.contains ^String second ":sa-stale-child-a")))
+        (is (not (.contains ^String second ":sa-stale-child-b")))
+        (is (= 2 @parent-wake-count)
+            "second wake should come from child C completion only")))))
+
+(deftest spawn-ask-multi-prompts-default-llm-test
+  (testing "spawn-ask([prompt ...]) uses bound default !llm-self for all entries"
+    (let [parent-h :sa-prompt-parent
+          parent-raw "(quine completion (eval (do )))"
+          default-llm (fn [prompt _handle] (str "result:" prompt))]
+      (runtime/register! parent-h)
+      (let [parent-future
+            (future
+              (binding [runtime/*current-handle* parent-h
+                        runtime/*current-raw* parent-raw
+                        runtime/*current-eval-fn* identity
+                        runtime/*default-spawn-llm* default-llm]
+                (runtime/spawn-ask ["alpha" "beta" "gamma"])))]
+        (let [result (deref parent-future 5000 :timeout)]
+          (is (string? result))
+          (is (.contains ^String result "result:alpha"))
+          (is (.contains ^String result "result:beta"))
+          (is (.contains ^String result "result:gamma")))))))
+
 (deftest spawn-addressable-test
   (testing "spawned agent can be sent to (handle is registered)"
     ;; spawn and !llm-self are effect-builtins: accessed via eval double-evaluation.
@@ -431,6 +577,18 @@
                      "(eval (do '(let [w (agents/spawn !llm-self \"(do \")] (not (nil? w)))))"
                      ;; Worker: just return 77
                      "77)"]]
+      (let [{:keys [llm]} (th/make-test-llm
+                            {:response-fn (fn [_]
+                                            (let [r (nth responses @call-count)]
+                                              (swap! call-count inc)
+                                              r))})]
+        (is (= true (llm "(do ")))))))
+
+(deftest spawn-default-arity-via-eval-test
+  (testing "agents/spawn prompt defaults to !llm-self in eval context"
+    (let [call-count (atom 0)
+          responses ["(eval (do '(let [w (agents/spawn \"(do \")] (keyword? w))))"
+                     "321)"]]
       (let [{:keys [llm]} (th/make-test-llm
                             {:response-fn (fn [_]
                                             (let [r (nth responses @call-count)]
