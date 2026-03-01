@@ -58,9 +58,12 @@ clj -M:dev -m exercism-bench run --difficulty 4-5 --limit 8
 
 ### 6. Handle Claude Code / Codex environment
 
-When running CC or Codex baselines, note that the user's `claude.md` / `agents.md` may affect results. This is fine for pilots and quick comparisons, but for reported results:
-- Record in the results file whether these files were cleared before the run.
-- If they weren't cleared, note this as a caveat in the results.
+When running CC or Codex baselines, the user's `claude.md` / `agents.md` affect results. This is fine for pilots and quick comparisons, but for reported results, disable custom config:
+
+- **Claude Code:** `claude --setting-sources "" -p "your prompt"` — skips all custom settings/CLAUDE.md.
+- **Codex:** `./scripts/codex-no-custom.sh` (interactive) or `./scripts/codex-no-custom.sh exec "prompt"` (non-interactive).
+
+Record in the results file whether custom config was disabled.
 
 ### 7. Investigate results by priority
 
