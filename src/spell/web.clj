@@ -213,6 +213,7 @@
                   (remove nil?)
                   vec)}))))
 
+
 (defn- search-duckduckgo
   "Search via DuckDuckGo HTML scraping."
   [q cfg max-results]

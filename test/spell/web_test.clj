@@ -141,6 +141,7 @@
       (finally
         (.delete cfg-file)))))
 
+
 (deftest fetch-jina-truncates-content
   (let [content (apply str (repeat 3000 "x"))]
     (with-redefs [web/http-get-text (fn [url _ _]
