@@ -135,14 +135,13 @@ For example, if the notebook entry is `2026-03-02-swebench-regression`, store tr
 
 | Benchmark | Invoke | Datasets |
 |-----------|--------|----------|
-| GSM8K, MATH, AIME, Omni-MATH | `cd benchmarking && uv run run_benchmark.py` | `gsm8k`, `math_easy`, `math_hard`, `aime_2025`, `omni_math` |
-| BABILong | `cd benchmarking && uv run run_benchmark.py` | `babilong` (auto-selects io agent) |
-| SWE-bench | `cd benchmarking && uv run run_swebench.py` | `mini` (50), `lite` (300), `verified` (500) |
+| GSM8K, MATH, AIME, Omni-MATH | `cd benchmarking && uv run python bench.py general` | `gsm8k`, `math_easy`, `math_hard`, `aime_2025`, `omni_math` |
+| BABILong | `cd benchmarking && uv run python bench.py general` | `babilong` (auto-selects io agent) |
+| Exercism | `cd benchmarking && uv run python bench.py exercism` | `--difficulty 1-3`, `--slugs hello-world,two-fer` |
+| SWE-bench | `cd benchmarking && uv run python bench.py swebench` | `mini` (50), `lite` (300), `verified` (500) |
 | Orchestration | `clj -M:dev -m benchmark run` | 9 orchestration prompts |
 
 See [references/harness-inventory.md](references/harness-inventory.md) for full flag reference and example invocations.
-
-**Note:** Exercism has a separate Clojure harness (`clj -M:dev -m exercism-bench run`) that is not yet unified with the Python harness and lacks `--trace` support. Prefer other benchmarks unless specifically requested.
 
 ## Best Practices
 
