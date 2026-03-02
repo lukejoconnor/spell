@@ -266,7 +266,8 @@
   [variant-builtins effect-builtins]
   (letfn [(eval-builtin [expr]
             (let [caller-env eval/*spell-env*]
-              (binding [eval/*builtins* (merge variant-builtins effect-builtins {'eval eval-builtin})]
+              (binding [eval/*builtins* (merge variant-builtins effect-builtins {'eval eval-builtin})
+                        runtime/*default-spawn-llm* (get effect-builtins '!llm-self)]
                 (let [result (eval/spell-eval expr caller-env)]
                   (if (eval/ok? result)
                     (:ok result)

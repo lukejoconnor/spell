@@ -6,7 +6,7 @@
 (deftest config-loads-overrides
   (let [f (java.io.File/createTempFile "spell-web-config-" ".edn")]
     (try
-      (spit f "{:search {:max-results 3} :fetch {:max-chars 1234}}")
+      (spit f "{:search {:max-results 3 :backend :duckduckgo} :fetch {:max-chars 1234}}")
       (binding [web/*config-path* (.getAbsolutePath f)]
         (let [cfg (:ok (web/config))]
           (is (= 3 (get-in cfg [:search :max-results])))
@@ -63,7 +63,7 @@
         cfg-file (java.io.File/createTempFile "spell-web-serper-" ".edn")]
     (try
       (spit cfg-file "{:search {:serper-api-key \"test-key-123\"}}")
-      (with-redefs [web/http-post-json (fn [url headers body _]
+      (with-redefs [web/http-post-json (fn [url headers _ _]
                                          (is (= "https://google.serper.dev/search" url))
                                          (is (= "test-key-123" (get headers "X-API-KEY")))
                                          {:ok serper-response})]
@@ -79,10 +79,11 @@
         (.delete cfg-file)))))
 
 (deftest search-serper-requires-api-key
-  (binding [web/*config-path* "/dev/null"]
-    (let [result (web/search "test" {:backend :serper})]
-      (is (contains? result :error))
-      (is (str/includes? (:error result) "SERPER_API_KEY")))))
+  (with-redefs [web/serper-api-key (fn [_] nil)]
+    (binding [web/*config-path* "/dev/null"]
+      (let [result (web/search "test" {:backend :serper})]
+        (is (contains? result :error))
+        (is (str/includes? (:error result) "SERPER_API_KEY"))))))
 
 (deftest search-serper-handles-api-error
   (let [cfg-file (java.io.File/createTempFile "spell-web-serper-" ".edn")]
@@ -95,6 +96,51 @@
             (is (str/includes? (:error result) "401")))))
       (finally
         (.delete cfg-file)))))
+
+(deftest search-defaults-to-serper-when-key-available
+  (let [serper-response {:organic [{:title "Serper result"
+                                    :link "https://serper.example"
+                                    :snippet "from serper"}]}]
+    (with-redefs [web/serper-api-key (fn [_] "env-or-config-key")
+                  web/http-post-json (fn [_ _ _ _] {:ok serper-response})
+                  web/http-get-text (fn [& _]
+                                      (throw (ex-info "DuckDuckGo should not be called" {})))]
+      (binding [web/*config-path* "/dev/null"]
+        (let [result (web/search "test")]
+          (is (contains? result :ok))
+          (is (= "https://serper.example" (get-in result [:ok 0 :url]))))))))
+
+(deftest search-defaults-to-duckduckgo-when-key-missing
+  (let [duck-html "<html><body>
+                   <div class='result'>
+                     <a class='result__a' href='https://duck.example'>Duck</a>
+                   </div>
+                   </body></html>"]
+    (with-redefs [web/serper-api-key (fn [_] nil)
+                  web/http-get-text (fn [_ _ _] {:ok duck-html})
+                  web/http-post-json (fn [& _]
+                                       (throw (ex-info "Serper should not be called" {})))]
+      (binding [web/*config-path* "/dev/null"]
+        (let [result (web/search "test")]
+          (is (contains? result :ok))
+          (is (= "https://duck.example" (get-in result [:ok 0 :url]))))))))
+
+(deftest search-prefers-configured-backend-over-runtime-default
+  (let [cfg-file (java.io.File/createTempFile "spell-web-backend-" ".edn")
+        duck-html "<html><body><div class='result'><a class='result__a' href='https://duck.example'>Duck</a></div></body></html>"]
+    (try
+      (spit cfg-file "{:search {:backend :duckduckgo}}")
+      (with-redefs [web/serper-api-key (fn [_] "available-key")
+                    web/http-get-text (fn [_ _ _] {:ok duck-html})
+                    web/http-post-json (fn [& _]
+                                         (throw (ex-info "Serper should not be called" {})))]
+        (binding [web/*config-path* (.getAbsolutePath cfg-file)]
+          (let [result (web/search "test")]
+            (is (contains? result :ok))
+            (is (= "https://duck.example" (get-in result [:ok 0 :url]))))))
+      (finally
+        (.delete cfg-file)))))
+
 
 (deftest fetch-jina-truncates-content
   (let [content (apply str (repeat 3000 "x"))]

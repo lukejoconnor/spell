@@ -25,8 +25,7 @@
   "config/web.edn")
 
 (def default-config
-  {:search {:backend :duckduckgo
-            :max-results 5
+  {:search {:max-results 5
             :region "us-en"}
    :fetch {:backend :jina
            :max-chars 40000
@@ -59,10 +58,28 @@
     (catch Exception _
       {})))
 
+(defn- serper-api-key
+  "Resolve Serper API key from config, falling back to SERPER_API_KEY env var."
+  [cfg]
+  (let [configured (get-in cfg [:search :serper-api-key])]
+    (if (str/blank? configured)
+      (System/getenv "SERPER_API_KEY")
+      configured)))
+
+(defn- default-search-backend
+  "Choose runtime default backend based on Serper key availability."
+  [cfg]
+  (if (str/blank? (serper-api-key cfg))
+    :duckduckgo
+    :serper))
+
 (defn effective-config
   "Return effective web config with defaults applied."
   []
-  (deep-merge default-config (load-config-file *config-path*)))
+  (let [cfg (deep-merge default-config (load-config-file *config-path*))]
+    (if (get-in cfg [:search :backend])
+      cfg
+      (assoc-in cfg [:search :backend] (default-search-backend cfg)))))
 
 (defn config
   "Inspect effective web tool configuration."
@@ -175,23 +192,27 @@
    Detects CAPTCHA/bot-detection pages and returns an error instead of empty results."
   [html]
   (let [doc (Jsoup/parse html)]
+    ;; DuckDuckGo serves CAPTCHA pages with class 'anomaly-modal' when it suspects bot traffic.
+    ;; These pages contain zero .result elements, so without this check we'd silently return [].
     (if (seq (.select doc "[class*=anomaly-modal]"))
       {:error "DuckDuckGo returned a CAPTCHA challenge (bot detection). Search is temporarily unavailable."}
-      {:ok (->> (.select doc ".result")
-                (map (fn [result]
-                       (let [title-el (.selectFirst result "a.result__a")
-                             snippet-el (or (.selectFirst result ".result__snippet")
-                                            (.selectFirst result "a.result__snippet"))
-                             title (some-> title-el .text str/trim)
-                             raw-url (some-> title-el (.attr "href"))
-                             url (some-> raw-url unwrap-duckduckgo-url)
-                             snippet (some-> snippet-el .text str/trim)]
-                         (when (and (seq title) (seq url))
-                           {:title title
-                            :url url
-                            :snippet (or snippet "")}))))
-                (remove nil?)
-                vec)})))
+      (let [results (.select doc ".result")]
+        {:ok (->> results
+                  (map (fn [result]
+                         (let [title-el (.selectFirst result "a.result__a")
+                               snippet-el (or (.selectFirst result ".result__snippet")
+                                              (.selectFirst result "a.result__snippet"))
+                               title (some-> title-el .text str/trim)
+                               raw-url (some-> title-el (.attr "href"))
+                               url (some-> raw-url unwrap-duckduckgo-url)
+                               snippet (some-> snippet-el .text str/trim)]
+                           (when (and (seq title) (seq url))
+                             {:title title
+                              :url url
+                              :snippet (or snippet "")}))))
+                  (remove nil?)
+                  vec)}))))
+
 
 (defn- search-duckduckgo
   "Search via DuckDuckGo HTML scraping."
@@ -216,15 +237,14 @@
 (defn- search-serper
   "Search via Serper.dev (Google results). Requires SERPER_API_KEY env var."
   [q cfg max-results]
-  (let [api-key (or (get-in cfg [:search :serper-api-key])
-                    (System/getenv "SERPER_API_KEY"))]
+  (let [api-key (serper-api-key cfg)]
     (if (str/blank? api-key)
       {:error "Serper search requires SERPER_API_KEY environment variable or :serper-api-key in config."}
       (let [response (http-post-json
-                       "https://google.serper.dev/search"
-                       {"X-API-KEY" api-key}
-                       {"q" q "num" max-results}
-                       (get-in cfg [:fetch :timeout-ms] 15000))]
+                      "https://google.serper.dev/search"
+                      {"X-API-KEY" api-key}
+                      {"q" q "num" max-results}
+                      (get-in cfg [:fetch :timeout-ms] 15000))]
         (if-let [err (:error response)]
           {:error err}
           (let [organic (get-in response [:ok :organic] [])]
@@ -239,7 +259,9 @@
 
 (defn search
   "Search the web. Returns {:ok [{:title :url :snippet} ...]} or {:error msg}.
-   Supported backends: :serper (default when SERPER_API_KEY set), :duckduckgo"
+   Supported backends: :serper, :duckduckgo.
+   Backend precedence: opts :backend > config :search :backend > runtime default
+   (:serper when SERPER_API_KEY is available, else :duckduckgo)."
   ([query] (search query {}))
   ([query opts]
    (let [q (str/trim (str query))]
@@ -248,9 +270,7 @@
        (let [cfg (effective-config)
              backend (keyword (or (:backend opts)
                                   (get-in cfg [:search :backend])
-                                  (if (seq (System/getenv "SERPER_API_KEY"))
-                                    :serper
-                                    :duckduckgo)))
+                                  (default-search-backend cfg)))
              max-results (-> (or (:max-results opts) (get-in cfg [:search :max-results] 5))
                              int
                              (max 1)
@@ -369,7 +389,7 @@
   (web/config)              — inspect active web config
 
 Default behavior:
-- Search backend: Serper (Google results via SERPER_API_KEY env var), falls back to DuckDuckGo
+- Search backend: :serper when SERPER_API_KEY is available, else :duckduckgo
 - Fetch backend: Jina Reader (r.jina.ai) with raw HTML fallback
 - Truncation: 40,000 chars by default
 
@@ -379,7 +399,7 @@ Configuration is loaded from config/web.edn if present."
     :config "Return effective web config map with defaults applied."}
    :detail
    {:search
-    "Search backends: :serper (Google results, default when SERPER_API_KEY set), :duckduckgo.
+    "Search backends: :serper (Google results), :duckduckgo (HTML scraping).
 
 (web/search \"clojure transducers\")
 (web/search \"spell lisp\" {:max-results 8})
@@ -389,7 +409,8 @@ Returns:
   {:ok [{:title \"...\" :url \"https://...\" :snippet \"...\"} ...]}
 
 Result count defaults to config max-results (5), clamped to [1, 10].
-Serper requires SERPER_API_KEY env var or :serper-api-key in config/web.edn."
+Backend precedence: opts :backend > config/web.edn :search :backend >
+runtime default (:serper when SERPER_API_KEY is available, else :duckduckgo)."
 
     :fetch
     "Fetch page content as markdown/text.
@@ -409,11 +430,11 @@ If :jina fails, fetch falls back to :raw by default."
 (web/config)
 
 Config defaults:
-  {:search {:backend :duckduckgo :max-results 5 :region \"us-en\"}
+  {:search {:max-results 5 :region \"us-en\"}
    :fetch  {:backend :jina :max-chars 40000 :timeout-ms 15000 :fallback-backend :raw}
    :http   {:user-agent \"spell-web/0.1 ...\"}}
 
-When SERPER_API_KEY env var is set, search auto-selects :serper backend.
+Set :search :backend in config/web.edn to force a backend.
 You can override defaults by creating config/web.edn."}
    :search search
    :fetch fetch

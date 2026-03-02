@@ -1,7 +1,8 @@
 ;; Optional config for spell.web namespace.
-;; Search auto-selects :serper when SERPER_API_KEY env var is set.
-;; Override with {:search {:backend :serper}} or {:search {:backend :duckduckgo}}.
-;; Serper API key: set SERPER_API_KEY env var or :serper-api-key below.
+;; Search default is dynamic:
+;; - :serper when SERPER_API_KEY is present (or :serper-api-key is set below)
+;; - :duckduckgo otherwise
+;; Set {:search {:backend ...}} here to force a backend.
 
 {:search {:max-results 5
           :region "us-en"}
