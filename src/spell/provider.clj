@@ -74,6 +74,8 @@
    "gpt-5.1"           [1.25 10.00]
    "gpt-5.2-codex"     [1.75 14.00]
    "gpt-5.2"           [1.75 14.00]
+   "gpt-5.3-codex"     [1.75 14.00]
+   "gpt-5.3"           [1.75 14.00]
    ;; Moonshot Kimi models
    "kimi-k2.5"         [0.60 3.00]
    "kimi-k2-thinking-turbo" [1.15 8.00]
