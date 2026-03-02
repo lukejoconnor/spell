@@ -23,8 +23,11 @@
 ;; =============================================================================
 
 (def ^:dynamic *sh-timeout*
-  "Timeout in seconds for sh/exec commands. Set to nil to disable."
-  30)
+  "Timeout in seconds for sh/exec commands. Set to nil to disable.
+   Overridable via SPELL_SH_TIMEOUT env var."
+  (if-let [env-timeout (System/getenv "SPELL_SH_TIMEOUT")]
+    (Long/parseLong env-timeout)
+    30))
 
 ;; =============================================================================
 ;; File reading/writing
@@ -478,7 +481,9 @@
 (defn sh
   "Execute shell command. Returns {:exit N :out \"...\" :err \"...\"}.
    Optional last arg may be an opts map with :timeout seconds.
-   :timeout 0 disables timeout for this call."
+   :timeout 0 disables timeout for this call.
+   When SPELL_DOCKER_CONTAINER env var is set, commands execute inside
+   that Docker container via `docker exec`."
   [command & more]
   (let [[opts parts] (if (and (seq more) (map? (last more)))
                        [(last more) (butlast more)]
@@ -488,8 +493,15 @@
                             (:timeout opts)
                             *sh-timeout*))
         command (if (seq parts) (apply str command parts) command)
-        shell (or (System/getenv "SHELL") "bash")
-        pb (ProcessBuilder. [shell "-c" command])
+        docker-container (System/getenv "SPELL_DOCKER_CONTAINER")
+        docker-workdir (System/getenv "SPELL_DOCKER_WORKDIR")
+        cmd-vec (if docker-container
+                  (cond-> ["docker" "exec" "-i"]
+                    docker-workdir (into ["-w" docker-workdir])
+                    true (into [docker-container "bash" "-c" command]))
+                  (let [shell (or (System/getenv "SHELL") "bash")]
+                    [shell "-c" command]))
+        pb (ProcessBuilder. cmd-vec)
         process (.start pb)
         out-future (future (slurp (.getInputStream process)))
         err-future (future (slurp (.getErrorStream process)))
