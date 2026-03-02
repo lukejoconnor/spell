@@ -1,5 +1,6 @@
 (ns spell.parse
-  "Parsing and string utilities for Spell.")
+  "Parsing and string utilities for Spell."
+  (:require [clojure.string :as str]))
 
 (defn paren-balance
   "Count open parens minus close parens in a string, respecting string literals
@@ -44,6 +45,61 @@
   "Characters that are valid after \\ in a Clojure string literal."
   #{\t \b \n \r \f \\ \" \u \0 \1 \2 \3 \4 \5 \6 \7})
 
+(def ^:private unmatched-delimiter-re
+  #"^Unmatched delimiter: (.)$")
+
+(defn- maybe-strip-trailing-unmatched-delimiter
+  "If the reader reports an unmatched delimiter and that delimiter is the last
+   non-whitespace character in s, strip exactly that one trailing character.
+   Returns nil when this special-case recovery does not apply."
+  [s error-msg]
+  (when-let [[_ bad-delim] (re-matches unmatched-delimiter-re (or error-msg ""))]
+    (let [trimmed    (str/trimr s)
+          n          (count trimmed)
+          delim-char (.charAt ^String bad-delim 0)]
+      (when (and (pos? n)
+                 (= delim-char (.charAt ^String trimmed (dec n))))
+        (subs trimmed 0 (dec n))))))
+
+(defn sanitize-nonspell-comment-markers
+  "Normalize common non-Spell comment tokens at line start when outside strings.
+   Rewrites line-start //, /*, and */ to ';' comments so reader recovery can
+   continue when models emit C/C++-style comment syntax."
+  [s]
+  (let [len (count s)
+        sb  (StringBuilder. len)]
+    (loop [i 0, in-string false, escape false, line-start true]
+      (if (>= i len)
+        (.toString sb)
+        (let [c  (.charAt ^String s i)
+              c2 (when (< (inc i) len) (.charAt ^String s (inc i)))]
+          (cond
+            escape
+            (do (.append sb c)
+                (recur (inc i) in-string false (= c \newline)))
+
+            in-string
+            (cond
+              (= c \\) (do (.append sb c) (recur (inc i) true true false))
+              (= c \") (do (.append sb c) (recur (inc i) false false false))
+              :else    (do (.append sb c) (recur (inc i) true false (= c \newline))))
+
+            (= c \newline)
+            (do (.append sb c) (recur (inc i) false false true))
+
+            (and line-start (or (= c \space) (= c \tab) (= c \return)))
+            (do (.append sb c) (recur (inc i) false false true))
+
+            (and line-start (= c \/) (or (= c2 \/) (= c2 \*)))
+            (do (.append sb \;) (recur (inc i) false false false))
+
+            (and line-start (= c \*) (= c2 \/))
+            (do (.append sb \;) (recur (inc i) false false false))
+
+            :else
+            (do (.append sb c)
+                (recur (inc i) false false false))))))))
+
 (defn sanitize-string-escapes
   "Fix invalid escape sequences inside string literals.
    LLMs often write LaTeX-like \\equiv, \\frac etc. in strings.
@@ -73,27 +129,37 @@
             (do (.append sb c)
                 (recur (inc i) (= c \") false))))))))
 
-(defn read-all
-  "Read all forms from a string. Returns a vector of parsed forms.
-   Tolerates trailing unmatched delimiters (common in LLM output)
-   and sanitizes invalid escape sequences in string literals."
+(defn- read-all-internal
+  "Read all forms from an already-sanitized string."
   [s]
-  (let [s   (sanitize-string-escapes s)
-        rdr (java.io.PushbackReader. (java.io.StringReader. s))]
+  (let [rdr (java.io.PushbackReader. (java.io.StringReader. s))]
     (loop [forms []]
-      (let [form (try (read rdr false ::eof)
-                      (catch RuntimeException e
-                        (if (.startsWith (.getMessage e) "Unmatched delimiter")
-                          ::eof
-                          (throw e))))]
+      (let [form (read rdr false ::eof)]
         (if (= form ::eof)
           forms
           (recur (conj forms form)))))))
 
+(defn read-all
+  "Read all forms from a string. Returns a vector of parsed forms.
+   Tolerates exactly one unmatched delimiter only when it is the final
+   non-whitespace character (common stray suffix char in LLM output),
+   normalizes common non-Spell comment markers, and sanitizes invalid
+   escape sequences in string literals."
+  [s]
+  (let [s (-> s
+              sanitize-nonspell-comment-markers
+              sanitize-string-escapes)]
+    (try
+      (read-all-internal s)
+      (catch RuntimeException e
+        (if-let [stripped (maybe-strip-trailing-unmatched-delimiter s (.getMessage e))]
+          (read-all-internal stripped)
+          (throw e))))))
+
 (defn strip-trailing-parens
   "Remove n trailing close-parens from a string, ignoring trailing whitespace."
   [n s]
-  (let [s (clojure.string/trimr (str s))
+  (let [s (str/trimr (str s))
         len (count s)]
     (loop [i (dec len), remaining n]
       (cond

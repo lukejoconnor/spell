@@ -862,6 +862,7 @@
       (llm "(quine completion (eval (do ")
       ;; The recovery prompt (second call) should mention the reader error
       (let [recovery-prompt (second @prompts)]
+        (is (str/includes? recovery-prompt "The previous Spell program threw an error."))
         (is (str/includes? recovery-prompt "Reader error"))
         (is (str/includes? recovery-prompt "\\invalidchar")))))
 
@@ -1228,4 +1229,3 @@
                                               (str/includes? prompt "task-b") "result-b"
                                               :else "???")))})]
       (is (= ["result-a" "result-b"] (llm "(eval (do "))))))
-
