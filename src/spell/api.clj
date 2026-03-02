@@ -35,12 +35,13 @@
      :verbosity — OpenAI verbosity
      :suffix-grammar? — enable prefix-aware OpenAI suffix grammar constraints
      :grammar-max-chars — max generated grammar chars before fallback
+     :format   — optional output format spec {:required [...] :optional [...]}
      :retries  — API retry sleep durations
      :usage    — pre-created usage atom (default: fresh atom)"
   [{:keys [prompt init agent provider user? user-reader
            verbose log-writer budget depth trace
            prefill? thinking reasoning-effort verbosity
-           suffix-grammar? grammar-max-chars retries usage]}]
+           suffix-grammar? grammar-max-chars format retries usage]}]
   ;; Validate inputs
   (when (and prompt init)
     (throw (ex-info "Specify exactly one of :prompt or :init, not both" {})))
@@ -57,7 +58,8 @@
                        reasoning-effort (assoc :reasoning-effort reasoning-effort)
                        verbosity (assoc :verbosity verbosity)
                        suffix-grammar? (assoc :suffix-grammar? suffix-grammar?)
-                       grammar-max-chars (assoc :grammar-max-chars grammar-max-chars))
+                       grammar-max-chars (assoc :grammar-max-chars grammar-max-chars)
+                       format (assoc :format format))
         ;; Validate: provider must come from somewhere
         _ (when-not (:provider agent-config)
             (throw (ex-info "Must specify :provider (via argument or agent .edn)" {})))
