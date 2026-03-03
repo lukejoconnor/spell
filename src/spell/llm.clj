@@ -364,12 +364,19 @@
                                 prev-prompt (assoc :cache-prefix prev-prompt))
                          ;; In prefill mode, the prefix is the assistant turn only.
                          ;; Send a minimal user message to avoid duplicating the prefix.
-                         user-msg (if prefill?
-                                    "Continue this Spell program."
-                                    prompt-str)
+                         base-user-msg (if prefill?
+                                         "Continue this Spell program."
+                                         prompt-str)
+                         max-tok (:max-tokens provider)
                          response (provider/call-with-retries
-                                    #(provider/strip-code-fences
-                                       (provider/call-llm provider user-msg opts))
+                                    (fn [err]
+                                      (let [user-msg (if (and err (= :missing-tool-call (:type (ex-data err))))
+                                                       (str base-user-msg
+                                                            "\n;; system: retrying — previous response was truncated or empty"
+                                                            (when max-tok (str ", max output tokens " max-tok)))
+                                                       base-user-msg)]
+                                        (provider/strip-code-fences
+                                          (provider/call-llm provider user-msg opts))))
                                     provider/*retries*)]
                      (reset! prev-prompt-atom prompt-str)
                      (if prefill?
@@ -481,9 +488,16 @@
                         (eval/vlog (str indent "Prompt: " (pr-str prompt))))
              opts     (cond-> {:system system}
                         model (assoc :model model))
+             max-tok  (:max-tokens provider)
              response (provider/call-with-retries
-                        #(provider/strip-code-fences
-                           (provider/call-llm provider prompt-str opts))
+                        (fn [err]
+                          (let [msg (if (and err (= :missing-tool-call (:type (ex-data err))))
+                                     (str prompt-str
+                                          "\n;; system: retrying — previous response was truncated or empty"
+                                          (when max-tok (str ", max output tokens " max-tok)))
+                                     prompt-str)]
+                            (provider/strip-code-fences
+                              (provider/call-llm provider msg opts))))
                         provider/*retries*)
              _        (eval/vlog (str indent "Response: " response))
              _        (when node-id
