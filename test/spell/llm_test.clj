@@ -46,6 +46,21 @@
                                               r))})]
         (is (= "hello world" (llm "(eval (do ")))))))
 
+(deftest peek-now-e2e-persisted-binding-test
+  (testing "!peek-now supports def-from-peek in next turn and persists only explicit defs after !extend"
+    (let [call-count (atom 0)
+          responses ["'(!peek-now x 42)))"
+                     "(def y x) '(!extend completion)))"
+                     "y)))"]
+          llm-map (th/make-test-llm
+                    {:response-fn (fn [_]
+                                    (let [idx @call-count]
+                                      (swap! call-count inc)
+                                      (nth responses idx)))})
+          llm (:llm llm-map)]
+      (is (= 42 (llm "(quine completion (eval (do ")))
+      (is (= 3 @call-count)))))
+
 (deftest spell-eval-with-llm-test
   (testing "spell-eval can evaluate programs containing llm calls (with effects)"
     ;; Create an LLM with provider, then use its eval pipeline

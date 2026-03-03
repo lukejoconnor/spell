@@ -343,7 +343,7 @@ Example — verify then correct:
 
 Categories (use (!describe builtins :category) for full listing):
   special-forms — quote, def, do, if, let, fn, expand, quine, loop, recur, for, try
-  macros        — when, defn, cond, case, ->, ->>, !call-now, !print, !describe, think/rethink/!extend/!compact, ...
+  macros        — when, defn, cond, case, ->, ->>, !call-now, !peek/!peek-now, !print, !describe, think/rethink/!extend/!compact, ...
   effect        — eval, !llm-self, leaf-llm, describe-fn, llm (trailing expression only)
   math          — +, -, *, /, inc, dec, mod, abs, max, min, floor, ceil, rand, ...
   comparison    — <, >, =, not, nil?, empty?, identity, ...
@@ -364,7 +364,7 @@ For namespace functions (io/, agents/, globals/, futures/, strings/, math/, patt
 
 Common mistakes:
 
-1. calling effect builtins outside the trailing expression: !llm-self, leaf-llm, eval, and describe-fn are effect functions; they must appear in the quoted trailing expression or inside !call-now / !print
+1. calling effect builtins outside the trailing expression: !llm-self, leaf-llm, eval, and describe-fn are effect functions; they must appear in the quoted trailing expression or inside !call-now / !peek / !print
 2. confusing def with let: def binds in the environment (visible to later expressions); let creates local scope
 3. forgetting quote on the trailing expression: the last expression must be quoted so the outer eval can run it with effect bindings
 4. str vs cat vs pr-str: str joins arguments as strings; cat is an alias; pr-str serializes as Spell-readable data (vectors, maps, etc.)
@@ -402,6 +402,8 @@ Common mistakes:
   some-> — thread-first with nil short-circuit; stops and returns nil on nil intermediate
   some->> — thread-last with nil short-circuit; stops and returns nil on nil intermediate
   !call-now — evaluate expr, extend completion with named binding; crosses the effect boundary
+  !peek — same as !call-now, but automatically marks the new binding as one-turn ephemeral
+  !peek-now — alias for !peek
   -> — thread-first; insert value as first argument through a chain of forms
   ->> — thread-last; insert value as last argument through a chain of forms
   future — wrap expr in a thunk and launch as a parallel future; returns a future handle
@@ -783,7 +785,32 @@ Example — tool call:
 
 Example — inspect a computation:
   '(!call-now result (+ (* 3 17) (/ 100 4)))
-  ;; next turn: result is bound to 76"
+  ;; next turn: result is bound to 76
+
+Use !peek when you want this binding to disappear on the following extension
+unless you explicitly persist what you need."
+
+    :!peek
+    "Macro. Ephemeral version of !call-now.
+
+'(!peek name expr)
+'(!peek-now name expr)
+
+!peek/!peek-now runs like !call-now, then appends:
+  (rethink \"!peek-now binding disappears unless persisted.\")
+
+On your next extension, that rethink prunes the peek binding from source.
+If you need part of the value, persist it first with your own def.
+
+Example:
+  '(!peek-now code (io/read-lines \"main.py\"))
+  ;; next turn: code is available for slicing
+  (def fn-defn (subvec code 100 111))
+  '(!extend completion)
+  ;; next turn: fn-defn remains; code is pruned"
+
+    :!peek-now
+    "Alias for !peek."
 
     :!print
     "Macro. Evaluate exprs and place their serialized values as bare literals in the

@@ -180,8 +180,11 @@
 ;; Optional limit controls inline threshold for serialize (default: call-now-inline-limit).
 ;; Negative limit means always inline (no out-of-band storage).
 ;; Multi-binding evaluates all exprs, then extends with all bindings in one turn.
-(defspellmacro '!call-now
-  (fn [& args]
+(defn- call-now-expander
+  "Shared expander for !call-now and !peek-now.
+   extra-str-parts are appended to the generated continuation string."
+  [macro-name args extra-str-parts]
+  (let [extra-str-parts (or extra-str-parts [])]
     (cond
       ;; Single binding: (!call-now name expr)
       (= (count args) 2)
@@ -189,11 +192,12 @@
             temp (gensym "call-now__")]
         (list 'let [temp val-expr]
               (list '!llm-self
-                    (list 'str
-                          (list 'prune-and-reopen 'completion)
-                          (str "(def " name-sym " ")
-                          (list 'serialize temp)
-                          ") "))))
+                    (list* 'str
+                           (list 'prune-and-reopen 'completion)
+                           (concat [(str "(def " name-sym " ")
+                                    (list 'serialize temp)
+                                    ") "]
+                                   extra-str-parts)))))
 
       ;; Single binding with limit: (!call-now name expr limit)
       (= (count args) 3)
@@ -201,11 +205,12 @@
             temp (gensym "call-now__")]
         (list 'let [temp val-expr]
               (list '!llm-self
-                    (list 'str
-                          (list 'prune-and-reopen 'completion)
-                          (str "(def " name-sym " ")
-                          (list 'serialize temp limit)
-                          ") "))))
+                    (list* 'str
+                           (list 'prune-and-reopen 'completion)
+                           (concat [(str "(def " name-sym " ")
+                                    (list 'serialize temp limit)
+                                    ") "]
+                                   extra-str-parts)))))
 
       ;; Multi-binding: (!call-now name1 expr1 name2 expr2 ...)
       (and (even? (count args)) (>= (count args) 4))
@@ -221,11 +226,32 @@
               (list '!llm-self
                     (list* 'str
                            (list 'prune-and-reopen 'completion)
-                           str-parts))))
+                           (concat str-parts extra-str-parts)))))
 
       :else
-      (throw (ex-info "!call-now: expected 2 args (name expr), 3 args (name expr limit), or even >= 4 args (name1 expr1 name2 expr2 ...)"
+      (throw (ex-info (str macro-name ": expected 2 args (name expr), 3 args (name expr limit), or even >= 4 args (name1 expr1 name2 expr2 ...)")
                       {:args-count (count args)})))))
+
+(def ^:private peek-rethink-message
+  "!peek-now binding disappears unless persisted.")
+
+(defspellmacro '!call-now
+  (fn [& args]
+    (call-now-expander "!call-now" args nil)))
+
+;; !peek-now: same as !call-now, but marks the binding as one-turn ephemeral.
+;; The injected rethink prunes the peek binding on the following extension unless
+;; the model persists the needed subset into a new def.
+(defspellmacro '!peek-now
+  (fn [& args]
+    (call-now-expander "!peek-now" args
+                       [(str "(rethink " (pr-str peek-rethink-message) ") ")])))
+
+;; Short alias for !peek-now.
+(defspellmacro '!peek
+  (fn [& args]
+    (call-now-expander "!peek" args
+                       [(str "(rethink " (pr-str peek-rethink-message) ") ")])))
 
 ;; =============================================================================
 ;; Threading helpers (used by -> and ->> macros)
