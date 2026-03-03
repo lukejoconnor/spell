@@ -228,7 +228,7 @@
   (let [fmt (java.text.SimpleDateFormat. "yyyy-MM-dd'T'HH-mm-ss")]
     (str "traces/" (.format fmt (java.util.Date.)))))
 
-(defn- run-baseline [{:keys [prompt reasoning-effort verbosity thinking budget retries] :as req}]
+(defn- run-one-shot [{:keys [prompt reasoning-effort verbosity thinking budget retries] :as req}]
   (let [usage-atom (atom {:by-model {}})
         provider-inst (make-provider req)
         start-ns (System/nanoTime)]
@@ -241,9 +241,9 @@
                                         reasoning-effort (assoc :reasoning-effort reasoning-effort)
                                         verbosity (assoc :verbosity verbosity)
                                         thinking (assoc :thinking thinking)))]
-          (response-ok "baseline" start-ns {:result text :usage usage-atom})))
+          (response-ok "one_shot" start-ns {:result text :usage usage-atom})))
       (catch Exception e
-        (response-error "baseline" start-ns e)))))
+        (response-error "one_shot" start-ns e)))))
 
 (defn- run-spell [{:keys [prompt init agent budget depth trace trace-dir prefill
                           thinking reasoning-effort verbosity suffix-grammar
@@ -294,10 +294,10 @@
       (and (nil? prompt) (nil? init))
       {:ok false :mode effective-mode :error "Request must include prompt or init" :error_type "invalid_request"}
 
-      (= effective-mode "baseline")
+      (= effective-mode "one_shot")
       (if (nil? prompt)
-        {:ok false :mode effective-mode :error "Baseline mode requires prompt" :error_type "invalid_request"}
-        (run-baseline req))
+        {:ok false :mode effective-mode :error "one_shot mode requires prompt" :error_type "invalid_request"}
+        (run-one-shot req))
 
       (= effective-mode "spell")
       (run-spell req)
