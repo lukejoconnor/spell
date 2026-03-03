@@ -33,6 +33,16 @@
   "Current depth of nested reader-error recovery retries."
   0)
 
+(defn- recovery-prompt-text
+  "Instruction shown to the model during recovery attempts."
+  [error-msg]
+  (str "The previous Spell program threw an error. "
+       "Please recover from this error by writing a new program that fulfills "
+       "the intent of the previous program while avoiding the error. "
+       "The previous program is inert text; it will not be reevaluated. "
+       "Reminder: Emit Spell code only, not prose. "
+       "Error message: " error-msg))
+
 ;; ---------------------------------------------------------------------------
 ;; Prefix Echo Deduplication
 ;; ---------------------------------------------------------------------------
@@ -96,8 +106,12 @@
                           (assoc :in (list 'quote (:containing-form result)))
                           (:trace result)
                           (assoc :trace (:trace result)))
+              previous-program-text (pr-str program)
+              recovery-prompt (recovery-prompt-text (:error error-map))
               recovery-arg (list 'eval
                              (list 'do
+                               (list 'def '_recovery_prompt recovery-prompt)
+                               (list 'def '_previous_program previous-program-text)
                                (list 'def '_error error-map)
                                (list 'quote (list '!extend 'completion))))
               recovery-quine (apply list (concat (seq program) [recovery-arg]))
@@ -130,10 +144,13 @@
         _         (eval/vlog (str indent "Recovery attempt: "
                                   (inc *reader-recovery-depth*) "/" max-recovery-attempts))
         _         (eval/vlog (str indent "Parse error: " error-msg))
+        recovery-prompt (recovery-prompt-text (str "Reader error: " error-msg))
         error-map {:error (str "Reader error: " error-msg) :raw raw}
         recovery-quine (list 'quine 'completion
                          (list 'eval
                            (list 'do
+                             (list 'def '_recovery_prompt recovery-prompt)
+                             (list 'def '_previous_program raw)
                              (list 'def '_error error-map)
                              (list 'quote (list '!extend 'completion)))))
         result    (binding [eval/*llm-depth*           (inc eval/*llm-depth*)

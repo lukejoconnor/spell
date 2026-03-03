@@ -79,6 +79,35 @@ Investigation priority:
 
 Every item in your results must have been individually examined by a subagent that returned real findings to you. If you catch yourself writing investigation results without having dispatched subagents, STOP and go do the actual work.
 
+### Trace Tooling (`spell.trace-tool`)
+
+For quick local inspection before/while subagent review, use the Clojure trace helper:
+
+```bash
+# Skeletonize latest extension node in one trace
+clj -M -m spell.trace-tool --trace-dir traces/2026-03-02T07-04-01
+
+# Count specific function calls on selected node (zsh: quote ! symbols)
+clj -M -m spell.trace-tool --trace-dir traces/2026-03-02T07-04-01 --fn think --fn '!print'
+
+# Aggregate call counts across all nodes (deduped by default)
+clj -M -m spell.trace-tool --trace-dir traces/2026-03-02T07-04-01 --count-all-nodes --fn think
+
+# Rethink report: each rethink + preceding expression
+clj -M -m spell.trace-tool --trace-dir traces/2026-03-02T07-04-01 --rethinks
+
+# Rethink report across a directory of traces
+clj -M -m spell.trace-tool --trace-root traces --rethinks
+
+# Resolve latest errored benchmark row to trace_dir, then inspect
+clj -M -m spell.trace-tool --results-jsonl benchmarking/results/unified/full_omni_spell_opus.jsonl
+```
+
+Notes:
+- Default node selection prefers the latest `:default` node with a parsed program (usually the last extension node).
+- `--string-truncate N` controls displayed string truncation (default `32`, `-1` disables truncation).
+- `--count-all-nodes` is useful for whole-trace stats; selected-node mode is better for extension-chain end state.
+
 ### 6. Scoring and reporting
 
 **Source of truth:** Always score from the benchmark harness's own output, never from agent self-reports. Spell's `ok: true` means "runtime didn't crash" — only the harness `is_resolved: true` means "tests passed." These diverge often.
@@ -135,13 +164,14 @@ For example, if the notebook entry is `2026-03-02-swebench-regression`, store tr
 
 | Benchmark | Invoke | Datasets |
 |-----------|--------|----------|
-| GSM8K, MATH, AIME, Omni-MATH | `cd benchmarking && uv run python bench.py general` | `gsm8k`, `math_easy`, `math_hard`, `aime_2025`, `omni_math` |
-| BABILong | `cd benchmarking && uv run python bench.py general` | `babilong` (auto-selects io agent) |
-| Exercism | `cd benchmarking && uv run python bench.py exercism` | `--difficulty 1-3`, `--slugs hello-world,two-fer` |
-| SWE-bench | `cd benchmarking && uv run python bench.py swebench` | `mini` (50), `lite` (300), `verified` (500) |
+| GSM8K, MATH, AIME, Omni-MATH | `cd benchmarking && uv run run_benchmark.py` | `gsm8k`, `math_easy`, `math_hard`, `aime_2025`, `omni_math` |
+| BABILong | `cd benchmarking && uv run run_benchmark.py` | `babilong` (auto-selects io agent) |
+| SWE-bench | `cd benchmarking && uv run run_swebench.py` | `mini` (50), `lite` (300), `verified` (500) |
 | Orchestration | `clj -M:dev -m benchmark run` | 9 orchestration prompts |
 
 See [references/harness-inventory.md](references/harness-inventory.md) for full flag reference and example invocations.
+
+**Note:** Exercism has a separate Clojure harness (`clj -M:dev -m exercism-bench run`) that is not yet unified with the Python harness and lacks `--trace` support. Prefer other benchmarks unless specifically requested.
 
 ## Best Practices
 

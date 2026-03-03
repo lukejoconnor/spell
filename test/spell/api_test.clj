@@ -120,4 +120,12 @@
                            :agent test-agent
                            :trace true})]
       (is (= 42 (:result result)))
-      (is (string? (:trace-dir result))))))
+      (is (string? (:trace-dir result)))))
+
+  (testing "format option can be supplied at API level (not only agent edn)"
+    (let [p (provider/test-provider {:response "{:result 42}))"})
+          result (api/run {:prompt "Return 42"
+                           :provider p
+                           :agent test-agent
+                           :format {:required [:result]}})]
+      (is (= {:result 42} (:result result))))))

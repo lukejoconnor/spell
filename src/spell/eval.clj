@@ -440,12 +440,26 @@
                              last-arg (last elements)
                              pruned-last (macros/prune-rethinks last-arg)
                              [_ do-form] (seq pruned-last)
-                             body-forms (rest do-form)]
+                             body-forms (rest do-form)
+                             env (or *spell-env* {})
+                             ;; Re-materialize free vars in persisted defs before serializing
+                             ;; back to source. This makes (def y x)-style persistence survive
+                             ;; when an earlier sibling binding is pruned, while preserving
+                             ;; source markers such as think/rethink.
+                             expanded-body-forms
+                             (map (fn [form]
+                                    (if (and (seq? form)
+                                             (= 'def (first form))
+                                             (symbol? (second form))
+                                             (>= (count form) 3))
+                                      (list 'def (second form) (expand-expr (nth form 2) env))
+                                      form))
+                                  body-forms)]
                          (str "(quine completion "
                               (when (seq inert-args)
                                 (str (str/join " " (map pr-str inert-args)) " "))
                               "(eval (do "
-                              (str/join " " (map pr-str body-forms))
+                              (str/join " " (map pr-str expanded-body-forms))
                               " "))),
    ;; Value store (for !call-now out-of-band large values)
    'stored stored,

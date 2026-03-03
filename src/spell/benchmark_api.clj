@@ -102,6 +102,38 @@
     (seq? v) (mapv json-safe v)
     :else (pr-str v)))
 
+(defn- parse-format-key
+  "Parse a JSON-provided key spec into a Clojure key for format validation.
+   Strings prefixed with ':' become keywords; other strings become symbols."
+  [k]
+  (cond
+    (or (keyword? k) (symbol? k)) k
+    (string? k) (if (str/starts-with? k ":")
+                  (keyword (subs k 1))
+                  (symbol k))
+    :else k))
+
+(defn- normalize-format-spec
+  "Normalize :format values from JSON input.
+   Converts string key specs in :required/:optional into keywords or symbols."
+  [format-spec]
+  (if (map? format-spec)
+    (cond-> format-spec
+      (:required format-spec) (update :required #(mapv parse-format-key %))
+      (:optional format-spec) (update :optional #(mapv parse-format-key %)))
+    format-spec))
+
+(defn- unwrap-result-value
+  "If a run result is wrapped as a map containing result, unwrap it."
+  [v]
+  (if (map? v)
+    (cond
+      (contains? v :result) (get v :result)
+      (contains? v 'result) (get v 'result)
+      (contains? v "result") (get v "result")
+      :else v)
+    v))
+
 (defn- make-provider [{:keys [model max-tokens responses-api] :as _req}]
   (when-not model
     (throw (ex-info "model is required in benchmark request" {:field "model"})))
@@ -173,7 +205,7 @@
              :mode mode
              :latency_ms latency-ms
              :usage usage}
-      (contains? result-map :result) (assoc :result (str (:result result-map)))
+      (contains? result-map :result) (assoc :result (str (unwrap-result-value (:result result-map))))
       (:trace-dir result-map) (assoc :trace_dir (:trace-dir result-map)))))
 
 (defn- response-error [mode start-ns e]
@@ -211,9 +243,10 @@
 
 (defn- run-spell [{:keys [prompt init agent budget depth trace prefill
                           thinking reasoning-effort verbosity suffix-grammar
-                          grammar-max-chars retries] :as req}]
+                          grammar-max-chars retries format] :as req}]
   (let [provider-inst (make-provider req)
         resolved-agent (or agent (default-agent-from-request req))
+        normalized-format (normalize-format-spec format)
         effective-prefill (if (contains? req :prefill)
                             prefill
                             (and (provider/supports-prefill provider-inst)
@@ -231,7 +264,8 @@
                                      :verbosity verbosity
                                      :prefill? effective-prefill
                                      :suffix-grammar? suffix-grammar
-                              :grammar-max-chars grammar-max-chars}
+                                     :format normalized-format}
+                              grammar-max-chars (assoc :grammar-max-chars grammar-max-chars)
                               prompt (assoc :prompt prompt)
                               init (assoc :init init)))]
         (if (:error result)

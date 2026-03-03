@@ -2,7 +2,8 @@
   (:require [clojure.test :refer [deftest is testing]]
             [spell.parse :refer [read-all paren-balance balance-parens
                                  strip-trailing-parens escape-string
-                                 sanitize-string-escapes]]))
+                                 sanitize-string-escapes
+                                 sanitize-nonspell-comment-markers]]))
 
 ;; =============================================================================
 ;; read-all tests
@@ -162,3 +163,51 @@
     ;; \equiv would crash without sanitization — now reads as literal text
     (is (= ['(def x "a \\equiv b")]
            (read-all "(def x \"a \\equiv b\")")))))
+
+;; =============================================================================
+;; unmatched delimiter handling tests
+;; =============================================================================
+
+(deftest trailing-unmatched-delimiter-test
+  (testing "single trailing unmatched delimiter is ignored"
+    (is (= ['(+ 1 2)] (read-all "(+ 1 2)}")))
+    (is (= ['(+ 1 2)] (read-all "(+ 1 2)\n]"))))
+
+  (testing "only one trailing delimiter is tolerated"
+    (is (thrown-with-msg? RuntimeException #"Unmatched delimiter"
+          (read-all "(+ 1 2)))"))))
+
+  (testing "unmatched delimiter not at end still throws"
+    (is (thrown-with-msg? RuntimeException #"Unmatched delimiter"
+          (read-all "(+ 1 } 2)")))
+    (is (thrown-with-msg? RuntimeException #"Unmatched delimiter"
+          (read-all "} (+ 1 2)")))))
+
+;; =============================================================================
+;; non-Spell comment token normalization tests
+;; =============================================================================
+
+(deftest sanitize-nonspell-comment-markers-test
+  (testing "line-start // comments are normalized"
+    (is (= ";/ C style comment\n(def x 1)"
+           (sanitize-nonspell-comment-markers "// C style comment\n(def x 1)")))
+    (is (= ['(def x 1)]
+           (read-all "// C style comment\n(def x 1)"))))
+
+  (testing "line-start /* and */ markers are normalized"
+    (is (= ['(def x 1)]
+           (read-all "/* block-style start\n(def x 1)")))
+    (is (= ['(def x 1)]
+           (read-all "*/ block-style end\n(def x 1)"))))
+
+  (testing "indented comment markers are normalized"
+    (is (= ['(def y 2)]
+           (read-all "   // indented comment\n(def y 2)"))))
+
+  (testing "markers not at line start are not rewritten"
+    (is (thrown-with-msg? RuntimeException #"Invalid token: //"
+          (read-all "(def x 1) // trailing non-Spell comment"))))
+
+  (testing "markers inside strings are unchanged"
+    (is (= ['(def s "// keep me") '(def t "/* keep */")]
+           (read-all "(def s \"// keep me\") (def t \"/* keep */\")")))))

@@ -23,8 +23,11 @@
 ;; =============================================================================
 
 (def ^:dynamic *sh-timeout*
-  "Timeout in seconds for sh/exec commands. Set to nil to disable."
-  30)
+  "Timeout in seconds for sh/exec commands. Set to nil to disable.
+   Overridable via SPELL_SH_TIMEOUT env var."
+  (if-let [env-timeout (System/getenv "SPELL_SH_TIMEOUT")]
+    (Long/parseLong env-timeout)
+    30))
 
 ;; =============================================================================
 ;; File reading/writing
@@ -478,7 +481,9 @@
 (defn sh
   "Execute shell command. Returns {:exit N :out \"...\" :err \"...\"}.
    Optional last arg may be an opts map with :timeout seconds.
-   :timeout 0 disables timeout for this call."
+   :timeout 0 disables timeout for this call.
+   When SPELL_DOCKER_CONTAINER env var is set, commands execute inside
+   that Docker container via `docker exec`."
   [command & more]
   (let [[opts parts] (if (and (seq more) (map? (last more)))
                        [(last more) (butlast more)]
@@ -488,8 +493,15 @@
                             (:timeout opts)
                             *sh-timeout*))
         command (if (seq parts) (apply str command parts) command)
-        shell (or (System/getenv "SHELL") "bash")
-        pb (ProcessBuilder. [shell "-c" command])
+        docker-container (System/getenv "SPELL_DOCKER_CONTAINER")
+        docker-workdir (System/getenv "SPELL_DOCKER_WORKDIR")
+        cmd-vec (if docker-container
+                  (cond-> ["docker" "exec" "-i"]
+                    docker-workdir (into ["-w" docker-workdir])
+                    true (into [docker-container "bash" "-c" command]))
+                  (let [shell (or (System/getenv "SHELL") "bash")]
+                    [shell "-c" command]))
+        pb (ProcessBuilder. cmd-vec)
         process (.start pb)
         out-future (future (slurp (.getInputStream process)))
         err-future (future (slurp (.getErrorStream process)))
@@ -565,7 +577,7 @@ Editing: str-replace for single-string edits; replace-lines for line-range edits
 Common mistakes:
 
 1. calling io/* outside the quoted trailing expression: (io/read-file \"x\") does nothing; must be '(io/read-file \"x\") or '(do ... (io/read-file \"x\") ...)
-2. forgetting !call-now when you need the result: '(io/read-file \"x\") evaluates but the result is lost; use '(!call-now contents (io/read-file \"x\"))
+2. forgetting !call-now when you need the result: '(io/read-file \"x\") evaluates but the result is lost; use '(!call-now contents (io/read-file \"x\")) (or '(!peek-now ...) for one-turn ephemeral bindings)
 3. using io/sh for everything: prefer io/read-file over (io/sh \"cat file\"), (io/ls \"dir\") over (io/sh \"ls dir\"), etc
 4. using str-replace for large edits: token inefficient, prefer replace-lines
 
@@ -586,20 +598,19 @@ Multi-part example — read a file, edit it, verify the edit:
   ...(def updated \"1: def greet():\\n2:     print('goodbye')\\n...\")
   ▌...
 
-Multi-part example — read a file, discard from context and only keep a few lines:
-1. Read whole file.
-  ...▌'(!call-now code (io/read-file \"main.py\"))
+Multi-part example — peek a full file for one turn, then persist only a slice:
+1. Peek full file with one-turn lifetime.
+  ...▌'(!peek-now file-lines (io/read-lines \"main.py\"))
 
-2. Next turn: source file is filling context window.
-  ...(def code \"1: ... 1000: ...\")
-  ▌(rethink \"The function is defined on lines 100-110.\")
-  '(!call-now fn-def (io/read-file \"main.py\" 100 111))
+2. Next turn: file-lines is available. Persist only the slice you need.
+  ...(def file-lines [\"... many lines ...\"])
+  ▌(def fn-defn (subvec file-lines 99 111))
+  '(!extend completion)
 
-3. Next turn: context window is clean.
+3. Next turn: fn-defn stays in context while full file-lines disappears.
   ...
-  (think \"The function is defined on lines 100-110.\")
-  '(!call-now fn-def (io/read-file \"main.py\" 100 111))
-  (def fn-def \"100: ... 110: ...\")
+  (think \"!peek-now binding disappears unless persisted.\")
+  (def fn-defn [\"def target_fn(...):\" \"    ...\"])
   ▌...
 "
           }
@@ -652,7 +663,10 @@ but the binding evaluates to the raw vector.
   ;; child sees numbered display, but code is a plain vector
   (nth code 0)           ;; first line as string
   (subvec code 0 5)      ;; first 5 lines
-  (count code)            ;; number of lines"
+  (count code)            ;; number of lines
+
+For one-turn file peeks, use:
+  '(!peek-now code (io/read-lines \"main.py\"))"
 
     :replace-lines
     "Replace lines in a file (1-indexed, half-open [start, end)). Two forms:

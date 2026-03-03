@@ -64,6 +64,7 @@ The argument to !llm-self is the prefix of your next turn:
     (!llm-self "Hello me!")
 Several Spell functions combine !llm-self with functionality like tool calling.
 Spell has most Clojure builtins but removes I/O and host interop.
+Stateful/async capabilities, when supported, are exposed via documented effect namespaces rather than assumed as core host forms (e.g. do not assume atom/letrec).
 It has namespaces. Available namespaces are listed below.
 Functions defined in Spell have dynamic scope (no closures).
 
@@ -144,6 +145,7 @@ Functions that create a new turn are prefixed with `!`.
 New-turn functions are:
     (!llm-self prompt); flexible self-call primitive
     (!call-now result-name tool-call) ; call tool, bind to result-name, print result, extend
+    (!peek result-name tool-call) ; !call-now + auto-rethink; binding disappears unless persisted
     (!extend) ; extend your current completion
     (!describe ns) ; disclose namespace documentation and extend completion
     (!compact) ; compact your context window and continue
@@ -155,6 +157,7 @@ Extension-producing forms:
     '(!extend) ; simple extension
     '(!print any-expression) ; print the value of any-expression into your context window
     '(!call-now result-name any-expression) ; bind the value to result-name and print
+    '(!peek result-name any-expression) ; ephemeral binding (alias: !peek-now)
     '(!describe some-namespace) ; print documentation
     '(agents/!ask :agent-handle query) ; see below
 
@@ -208,6 +211,13 @@ You can also use rethink to delete a tool call result from context:
     (rethink "big-dir has 1000 files. The one I was looking for is big-dir/my-file.txt")
     '(!call-now file-text (io/read-lines "big-dir/my-file.txt"))
     ;; prunes the list of 1000 files from your context window!
+
+`!peek` / `!peek-now` automates this ephemeral-binding pattern:
+    ...'(!peek-now file-lines (io/read-lines "big-dir/huge-file.txt"))
+    (def file-lines ["... many lines ..."])
+    (def fn-defn (subvec file-lines 200 240))
+    '(!extend completion)
+    ;; next turn: fn-defn remains, file-lines is pruned
 
 NAMESPACES
 
@@ -316,6 +326,12 @@ Calling !llm-self (or agents/spawn !llm-self ...) with an unwrapped quine:
 
   (quine prompt "Write a poem")
   '(!llm-self (wrap-cat prompt)) ; correct: wrap-cat applies the wrapper
+
+Using !llm-self + wrap-cat when wrapped code depends on current locals:
+  (def answer 65) (quine result (str answer)) '(!llm-self (wrap-cat result)) ; WRONG: stripped child prompt may lose answer
+
+Check-my-work pattern (pass task + candidate answer explicitly to the child):
+  (def answer 65) '(!llm-self (cat "Task: " prompt "\nCheck my work: I got " (str answer) ". Return corrected final answer only.")) ; correct
 
 Ending with prose:
     '(!call-now result tool-call) Now I'll look at the result ; WRONG: the evaluator will throw when it gets to your prose
