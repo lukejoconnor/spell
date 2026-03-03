@@ -29,6 +29,7 @@
      :budget   — max spend in dollars (nil = unlimited)
      :depth    — max LLM recursion depth (nil = unlimited)
      :trace    — when true, record execution trace
+     :trace-dir — optional destination directory for trace output
      :prefill? — override provider prefill support
      :thinking — Anthropic adaptive thinking budget
      :reasoning-effort — OpenAI reasoning effort
@@ -39,7 +40,7 @@
      :retries  — API retry sleep durations
      :usage    — pre-created usage atom (default: fresh atom)"
   [{:keys [prompt init agent provider user? user-reader
-           verbose log-writer budget depth trace
+           verbose log-writer budget depth trace trace-dir
            prefill? thinking reasoning-effort verbosity
            suffix-grammar? grammar-max-chars format retries usage]}]
   ;; Validate inputs
@@ -74,6 +75,25 @@
                            :else budget)
         effective-verbose (or verbose (some? log-writer))
         trace-atom (when trace (trace/new-trace))
+        trace-dir (when trace
+                    (or trace-dir
+                        (let [fmt (java.text.SimpleDateFormat. "yyyy-MM-dd'T'HH-mm-ss")]
+                          (str "traces/" (.format fmt (java.util.Date.))))))
+        trace-written? (atom false)
+        write-trace-once!
+        (fn [force?]
+          (when (and trace-atom
+                     trace-dir
+                     (or force? (seq (:nodes @trace-atom)))
+                     (compare-and-set! trace-written? false true))
+            (trace/write-trace! @trace-atom trace-dir)))
+        shutdown-hook (when trace-atom
+                        (Thread.
+                         ^Runnable
+                         (fn []
+                           (try
+                             (write-trace-once! false)
+                             (catch Exception _)))))
         usage-atom (or usage (atom {:by-model {}}))]
     ;; Reset runtime registry and globals for fresh run
     (reset! runtime/registry {})
@@ -84,6 +104,8 @@
         (user/register-user-agent! user-reader)
         (user/register-user-agent!)))
     (try
+      (when shutdown-hook
+        (.addShutdownHook (Runtime/getRuntime) shutdown-hook))
       (binding [eval/*verbose* effective-verbose
                 eval/*log-writer* log-writer
                 eval/*max-llm-depth* depth
@@ -98,12 +120,15 @@
                          {:error (.getMessage e)
                           :error-data (ex-data e)
                           :usage usage-atom}))]
+          (when trace-atom
+            (write-trace-once! true))
           (if trace-atom
-            (let [dir (trace/write-trace! @trace-atom
-                        (let [fmt (java.text.SimpleDateFormat. "yyyy-MM-dd'T'HH-mm-ss")]
-                          (str "traces/" (.format fmt (java.util.Date.)))))]
-              (assoc result :trace-dir dir))
+            (assoc result :trace-dir trace-dir)
             result)))
       (finally
+        (when shutdown-hook
+          (try
+            (.removeShutdownHook (Runtime/getRuntime) shutdown-hook)
+            (catch IllegalStateException _)))
         (when log-writer
           (.close ^java.io.Writer log-writer))))))

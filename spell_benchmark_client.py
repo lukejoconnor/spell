@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -30,29 +31,72 @@ class SpellBenchmarkClient:
         self.project_root = Path(project_root or Path(__file__).resolve().parent)
         self.clj_cmd = clj_cmd or ["clj", "-M", "-m", "spell.benchmark-api"]
 
+    @staticmethod
+    def _default_trace_dir() -> str:
+        return f"traces/{datetime.now().strftime('%Y-%m-%dT%H-%M-%S-%f')}"
+
+    @staticmethod
+    def _coerce_text(value: str | bytes | None) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        return value
+
+    @staticmethod
+    def _trace_dir_with_files(run_cwd: Path, trace_dir: Any) -> str | None:
+        if not isinstance(trace_dir, str) or not trace_dir:
+            return None
+        trace_path = run_cwd / trace_dir
+        if trace_path.exists() and any(trace_path.iterdir()):
+            return trace_dir
+        return None
+
     def run(self, request: dict[str, Any], timeout: int = 300, cwd: Path | str | None = None) -> BenchmarkAPIResponse:
         cmd = [*self.clj_cmd, "--request", "-", "--response", "-"]
+        run_cwd = Path(cwd or self.project_root)
+        payload_request = dict(request)
+        if payload_request.get("trace") and not payload_request.get("trace_dir"):
+            payload_request["trace_dir"] = self._default_trace_dir()
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 cmd,
-                input=json.dumps(request),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                capture_output=True,
-                timeout=timeout,
-                cwd=str(cwd or self.project_root),
+                cwd=str(run_cwd),
             )
+            stdout, stderr = proc.communicate(input=json.dumps(payload_request), timeout=timeout)
         except subprocess.TimeoutExpired as exc:
+            stdout = self._coerce_text(exc.stdout)
+            stderr = self._coerce_text(exc.stderr)
+            proc.terminate()
+            try:
+                term_stdout, term_stderr = proc.communicate(timeout=5)
+                stdout = stdout or self._coerce_text(term_stdout)
+                stderr = stderr or self._coerce_text(term_stderr)
+            except subprocess.TimeoutExpired as term_exc:
+                stdout = stdout or self._coerce_text(term_exc.stdout)
+                stderr = stderr or self._coerce_text(term_exc.stderr)
+                proc.kill()
+                kill_stdout, kill_stderr = proc.communicate()
+                stdout = stdout or self._coerce_text(kill_stdout)
+                stderr = stderr or self._coerce_text(kill_stderr)
+
+            trace_dir = self._trace_dir_with_files(run_cwd, payload_request.get("trace_dir"))
             payload = {
                 "ok": False,
-                "mode": request.get("mode", "unknown"),
+                "mode": payload_request.get("mode", "unknown"),
                 "error": f"spell.benchmark-api timed out after {timeout}s",
                 "error_type": "timeout",
                 "error_data": {
                     "timeout_seconds": timeout,
-                    "stdout": (exc.stdout or "")[:4000],
-                    "stderr": (exc.stderr or "")[:4000],
+                    "stdout": stdout[:4000],
+                    "stderr": stderr[:4000],
                     "cmd": cmd,
                 },
+                "trace_dir": trace_dir,
             }
             return BenchmarkAPIResponse(
                 ok=False,
@@ -63,12 +107,12 @@ class SpellBenchmarkClient:
                 error=payload["error"],
                 error_type=payload["error_type"],
                 error_data=payload["error_data"],
-                trace_dir=None,
+                trace_dir=trace_dir,
                 raw=payload,
             )
 
-        stdout = (proc.stdout or "").strip()
-        stderr = (proc.stderr or "").strip()
+        stdout = (stdout or "").strip()
+        stderr = (stderr or "").strip()
 
         payload: dict[str, Any]
         if stdout:
@@ -77,7 +121,7 @@ class SpellBenchmarkClient:
             except json.JSONDecodeError as exc:
                 payload = {
                     "ok": False,
-                    "mode": request.get("mode", "unknown"),
+                    "mode": payload_request.get("mode", "unknown"),
                     "error": f"Invalid JSON from spell.benchmark-api: {exc}",
                     "error_type": "invalid_json_response",
                     "error_data": {
@@ -89,7 +133,7 @@ class SpellBenchmarkClient:
         else:
             payload = {
                 "ok": False,
-                "mode": request.get("mode", "unknown"),
+                "mode": payload_request.get("mode", "unknown"),
                 "error": "No JSON response from spell.benchmark-api",
                 "error_type": "missing_response",
                 "error_data": {
@@ -101,7 +145,7 @@ class SpellBenchmarkClient:
         if proc.returncode != 0 and payload.get("ok") is True:
             payload = {
                 "ok": False,
-                "mode": payload.get("mode", request.get("mode", "unknown")),
+                "mode": payload.get("mode", payload_request.get("mode", "unknown")),
                 "error": f"spell.benchmark-api exited with code {proc.returncode}",
                 "error_type": "subprocess_failure",
                 "error_data": {
@@ -109,11 +153,15 @@ class SpellBenchmarkClient:
                     "stdout": stdout[:4000],
                     "exit_code": proc.returncode,
                 },
+                "trace_dir": payload.get("trace_dir"),
             }
+
+        if payload.get("trace_dir") is None:
+            payload["trace_dir"] = self._trace_dir_with_files(run_cwd, payload_request.get("trace_dir"))
 
         return BenchmarkAPIResponse(
             ok=bool(payload.get("ok")),
-            mode=str(payload.get("mode", request.get("mode", "unknown"))),
+            mode=str(payload.get("mode", payload_request.get("mode", "unknown"))),
             result=payload.get("result"),
             usage=payload.get("usage"),
             latency_ms=payload.get("latency_ms"),

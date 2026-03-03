@@ -122,6 +122,20 @@
       (is (= 42 (:result result)))
       (is (string? (:trace-dir result)))))
 
+  (testing "trace option respects provided trace-dir"
+    (let [p (provider/test-provider {:response "(def x 42))"})
+          trace-dir (.toString (java.nio.file.Files/createTempDirectory
+                                 "spell-api-trace-"
+                                 (make-array java.nio.file.attribute.FileAttribute 0)))
+          result (api/run {:prompt "Return 42"
+                           :provider p
+                           :agent test-agent
+                           :trace true
+                           :trace-dir trace-dir})]
+      (is (= 42 (:result result)))
+      (is (= trace-dir (:trace-dir result)))
+      (is (.exists (java.io.File. trace-dir "trace.edn")))))
+
   (testing "format option can be supplied at API level (not only agent edn)"
     (let [p (provider/test-provider {:response "{:result 42}))"})
           result (api/run {:prompt "Return 42"

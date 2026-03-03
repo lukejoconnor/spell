@@ -224,6 +224,10 @@
     (zero? budget) nil
     :else budget))
 
+(defn- default-trace-dir []
+  (let [fmt (java.text.SimpleDateFormat. "yyyy-MM-dd'T'HH-mm-ss")]
+    (str "traces/" (.format fmt (java.util.Date.)))))
+
 (defn- run-baseline [{:keys [prompt reasoning-effort verbosity thinking budget retries] :as req}]
   (let [usage-atom (atom {:by-model {}})
         provider-inst (make-provider req)
@@ -241,12 +245,13 @@
       (catch Exception e
         (response-error "baseline" start-ns e)))))
 
-(defn- run-spell [{:keys [prompt init agent budget depth trace prefill
+(defn- run-spell [{:keys [prompt init agent budget depth trace trace-dir prefill
                           thinking reasoning-effort verbosity suffix-grammar
                           grammar-max-chars retries format] :as req}]
   (let [provider-inst (make-provider req)
         resolved-agent (or agent (default-agent-from-request req))
         normalized-format (normalize-format-spec format)
+        resolved-trace-dir (when trace (or trace-dir (default-trace-dir)))
         effective-prefill (if (contains? req :prefill)
                             prefill
                             (and (provider/supports-prefill provider-inst)
@@ -258,6 +263,7 @@
                                      :budget budget
                                      :depth depth
                                      :trace trace
+                                     :trace-dir resolved-trace-dir
                                      :retries retries
                                      :thinking thinking
                                      :reasoning-effort reasoning-effort
@@ -276,10 +282,11 @@
            :error_type (some-> result :error-data :type name)
            :error_data (json-safe (:error-data result))
            :usage (when-let [u (:usage result)] (provider/usage-summary u))
-           :trace_dir (:trace-dir result)}
+           :trace_dir (or (:trace-dir result) resolved-trace-dir)}
           (response-ok "spell" start-ns result)))
       (catch Exception e
-        (response-error "spell" start-ns e)))))
+        (cond-> (response-error "spell" start-ns e)
+          resolved-trace-dir (assoc :trace_dir resolved-trace-dir))))))
 
 (defn- run-request [{:keys [mode prompt init] :as req}]
   (let [effective-mode (or mode "spell")]
