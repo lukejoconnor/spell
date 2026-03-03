@@ -71,7 +71,11 @@ class SpellBenchmarkClient:
         except subprocess.TimeoutExpired as exc:
             stdout = self._coerce_text(exc.stdout)
             stderr = self._coerce_text(exc.stderr)
-            proc.terminate()
+            if proc.poll() is None:
+                try:
+                    proc.terminate()
+                except ProcessLookupError:
+                    pass
             try:
                 term_stdout, term_stderr = proc.communicate(timeout=5)
                 stdout = stdout or self._coerce_text(term_stdout)
@@ -79,7 +83,11 @@ class SpellBenchmarkClient:
             except subprocess.TimeoutExpired as term_exc:
                 stdout = stdout or self._coerce_text(term_exc.stdout)
                 stderr = stderr or self._coerce_text(term_exc.stderr)
-                proc.kill()
+                if proc.poll() is None:
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
                 kill_stdout, kill_stderr = proc.communicate()
                 stdout = stdout or self._coerce_text(kill_stdout)
                 stderr = stderr or self._coerce_text(kill_stderr)
