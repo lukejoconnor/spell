@@ -166,11 +166,13 @@ You can also use rethink to delete a tool call result from context:
     ;; prunes the list of 1000 files from your context window!
 
 `!peek` / `!peek-now` automates this ephemeral-binding pattern:
-    ...'(!peek-now file-lines (io/read-lines "big-dir/huge-file.txt"))
+    ...'(!peek-now file-lines (io/read-lines "big-dir/huge-file.txt")) ; pass turn 0
     (def file-lines ["... many lines ..."])
+    (rethink)
+    ;; turn 1 begins here
     (def fn-defn (subvec file-lines 200 240))
     '(!extend completion)
-    ;; next turn: fn-defn remains, file-lines is pruned
+    ;; turn 2: file-lines is deleted, fn-defn remains as a string literal
 
 NAMESPACES
 
@@ -179,7 +181,7 @@ Access functions with qualified symbols.
 Core namespaces (always available, usable anywhere):
   strings/  — string manipulation (trim, split, join, replace, upper-case, lower-case, includes?, starts-with?, re-find, ...)
   math/     — math functions (sqrt, pow, abs, floor, ceil, rand, rand-int, factorial, PI, ...)
-  patterns/ — orchestration patterns (check-result, clean-prompt, explore)
+  patterns/ — orchestration patterns (check-result, clean-prompt, explore, fix-loop)
   builtins/ — reference for core builtins by category (docs only)
 
 Effect namespaces (configurable, only usable in the quoted trailing expression):
@@ -207,6 +209,10 @@ Rethinking tool calls:
   '(!call-now big-result ...)(def big-result ...)
   (rethink "That search term was too generic.")
   '(!call-now targeted-result ...)
+
+Peek large files:
+    '(!peek file-lines (io/read-lines "big-dir/huge-file.txt"))
+    ;; file-lines is in context for exactly one turn
 
 Plan + execute with a clean context window:
   (quine prompt "...") (think "...") '(!call-now ...) ... ; 1k tokens of thinking + tool calls

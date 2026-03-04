@@ -5,6 +5,9 @@
  :doc "Prefill transport agent with io+web namespaces for benchmark/runtime access"
 
  :namespaces
- {io stdlib/io
-  web stdlib/web}
- :llms []}
+ {io       stdlib/io
+  web      stdlib/web
+  patterns stdlib/patterns
+  agents   stdlib/agents
+  globals  stdlib/globals}
+ :llms {reflector fix-loop-reflector.agent.edn}}

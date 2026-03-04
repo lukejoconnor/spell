@@ -79,3 +79,31 @@
          "Use io/sh with grep, find, and io/read-file or io/read-lines to explore.\n"
          "Return a map with :answer (string summary) and :files (vector of relevant file paths).\n\n"
          "Query: " query)))
+
+;; ---------------------------------------------------------------------------
+;; fix-loop — test-driven code fixing with reflector diagnosis
+;; ---------------------------------------------------------------------------
+;; Manages a git-backed retry loop for test-driven code repair.
+;; Creates a branch, runs tests, calls a worker to edit files, runs tests again,
+;; and uses a reflector to diagnose failures and decide keep/discard changes.
+;;
+;; '(!call-now result (patterns/fix-loop
+;;    {:test "pytest tests/test_foo.py -x"
+;;     :issue issue-description
+;;     :reflector llms/reflector
+;;     :max-retries 5}))
+;; => {:pass true} or {:fail "reason"}
+;;
+;; opts map:
+;;   :test        — shell command to run tests (required)
+;;   :issue       — description of the problem to fix (required)
+;;   :reflector   — reflector LLM function, e.g. llms/reflector (required)
+;;   :worker      — worker LLM function (default: !llm-self)
+;;   :max-retries — max fix attempts (default: 5)
+;;
+;; The reflector must return {:diagnosis str :keep-changes bool :panic bool}.
+;; Worker and reflector run as nested LLM calls (not spawned agents).
+;;
+;; NOTE: fix-loop is implemented in Clojure (not as a Spell defn) because it
+;; uses a Clojure loop/recur with multiple sequential LLM calls. This reference
+;; version shows the interface only.

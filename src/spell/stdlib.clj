@@ -8,7 +8,9 @@
    - patterns: Spell-specific orchestration patterns
    - futures: parallel computation utilities"
   (:require [clojure.string :as str]
-            [spell.eval :as eval]))
+            [spell.eval :as eval]
+            [spell.io :as sio]
+            [spell.runtime :as runtime]))
 
 ;; =============================================================================
 ;; strings namespace (matches clojure.string)
@@ -248,12 +250,13 @@ All functions take and return numbers. Use (!describe math :fn-name) for any fun
 
 (def patterns
   "Reusable orchestration patterns (Spell-specific)."
-  {:short-docs "Reusable orchestration patterns: check-result, clean-prompt, explore."
+  {:short-docs "Reusable orchestration patterns: check-result, clean-prompt, explore, fix-loop."
    :docs {:guide "PATTERNS — Reusable orchestration patterns (effect namespace).
 
   (patterns/check-result prompt answer)  — verify answer with leaf-llm
   (patterns/clean-prompt raw-text)       — clean up messy text, then execute it
   (patterns/explore question)            — one-shot codebase exploration agent
+  (patterns/fix-loop opts)               — test-driven code fixing loop with reflector
 
 Use (!describe patterns :fn-name) for detailed docs on any function.
 
@@ -269,6 +272,11 @@ clean-prompt: Cleans up a raw prompt (voice-to-text, quick notes) via leaf-llm, 
 explore: One-shot delegation to a child exploration agent. Spawns a child that greps, reads, and analyzes, then returns structured findings.
   '(!call-now findings (patterns/explore \"Where is authentication handled?\"))
   Returns {:answer \"...\" :files [\"src/auth.py\" ...]}
+
+fix-loop: Test-driven code fixing loop. Runs tests, spawns a worker to fix code, uses a reflector
+to diagnose failures and decide whether to keep or discard changes. Loops until tests pass or retries exhausted.
+  '(!call-now result (patterns/fix-loop {:test \"pytest tests/ -x\" :issue issue :reflector llms/reflector}))
+  Returns {:pass true} or {:fail \"reason\"}
 
 All patterns/ calls are effect functions — quote them in the trailing expression.
 
@@ -294,7 +302,33 @@ Example — verify then correct:
    :detail
    {:check-result "(patterns/check-result prompt answer) — verify answer with leaf-llm, returns {:ok answer} or {:wrong msg}"
     :clean-prompt "(patterns/clean-prompt raw-prompt) — clean up raw prompt via leaf-llm and execute it"
-    :explore "(patterns/explore question) — one-shot exploration agent, returns {:answer \"...\" :files [...]}"}
+    :explore "(patterns/explore question) — one-shot exploration agent, returns {:answer \"...\" :files [...]}"
+    :fix-loop "(patterns/fix-loop opts) — test-driven code fixing loop.
+opts map:
+  :test       — shell command to run tests (required)
+  :issue      — description of the problem to fix (required)
+  :reflector  — reflector LLM function, e.g. llms/reflector (required)
+  :worker     — worker LLM function (default: !llm-self)
+  :max-retries — max fix attempts (default: 5)
+
+Creates a git branch, runs tests, and enters a retry loop:
+1. Worker agent edits files to fix the issue
+2. Tests are run
+3. If tests pass: commits and returns {:pass true}
+4. If tests fail: reflector analyzes diff + test output, returns diagnosis
+   - :keep-changes true: commit partial progress, continue with same changes
+   - :keep-changes false: git revert, try fresh
+   - :panic true: give up, return {:fail diagnosis}
+
+The reflector must return {:diagnosis str :keep-changes bool :panic bool}.
+Worker and reflector run as nested LLM calls (not spawned agents).
+
+Example:
+  '(!call-now result (patterns/fix-loop
+    {:test \"python -m pytest tests/test_foo.py -x\"
+     :issue issue-description
+     :reflector llms/reflector
+     :max-retries 3}))"}
    ;; check-result: verify answer with leaf-llm (core builtin), return {:ok answer} or {:wrong msg}
    :check-result {:spell/fn true
                   :params ['prompt 'answer]
@@ -329,7 +363,96 @@ Example — verify then correct:
                        (cat "You are an exploration agent. Your task is to investigate the codebase and return structured findings.\n\n"
                             "Use io/sh with grep, find, and io/read-file or io/read-lines to explore.\n"
                             "Return a map with :answer (string summary) and :files (vector of relevant file paths).\n\n"
-                            "Query: " query)))}})
+                            "Query: " query)))}
+   ;; fix-loop: test-driven code fixing loop with reflector diagnosis
+   :fix-loop
+   (fn fix-loop [opts]
+     (let [test-cmd    (:test opts)
+           issue       (:issue opts)
+           reflector   (:reflector opts)
+           max-retries (or (:max-retries opts) 5)
+           worker-llm  (or (:worker opts) runtime/*default-spawn-llm*)
+           branch      (str "spell-fix-" (abs (rand-int 100000)))
+           orig-branch (str/trim (:out (sio/sh "git rev-parse --abbrev-ref HEAD")))
+           cleanup!    (fn [] (sio/sh (str "git checkout " orig-branch)))]
+       ;; Create working branch
+       (sio/sh (str "git checkout -b " branch))
+       ;; Baseline test run
+       (let [t0 (sio/sh test-cmd)]
+         (if (= 0 (:exit t0))
+           {:pass true}
+           ;; Initial reflector diagnosis
+           (let [initial-diag
+                 (reflector
+                   (str "Analyze this test failure from a codebase.\n\n"
+                        "ISSUE DESCRIPTION:\n" issue "\n\n"
+                        "TEST COMMAND: " test-cmd "\n"
+                        "TEST OUTPUT (exit " (:exit t0) "):\n"
+                        (:out t0) "\n" (:err t0) "\n\n"
+                        "No changes have been made yet. Provide your initial diagnosis.\n"
+                        "Return a Spell map with:\n"
+                        "  {:diagnosis \"what's wrong and suggested fix approach\"\n"
+                        "   :keep-changes false\n"
+                        "   :panic false}\n"
+                        "Set :panic true only if the problem seems fundamentally unsolvable."))]
+             (if (:panic initial-diag)
+               (do (cleanup!)
+                   {:fail (:diagnosis initial-diag)})
+               ;; Fix loop
+               (loop [attempt   0
+                      diagnosis (:diagnosis initial-diag)]
+                 (if (>= attempt max-retries)
+                   (do (cleanup!)
+                       {:fail (str "Max retries (" max-retries "). Last diagnosis: " diagnosis)})
+                   ;; Worker fixes code
+                   (let [_ (worker-llm
+                             (str "You are a code repair agent. Fix the following issue in this codebase.\n\n"
+                                  "ISSUE:\n" issue "\n\n"
+                                  "DIAGNOSIS:\n" diagnosis "\n\n"
+                                  "Use io/sh and io/read-file to explore the codebase.\n"
+                                  "Use io/write-file or io/str-replace to make targeted edits.\n"
+                                  "When done editing, return a brief summary of changes made."))
+                         ;; Run tests
+                         t (sio/sh test-cmd)]
+                     (if (= 0 (:exit t))
+                       ;; Tests pass!
+                       (do (sio/sh "git add -A")
+                           (sio/sh (str "git commit -m \"fix: applied (attempt "
+                                        (inc attempt) ")\""))
+                           {:pass true})
+                       ;; Tests fail — reflect
+                       (let [diff       (:out (sio/sh "git diff"))
+                             staged     (:out (sio/sh "git diff --cached"))
+                             all-diff   (str diff staged)
+                             test-out   (str (:out t) "\n" (:err t))
+                             refl
+                             (reflector
+                               (str "Analyze this failed fix attempt.\n\n"
+                                    "ISSUE:\n" issue "\n\n"
+                                    "GIT DIFF of changes made:\n" all-diff "\n\n"
+                                    "TEST COMMAND: " test-cmd "\n"
+                                    "TEST OUTPUT (exit " (:exit t) "):\n" test-out "\n\n"
+                                    "PREVIOUS DIAGNOSIS:\n" diagnosis "\n\n"
+                                    "Return a Spell map with:\n"
+                                    "  {:diagnosis \"what went wrong, what to try next\"\n"
+                                    "   :keep-changes true/false\n"
+                                    "   :panic false}\n"
+                                    "Set :keep-changes true if changes are partially correct.\n"
+                                    "Set :keep-changes false to discard all changes and try fresh.\n"
+                                    "Set :panic true only if stuck or unsolvable."))]
+                         (if (:panic refl)
+                           (do (cleanup!)
+                               {:fail (:diagnosis refl)})
+                           (if (:keep-changes refl)
+                             ;; Keep changes, commit partial progress
+                             (do (sio/sh "git add -A")
+                                 (sio/sh (str "git commit -m \"partial: iteration "
+                                              (inc attempt) "\""))
+                                 (recur (inc attempt) (:diagnosis refl)))
+                             ;; Discard changes, try fresh
+                             (do (sio/sh "git checkout .")
+                                 (sio/sh "git clean -fd")
+                                 (recur (inc attempt) (:diagnosis refl))))))))))))))))})
 
 ;; =============================================================================
 ;; builtins namespace (docs-only, for progressive disclosure)
