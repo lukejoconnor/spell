@@ -13,4 +13,4 @@
   patterns stdlib/patterns
   agents   stdlib/agents
   globals  stdlib/globals}
- :llms []}
+ :llms {reflector fix-loop-reflector.agent.edn}}

@@ -1970,12 +1970,12 @@
             id (second (first forms))]
         (is (= big-vec (eval/stored id))))))
 
-  (testing "serialize-for-continuation with line-offset vector produces do form"
+  (testing "serialize-for-continuation with line-offset vector produces commented vector literal"
     (let [lines (with-meta ["line one" "line two" "line three"] {:spell/line-offset 10})
           result (eval/serialize-for-continuation lines)]
-      (is (.startsWith ^String result "(do "))
-      (is (.contains ^String result "10: line one"))
-      (is (.contains ^String result "12: line three"))
+      (is (.startsWith ^String result "["))
+      (is (.contains ^String result "; 10"))
+      (is (.contains ^String result "; 12"))
       ;; Round-trip: evaluating the form should yield the original vector
       (let [parsed (first (spell.parse/read-all result))
             evaled (run-spell parsed)]
@@ -1984,13 +1984,13 @@
   (testing "serialize-for-continuation with line-offset offset=1"
     (let [lines (with-meta ["alpha" "beta"] {:spell/line-offset 1})
           result (eval/serialize-for-continuation lines)]
-      (is (.contains ^String result "1: alpha"))
-      (is (.contains ^String result "2: beta"))))
+      (is (.contains ^String result "; 1"))
+      (is (.contains ^String result "; 2"))))
 
   (testing "serialize-for-continuation with empty line-offset vector"
     (let [lines (with-meta [] {:spell/line-offset 5})
           result (eval/serialize-for-continuation lines)]
-      (is (.startsWith ^String result "(do "))
+      (is (= "[]" result))
       (let [parsed (first (spell.parse/read-all result))
             evaled (run-spell parsed)]
         (is (= [] evaled))))))

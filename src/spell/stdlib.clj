@@ -8,7 +8,8 @@
    - patterns: Spell-specific orchestration patterns
    - futures: parallel computation utilities"
   (:require [clojure.string :as str]
-            [spell.eval :as eval]))
+            [spell.eval :as eval]
+            [spell.patterns :as patterns-lib]))
 
 ;; =============================================================================
 ;; strings namespace (matches clojure.string)
@@ -248,88 +249,7 @@ All functions take and return numbers. Use (!describe math :fn-name) for any fun
 
 (def patterns
   "Reusable orchestration patterns (Spell-specific)."
-  {:short-docs "Reusable orchestration patterns: check-result, clean-prompt, explore."
-   :docs {:guide "PATTERNS — Reusable orchestration patterns (effect namespace).
-
-  (patterns/check-result prompt answer)  — verify answer with leaf-llm
-  (patterns/clean-prompt raw-text)       — clean up messy text, then execute it
-  (patterns/explore question)            — one-shot codebase exploration agent
-
-Use (!describe patterns :fn-name) for detailed docs on any function.
-
-check-result: Verifies an answer using leaf-llm. Returns {:ok answer} or {:wrong msg}.
-  (patterns/check-result \"What is 2+2?\" 4)            ;; => {:ok 4}
-  (patterns/check-result \"Capital of France?\" \"London\") ;; => {:wrong \"London is...\"
-
-clean-prompt: Cleans up a raw prompt (voice-to-text, quick notes) via leaf-llm, then runs it.
-  '(patterns/clean-prompt \"waht is the captal of franc... like the big city\")
-  leaf-llm infers intent and rewrites; !llm-self executes the cleaned prompt.
-  Accepts a string or quine form (serializes non-strings automatically).
-
-explore: One-shot delegation to a child exploration agent. Spawns a child that greps, reads, and analyzes, then returns structured findings.
-  '(!call-now findings (patterns/explore \"Where is authentication handled?\"))
-  Returns {:answer \"...\" :files [\"src/auth.py\" ...]}
-
-All patterns/ calls are effect functions — quote them in the trailing expression.
-
-Common mistakes:
-
-1. calling check-result outside the trailing expression: must be quoted like all effect calls
-2. forgetting !call-now with explore: '(patterns/explore \"...\") runs the agent but you lose the return value; use '(!call-now findings (patterns/explore \"...\"))
-3. using explore for simple tasks: explore spawns a child agent — overkill for a quick io/read-file or io/sh
-
-In examples, ▌ marks cursor position in a completion. It is doc-only; do not type it into code.
-
-Example — verify then correct:
-
-1. Compute an answer and check it.
-  ...(def answer 42)
-  ▌'(!call-now verdict (patterns/check-result \"What is 6 * 9?\" answer))
-
-2. Next turn: handle the verdict.
-  ...(def verdict {:wrong \"6 * 9 = 54, not 42\"})
-  ▌(def answer 54)
-  '(!call-now verdict (patterns/check-result \"What is 6 * 9?\" answer))
-"}
-   :detail
-   {:check-result "(patterns/check-result prompt answer) — verify answer with leaf-llm, returns {:ok answer} or {:wrong msg}"
-    :clean-prompt "(patterns/clean-prompt raw-prompt) — clean up raw prompt via leaf-llm and execute it"
-    :explore "(patterns/explore question) — one-shot exploration agent, returns {:answer \"...\" :files [...]}"}
-   ;; check-result: verify answer with leaf-llm (core builtin), return {:ok answer} or {:wrong msg}
-   :check-result {:spell/fn true
-                  :params ['prompt 'answer]
-                  :body '((let [verification-prompt (cat "Verify this answer.\n\n"
-                                                         "Task: " prompt "\n\n"
-                                                         "Answer: " (pr-str answer) "\n\n"
-                                                         "Respond with exactly one line:\n"
-                                                         "- \"OK\" if correct\n"
-                                                         "- \"WRONG: <reason>\" if incorrect")
-                                response (leaf-llm verification-prompt)
-                                trimmed (strings/trim response)]
-                            (if (strings/starts-with? trimmed "OK")
-                              {:ok answer}
-                              {:wrong (strings/trim
-                                       (if (strings/starts-with? trimmed "WRONG:")
-                                         (strings/subs trimmed 6)
-                                         trimmed))})))}
-   ;; clean-prompt: clean up raw text via leaf-llm, then execute with !llm-self
-   :clean-prompt {:spell/fn true
-                  :params ['raw]
-                  :body '((let [text (if (string? raw) raw (pr-str raw))
-                                cleaned (leaf-llm (cat "Rewrite the following as a clear, well-formed prompt. "
-                                                       "Fix typos, complete half-sentences, and infer intent. "
-                                                       "The input may be wrapped in code syntax — ignore that and focus on the natural language content. "
-                                                       "Output ONLY the rewritten prompt.\n\n"
-                                                       text))]
-                            (!llm-self cleaned)))}
-   ;; explore: one-shot delegation to a child exploration agent
-   :explore {:spell/fn true
-             :params ['query]
-             :body '((agents/!spawn-ask !llm-self
-                       (cat "You are an exploration agent. Your task is to investigate the codebase and return structured findings.\n\n"
-                            "Use io/sh with grep, find, and io/read-file or io/read-lines to explore.\n"
-                            "Return a map with :answer (string summary) and :files (vector of relevant file paths).\n\n"
-                            "Query: " query)))}})
+  patterns-lib/patterns)
 
 ;; =============================================================================
 ;; builtins namespace (docs-only, for progressive disclosure)
