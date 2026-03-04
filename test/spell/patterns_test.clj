@@ -1,5 +1,6 @@
 (ns spell.patterns-test
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
+            [spell.eval :as eval]
             [spell.stdlib :as stdlib]
             [spell.runtime :as runtime]
             [spell.io :as sio]
@@ -13,6 +14,11 @@
     (reset! runtime/registry {})))
 
 (def fix-loop (:fix-loop stdlib/patterns))
+
+(defn- run-fix-loop [opts]
+  (binding [eval/*spell-env* {'strings stdlib/strings
+                              'io sio/io-namespace}]
+    (eval/invoke-fn fix-loop [opts])))
 
 (defn- create-temp-git-repo
   "Create a temp directory with an initialized git repo. Returns path string.
@@ -78,11 +84,11 @@
                        "done")]
 
           (with-redefs [sio/sh (sh-in-dir dir)]
-            (let [result (fix-loop {:test "./run_tests.sh"
-                                    :issue "Tests fail because fixed.txt is missing"
-                                    :reflector reflector
-                                    :worker worker
-                                    :max-retries 3})]
+            (let [result (run-fix-loop {:test "./run_tests.sh"
+                                        :issue "Tests fail because fixed.txt is missing"
+                                        :reflector reflector
+                                        :worker worker
+                                        :max-retries 3})]
               (is (= true (:pass result)))
               (is (= 1 (count @reflector-calls)))
               (is (= 1 (count @worker-calls)))
@@ -109,42 +115,46 @@
                           {:diagnosis "" :keep-changes false :panic false})]
 
           (with-redefs [sio/sh (sh-in-dir dir)]
-            (let [result (fix-loop {:test "./run_tests.sh"
-                                    :issue "Some issue"
-                                    :reflector reflector
-                                    :worker (fn [_] nil)
-                                    :max-retries 3})]
+            (let [result (run-fix-loop {:test "./run_tests.sh"
+                                        :issue "Some issue"
+                                        :reflector reflector
+                                        :worker (fn [_] nil)
+                                        :max-retries 3})]
               (is (= true (:pass result)))
               (is (= 0 @reflector-calls)))))
         (finally
           (cleanup-dir (str dir)))))))
 
 ;; =============================================================================
-;; Dirty repo guard: reject if working tree is not clean
+;; Dirty repo: commit pre-existing changes and proceed
 ;; =============================================================================
 
-(deftest fix-loop-requires-clean-worktree-test
-  (testing "fails fast when repo has pre-existing changes"
+(deftest fix-loop-dirty-worktree-commits-and-proceeds-test
+  (testing "commits dirty state then runs fix loop normally"
     (let [dir (create-temp-git-repo "fixed.txt")]
       (try
+        ;; Pre-existing untracked file (dirty working tree)
         (spit (str dir "/preexisting.txt") "local work")
         (let [reflector-calls (atom 0)
               worker-calls (atom 0)
               reflector (fn [_] (swap! reflector-calls inc)
-                          {:diagnosis "unused" :keep-changes false :panic false})
-              worker (fn [_] (swap! worker-calls inc) "unused")]
+                          {:diagnosis "Create fixed.txt" :keep-changes false :panic false})
+              worker (fn [_] (swap! worker-calls inc)
+                       (spit (str dir "/fixed.txt") "done")
+                       "created fixed.txt")]
           (with-redefs [sio/sh (sh-in-dir dir)]
-            (let [result (fix-loop {:test "./run_tests.sh"
-                                    :issue "Need fixed.txt"
-                                    :reflector reflector
-                                    :worker worker
-                                    :max-retries 2})]
-              (is (nil? (:pass result)))
-              (is (string? (:fail result)))
-              (is (str/includes? (:fail result) "clean git working tree"))
-              (is (= 0 @reflector-calls))
-              (is (= 0 @worker-calls))
-              (is (str/blank? (str/trim (:out (sio/sh "git branch --list 'spell-fix-*'"))))))))
+            (let [result (run-fix-loop {:test "./run_tests.sh"
+                                        :issue "Need fixed.txt"
+                                        :reflector reflector
+                                        :worker worker
+                                        :max-retries 2})]
+              ;; fix-loop should succeed (worker creates fixed.txt)
+              (is (= true (:pass result)))
+              ;; reflector + worker should each be called once
+              (is (= 1 @reflector-calls))
+              (is (= 1 @worker-calls))
+              ;; pre-existing file should still be present (committed as baseline)
+              (is (.exists (io/file (str dir "/preexisting.txt")))))))
         (finally
           (cleanup-dir dir))))))
 
@@ -177,11 +187,11 @@
                                  :panic false})))]
 
           (with-redefs [sio/sh (sh-in-dir dir)]
-            (let [result (fix-loop {:test "./run_tests.sh"
-                                    :issue "Need both file-a.txt and file-b.txt"
-                                    :reflector reflector
-                                    :worker worker
-                                    :max-retries 5})]
+            (let [result (run-fix-loop {:test "./run_tests.sh"
+                                        :issue "Need both file-a.txt and file-b.txt"
+                                        :reflector reflector
+                                        :worker worker
+                                        :max-retries 5})]
               (is (= true (:pass result)))
               (is (= 2 @worker-call-count))
               (is (= 2 @reflector-call-count)))))
@@ -219,11 +229,11 @@
                                  :panic false})))]
 
           (with-redefs [sio/sh (sh-in-dir dir)]
-            (let [result (fix-loop {:test "./run_tests.sh"
-                                    :issue "Need correct.txt"
-                                    :reflector reflector
-                                    :worker worker
-                                    :max-retries 5})]
+            (let [result (run-fix-loop {:test "./run_tests.sh"
+                                        :issue "Need correct.txt"
+                                        :reflector reflector
+                                        :worker worker
+                                        :max-retries 5})]
               (is (= true (:pass result)))
               (is (= 2 @worker-call-count))
               ;; wrong.txt was staged in attempt 1 and must not leak into attempt 2.
@@ -247,11 +257,11 @@
               worker (fn [_] (swap! worker-calls inc) nil)]
 
           (with-redefs [sio/sh (sh-in-dir dir)]
-            (let [result (fix-loop {:test "./run_tests.sh"
-                                    :issue "Unsolvable issue"
-                                    :reflector reflector
-                                    :worker worker
-                                    :max-retries 3})]
+            (let [result (run-fix-loop {:test "./run_tests.sh"
+                                        :issue "Unsolvable issue"
+                                        :reflector reflector
+                                        :worker worker
+                                        :max-retries 3})]
               (is (nil? (:pass result)))
               (is (string? (:fail result)))
               (is (str/includes? (:fail result) "unsolvable"))
@@ -280,11 +290,11 @@
               worker (fn [_] (spit (str dir "/fix.txt") "attempt") nil)]
 
           (with-redefs [sio/sh (sh-in-dir dir)]
-            (let [result (fix-loop {:test "./run_tests.sh"
-                                    :issue "Failing tests"
-                                    :reflector reflector
-                                    :worker worker
-                                    :max-retries 3})]
+            (let [result (run-fix-loop {:test "./run_tests.sh"
+                                        :issue "Failing tests"
+                                        :reflector reflector
+                                        :worker worker
+                                        :max-retries 3})]
               (is (nil? (:pass result)))
               (is (string? (:fail result)))
               (is (str/includes? (:fail result) "stuck")))))
@@ -312,11 +322,11 @@
                              :panic false}))]
 
           (with-redefs [sio/sh (sh-in-dir dir)]
-            (let [result (fix-loop {:test "./run_tests.sh"
-                                    :issue "Unfixable issue"
-                                    :reflector reflector
-                                    :worker worker
-                                    :max-retries 2})]
+            (let [result (run-fix-loop {:test "./run_tests.sh"
+                                        :issue "Unfixable issue"
+                                        :reflector reflector
+                                        :worker worker
+                                        :max-retries 2})]
               (is (nil? (:pass result)))
               (is (string? (:fail result)))
               (is (str/includes? (:fail result) "Max retries"))

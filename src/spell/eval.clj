@@ -124,24 +124,29 @@
     :else value))
 
 (defn- format-line-offset-vector
-  "Serialize a vector with :spell/line-offset metadata as (do \"numbered lines\" [raw-vec]).
-   The string literal shows numbered lines for LLM readability; the vector is the actual value.
+  "Serialize a vector with :spell/line-offset metadata as a vector literal
+   where each entry has an inline ; line-number comment.
    Returns nil if the vector doesn't have line-offset metadata."
   [value]
   (when-let [offset (:spell/line-offset (meta value))]
-    (let [width (count (str (+ offset (dec (max 1 (count value))))))
-          numbered (str/join "\n"
-                    (map-indexed (fn [i line]
-                                  (str (format (str "%" width "d") (+ offset i)) ": " line))
-                                value))]
-      (str "(do " (pr-str numbered) " " (pr-str value) ")"))))
+    (if (empty? value)
+      "[]"
+      (let [last-line (+ offset (dec (count value)))
+            width (count (str last-line))
+            rows (map-indexed (fn [i line]
+                                (str " " (pr-str line)
+                                     " ; "
+                                     (format (str "%" width "d") (+ offset i))))
+                              value)]
+        (str "[\n" (str/join "\n" rows) "\n]")))))
 
 (defn serialize-for-continuation
   "Serialize a value for embedding in a !call-now continuation.
    Small values are inlined via pr-str. Large strings are truncated with a note.
    Large non-strings are deep-truncated (string values within maps/seqs are
    individually truncated) then inlined. Only stored out-of-band if still too large.
-   Vectors with :spell/line-offset metadata produce (do \"numbered\" [raw]) form.
+   Vectors with :spell/line-offset metadata produce a vector literal with
+   inline line-number comments.
    limit: max pr-str chars before truncation/storage. Negative means always inline."
   ([value] (serialize-for-continuation value call-now-inline-limit))
   ([value limit]

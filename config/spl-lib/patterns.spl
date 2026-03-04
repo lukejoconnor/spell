@@ -104,6 +104,9 @@
 ;; The reflector must return {:diagnosis str :keep-changes bool :panic bool}.
 ;; Worker and reflector run as nested LLM calls (not spawned agents).
 ;;
-;; NOTE: fix-loop is implemented in Clojure (not as a Spell defn) because it
-;; uses a Clojure loop/recur with multiple sequential LLM calls. This reference
-;; version shows the interface only.
+;; If the working tree is dirty when fix-loop starts, it commits the current
+;; state as a baseline before creating the fix branch. This lets you write
+;; reproducer tests before calling fix-loop.
+;;
+;; NOTE: fix-loop is implemented as a Spell function in src/spell/stdlib.clj.
+;; This file documents the interface and usage pattern.
