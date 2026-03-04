@@ -597,6 +597,77 @@
         (is (= true (llm "(do ")))))))
 
 ;; =============================================================================
+;; Completion await helper tests
+;; =============================================================================
+
+(deftest next-completion-token-test
+  (testing "next-completion captures current completion promise as await token"
+    (let [handle :next-completion-child
+          child-raw "(quine completion (eval (do )))"
+          eval-fn (fn [_] :child-finished)]
+      (runtime/start-box handle eval-fn child-raw)
+      (Thread/sleep 100)
+      (let [token (runtime/next-completion handle)]
+        (is (= true (:spell/future token)))
+        (runtime/send-msg-fn identity handle)
+        (is (= :child-finished (deref (:ref token) 5000 :timeout))))))
+
+  (testing "next-completion throws for unregistered handles"
+    (is (thrown-with-msg? Exception #"handle not registered"
+          (runtime/next-completion :missing-handle)))))
+
+(deftest send-await-test
+  (testing "send-await sends message and returns target completion value"
+    (let [parent-h :send-await-parent
+          child-h :send-await-child
+          child-raw "(quine completion (eval (do )))"
+          child-received (atom nil)
+          child-eval-fn (fn [raw]
+                          (reset! child-received raw)
+                          :child-result)]
+      (runtime/register! parent-h)
+      (runtime/start-box child-h child-eval-fn child-raw)
+      (Thread/sleep 100)
+      (let [result (binding [runtime/*current-handle* parent-h
+                             runtime/*current-raw* child-raw]
+                     (runtime/send-await child-h {:task :run-now}))]
+        (is (= :child-result result))
+        (is (some? @child-received))
+        (is (.contains ^String @child-received ":from :send-await-parent"))
+        (is (.contains ^String @child-received ":task :run-now")))))
+
+  (testing "send-await asserts when called outside agent context"
+    (runtime/register! :send-await-target)
+    (is (thrown-with-msg? Exception #"not inside an agent context"
+          (runtime/send-await :send-await-target :msg)))))
+
+(deftest spawn-await-test
+  (testing "spawn-await returns child handle and completion value"
+    (let [parent-h :spawn-await-parent
+          child-fn (fn [prompt _handle] (str "done:" prompt))]
+      (runtime/register! parent-h)
+      (let [result (binding [runtime/*current-handle* parent-h
+                             runtime/*current-raw* "(quine completion (eval (do )))"]
+                     (runtime/spawn-await child-fn "job" :spawn-await-child))]
+        (is (= :spawn-await-child (:handle result)))
+        (is (= "done:job" (:value result)))
+        (is (runtime/handle? :spawn-await-child)))))
+
+  (testing "spawn-await does not miss fast child completions"
+    (let [parent-h :spawn-await-fast-parent
+          fast-child (fn [prompt _handle] (str "fast:" prompt))]
+      (runtime/register! parent-h)
+      (let [run (future
+                  (binding [runtime/*current-handle* parent-h
+                            runtime/*current-raw* "(quine completion (eval (do )))"]
+                    (mapv (fn [i]
+                            (:value (runtime/spawn-await fast-child (str i))))
+                          (range 20))))
+            result (deref run 5000 :timeout)]
+        (is (not= :timeout result))
+        (is (= (mapv #(str "fast:" %) (range 20)) result))))))
+
+;; =============================================================================
 ;; Ask tests
 ;; =============================================================================
 
