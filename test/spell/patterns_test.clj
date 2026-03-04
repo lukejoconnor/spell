@@ -120,6 +120,35 @@
           (cleanup-dir (str dir)))))))
 
 ;; =============================================================================
+;; Dirty repo guard: reject if working tree is not clean
+;; =============================================================================
+
+(deftest fix-loop-requires-clean-worktree-test
+  (testing "fails fast when repo has pre-existing changes"
+    (let [dir (create-temp-git-repo "fixed.txt")]
+      (try
+        (spit (str dir "/preexisting.txt") "local work")
+        (let [reflector-calls (atom 0)
+              worker-calls (atom 0)
+              reflector (fn [_] (swap! reflector-calls inc)
+                          {:diagnosis "unused" :keep-changes false :panic false})
+              worker (fn [_] (swap! worker-calls inc) "unused")]
+          (with-redefs [sio/sh (sh-in-dir dir)]
+            (let [result (fix-loop {:test "./run_tests.sh"
+                                    :issue "Need fixed.txt"
+                                    :reflector reflector
+                                    :worker worker
+                                    :max-retries 2})]
+              (is (nil? (:pass result)))
+              (is (string? (:fail result)))
+              (is (str/includes? (:fail result) "clean git working tree"))
+              (is (= 0 @reflector-calls))
+              (is (= 0 @worker-calls))
+              (is (str/blank? (str/trim (:out (sio/sh "git branch --list 'spell-fix-*'"))))))))
+        (finally
+          (cleanup-dir dir))))))
+
+;; =============================================================================
 ;; Retry with keep-changes: partial fix, then complete fix
 ;; =============================================================================
 
@@ -172,7 +201,9 @@
               worker (fn [_prompt]
                        (let [n (swap! worker-call-count inc)]
                          (case n
-                           1 (spit (str dir "/wrong.txt") "wrong")
+                           1 (do
+                               (spit (str dir "/wrong.txt") "wrong")
+                               (sio/sh "git add wrong.txt"))
                            2 (spit (str dir "/correct.txt") "correct"))
                          "done"))
 
@@ -195,7 +226,7 @@
                                     :max-retries 5})]
               (is (= true (:pass result)))
               (is (= 2 @worker-call-count))
-              ;; wrong.txt should have been cleaned by git clean -fd
+              ;; wrong.txt was staged in attempt 1 and must not leak into attempt 2.
               (is (not (.exists (io/file (str dir "/wrong.txt"))))))))
         (finally
           (cleanup-dir dir))))))

@@ -317,7 +317,7 @@ Creates a git branch, runs tests, and enters a retry loop:
 3. If tests pass: commits and returns {:pass true}
 4. If tests fail: reflector analyzes diff + test output, returns diagnosis
    - :keep-changes true: commit partial progress, continue with same changes
-   - :keep-changes false: git revert, try fresh
+   - :keep-changes false: hard reset working branch to last commit, try fresh
    - :panic true: give up, return {:fail diagnosis}
 
 The reflector must return {:diagnosis str :keep-changes bool :panic bool}.
@@ -374,85 +374,96 @@ Example:
            worker-llm  (or (:worker opts) runtime/*default-spawn-llm*)
            branch      (str "spell-fix-" (abs (rand-int 100000)))
            orig-branch (str/trim (:out (sio/sh "git rev-parse --abbrev-ref HEAD")))
-           cleanup!    (fn [] (sio/sh (str "git checkout " orig-branch)))]
-       ;; Create working branch
-       (sio/sh (str "git checkout -b " branch))
-       ;; Baseline test run
-       (let [t0 (sio/sh test-cmd)]
-         (if (= 0 (:exit t0))
-           {:pass true}
-           ;; Initial reflector diagnosis
-           (let [initial-diag
-                 (reflector
-                   (str "Analyze this test failure from a codebase.\n\n"
-                        "ISSUE DESCRIPTION:\n" issue "\n\n"
-                        "TEST COMMAND: " test-cmd "\n"
-                        "TEST OUTPUT (exit " (:exit t0) "):\n"
-                        (:out t0) "\n" (:err t0) "\n\n"
-                        "No changes have been made yet. Provide your initial diagnosis.\n"
-                        "Return a Spell map with:\n"
-                        "  {:diagnosis \"what's wrong and suggested fix approach\"\n"
-                        "   :keep-changes false\n"
-                        "   :panic false}\n"
-                        "Set :panic true only if the problem seems fundamentally unsolvable."))]
-             (if (:panic initial-diag)
-               (do (cleanup!)
-                   {:fail (:diagnosis initial-diag)})
-               ;; Fix loop
-               (loop [attempt   0
-                      diagnosis (:diagnosis initial-diag)]
-                 (if (>= attempt max-retries)
-                   (do (cleanup!)
-                       {:fail (str "Max retries (" max-retries "). Last diagnosis: " diagnosis)})
-                   ;; Worker fixes code
-                   (let [_ (worker-llm
-                             (str "You are a code repair agent. Fix the following issue in this codebase.\n\n"
-                                  "ISSUE:\n" issue "\n\n"
-                                  "DIAGNOSIS:\n" diagnosis "\n\n"
-                                  "Use io/sh and io/read-file to explore the codebase.\n"
-                                  "Use io/write-file or io/str-replace to make targeted edits.\n"
-                                  "When done editing, return a brief summary of changes made."))
-                         ;; Run tests
-                         t (sio/sh test-cmd)]
-                     (if (= 0 (:exit t))
-                       ;; Tests pass!
-                       (do (sio/sh "git add -A")
-                           (sio/sh (str "git commit -m \"fix: applied (attempt "
-                                        (inc attempt) ")\""))
-                           {:pass true})
-                       ;; Tests fail — reflect
-                       (let [diff       (:out (sio/sh "git diff"))
-                             staged     (:out (sio/sh "git diff --cached"))
-                             all-diff   (str diff staged)
-                             test-out   (str (:out t) "\n" (:err t))
-                             refl
-                             (reflector
-                               (str "Analyze this failed fix attempt.\n\n"
-                                    "ISSUE:\n" issue "\n\n"
-                                    "GIT DIFF of changes made:\n" all-diff "\n\n"
-                                    "TEST COMMAND: " test-cmd "\n"
-                                    "TEST OUTPUT (exit " (:exit t) "):\n" test-out "\n\n"
-                                    "PREVIOUS DIAGNOSIS:\n" diagnosis "\n\n"
-                                    "Return a Spell map with:\n"
-                                    "  {:diagnosis \"what went wrong, what to try next\"\n"
-                                    "   :keep-changes true/false\n"
-                                    "   :panic false}\n"
-                                    "Set :keep-changes true if changes are partially correct.\n"
-                                    "Set :keep-changes false to discard all changes and try fresh.\n"
-                                    "Set :panic true only if stuck or unsolvable."))]
-                         (if (:panic refl)
-                           (do (cleanup!)
-                               {:fail (:diagnosis refl)})
-                           (if (:keep-changes refl)
-                             ;; Keep changes, commit partial progress
-                             (do (sio/sh "git add -A")
-                                 (sio/sh (str "git commit -m \"partial: iteration "
-                                              (inc attempt) "\""))
-                                 (recur (inc attempt) (:diagnosis refl)))
-                             ;; Discard changes, try fresh
-                             (do (sio/sh "git checkout .")
-                                 (sio/sh "git clean -fd")
-                                 (recur (inc attempt) (:diagnosis refl))))))))))))))))})
+           cleanup!    (fn [] (sio/sh (str "git checkout " orig-branch)))
+           dirty?      (not (str/blank? (:out (sio/sh "git status --porcelain"))))]
+       (if dirty?
+         {:fail "patterns/fix-loop requires a clean git working tree (no staged, unstaged, or untracked changes). Commit or stash existing work before running it."}
+         (do
+           ;; Create working branch
+           (sio/sh (str "git checkout -b " branch))
+           ;; Baseline test run
+           (let [t0 (sio/sh test-cmd)]
+             (if (= 0 (:exit t0))
+               {:pass true}
+               ;; Initial reflector diagnosis
+               (let [initial-diag
+                     (reflector
+                      (str "Analyze this test failure from a codebase.\n\n"
+                           "ISSUE DESCRIPTION:\n" issue "\n\n"
+                           "TEST COMMAND: " test-cmd "\n"
+                           "TEST OUTPUT (exit " (:exit t0) "):\n"
+                           (:out t0) "\n" (:err t0) "\n\n"
+                           "No changes have been made yet. Provide your initial diagnosis.\n"
+                           "Return a Spell map with:\n"
+                           "  {:diagnosis \"what's wrong and suggested fix approach\"\n"
+                           "   :keep-changes false\n"
+                           "   :panic false}\n"
+                           "Set :panic true only if the problem seems fundamentally unsolvable."))]
+                 (if (:panic initial-diag)
+                   (do
+                     (cleanup!)
+                     {:fail (:diagnosis initial-diag)})
+                   ;; Fix loop
+                   (loop [attempt   0
+                          diagnosis (:diagnosis initial-diag)]
+                     (if (>= attempt max-retries)
+                       (do
+                         (cleanup!)
+                         {:fail (str "Max retries (" max-retries "). Last diagnosis: " diagnosis)})
+                       ;; Worker fixes code
+                       (let [_ (worker-llm
+                                (str "You are a code repair agent. Fix the following issue in this codebase.\n\n"
+                                     "ISSUE:\n" issue "\n\n"
+                                     "DIAGNOSIS:\n" diagnosis "\n\n"
+                                     "Use io/sh and io/read-file to explore the codebase.\n"
+                                     "Use io/write-file or io/str-replace to make targeted edits.\n"
+                                     "When done editing, return a brief summary of changes made."))
+                             ;; Run tests
+                             t (sio/sh test-cmd)]
+                         (if (= 0 (:exit t))
+                           ;; Tests pass!
+                           (do
+                             (sio/sh "git add -A")
+                             (sio/sh (str "git commit -m \"fix: applied (attempt "
+                                          (inc attempt) ")\""))
+                             {:pass true})
+                           ;; Tests fail — reflect
+                           (let [diff     (:out (sio/sh "git diff"))
+                                 staged   (:out (sio/sh "git diff --cached"))
+                                 all-diff (str diff staged)
+                                 test-out (str (:out t) "\n" (:err t))
+                                 refl
+                                 (reflector
+                                  (str "Analyze this failed fix attempt.\n\n"
+                                       "ISSUE:\n" issue "\n\n"
+                                       "GIT DIFF of changes made:\n" all-diff "\n\n"
+                                       "TEST COMMAND: " test-cmd "\n"
+                                       "TEST OUTPUT (exit " (:exit t) "):\n" test-out "\n\n"
+                                       "PREVIOUS DIAGNOSIS:\n" diagnosis "\n\n"
+                                       "Return a Spell map with:\n"
+                                       "  {:diagnosis \"what went wrong, what to try next\"\n"
+                                       "   :keep-changes true/false\n"
+                                       "   :panic false}\n"
+                                       "Set :keep-changes true if changes are partially correct.\n"
+                                       "Set :keep-changes false to discard all changes and try fresh.\n"
+                                       "Set :panic true only if stuck or unsolvable."))]
+                             (if (:panic refl)
+                               (do
+                                 (cleanup!)
+                                 {:fail (:diagnosis refl)})
+                               (if (:keep-changes refl)
+                                 ;; Keep changes, commit partial progress
+                                 (do
+                                   (sio/sh "git add -A")
+                                   (sio/sh (str "git commit -m \"partial: iteration "
+                                                (inc attempt) "\""))
+                                   (recur (inc attempt) (:diagnosis refl)))
+                                 ;; Discard changes, try fresh
+                                 (do
+                                   (sio/sh "git reset --hard HEAD")
+                                   (sio/sh "git clean -fd")
+                                   (recur (inc attempt) (:diagnosis refl))))))))))))))))))
+   })
 
 ;; =============================================================================
 ;; builtins namespace (docs-only, for progressive disclosure)
