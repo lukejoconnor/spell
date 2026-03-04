@@ -17,7 +17,7 @@
 
 (defn- run-fix-loop [opts]
   (binding [eval/*spell-env* {'strings stdlib/strings
-                              'io sio/io-namespace}]
+                              'io (assoc sio/io-namespace :sh sio/sh)}]
     (eval/invoke-fn fix-loop [opts])))
 
 (defn- create-temp-git-repo
