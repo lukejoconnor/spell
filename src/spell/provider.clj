@@ -857,7 +857,9 @@
         reasoning-tokens (get-in usage [:output_tokens_details :reasoning_tokens])]
     (when-not tool-input
       (throw (ex-info "Codex toolcall response missing custom_tool_call"
-                      {:output (:output completed)})))
+                      {:type :missing-tool-call
+                       :provider :codex-tc
+                       :output (:output completed)})))
     {:text tool-input
      :usage (cond-> {:input_tokens (get-in usage [:input_tokens] 0)
                      :output_tokens (get-in usage [:output_tokens] 0)}
@@ -1179,23 +1181,26 @@
 
 (defn retryable?
   "Returns true if the exception looks like a transient API failure worth retrying.
-   Rate limits (429), server errors (5xx), and network errors are retryable."
+   Rate limits (429), server errors (5xx), network errors, and missing tool-call
+   responses (empty/truncated) are retryable."
   [ex]
   (let [data (ex-data ex)
         status (:status data)]
     (or (= status 429)
         (and status (>= status 500))
+        (= (:type data) :missing-tool-call)
         (instance? java.net.ConnectException ex)
         (instance? java.net.http.HttpConnectTimeoutException ex)
         (instance? java.net.http.HttpTimeoutException ex))))
 
 (defn call-with-retries
   "Call f, retrying on transient failures according to retries-seq.
-   retries-seq is a sequence of sleep durations in seconds."
+   retries-seq is a sequence of sleep durations in seconds.
+   f takes one argument: the previous exception (nil on first call)."
   [f retries-seq]
-  (loop [retries-left (seq retries-seq)]
+  (loop [retries-left (seq retries-seq) last-err nil]
     (let [result (try
-                   {:ok (f)}
+                   {:ok (f last-err)}
                    (catch Exception e
                      (if (and retries-left (retryable? e))
                        {:retry e :sleep (first retries-left) :rest (next retries-left)}
@@ -1205,7 +1210,7 @@
         (do
           (when (pos? (:sleep result))
             (Thread/sleep (* 1000 (long (:sleep result)))))
-          (recur (:rest result)))))))
+          (recur (:rest result) (:retry result)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Provider loading from .provider.edn files

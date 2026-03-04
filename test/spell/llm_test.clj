@@ -999,7 +999,7 @@
                      "success")))]
       (binding [provider/*retries* [0]]
         (is (= "success" (provider/call-with-retries
-                           #(provider/call-llm prov "test" {})
+                           (fn [_err] (provider/call-llm prov "test" {}))
                            [0])))
         (is (= 2 @call-count)))))
 
@@ -1013,7 +1013,7 @@
                    (throw (ex-info "Bad request" {:status 400}))))]
       (is (thrown-with-msg? Exception #"Bad request"
                             (provider/call-with-retries
-                              #(provider/call-llm prov "test" {})
+                              (fn [_err] (provider/call-llm prov "test" {}))
                               [0 0])))
       (is (= 1 @call-count))))
 
@@ -1027,7 +1027,7 @@
                    (throw (ex-info "Rate limited" {:status 429}))))]
       (is (thrown-with-msg? Exception #"Rate limited"
                             (provider/call-with-retries
-                              #(provider/call-llm prov "test" {})
+                              (fn [_err] (provider/call-llm prov "test" {}))
                               [0 0])))
       ;; 1 initial + 2 retries = 3 calls
       (is (= 3 @call-count))))
@@ -1042,9 +1042,94 @@
                    (throw (ex-info "Server error" {:status 500}))))]
       (is (thrown-with-msg? Exception #"Server error"
                             (provider/call-with-retries
-                              #(provider/call-llm prov "test" {})
+                              (fn [_err] (provider/call-llm prov "test" {}))
                               nil)))
       (is (= 1 @call-count)))))
+
+;; =============================================================================
+;; Missing tool-call retry (#144)
+;; =============================================================================
+
+(deftest retryable-missing-tool-call
+  (testing "retryable? returns true for :missing-tool-call"
+    (is (provider/retryable?
+          (ex-info "missing tool call" {:type :missing-tool-call}))))
+
+  (testing "retryable? still returns true for 429 and 5xx"
+    (is (provider/retryable? (ex-info "rate limit" {:status 429})))
+    (is (provider/retryable? (ex-info "server error" {:status 500}))))
+
+  (testing "retryable? returns false for other errors"
+    (is (not (provider/retryable? (ex-info "bad request" {:status 400}))))
+    (is (not (provider/retryable? (ex-info "generic" {}))))))
+
+(deftest call-with-retries-passes-last-error
+  (testing "f receives nil on first call and the exception on retry"
+    (let [received-errs (atom [])
+          call-count (atom 0)
+          missing-ex (ex-info "missing tool call" {:type :missing-tool-call})]
+      (provider/call-with-retries
+        (fn [err]
+          (swap! received-errs conj err)
+          (swap! call-count inc)
+          (if (= 1 @call-count)
+            (throw missing-ex)
+            "success"))
+        [0])
+      (is (= 2 @call-count))
+      (is (nil? (first @received-errs)) "first call should receive nil")
+      (is (= missing-ex (second @received-errs)) "retry should receive the previous exception"))))
+
+(deftest missing-tool-call-retry-hint-in-make-llm
+  (testing "retry hint is appended to user message on missing-tool-call retry"
+    (let [call-count (atom 0)
+          received-prompts (atom [])
+          prov (reify provider/LLMProvider
+                 (supports-prefill [_] true)
+                 (call-llm [_ prompt] (provider/call-llm _ prompt {}))
+                 (call-llm [_ prompt opts]
+                   (swap! received-prompts conj prompt)
+                   (swap! call-count inc)
+                   (if (= 1 @call-count)
+                     (throw (ex-info "missing tool call"
+                                     {:type :missing-tool-call :provider :anthropic-tc}))
+                     "(def return 42))")))
+          {:keys [llm]} (llm/make-llm {:namespaces {}
+                                        :provider prov
+                                        :prefill? true
+                                        :recover false})]
+      (binding [provider/*retries* [0]]
+        (is (= 42 (llm "(do "))))
+      (is (= 2 @call-count))
+      ;; First call: plain user message (prefill mode = "Continue this Spell program.")
+      (is (= "Continue this Spell program." (first @received-prompts)))
+      ;; Second call: user message with retry hint appended
+      (is (clojure.string/includes? (second @received-prompts)
+                                     "retrying")))))
+
+(deftest missing-tool-call-retry-hint-in-leaf-llm
+  (testing "retry hint is appended in leaf-llm on missing-tool-call retry"
+    (let [call-count (atom 0)
+          received-prompts (atom [])
+          prov (reify provider/LLMProvider
+                 (supports-prefill [_] false)
+                 (call-llm [_ prompt] (provider/call-llm _ prompt {}))
+                 (call-llm [_ prompt opts]
+                   (swap! received-prompts conj prompt)
+                   (swap! call-count inc)
+                   (if (= 1 @call-count)
+                     (throw (ex-info "missing tool call"
+                                     {:type :missing-tool-call :provider :codex-tc}))
+                     "hello world")))]
+      (let [leaf (llm/make-leaf-llm {:provider prov})]
+        (binding [provider/*retries* [0]]
+          (is (= "hello world" (leaf "hi")))))
+      (is (= 2 @call-count))
+      ;; First call: plain prompt
+      (is (= "hi" (first @received-prompts)))
+      ;; Second call: prompt with retry hint
+      (is (clojure.string/includes? (second @received-prompts)
+                                     "retrying")))))
 
 ;; =============================================================================
 ;; Kimi provider (#46)
