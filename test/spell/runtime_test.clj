@@ -190,6 +190,36 @@
       (deliver p "raw")
       (is (= :result (runtime/box handle p inside-fn))))))
 
+(deftest orphan-box-captures-innermost-raw-test
+  (testing "orphan box uses the innermost extension's raw, not the root box's raw"
+    (let [handle :test-orphan-raw
+          ;; eval-fn simulates an extension chain: when called, it enters a nested
+          ;; box with a different raw, simulating what !llm-self does.
+          inner-raw "inner-extension-raw"
+          eval-fn (fn [raw]
+                    ;; Simulate an extension: enter a nested box with new raw
+                    (runtime/box handle inner-raw (fn [r] (str "result:" r))))
+          p (promise)]
+      (runtime/register! handle)
+      (deliver p "outer-root-raw")
+      ;; Capture :completed before run-root-box
+      (let [cp @(:completed (get @runtime/registry handle))]
+        (runtime/run-root-box handle p (runtime/make-awake-fn handle eval-fn) eval-fn)
+        ;; Wait for orphan box to start and sleep
+        (Thread/sleep 100)
+        ;; Now send a message to the orphan and check what raw it uses
+        (let [orphan-received (promise)
+              orphan-eval-fn-raw (atom nil)]
+          ;; Peek at what raw the orphan has by sending a transform that captures it
+          (runtime/send-msg-fn
+            (fn [raw]
+              (deliver orphan-received raw)
+              raw)
+            handle)
+          (let [received (deref orphan-received 2000 :timeout)]
+            (is (= "inner-extension-raw" received)
+                "orphan should have the innermost extension raw, not outer-root-raw")))))))
+
 (deftest box-handles-exception-promise-test
   (testing "box rethrows exception delivered to promise"
     (let [handle :test-ex

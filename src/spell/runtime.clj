@@ -20,6 +20,7 @@
   "Global registry: handle -> {:state (atom {:inbox-fn identity, :signal (promise)}),
                                 :has-box (atom false),
                                 :completed (atom (promise)),
+                                :last-raw (atom nil),
                                 :parent-handle kw-or-nil}"
   (atom {}))
 
@@ -35,7 +36,8 @@
           {:state             (atom {:inbox-fn identity, :signal (promise)})
            :has-box           (atom false)
            :parent-handle     parent-handle
-           :completed         (atom (promise))})))
+           :completed         (atom (promise))
+           :last-raw          (atom nil)})))
 
 ;; =============================================================================
 ;; Dynamic vars
@@ -115,6 +117,9 @@
   "Wrap an inside-fn with root lifecycle: completed delivery + orphan creation.
    After inside-fn returns (or throws), delivers completed and starts an
    asleep orphan box for the next lifecycle round.
+   Reads :last-raw from registry (not *current-raw*) so the orphan captures
+   the innermost extension's raw — dynamic binding reverts on stack unwind,
+   but the atom retains the deepest box's value.
    No signal reset needed — make-awake-fn resets signal at phase 3 entry,
    and the orphan's asleep-fn will block on the signal created there."
   [handle eval-fn inside-fn]
@@ -123,14 +128,16 @@
       (let [result (inside-fn raw)]
         (deliver @(:completed (get @registry handle)) result)
         (reset! (:completed (get @registry handle)) (promise))
-        (future (box handle *current-raw*
-                  (make-root-fn handle eval-fn (make-asleep-fn handle eval-fn))))
+        (let [orphan-raw @(:last-raw (get @registry handle))]
+          (future (box handle orphan-raw
+                    (make-root-fn handle eval-fn (make-asleep-fn handle eval-fn)))))
         result)
       (catch Exception e
         (deliver @(:completed (get @registry handle)) nil)
         (reset! (:completed (get @registry handle)) (promise))
-        (future (box handle *current-raw*
-                  (make-root-fn handle eval-fn (make-asleep-fn handle eval-fn))))
+        (let [orphan-raw @(:last-raw (get @registry handle))]
+          (future (box handle orphan-raw
+                    (make-root-fn handle eval-fn (make-asleep-fn handle eval-fn)))))
         (throw e)))))
 
 (defn run-root-box
@@ -161,15 +168,18 @@
    inside-fn with the raw string. Inbox drain happens in make-awake-fn
    (single-drain model: one drain per wake cycle, at the start of phase 3).
    Takes handle, a completion source (promise, future, or raw string),
-   and an inside-fn that processes the raw string."
+   and an inside-fn that processes the raw string.
+   Updates :last-raw in registry so make-root-fn can read the innermost
+   raw for orphan box creation (dynamic binding reverts on unwind)."
   [handle completion-source inside-fn]
-  (let [{:keys [has-box]} (get @registry handle)]
+  (let [{:keys [has-box last-raw]} (get @registry handle)]
     (when-not has-box
       (throw (ex-info "Handle not registered" {:handle handle})))
     (let [raw (parse/balance-parens (resolve-completion-source completion-source))]
       (when-not (compare-and-set! has-box false true)
         (throw (ex-info "Box already active for handle" {:handle handle})))
       (reset! has-box false)
+      (reset! last-raw raw)
       (binding [*current-handle* handle
                 *current-raw*    raw]
         (inside-fn raw)))))
