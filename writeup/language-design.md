@@ -316,6 +316,31 @@ Functions are organized into namespaces — simple maps with a `:docs` key and f
 
 These primitives are for deterministic computation only — not for LLM calls. Parallel LLM work uses `spawn`, which creates a separate handle (see *Concurrent agents*).
 
+### Agent-orchestration blocking
+
+Spell treats deterministic compute waiting and agent-orchestration waiting as separate concerns:
+
+1. Deterministic compute waiting (`await`, `futures/await-all`) blocks on local compute futures.
+2. Agent-orchestration waiting blocks on another handle's next completion.
+
+Agent-orchestration waits live in the future-only `blocking/` namespace:
+
+```clojure
+(future
+  (blocking/send-await worker {:kind :task :body "..."}))
+```
+
+`blocking/` is injected into future eval environments only, so these blocking primitives are not available in non-future turns.
+
+For non-future turns, `futures/!ask-await` provides a message-wakeup bridge:
+
+```clojure
+'(futures/!ask-await some-future)
+;; next turn receives msg with {:from :future :body result}
+```
+
+This keeps the caller responsive while a waiter thread resolves the future and wakes the agent with a normal message.
+
 ## Patterns
 
 ### File watching

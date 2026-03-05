@@ -9,6 +9,7 @@
    - futures: parallel computation utilities"
   (:require [clojure.string :as str]
             [spell.eval :as eval]
+            [spell.runtime :as runtime]
             [spell.patterns :as patterns-lib]))
 
 ;; =============================================================================
@@ -822,11 +823,12 @@ Example:
 
 (def futures-namespace
   "Parallel computation namespace — effect-guarded (trailing expression only)."
-  {:short-docs "Parallel computation: future, await, pmap."
+  {:short-docs "Parallel computation: future, await-all, pmap, !ask-await."
    :docs {:guide "FUTURES — Deterministic parallel computation (effect namespace).
 
   (future expr)          — run expr in background, returns a future
   (await f)              — block until future f completes, returns value
+  (futures/!ask-await f) — wait via message wakeup (no thread-blocking in caller turn)
   (futures/await-all [f1 f2 ...])  — await multiple futures, returns vector of results
   (plet [a expr1 b expr2] body)   — parallel let: compute bindings concurrently
   (futures/pmap f coll)            — parallel map: applies f to each element concurrently
@@ -834,7 +836,7 @@ Example:
 Use (!describe futures :fn-name) for detailed docs on any function.
 
 future, await, and plet are core builtins (no namespace prefix needed).
-Only await-all and pmap require the futures/ prefix.
+Only await-all, pmap, and !ask-await require the futures/ prefix.
 
 These are for pure computation only — never use them for LLM calls.
 LLM calls in futures would share the parent handle and contend over the box.
@@ -848,6 +850,7 @@ Common mistakes:
 2. forgetting to await: a future runs in the background; its result is only available after (await f) or via plet
 3. calling futures/pmap with effect functions: pmap is for pure computation; mapping over io or agent calls will fail or race
 4. unnecessary future+await: (await (future expr)) is just expr with overhead; use futures when you have multiple independent computations
+5. using await in orchestration loops: use blocking/send-await in a future, or futures/!ask-await in the caller turn
 
 In examples, ▌ marks cursor position in a completion. It is doc-only; do not type it into code.
 
@@ -860,8 +863,24 @@ Example — parallel computation with plet:
 "
           }
    :detail
-   {:await-all "(futures/await-all [f1 f2 ...]) — await multiple futures, returns vector of results"
+   {:!ask-await "(futures/!ask-await fut) — installs waiter future, sends result to self, then blocks for wakeup message."
+    :await-all "(futures/await-all [f1 f2 ...]) — await multiple futures, returns vector of results"
     :pmap "(futures/pmap f coll) — parallel map, applies f to each element concurrently"}
+   :!ask-await (fn [fut]
+                 (when-not (eval/spell-future? fut)
+                   (throw (ex-info "!ask-await requires a future" {:value fut})))
+                 (let [target runtime/*current-handle*]
+                   (when-not target
+                     (throw (ex-info "!ask-await: not inside an agent context" {})))
+                   (future
+                     (try
+                       (let [result (deref (:ref fut))]
+                         (binding [runtime/*current-handle* :future]
+                           (runtime/send target result)))
+                       (catch Exception e
+                         (binding [runtime/*current-handle* :future]
+                           (runtime/send target {:future-await/error (.getMessage e)})))))
+                   (runtime/block-for-message)))
    :await-all (fn [futures]
                 (when-not (sequential? futures)
                   (throw (ex-info "await-all: argument must be a collection" {:got futures})))

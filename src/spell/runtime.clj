@@ -330,26 +330,37 @@
   (when-not *current-raw*
     (throw (ex-info (str caller ": no raw completion available") {}))))
 
-(defn next-completion
+(defn- assert-future-context!
+  "Throw if not running inside a Spell future."
+  [caller]
+  (when-not (eval/in-future-context?)
+    (throw (ex-info (str caller ": must be called from within a future") {}))))
+
+(defn completion-promise
   "Return await token for handle's current completion promise.
-   Capture this before a triggering action and use core (await ...)."
-  ([]
-   (assert-agent-context! "next-completion")
-   (next-completion *current-handle*))
-  ([handle]
-   (let [entry (get @registry handle)]
-     (when-not entry
-       (throw (ex-info "next-completion: handle not registered" {:handle handle})))
-     (completion-token @(:completed entry)))))
+   Future-only primitive: must be called from a Spell future."
+  [handle]
+  (assert-future-context! "completion-promise")
+  (let [entry (get @registry handle)]
+    (when-not entry
+      (throw (ex-info "completion-promise: handle not registered" {:handle handle})))
+    (completion-token @(:completed entry))))
+
+(defn blocking-await
+  "Future-only await helper for the blocking/ namespace."
+  [fut]
+  (assert-future-context! "blocking/await")
+  (if (eval/spell-future? fut)
+    (deref (:ref fut))
+    (throw (ex-info "blocking/await requires a future" {:value fut}))))
 
 (defn send-await
-  "Send value to target, then wait for target's next completion value.
-   Captures completion before sending so fast completions are not missed."
-  [target value]
-  (assert-agent-context! "send-await")
-  (let [next-result (next-completion target)]
-    (send target value)
-    (deref (:ref next-result))))
+  "Future-only helper: capture completion token, send message, await completion."
+  [handle msg]
+  (assert-future-context! "send-await")
+  (let [token (completion-promise handle)]
+    (send handle msg)
+    (blocking-await token)))
 
 (defn reply-ask
   "Reply to a message and block for response.
@@ -444,8 +455,8 @@
 ;; =============================================================================
 
 (defn- spawn*
-  "Internal spawn primitive that returns handle + captured completion token.
-   Captures completion token at registration time to avoid race with fast child completion."
+  "Internal spawn primitive that returns handle.
+   Keeps completion promise lifecycle handling for fast/non-agent child returns."
   [llm-fn prompt handle-name]
   (when (:spell/leaf (meta llm-fn))
     (throw (ex-info "leaf-llm cannot be used with agents/spawn (no agent lifecycle) — use !llm-self instead"
@@ -473,8 +484,7 @@
                  (when-not (realized? initial-completed)
                    (deliver initial-completed nil)))
                (throw e))))))
-      {:handle handle
-       :completion-token (completion-token initial-completed)})))
+      {:handle handle})))
 
 (defn spawn
   "Start an agent in a background future. Returns its handle immediately.
@@ -494,23 +504,6 @@
      (spawn (default-spawn-llm "spawn") a b)))
   ([llm-fn prompt handle-name]
    (:handle (spawn* llm-fn prompt handle-name))))
-
-(defn spawn-await
-  "Spawn child and wait for its next completion value.
-   Prompt-only forms default llm-fn to !llm-self in eval context.
-   Returns {:handle child-handle :value completion-value}."
-  ([prompt]
-   (assert-agent-context! "spawn-await")
-   (spawn-await (default-spawn-llm "spawn-await") prompt nil))
-  ([a b]
-   (if (fn? a)
-     (spawn-await a b nil)
-     (spawn-await (default-spawn-llm "spawn-await") a b)))
-  ([llm-fn prompt handle-name]
-   (assert-agent-context! "spawn-await")
-   (let [{:keys [handle completion-token]} (spawn* llm-fn prompt handle-name)]
-     {:handle handle
-      :value (deref (:ref completion-token))})))
 
 (defn- spawn-from-multi-spec
   "Spawn child from a multi-spawn-ask entry.
@@ -569,9 +562,29 @@
 ;; Namespace maps
 ;; =============================================================================
 
+(def blocking-namespace
+  "Future-only blocking namespace.
+   Injected into env by future*; unavailable outside futures."
+  {:short-docs "Future-only blocking helpers: await, completion-promise, send-await."
+   :docs {:guide "BLOCKING — Future-only blocking primitives.
+
+  (blocking/await fut)                 — await a Spell future token (future-only)
+  (blocking/completion-promise handle) — await token for handle completion (future-only)
+  (blocking/send-await handle msg)     — capture completion, send, await (future-only)
+
+Use from inside (future ...) orchestration code."
+          }
+   :detail
+   {:await "(blocking/await fut) — future-only await. Throws outside (future ...)."
+    :completion-promise "(blocking/completion-promise handle) — future-only completion token capture."
+    :send-await "(blocking/send-await handle msg) — future-only capture->send->await helper."}
+   :await blocking-await
+   :completion-promise completion-promise
+   :send-await send-await})
+
 (def agents-namespace
   "Agent communication namespace — effect-guarded (trailing expression only)."
-  {:short-docs "Inter-agent communication: spawn, !ask, send, reply, completion-await helpers."
+  {:short-docs "Inter-agent communication: spawn, !ask, send, reply."
    :docs {:guide "AGENTS — Inter-agent communication (effect namespace).
 
   (agents/spawn prompt)         — start background agent with !llm-self
@@ -584,23 +597,16 @@
   (agents/!ask target)             — poke target without message, block for reply
   (agents/!ask [a b c])            — multi-target: poke all, wake when all complete
   (agents/!reply-ask msg-map message)   — reply to msg-map, block for next message
-  (agents/!spawn-ask prompt) — spawn with !llm-self, block until it sends back
+  (agents/!spawn-ask prompt) — spawn with !llm-self, block until completion
   (agents/!spawn-ask prompt :handle-name) — same, with explicit handle name
-  (agents/!spawn-ask llm-fn prompt) — spawn with explicit llm-fn, block until it sends back
+  (agents/!spawn-ask llm-fn prompt) — spawn with explicit llm-fn, block until completion
   (agents/!spawn-ask [[llm-fn prompt] [llm-fn prompt :name] ...]) — spawn many, wait for all completions (no ask wakeup poke)
   (agents/!spawn-ask [prompt-a prompt-b ...]) — spawn many with !llm-self, wait for all completions (no ask wakeup poke)
-  (agents/next-completion target) — await token for target's current completion
-  (agents/send-await target message) — send, then return target's completion value
-  (agents/spawn-await prompt) — spawn, then return {:handle h :value v}
-  (agents/spawn-await llm-fn prompt :handle-name) — explicit llm-fn + optional handle name
   (agents/current-handle)          — your handle
   (agents/parent-handle)           — handle of agent that spawned you (nil if you are main)
   (agents/send-msg-fn f handle)    — low-level / not recommended
 
 Use (!describe agents :fn-name) for detailed docs on any function.
-
-agents/next-completion, agents/send-await, and agents/spawn-await are runtime
-plumbing primitives and are not typically used by agents directly.
 
 Special handles:
   :main — the initial agent (entry point). Always present.
@@ -791,7 +797,7 @@ Combines spawn + block. One-shot delegation pattern.
 (agents/!spawn-ask prompt :name)
 (agents/!spawn-ask llm-fn prompt :name)
   llm-fn: !llm-self (not leaf-llm — leaf-llm has no agent lifecycle and will error)
-  prompt: string or wrap-cat — must instruct child to send to (agents/parent-handle)
+  prompt: string or wrap-cat
   :name: optional keyword handle (like agents/spawn)
   (see agents/spawn docs for why the prompt must not be a bare quine)
 
@@ -806,33 +812,8 @@ Your next turn sees (def msg-N {:from child-handle :body result}).
   Your next turn sees :body as a vector of {:from child-handle :body result}.
 
 Example:
-  '(agents/!spawn-ask !llm-self \"Compute 6*7 and (agents/send (agents/parent-handle) result)\")
-  ;; next turn: (def msg-0 {:from :spawn-42 :body 42})"
-
-    :next-completion
-    "Return an await token for a handle's current completion promise.
-This is advanced runtime plumbing and is not typically used by agents directly.
-Pair with core (await ...) when composing low-level coordination.
-
-(agents/next-completion handle)
-(agents/next-completion)  ; current handle"
-
-    :send-await
-    "Send a message and synchronously return the target's next completion value.
-This is advanced runtime plumbing and is not typically used by agents directly.
-Internally: capture (next-completion target), send, then await.
-
-(agents/send-await target value)"
-
-    :spawn-await
-    "Spawn child and synchronously return its next completion value.
-This is advanced runtime plumbing and is not typically used by agents directly.
-Returns {:handle child-handle :value completion-value}.
-
-(agents/spawn-await prompt)
-(agents/spawn-await prompt :name)
-(agents/spawn-await llm-fn prompt)
-(agents/spawn-await llm-fn prompt :name)"
+	  '(agents/!spawn-ask !llm-self \"Compute 6*7 and (agents/send (agents/parent-handle) result)\")
+	  ;; next turn: (def msg-0 {:from :spawn-42 :body 42})"
 
     :current-handle
     "Returns your handle as a keyword.
@@ -864,9 +845,6 @@ Internal plumbing for the communication layer."}
    :!ask ask-builtin
    :spawn spawn
    :!spawn-ask spawn-ask
-   :next-completion next-completion
-   :send-await send-await
-   :spawn-await spawn-await
    :current-handle (fn [] *current-handle*)
    :parent-handle (fn [] (:parent-handle (get @registry *current-handle*)))
    :send-msg-fn send-msg-fn})

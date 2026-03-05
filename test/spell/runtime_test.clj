@@ -597,75 +597,104 @@
         (is (= true (llm "(do ")))))))
 
 ;; =============================================================================
-;; Completion await helper tests
+;; Completion promise tests
 ;; =============================================================================
 
-(deftest next-completion-token-test
-  (testing "next-completion captures current completion promise as await token"
-    (let [handle :next-completion-child
+(deftest completion-promise-basic-test
+  (testing "completion-promise captures current completion as await token (future-only)"
+    (let [handle :completion-promise-child
           child-raw "(quine completion (eval (do )))"
           eval-fn (fn [_] :child-finished)]
       (runtime/start-box handle eval-fn child-raw)
       (Thread/sleep 100)
-      (let [token (runtime/next-completion handle)]
+      (let [token (binding [eval/*spell-env* {eval/future-context-key true}]
+                    (runtime/completion-promise handle))]
         (is (= true (:spell/future token)))
         (runtime/send-msg-fn identity handle)
-        (is (= :child-finished (deref (:ref token) 5000 :timeout))))))
+        (is (= :child-finished (deref (:ref token) 5000 :timeout)))))))
 
-  (testing "next-completion throws for unregistered handles"
+(deftest completion-promise-rejects-outside-future-test
+  (testing "completion-promise throws outside future context"
+    (runtime/register! :completion-promise-target)
+    (is (thrown-with-msg? Exception #"must be called from within a future"
+          (runtime/completion-promise :completion-promise-target)))))
+
+(deftest completion-promise-missing-handle-test
+  (testing "completion-promise throws for unregistered handles"
     (is (thrown-with-msg? Exception #"handle not registered"
-          (runtime/next-completion :missing-handle)))))
+          (binding [eval/*spell-env* {eval/future-context-key true}]
+            (runtime/completion-promise :missing-handle))))))
 
-(deftest send-await-test
-  (testing "send-await sends message and returns target completion value"
-    (let [parent-h :send-await-parent
-          child-h :send-await-child
+(deftest completion-promise-capture-before-send-test
+  (testing "capturing completion promise before send avoids fast-completion race"
+    (let [handle :completion-promise-race-child
           child-raw "(quine completion (eval (do )))"
-          child-received (atom nil)
-          child-eval-fn (fn [raw]
-                          (reset! child-received raw)
-                          :child-result)]
-      (runtime/register! parent-h)
-      (runtime/start-box child-h child-eval-fn child-raw)
+          eval-fn (fn [_] :race-result)]
+      (runtime/start-box handle eval-fn child-raw)
       (Thread/sleep 100)
-      (let [result (binding [runtime/*current-handle* parent-h
-                             runtime/*current-raw* child-raw]
-                     (runtime/send-await child-h {:task :run-now}))]
-        (is (= :child-result result))
-        (is (some? @child-received))
-        (is (.contains ^String @child-received ":from :send-await-parent"))
-        (is (.contains ^String @child-received ":task :run-now")))))
+      (let [result (deref
+                     (future
+                       (binding [eval/*spell-env* {eval/future-context-key true}]
+                         (let [token (runtime/completion-promise handle)]
+                           (runtime/send-msg-fn identity handle)
+                           (deref (:ref token) 5000 :timeout))))
+                     5000 :timeout)]
+        (is (= :race-result result))))))
 
-  (testing "send-await asserts when called outside agent context"
-    (runtime/register! :send-await-target)
-    (is (thrown-with-msg? Exception #"not inside an agent context"
-          (runtime/send-await :send-await-target :msg)))))
+(deftest blocking-await-basic-test
+  (testing "blocking-await resolves a Spell future only in future context"
+    (let [token {:spell/future true :ref (future :blocking-ok)}]
+      (is (= :blocking-ok
+             (binding [eval/*spell-env* {eval/future-context-key true}]
+               (runtime/blocking-await token))))
+      (is (thrown-with-msg? Exception #"must be called from within a future"
+            (runtime/blocking-await token)))
+      (is (thrown-with-msg? Exception #"requires a future"
+            (binding [eval/*spell-env* {eval/future-context-key true}]
+              (runtime/blocking-await 42)))))))
 
-(deftest spawn-await-test
-  (testing "spawn-await returns child handle and completion value"
-    (let [parent-h :spawn-await-parent
-          child-fn (fn [prompt _handle] (str "done:" prompt))]
-      (runtime/register! parent-h)
-      (let [result (binding [runtime/*current-handle* parent-h
-                             runtime/*current-raw* "(quine completion (eval (do )))"]
-                     (runtime/spawn-await child-fn "job" :spawn-await-child))]
-        (is (= :spawn-await-child (:handle result)))
-        (is (= "done:job" (:value result)))
-        (is (runtime/handle? :spawn-await-child)))))
+(deftest send-await-basic-test
+  (testing "send-await captures completion, sends, and awaits in future context"
+    (let [handle :send-await-child
+          child-raw "(quine completion (eval (do )))"
+          eval-fn (fn [_] :send-await-done)]
+      (runtime/start-box handle eval-fn child-raw)
+      (Thread/sleep 100)
+      (is (= :send-await-done
+             (binding [eval/*spell-env* {eval/future-context-key true}
+                       runtime/*current-handle* :send-await-parent]
+               (runtime/send-await handle {:kind :wake}))))))
+  (testing "send-await rejects outside future context"
+    (is (thrown-with-msg? Exception #"must be called from within a future"
+          (runtime/send-await :missing {:kind :wake})))))
 
-  (testing "spawn-await does not miss fast child completions"
-    (let [parent-h :spawn-await-fast-parent
-          fast-child (fn [prompt _handle] (str "fast:" prompt))]
-      (runtime/register! parent-h)
-      (let [run (future
-                  (binding [runtime/*current-handle* parent-h
-                            runtime/*current-raw* "(quine completion (eval (do )))"]
-                    (mapv (fn [i]
-                            (:value (runtime/spawn-await fast-child (str i))))
-                          (range 20))))
-            result (deref run 5000 :timeout)]
-        (is (not= :timeout result))
-        (is (= (mapv #(str "fast:" %) (range 20)) result))))))
+(deftest futures-ask-await-wakeup-test
+  (testing "futures/!ask-await blocks for wakeup and resumes with a future result message"
+    (let [handle :futures-ask-await
+          raw "(quine completion (eval (do )))"
+          ask-await (get-in spell/all-namespaces ['futures :!ask-await])
+          first? (atom true)
+          eval-fn (fn [current-raw]
+                    (if (compare-and-set! first? true false)
+                      (ask-await {:spell/future true :ref (future :ask-await-ok)})
+                      current-raw))
+          p (promise)]
+      (runtime/register! handle)
+      (deliver p raw)
+      (let [result (deref (future (runtime/box handle p (runtime/make-awake-fn handle eval-fn)))
+                          5000 :timeout)]
+        (is (string? result))
+        (is (.contains ^String result ":from :future"))
+        (is (.contains ^String result ":body :ask-await-ok"))))))
+
+(deftest blocking-namespace-env-gated-test
+  (testing "blocking/ is unavailable outside futures and available inside futures"
+    (is (thrown-with-msg? Exception #"Unbound symbol: blocking"
+          (binding [eval/*future-env* {'blocking runtime/blocking-namespace}]
+            (eval/run-spell '(blocking/await (future 1))))))
+    (is (= 7
+           (binding [eval/*future-env* {'blocking runtime/blocking-namespace}]
+             (eval/run-spell '(await (future (blocking/await (future 7))))))))))
 
 ;; =============================================================================
 ;; Ask tests
