@@ -11,13 +11,14 @@
   "config/spl-lib/patterns.spl")
 
 (def ^:private patterns-docs
-  {:short-docs "Reusable orchestration patterns: check-result, clean-prompt, explore, fix-loop."
+  {:short-docs "Reusable orchestration patterns: check-result, clean-prompt, explore, ralph, fix-loop."
    :docs {:guide "PATTERNS - Reusable orchestration patterns (effect namespace).
 
   (patterns/check-result prompt answer)  - verify answer with leaf-llm
   (patterns/clean-prompt raw-text)       - clean up messy text, then execute it
   (patterns/explore question)            - one-shot codebase exploration agent
-  (patterns/fix-loop opts)               - test-driven code fixing loop with reflector
+  (patterns/ralph opts)                  - future-based retry orchestrator
+  (patterns/fix-loop issue)              - test-driven code fixing loop (reflector + worker agents)
 
 Use (!describe patterns :fn-name) for detailed docs on any function.
 
@@ -34,9 +35,19 @@ explore: One-shot delegation to a child exploration agent. Spawns a child that g
   '(!call-now findings (patterns/explore \"Where is authentication handled?\"))
   Returns {:answer \"...\" :files [\"src/auth.py\" ...]}
 
-fix-loop: Test-driven code fixing loop. Runs tests, spawns a worker to fix code, uses a reflector
-to diagnose failures and decide whether to keep or discard changes. Loops until tests pass or retries exhausted.
-  '(!call-now result (patterns/fix-loop {:test \"pytest tests/ -x\" :issue issue :reflector llms/reflector}))
+ralph: Retry orchestrator that runs blocking completion waits inside a future, so
+the caller's agent trace stays responsive. Spawns a worker, sends task/retry
+messages, waits via blocking/send-await, and sends
+final {:pass result} or {:fail last-result} to the caller.
+  '(!call-now started (patterns/ralph \"fix failing tests\"))
+  ;; later receives msg with {:pass ...} or {:fail ...}
+
+fix-loop: Test-driven code fixing loop. Registers a persistent reflector agent and
+a persistent worker agent for the run. The root loop coordinates both via
+blocking/send-await inside a future, and the caller waits via futures/!ask-await:
+reflector proposes diagnosis + test command,
+worker applies edits, and the loop retries until tests pass or retries are exhausted.
+  '(!call-now result (patterns/fix-loop issue))
   Returns {:pass true} or {:fail \"reason\"}
 
 All patterns/ calls are effect functions - quote them in the trailing expression.
@@ -64,37 +75,65 @@ Example - verify then correct:
    {:check-result "(patterns/check-result prompt answer) - verify answer with leaf-llm, returns {:ok answer} or {:wrong msg}"
     :clean-prompt "(patterns/clean-prompt raw-prompt) - clean up raw prompt via leaf-llm and execute it"
     :explore "(patterns/explore question) - one-shot exploration agent, returns {:answer \"...\" :files [...]}"
-    :fix-loop "(patterns/fix-loop opts) - test-driven code fixing loop.
-opts map:
-  :test       - shell command to run tests (required)
-  :issue      - description of the problem to fix (required)
-  :reflector  - reflector LLM function, e.g. llms/reflector (required)
-  :worker     - worker LLM function (default: !llm-self)
-  :max-retries - max fix attempts (default: 5)
+    :ralph "(patterns/ralph opts) - future-based retry orchestrator.
+opts:
+  string                   - task text
+  :task                    - task text (required if opts map)
+  :test-fn                 - predicate over worker result (default: (:ok result))
+  :max-retries             - retry limit (default: 3)
+  :worker-prompt           - custom worker prompt
+Sends {:pass result} or {:fail last-result} to caller."
+    :fix-loop "(patterns/fix-loop issue) - test-driven code fixing loop.
+primary argument:
+  issue                    - description of the problem to fix (required)
 
-Creates a git branch, runs tests, and enters a retry loop:
-1. Worker agent edits files to fix the issue
-2. Tests are run
-3. If tests pass: commits and returns {:pass true}
-4. If tests fail: reflector analyzes diff + test output, returns diagnosis
-   - :keep-changes true: commit partial progress, continue with same changes
-   - :keep-changes false: hard reset working branch to last commit, try fresh
-   - :panic true: give up, return {:fail diagnosis}
+optional map form (advanced/internal use):
+  :issue                   - description of the problem to fix (required)
+  :max-retries             - max fix attempts (default: 5)
 
-The reflector must return {:diagnosis str :keep-changes bool :panic bool}.
-Worker and reflector run as nested LLM calls (not spawned agents).
+Execution model:
+1. Commit dirty state (if any), create a fix branch
+2. Register dormant reflector + worker agents for this run
+3. Run loop in a future; use blocking/send-await for reflector/worker turns
+4. Wait from caller turn with futures/!ask-await
+5. Loop runs tests, wakes worker to edit code, reruns tests, and retries with
+   updated diagnosis + git diff context until pass or retries exhausted
+
+Reflector output contract:
+  {:diagnosis string :test string :panic boolean}
+
+Requires agent profile with io/ and agents/ namespaces.
 
 Example:
   '(!call-now result (patterns/fix-loop
-    {:test \"python -m pytest tests/test_foo.py -x\"
-     :issue issue-description
-     :reflector llms/reflector
-     :max-retries 3}))"}})
+    issue-description))"}})
 
 (defn- defn-form?
   [form]
   (and (seq? form)
        (= 'defn (first form))))
+
+(defn- resolve-patterns-file
+  "Resolve patterns.spl path across normal CLI and benchmark workspace CWDs.
+   Lookup order:
+   1) current working directory (config/spl-lib/patterns.spl)
+   2) $SPELL_ROOT/config/spl-lib/patterns.spl (if SPELL_ROOT is set)
+   3) classpath-derived project root from spell/patterns.clj resource"
+  []
+  (let [cwd-file (io/file patterns-spl-path)
+        env-file (when-let [spell-root (System/getenv "SPELL_ROOT")]
+                   (io/file spell-root patterns-spl-path))
+        classpath-root (when-let [src-url (io/resource "spell/patterns.clj")]
+                         (-> src-url io/file .getParentFile .getParentFile .getParentFile))
+        classpath-file (when classpath-root
+                         (io/file classpath-root patterns-spl-path))
+        candidates (remove nil? [cwd-file env-file classpath-file])]
+    (or (first (filter #(.exists ^java.io.File %) candidates))
+        (throw (ex-info "patterns.spl file not found"
+                        {:path patterns-spl-path
+                         :cwd (.getAbsolutePath cwd-file)
+                         :spell-root (some-> env-file .getAbsolutePath)
+                         :classpath-root (some-> classpath-file .getAbsolutePath)})))))
 
 (defn- form->spell-fn
   "Convert a top-level (defn name [params] body...) form into {:spell/fn ...}."
@@ -113,10 +152,7 @@ Example:
 
 (defn- load-pattern-fns
   []
-  (let [file (io/file patterns-spl-path)]
-    (when-not (.exists file)
-      (throw (ex-info "patterns.spl file not found"
-                      {:path (.getPath file)})))
+  (let [file (resolve-patterns-file)]
     (let [forms (parse/read-all (slurp file))
           entries (->> forms
                        (filter defn-form?)

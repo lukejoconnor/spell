@@ -383,7 +383,9 @@
         ;; Effect builtins: !llm-self (user-self) + agents namespace
         effect-builtins {'!llm-self user-self-fn
                          'agents runtime/agents-namespace}
-        eval-builtin (llm/make-eval variant-builtins effect-builtins)
+        eval-builtin (llm/make-eval variant-builtins
+                                    effect-builtins
+                                    {'blocking runtime/blocking-namespace})
         config {:variant-builtins variant-builtins
                 :eval-builtin eval-builtin
                 :allow-multiple-top-level? true

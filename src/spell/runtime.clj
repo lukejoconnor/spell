@@ -85,6 +85,12 @@
       (throw raw-or-ex))
     raw-or-ex))
 
+(defn- completion-token
+  "Wrap a completion source as a Spell await token."
+  [completion-source]
+  {:spell/future true
+   :ref completion-source})
+
 ;; =============================================================================
 ;; Inside-fn constructors
 ;; =============================================================================
@@ -334,6 +340,62 @@
   (when-not *current-raw*
     (throw (ex-info (str caller ": no raw completion available") {}))))
 
+(defn- assert-future-context!
+  "Throw if not running inside a Spell future."
+  [caller]
+  (when-not (eval/in-future-context?)
+    (throw (ex-info (str caller ": must be called from within a future") {}))))
+
+(defn completion-promise
+  "Return await token for handle's current completion promise.
+   Future-only primitive: must be called from a Spell future."
+  [handle]
+  (assert-future-context! "completion-promise")
+  (let [entry (get @registry handle)]
+    (when-not entry
+      (throw (ex-info "completion-promise: handle not registered" {:handle handle})))
+    (completion-token @(:completed entry))))
+
+(defn blocking-await
+  "Future-only await helper for the blocking/ namespace."
+  [fut]
+  (assert-future-context! "blocking/await")
+  (if (eval/spell-future? fut)
+    (deref (:ref fut))
+    (throw (ex-info "blocking/await requires a future" {:value fut}))))
+
+(defn blocking-await-all
+  "Future-only helper: await a collection of Spell futures."
+  [futures]
+  (assert-future-context! "blocking/await-all")
+  (when-not (sequential? futures)
+    (throw (ex-info "blocking/await-all: argument must be a collection" {:got futures})))
+  (mapv (fn [f]
+          (when-not (eval/spell-future? f)
+            (throw (ex-info "blocking/await-all: all elements must be futures" {:got f})))
+          (deref (:ref f)))
+        futures))
+
+(defn blocking-pmap
+  "Future-only parallel map. Applies f to each item concurrently and awaits results."
+  [f coll]
+  (assert-future-context! "blocking/pmap")
+  (let [futures (mapv (fn [item]
+                        (completion-token
+                          (clojure.core/future
+                            ((bound-fn [] (eval/invoke-fn f [item])))))
+                        )
+                      coll)]
+    (blocking-await-all futures)))
+
+(defn send-await
+  "Future-only helper: capture completion token, send message, await completion."
+  [handle msg]
+  (assert-future-context! "blocking/send-await")
+  (let [token (completion-promise handle)]
+    (send handle msg)
+    (blocking-await token)))
+
 (defn reply-ask
   "Reply to a message and block for response.
    Extracts sender from the message map, sends value, then blocks."
@@ -426,6 +488,38 @@
 ;; Spawn
 ;; =============================================================================
 
+(defn- spawn*
+  "Internal spawn primitive that returns handle.
+   Keeps completion promise lifecycle handling for fast/non-agent child returns."
+  [llm-fn prompt handle-name]
+  (when (:spell/leaf (meta llm-fn))
+    (throw (ex-info "leaf-llm cannot be used with agents/spawn (no agent lifecycle) — use !llm-self instead"
+                    {:handle handle-name})))
+  (let [handle (or handle-name (keyword (gensym "spawn-")))
+        parent *current-handle*]
+    ;; Register synchronously — handle is live before future starts
+    (register! handle parent)
+    (let [initial-completed @(:completed (get @registry handle))]
+      (future
+        ((bound-fn []
+           (try
+             (let [result (llm-fn prompt handle)]
+               ;; If llm-fn returned without delivering :completed (non-agent fn),
+               ;; deliver now so notifiers fire and waiting agents don't deadlock.
+               ;; Check that :completed atom still holds the same promise (run-root-box
+               ;; resets it), so we don't interfere with the orphan lifecycle.
+               (when (identical? @(:completed (get @registry handle)) initial-completed)
+                 (when-not (realized? initial-completed)
+                   (deliver initial-completed result)))
+               result)
+             (catch Exception e
+               ;; Ensure :completed is delivered so notifiers fire (prevents deadlock)
+               (when (identical? @(:completed (get @registry handle)) initial-completed)
+                 (when-not (realized? initial-completed)
+                   (deliver initial-completed nil)))
+               (throw e))))))
+      {:handle handle})))
+
 (defn spawn
   "Start an agent in a background future. Returns its handle immediately.
    The handle is addressable. The child must explicitly send
@@ -443,33 +537,7 @@
      (spawn a b nil)
      (spawn (default-spawn-llm "spawn") a b)))
   ([llm-fn prompt handle-name]
-   (when (:spell/leaf (meta llm-fn))
-     (throw (ex-info "leaf-llm cannot be used with agents/spawn (no agent lifecycle) — use !llm-self instead"
-                     {:handle handle-name})))
-   (let [handle (or handle-name (keyword (gensym "spawn-")))
-         parent *current-handle*]
-     ;; Register synchronously — handle is live before future starts
-     (register! handle parent)
-     (let [initial-completed @(:completed (get @registry handle))]
-       (future
-         ((bound-fn []
-            (try
-              (let [result (llm-fn prompt handle)]
-                ;; If llm-fn returned without delivering :completed (non-agent fn),
-                ;; deliver now so notifiers fire and waiting agents don't deadlock.
-                ;; Check that :completed atom still holds the same promise (run-root-box
-                ;; resets it), so we don't interfere with the orphan lifecycle.
-                (when (identical? @(:completed (get @registry handle)) initial-completed)
-                  (when-not (realized? initial-completed)
-                    (deliver initial-completed result)))
-                result)
-              (catch Exception e
-                ;; Ensure :completed is delivered so notifiers fire (prevents deadlock)
-                (when (identical? @(:completed (get @registry handle)) initial-completed)
-                  (when-not (realized? initial-completed)
-                    (deliver initial-completed nil)))
-                (throw e)))))))
-     handle)))
+   (:handle (spawn* llm-fn prompt handle-name))))
 
 (defn- spawn-from-multi-spec
   "Spawn child from a multi-spawn-ask entry.
@@ -528,6 +596,34 @@
 ;; Namespace maps
 ;; =============================================================================
 
+(def blocking-namespace
+  "Future-only blocking namespace.
+   Injected into env by future*; unavailable outside futures."
+  {:short-docs "Future-only blocking helpers: await, await-all, pmap, completion-promise, send-await."
+   :docs {:guide "BLOCKING — Future-only blocking primitives.
+
+  (blocking/await fut)                 — await a Spell future token (future-only)
+  (blocking/await-all [f1 f2 ...])     — await multiple Spell futures (future-only)
+  (blocking/pmap f coll)               — parallel map with blocking join (future-only)
+  (blocking/plet [a expr1 b expr2] body) — macro; parallel let with blocking/await
+  (blocking/completion-promise handle) — await token for handle completion (future-only)
+  (blocking/send-await handle msg)     — capture completion, send, await (future-only)
+
+Use from inside (future ...) orchestration code."
+          }
+   :detail
+   {:await "(blocking/await fut) — future-only await. Throws outside (future ...)."
+    :await-all "(blocking/await-all [f1 f2 ...]) — future-only await-many helper."
+    :pmap "(blocking/pmap f coll) — future-only parallel map with blocking join."
+    :plet "(blocking/plet [bindings] body...) — macro; parallel let using blocking/await."
+    :completion-promise "(blocking/completion-promise handle) — future-only completion token capture."
+    :send-await "(blocking/send-await handle msg) — future-only capture->send->await helper."}
+   :await blocking-await
+   :await-all blocking-await-all
+   :pmap blocking-pmap
+   :completion-promise completion-promise
+   :send-await send-await})
+
 (def agents-namespace
   "Agent communication namespace — effect-guarded (trailing expression only)."
   {:short-docs "Inter-agent communication: spawn, !ask, send, reply."
@@ -543,9 +639,9 @@
   (agents/!ask target)             — poke target without message, block for reply
   (agents/!ask [a b c])            — multi-target: poke all, wake when all complete
   (agents/!reply-ask msg-map message)   — reply to msg-map, block for next message
-  (agents/!spawn-ask prompt) — spawn with !llm-self, block until it sends back
+  (agents/!spawn-ask prompt) — spawn with !llm-self, block until completion
   (agents/!spawn-ask prompt :handle-name) — same, with explicit handle name
-  (agents/!spawn-ask llm-fn prompt) — spawn with explicit llm-fn, block until it sends back
+  (agents/!spawn-ask llm-fn prompt) — spawn with explicit llm-fn, block until completion
   (agents/!spawn-ask [[llm-fn prompt] [llm-fn prompt :name] ...]) — spawn many, wait for all completions (no ask wakeup poke)
   (agents/!spawn-ask [prompt-a prompt-b ...]) — spawn many with !llm-self, wait for all completions (no ask wakeup poke)
   (agents/current-handle)          — your handle
@@ -743,7 +839,7 @@ Combines spawn + block. One-shot delegation pattern.
 (agents/!spawn-ask prompt :name)
 (agents/!spawn-ask llm-fn prompt :name)
   llm-fn: !llm-self (not leaf-llm — leaf-llm has no agent lifecycle and will error)
-  prompt: string or wrap-cat — must instruct child to send to (agents/parent-handle)
+  prompt: string or wrap-cat
   :name: optional keyword handle (like agents/spawn)
   (see agents/spawn docs for why the prompt must not be a bare quine)
 
@@ -758,8 +854,8 @@ Your next turn sees (def msg-N {:from child-handle :body result}).
   Your next turn sees :body as a vector of {:from child-handle :body result}.
 
 Example:
-  '(agents/!spawn-ask !llm-self \"Compute 6*7 and (agents/send (agents/parent-handle) result)\")
-  ;; next turn: (def msg-0 {:from :spawn-42 :body 42})"
+	  '(agents/!spawn-ask !llm-self \"Compute 6*7 and (agents/send (agents/parent-handle) result)\")
+	  ;; next turn: (def msg-0 {:from :spawn-42 :body 42})"
 
     :current-handle
     "Returns your handle as a keyword.

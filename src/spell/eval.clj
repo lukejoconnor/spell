@@ -52,11 +52,25 @@
    Allows Clojure builtins (like apply) to access the current env for spell-fn support."
   {})
 
+(def ^:dynamic *future-env*
+  "Env entries injected when evaluating inside a Spell future.
+   Used for future-only namespaces like blocking/."
+  {})
+
 (def ^:dynamic *raw-text*
   "Balanced raw text of the current completion being evaluated.
    Set by the eval pipeline; used by reopen to preserve original formatting
    for KV cache compatibility (avoids pr-str round-trip divergence)."
   nil)
+
+(def future-context-key
+  "Env marker key set by future* for future-only runtime primitives."
+  ::in-future)
+
+(defn in-future-context?
+  "True when current evaluation is running inside a Spell future."
+  []
+  (true? (get *spell-env* future-context-key)))
 
 (defn spell-future?
   "Returns true if v is a Spell future handle."
@@ -636,13 +650,12 @@
                             {:spell/thrown v}))),
    ;; future* — run a thunk in a new thread, return a future handle
    'future* (fn [thunk]
-              (let [f (bound-fn [] (invoke-fn thunk []))]
-                {:spell/future true :ref (clojure.core/future (f))})),
-   ;; await — deref a future handle, blocking until the result is available
-   'await (fn [fut]
-            (if (spell-future? fut)
-              (deref (:ref fut))
-              (throw (ex-info "await requires a future" {:value fut}))))})
+              (let [f (bound-fn []
+                        (binding [*spell-env* (merge *spell-env*
+                                                     *future-env*
+                                                     {future-context-key true})]
+                          (invoke-fn thunk [])))]
+                {:spell/future true :ref (clojure.core/future (f))}))})
 
 (def ^:dynamic *builtins*
   "Active builtins map. Rebound by each llm variant during evaluation.

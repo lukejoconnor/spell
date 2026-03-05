@@ -81,128 +81,274 @@
          "Query: " query)))
 
 ;; ---------------------------------------------------------------------------
-;; fix-loop — test-driven code fixing with reflector diagnosis
+;; ralph - retry orchestration in a future (caller stays responsive)
 ;; ---------------------------------------------------------------------------
-;; Manages a git-backed retry loop for test-driven code repair.
-;; Creates a branch, runs tests, calls a worker to edit files, runs tests again,
-;; and uses a reflector to diagnose failures and decide keep/discard changes.
+;; Spawns a worker and runs retry orchestration in a future thread:
+;; send task -> blocking/send-await -> test -> retry.
+;;
+;; '(!call-now started (patterns/ralph "fix the failing test"))
+;; => returns immediately; later sends {:pass result} or {:fail last-result}
+;;    to the calling agent.
+;;
+;; opts:
+;;   string                  - task text
+;;   {:task "..."            - required task text (or provide string arg)
+;;    :test-fn fn            - truthy means pass (default: (:ok result))
+;;    :max-retries int       - default 3
+;;    :worker-prompt string} - custom worker prompt
+;;
+(defn ralph [opts]
+  (let [opts (if (string? opts) {:task opts} opts)
+        task (or (:task opts) (throw "ralph: :task required"))
+        test-fn (or (:test-fn opts) (fn [result] (:ok result)))
+        max-retries (or (:max-retries opts) 3)
+        worker-prompt (or (:worker-prompt opts)
+                          (str "You are a worker agent for patterns/ralph.\n"
+                               "On each wake, inspect the newest msg-* binding.\n"
+                               "Read :body {:kind :task|:retry ...} and produce an improved result.\n"
+                               "Do not send messages to parent; return your result as completion value."))
+        me (agents/current-handle)
+        worker-handle (read-string (str ":ralph-worker-" (abs (rand-int 1000000))))
+        worker (agents/spawn worker-prompt worker-handle)]
+    (future
+      (let [final-result
+            (loop [attempt 0
+                   feedback {:kind :task :body task :attempt 0}]
+              (let [result (blocking/send-await worker feedback)]
+                (if (test-fn result)
+                  {:pass result}
+                  (if (>= (inc attempt) max-retries)
+                    {:fail result}
+                    (recur (inc attempt)
+                           {:kind :retry
+                            :attempt (inc attempt)
+                            :task task
+                            :previous result
+                            :feedback (str "Test failed, retry with a better result. Previous: "
+                                           (pr-str result))}))))) ]
+        (agents/send me final-result)))
+    {:started true :worker worker}))
+
+
+;; ---------------------------------------------------------------------------
+;; fix-loop - test-driven code fixing with persistent reflector + worker agents
+;; ---------------------------------------------------------------------------
+;; Manages a git-backed retry loop for code repair.
+;; Registers two dormant agents for the run:
+;; - reflector agent (diagnosis + test authoring)
+;; - worker agent (targeted code edits)
+;;
+;; The root loop runs inside a future and uses blocking/send-await for both roles.
 ;;
 ;; '(!call-now result (patterns/fix-loop
-;;    {:test "pytest tests/test_foo.py -x"
-;;     :issue issue-description
-;;     :reflector llms/reflector
-;;     :max-retries 5}))
+;;    issue-description))
 ;; => {:pass true} or {:fail "reason"}
 ;;
-;; opts map:
-;;   :test        — shell command to run tests (required)
-;;   :issue       — description of the problem to fix (required)
-;;   :reflector   — reflector LLM function, e.g. llms/reflector (required)
-;;   :worker      — worker LLM function (default: !llm-self)
-;;   :max-retries — max fix attempts (default: 5)
+;; primary argument:
+;;   issue - issue description string (required)
 ;;
-;; The reflector must return {:diagnosis str :keep-changes bool :panic bool}.
-;; Worker and reflector run as nested LLM calls (not spawned agents).
+;; optional map form (advanced/internal use):
+;;   {:issue "..."
+;;    :max-retries 5}
 ;;
-;; If the working tree is dirty when fix-loop starts, it commits the current
-;; state as a baseline before creating the fix branch. This lets you write
-;; reproducer tests before calling fix-loop.
+;; Reflector must return a map-like value with:
+;;   {:diagnosis "..." :test "..." :panic false}
 ;;
-(defn fix-loop [opts]
-  (let [test-cmd    (:test opts)
-        issue       (:issue opts)
-        reflector   (:reflector opts)
-        max-retries (or (:max-retries opts) 5)
-        worker      (or (:worker opts) !llm-self)
-        branch      (str "spell-fix-" (abs (rand-int 100000)))
-        orig-branch (strings/trim (:out (io/sh "git rev-parse --abbrev-ref HEAD")))
-        cleanup     (fn [] (io/sh (str "git checkout " orig-branch)))
-        dirty?      (not (strings/blank? (:out (io/sh "git status --porcelain"))))]
-    ;; Commit dirty state so discard-path preserves pre-fix-loop work
-    (when dirty?
-      (io/sh "git add -A")
-      (io/sh "git commit -m \"baseline: pre-fix-loop state\""))
-    ;; Create working branch
-    (io/sh (str "git checkout -b " branch))
-    ;; Baseline test run
-    (let [t0 (io/sh test-cmd)]
-      (if (= 0 (:exit t0))
-        {:pass true}
-        ;; Initial reflector diagnosis
-        (let [initial-diag
-              (reflector
-               (str "Analyze this test failure from a codebase.\n\n"
-                    "ISSUE DESCRIPTION:\n" issue "\n\n"
-                    "TEST COMMAND: " test-cmd "\n"
-                    "TEST OUTPUT (exit " (:exit t0) "):\n"
-                    (:out t0) "\n" (:err t0) "\n\n"
-                    "No changes have been made yet. Provide your initial diagnosis.\n"
-                    "Return a Spell map with:\n"
-                    "  {:diagnosis \"what's wrong and suggested fix approach\"\n"
-                    "   :keep-changes false\n"
-                    "   :panic false}\n"
-                    "Set :panic true only if the problem seems fundamentally unsolvable."))]
-          (if (:panic initial-diag)
-            (do
-              (cleanup)
-              {:fail (:diagnosis initial-diag)})
-            ;; Fix loop
-            (loop [attempt   0
-                   diagnosis (:diagnosis initial-diag)]
+;; Notes:
+;; - The reflector writes/updates tests and proposes the active test command.
+;; - Dirty state is committed before branch creation to preserve user work.
+;; - Failed worker attempts are reset before retry for branch safety.
+;;
+(defn fix-loop [issue-or-opts]
+  (let [opts             (if (map? issue-or-opts)
+                           issue-or-opts
+                           {:issue issue-or-opts})
+        issue-raw        (:issue opts)
+        issue            (if (string? issue-raw) issue-raw (pr-str issue-raw))
+        max-retries      (or (:max-retries opts) 5)
+        run-id           (abs (rand-int 1000000))
+        branch           (str "spell-fix-" run-id)
+        reflector-handle (read-string (str ":fix-reflector-" run-id))
+        worker-handle    (read-string (str ":fix-worker-" run-id))
+        orig-branch      (strings/trim (:out (io/sh "git rev-parse --abbrev-ref HEAD")))
+        reset-worktree   (fn []
+                           (io/sh "git reset --hard HEAD")
+                           (io/sh "git clean -fd"))
+        cleanup          (fn []
+                           (reset-worktree)
+                           (io/sh (str "git checkout " orig-branch)))
+        maybe-commit     (fn [msg]
+                           (when (not (strings/blank? (:out (io/sh "git status --porcelain"))))
+                             (io/sh "git add -A")
+                             (io/sh (str "git commit -m \"" msg "\""))))
+        dirty?           (not (strings/blank? (:out (io/sh "git status --porcelain"))))]
+    (if (strings/blank? issue)
+      {:fail "fix-loop requires non-empty issue description"}
+      (let [normalize-reflector
+            (fn [raw previous-test]
+              (let [parsed (if (map? raw)
+                             raw
+                             (if (string? raw)
+                               (try
+                                 (read-string raw)
+                                 (catch e raw))
+                               raw))
+                    parsed (if (map? parsed)
+                             parsed
+                             {:diagnosis (str "Invalid reflector response: " (pr-str raw))
+                              :test previous-test
+                              :panic true})
+                    diagnosis-base (if (string? (:diagnosis parsed))
+                                     (:diagnosis parsed)
+                                     (pr-str (:diagnosis parsed)))
+                    test-cmd (if (and (string? (:test parsed))
+                                      (not (strings/blank? (:test parsed))))
+                               (:test parsed)
+                               previous-test)
+                    missing-test? (or (not (string? test-cmd))
+                                      (strings/blank? test-cmd))
+                    diagnosis (if missing-test?
+                                (str diagnosis-base
+                                     "\n\nReflector must return a non-empty :test command.")
+                                diagnosis-base)]
+                {:diagnosis diagnosis
+                 :test test-cmd
+                 :panic (or (= true (:panic parsed))
+                            missing-test?)}))
+            collect-diff
+            (fn []
+              (str "GIT STATUS:\n"
+                   (:out (io/sh "git status --short"))
+                   "\n\nGIT DIFF (unstaged):\n"
+                   (:out (io/sh "git diff"))
+                   "\n\nGIT DIFF (staged):\n"
+                   (:out (io/sh "git diff --cached"))))
+            run-gate
+            (fn [active-test]
+              (let [primary (io/sh active-test)]
+                (if (not= 0 (:exit primary))
+                  {:pass false
+                   :failed-cmd active-test
+                   :result primary}
+                  {:pass true})))
+            format-failure
+            (fn [failed-cmd result]
+              (str "COMMAND: " failed-cmd "\n"
+                   "EXIT: " (:exit result) "\n"
+                   "OUT:\n" (:out result) "\n"
+                   "ERR:\n" (:err result)))
+            reflector-msg
+            (fn [attempt last-test-output last-diff last-diagnosis active-test]
+              {:kind :reflect
+               :attempt attempt
+               :issue issue
+               :active-test active-test
+               :last-test-output last-test-output
+               :last-diff last-diff
+               :last-diagnosis last-diagnosis})
+            reflector-init-prompt
+            (str "You are the reflector agent in patterns/fix-loop.\n\n"
+                 "On each wake, inspect the newest msg-* binding.\n"
+                 "Its :body is a map with keys:\n"
+                 "{:kind :reflect :attempt int :issue str :active-test str|nil\n"
+                 " :last-test-output str :last-diff str :last-diagnosis str}\n\n"
+                 "Responsibilities:\n"
+                 "1) Attempt 0: explore codebase and run relevant existing tests FIRST.\n"
+                 "2) Prefer an existing failing test command when it already reproduces the issue.\n"
+                 "3) Only write/update a new regression test if no existing test reproduces the bug.\n"
+                 "4) :test must cover relevant existing behavior, not only a newly added narrow test.\n"
+                 "5) Run the exact :test command and ensure it FAILS before returning.\n"
+                 "6) Retry attempts: use prior test output and diff to refine diagnosis and test command.\n"
+                 "7) Reflector owns diagnosis and tests; do not implement production fixes.\n\n"
+                 "Return ONLY a Spell map literal with exactly:\n"
+                 "{:diagnosis \"what is wrong and how to fix it\"\n"
+                 " :test \"shell command to evaluate the fix\"\n"
+                 " :panic false}\n\n"
+                 ":test is REQUIRED and must be a runnable shell command.\n"
+                 "Set :panic true only if fundamentally unsolvable.")
+            reflector-init-completion
+            (str "(quine completion (eval (do "
+                 "(quine prompt " (pr-str reflector-init-prompt) ") "
+                 "'(!extend))))")
+            worker-init-prompt
+            (str "You are a code repair worker used by patterns/fix-loop.\n\n"
+                 "On each wake, inspect the newest msg-* binding.\n"
+                 "Its :body is a map with keys:\n"
+                 "{:kind :repair :attempt int :issue str :diagnosis str :test str\n"
+                 " :failed-cmd str :failed-output str}\n\n"
+                 "Use :issue + :diagnosis to make targeted implementation edits.\n"
+                 "Use io/sh, io/read-file, io/str-replace, and io/write-file as needed.\n"
+                 "Do NOT run tests; parent loop runs tests.\n"
+                 "Return a brief summary (string or {:summary \"...\"}).")
+            worker-init-completion
+            (str "(quine completion (eval (do "
+                 "(quine prompt " (pr-str worker-init-prompt) ") "
+                 "'(!extend))))")]
+        (when dirty?
+          (io/sh "git add -A")
+          (io/sh "git commit -m \"baseline: pre-fix-loop state\""))
+        (io/sh (str "git checkout -b " branch))
+        (agents/register reflector-handle reflector-init-completion)
+        (agents/register worker-handle worker-init-completion)
+        (futures/!ask-await
+          (future
+            (loop [attempt 0
+                   last-test-output ""
+                   last-diff ""
+                   last-diagnosis ""
+                   active-test nil]
               (if (>= attempt max-retries)
                 (do
                   (cleanup)
-                  {:fail (str "Max retries (" max-retries "). Last diagnosis: " diagnosis)})
-                ;; Worker fixes code
-                (let [_ (worker
-                         (str "You are a code repair agent. Fix the following issue in this codebase.\n\n"
-                              "ISSUE:\n" issue "\n\n"
-                              "DIAGNOSIS:\n" diagnosis "\n\n"
-                              "Use io/sh and io/read-file to explore the codebase.\n"
-                              "Use io/write-file or io/str-replace to make targeted edits.\n"
-                              "When done editing, return a brief summary of changes made."))
-                      ;; Run tests
-                      t (io/sh test-cmd)]
-                  (if (= 0 (:exit t))
-                    ;; Tests pass!
+                  {:fail (str "Max retries (" max-retries "). Last diagnosis: " last-diagnosis)})
+                (let [reflector-raw (blocking/send-await reflector-handle
+                                                         (reflector-msg attempt
+                                                                        last-test-output
+                                                                        last-diff
+                                                                        last-diagnosis
+                                                                        active-test))
+                      reflector (normalize-reflector reflector-raw active-test)
+                      diagnosis (:diagnosis reflector)
+                      chosen-test (:test reflector)]
+                  (if (:panic reflector)
                     (do
-                      (io/sh "git add -A")
-                      (io/sh (str "git commit -m \"fix: applied (attempt "
-                                  (inc attempt) ")\""))
-                      {:pass true})
-                    ;; Tests fail -- reflect
-                    (let [diff     (:out (io/sh "git diff"))
-                          staged   (:out (io/sh "git diff --cached"))
-                          all-diff (str diff staged)
-                          test-out (str (:out t) "\n" (:err t))
-                          refl
-                          (reflector
-                           (str "Analyze this failed fix attempt.\n\n"
-                                "ISSUE:\n" issue "\n\n"
-                                "GIT DIFF of changes made:\n" all-diff "\n\n"
-                                "TEST COMMAND: " test-cmd "\n"
-                                "TEST OUTPUT (exit " (:exit t) "):\n" test-out "\n\n"
-                                "PREVIOUS DIAGNOSIS:\n" diagnosis "\n\n"
-                                "Return a Spell map with:\n"
-                                "  {:diagnosis \"what went wrong, what to try next\"\n"
-                                "   :keep-changes true/false\n"
-                                "   :panic false}\n"
-                                "Set :keep-changes true if changes are partially correct.\n"
-                                "Set :keep-changes false to discard all changes and try fresh.\n"
-                                "Set :panic true only if stuck or unsolvable."))]
-                      (if (:panic refl)
+                      (cleanup)
+                      {:fail diagnosis})
+                    (let [pre-check (run-gate chosen-test)]
+                      (if (:pass pre-check)
                         (do
-                          (cleanup)
-                          {:fail (:diagnosis refl)})
-                        (if (:keep-changes refl)
-                          ;; Keep changes, commit partial progress
-                          (do
-                            (io/sh "git add -A")
-                            (io/sh (str "git commit -m \"partial: iteration "
-                                        (inc attempt) "\""))
-                            (recur (inc attempt) (:diagnosis refl)))
-                          ;; Discard changes, try fresh
-                          (do
-                            (io/sh "git reset --hard HEAD")
-                            (io/sh "git clean -fd")
-                            (recur (inc attempt) (:diagnosis refl))))))))))))))))
+                          (maybe-commit (str "fix-loop: resolved before worker (attempt " (inc attempt) ")"))
+                          {:pass true})
+                        (let [pre-result (:result pre-check)
+                              pre-failed-cmd (:failed-cmd pre-check)
+                              pre-output (format-failure pre-failed-cmd pre-result)]
+                          ;; Checkpoint reflector-authored tests/diagnosis artifacts so
+                          ;; worker rollback can discard attempt-local edits.
+                          (maybe-commit (str "fix-loop: reflector checkpoint (attempt " (inc attempt) ")"))
+                          (let [worker-result (blocking/send-await
+                                               worker-handle
+                                               {:kind :repair
+                                                :attempt (inc attempt)
+                                                :issue issue
+                                                :diagnosis diagnosis
+                                                :test chosen-test
+                                                :failed-cmd pre-failed-cmd
+                                                :failed-output pre-output})
+                                post-check (run-gate chosen-test)]
+                            (if (:pass post-check)
+                              (do
+                                (maybe-commit (str "fix-loop: applied fix (attempt " (inc attempt) ")"))
+                                {:pass true})
+                              (let [post-result (:result post-check)
+                                    post-failed-cmd (:failed-cmd post-check)
+                                    post-output
+                                    (str (format-failure post-failed-cmd post-result)
+                                         "\n\nWORKER RESULT:\n"
+                                         (pr-str worker-result))
+                                    attempt-diff (collect-diff)]
+                                (reset-worktree)
+                                (recur (inc attempt)
+                                       post-output
+                                       attempt-diff
+                                       diagnosis
+                                       chosen-test)))))))))))))))))

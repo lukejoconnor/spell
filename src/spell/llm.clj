@@ -279,17 +279,21 @@
 (defn make-eval
   "Create an eval builtin (inner/dangerous evaluator) from effect-builtins.
    Returns a function that merges variant-builtins with effect-builtins and evaluates.
-   The eval builtin binds itself in eval/*builtins* to support recursive eval calls."
-  [variant-builtins effect-builtins]
-  (letfn [(eval-builtin [expr]
-            (let [caller-env eval/*spell-env*]
-              (binding [eval/*builtins* (merge variant-builtins effect-builtins {'eval eval-builtin})
-                        runtime/*default-spawn-llm* (get effect-builtins '!llm-self)]
-                (let [result (eval/spell-eval expr caller-env)]
-                  (if (eval/ok? result)
-                    (:ok result)
-                    (throw (ex-info (:err result) {:result result})))))))]
-    eval-builtin))
+   The eval builtin binds itself in eval/*builtins* to support recursive eval calls.
+   Optional future-only namespaces are injected via eval/*future-env*."
+  ([variant-builtins effect-builtins]
+   (make-eval variant-builtins effect-builtins {}))
+  ([variant-builtins effect-builtins future-only-builtins]
+   (letfn [(eval-builtin [expr]
+             (let [caller-env eval/*spell-env*]
+               (binding [eval/*builtins* (merge variant-builtins effect-builtins {'eval eval-builtin})
+                         eval/*future-env* future-only-builtins
+                         runtime/*default-spawn-llm* (get effect-builtins '!llm-self)]
+                 (let [result (eval/spell-eval expr caller-env)]
+                   (if (eval/ok? result)
+                     (:ok result)
+                     (throw (ex-info (:err result) {:result result})))))))]
+     eval-builtin)))
 
 (defn- wrap-nl
   "Wrap a prompt value for LLM consumption.
@@ -406,6 +410,7 @@
                                                           model (assoc :model model)))}
                          effect-ns-builtins
                          (when llm-var {'llm llm-var}))
+        future-only-builtins {'blocking runtime/blocking-namespace}
         ;; Add register-agent to agents namespace (if present)
         register-agent-fn (fn [handle-name completion] (register-agent @final-config handle-name completion))
         effect-builtins' (if (contains? effect-ns-builtins 'agents)
@@ -414,7 +419,7 @@
                                          :register register-agent-fn))
                            effect-builtins)
         ;; Create eval builtin using make-eval
-        eval-builtin (make-eval variant-builtins effect-builtins')
+        eval-builtin (make-eval variant-builtins effect-builtins' future-only-builtins)
         ;; Config with variant-builtins and eval-builtin
         config'  {:call-fn call-fn
                   :variant-builtins variant-builtins

@@ -1298,34 +1298,38 @@
       (is (nil? (:grammar-format @seen-opts))))))
 
 ;; =============================================================================
-;; Leaf-llm async via future/plet (not spawn)
+;; Leaf-llm async via future/blocking (not spawn)
 ;; =============================================================================
 
 (deftest leaf-llm-via-plet-test
-  (testing "leaf-llm works in parallel via plet (the correct async pattern)"
+  (testing "leaf-llm works in parallel via blocking/plet inside a future"
     (let [call-count (atom 0)
           {:keys [llm]} (th/make-test-llm
                           {:response-fn (fn [prompt]
                                           (let [n (swap! call-count inc)]
                                             (cond
-                                              ;; Main LLM: return code that uses plet with leaf-llm
-                                              (= n 1) "'(plet [a (leaf-llm \"p1\") b (leaf-llm \"p2\")] (cat a b))))"
+                                              ;; Main LLM: return a future token whose body does parallel leaf-llm work.
+                                              (= n 1) "'(future (blocking/plet [a (leaf-llm \"p1\") b (leaf-llm \"p2\")] (cat a b)))"
                                               ;; Leaf-llm calls
                                               (str/includes? prompt "p1") "hello"
                                               (str/includes? prompt "p2") "world"
                                               :else "???")))})]
-      (is (= "helloworld" (llm "(eval (do "))))))
+      (let [fut (llm "(eval (do ")]
+        (is (:spell/future fut))
+        (is (= "helloworld" (deref (:ref fut) 5000 :timeout)))))))
 
 (deftest leaf-llm-via-future-await-test
-  (testing "leaf-llm works with explicit future/await in trailing expression"
+  (testing "leaf-llm works with explicit future + blocking/await"
     (let [call-count (atom 0)
           {:keys [llm]} (th/make-test-llm
                           {:response-fn (fn [prompt]
                                           (let [n (swap! call-count inc)]
                                             (cond
-                                              ;; Main LLM: trailing expression with future/await
-                                              (= n 1) "'(let [f1 (future (leaf-llm \"task-a\")) f2 (future (leaf-llm \"task-b\"))] (list (await f1) (await f2))))"
+                                              ;; Main LLM: return a future token with explicit inner awaits.
+                                              (= n 1) "'(future (let [f1 (future (leaf-llm \"task-a\")) f2 (future (leaf-llm \"task-b\"))] (list (blocking/await f1) (blocking/await f2))))"
                                               (str/includes? prompt "task-a") "result-a"
                                               (str/includes? prompt "task-b") "result-b"
                                               :else "???")))})]
-      (is (= ["result-a" "result-b"] (llm "(eval (do "))))))
+      (let [fut (llm "(eval (do ")]
+        (is (:spell/future fut))
+        (is (= ["result-a" "result-b"] (deref (:ref fut) 5000 :timeout)))))))

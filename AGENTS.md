@@ -35,6 +35,7 @@ Spell has two namespace categories:
 - Effect namespaces (`io`, `globals`, `agents`, `futures`, `patterns`) are available in trailing-expression evaluation via `eval`.
 
 Namespace maps use `:short-docs`, `:docs`, and optional `:detail`; `describe` surfaces this metadata in extensions.
+Future threads also get an env-gated `blocking/` namespace (`blocking/await`, `blocking/completion-promise`, `blocking/send-await`).
 
 ## LLM Calls and Concurrency
 
@@ -43,8 +44,9 @@ Namespace maps use `:short-docs`, `:docs`, and optional `:detail`; `describe` su
 - `agents/spawn`: asynchronous agent creation with a new handle.
 
 ### Concurrency Models
-- Deterministic computation concurrency: `future`, `await`, `plet`, `futures/pmap`.
+- Deterministic computation concurrency: `future` (launch), `blocking/await` (join), `blocking/plet`, `blocking/pmap` (future-only).
 - Agent concurrency: `agents/spawn` plus coordination via `agents/!ask` and `globals/*`.
+- Main-thread non-blocking future wait bridge: `futures/!ask-await`.
 
 These are intentionally separate: use futures for deterministic compute, and spawned agents for LLM-driven parallelism.
 
