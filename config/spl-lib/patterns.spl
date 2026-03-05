@@ -246,6 +246,16 @@
                :last-test-output last-test-output
                :last-diff last-diff
                :last-diagnosis last-diagnosis})
+            io-guide
+            (let [docs (:docs io)
+                  guide (:guide docs)]
+              (if (string? guide) guide ""))
+            io-guide-context
+            (if (strings/blank? io-guide)
+              ""
+              (str "\n\nIO namespace guide:\n"
+                   io-guide
+                   "\n\nPrefer io/ APIs and signatures exactly as documented above.\n"))
             reflector-init-prompt
             (str "You are the reflector agent in patterns/fix-loop.\n\n"
                  "On each wake, inspect the newest msg-* binding.\n"
@@ -260,6 +270,7 @@
                  "5) Run the exact :test command and ensure it FAILS before returning.\n"
                  "6) Retry attempts: use prior test output and diff to refine diagnosis and test command.\n"
                  "7) Reflector owns diagnosis and tests; do not implement production fixes.\n\n"
+                 io-guide-context
                  "Return ONLY a Spell map literal with exactly:\n"
                  "{:diagnosis \"what is wrong and how to fix it\"\n"
                  " :test \"shell command to evaluate the fix\"\n"
@@ -279,6 +290,7 @@
                  "Use :issue + :diagnosis to make targeted implementation edits.\n"
                  "Use io/sh, io/read-file, io/str-replace, and io/write-file as needed.\n"
                  "Do NOT run tests; parent loop runs tests.\n"
+                 io-guide-context
                  "Return a brief summary (string or {:summary \"...\"}).")
             worker-init-completion
             (str "(quine completion (eval (do "

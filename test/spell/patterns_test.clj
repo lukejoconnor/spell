@@ -172,7 +172,9 @@
             (is (some #(str/includes? (:completion %) "reflector agent in patterns/fix-loop")
                       @register-calls))
             (is (some #(str/includes? (:completion %) "code repair worker used by patterns/fix-loop")
-                      @register-calls))))
+                      @register-calls))
+            (is (every? #(str/includes? (:completion %) "shell commands, process execution and file watching.")
+                        @register-calls))))
         (finally
           (cleanup-dir dir))))))
 
