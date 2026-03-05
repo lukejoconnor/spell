@@ -68,16 +68,6 @@
    Bound by the LLM pipeline. Consulted on symbol lookup failure to
    produce context-specific error messages instead of generic 'Unbound symbol'."
   {})
-
-(def future-context-key
-  "Env marker key set by future* for future-only runtime primitives."
-  ::in-future)
-
-(defn in-future-context?
-  "True when current evaluation is running inside a Spell future."
-  []
-  (true? (get *spell-env* future-context-key)))
-
 (defn spell-future?
   "Returns true if v is a Spell future handle."
   [v]
@@ -708,11 +698,14 @@
    'ex-data spell-ex-data, 'ex-message spell-ex-message, 'ex-cause spell-ex-cause,
    ;; future* — run a thunk in a new thread, return a future handle
    'future* (fn [thunk]
-              (let [f (bound-fn []
-                        (binding [*spell-env* (merge *spell-env*
-                                                     *future-env*
-                                                     {future-context-key true})]
-                          (invoke-fn thunk [])))]
+              (let [current-raw-var (resolve 'spell.runtime/*current-raw*)
+                    f (bound-fn []
+                        (if current-raw-var
+                          (with-bindings* {current-raw-var nil}
+                            #(binding [*spell-env* (merge *spell-env* *future-env*)]
+                               (invoke-fn thunk [])))
+                          (binding [*spell-env* (merge *spell-env* *future-env*)]
+                            (invoke-fn thunk []))))]
                 {:spell/future true :ref (clojure.core/future (f))}))})
 
 (def ^:dynamic *builtins*
