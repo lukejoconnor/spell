@@ -12,5 +12,4 @@
   futures  stdlib/futures
   patterns stdlib/patterns
   agents   stdlib/agents
-  globals  stdlib/globals}
- :llms {reflector fix-loop-reflector.agent.edn}}
+  globals  stdlib/globals}}
