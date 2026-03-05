@@ -631,29 +631,21 @@
 ;; =============================================================================
 
 (deftest completion-promise-basic-test
-  (testing "completion-promise captures current completion as await token (future-only)"
+  (testing "completion-promise captures current completion as await token"
     (let [handle :completion-promise-child
           child-raw "(quine completion (eval (do )))"
           eval-fn (fn [_] :child-finished)]
       (runtime/start-box handle eval-fn child-raw)
       (Thread/sleep 100)
-      (let [token (binding [eval/*spell-env* {eval/future-context-key true}]
-                    (runtime/completion-promise handle))]
+      (let [token (runtime/completion-promise handle)]
         (is (= true (:spell/future token)))
         (runtime/send-msg-fn identity handle)
         (is (= :child-finished (deref (:ref token) 5000 :timeout)))))))
 
-(deftest completion-promise-rejects-outside-future-test
-  (testing "completion-promise throws outside future context"
-    (runtime/register! :completion-promise-target)
-    (is (thrown-with-msg? Exception #"must be called from within a future"
-          (runtime/completion-promise :completion-promise-target)))))
-
 (deftest completion-promise-missing-handle-test
   (testing "completion-promise throws for unregistered handles"
     (is (thrown-with-msg? Exception #"handle not registered"
-          (binding [eval/*spell-env* {eval/future-context-key true}]
-            (runtime/completion-promise :missing-handle))))))
+          (runtime/completion-promise :missing-handle)))))
 
 (deftest completion-promise-capture-before-send-test
   (testing "capturing completion promise before send avoids fast-completion race"
@@ -664,38 +656,31 @@
       (Thread/sleep 100)
       (let [result (deref
                      (future
-                       (binding [eval/*spell-env* {eval/future-context-key true}]
-                         (let [token (runtime/completion-promise handle)]
-                           (runtime/send-msg-fn identity handle)
-                           (deref (:ref token) 5000 :timeout))))
+                       (let [token (runtime/completion-promise handle)]
+                         (runtime/send-msg-fn identity handle)
+                         (deref (:ref token) 5000 :timeout)))
                      5000 :timeout)]
         (is (= :race-result result))))))
 
 (deftest blocking-await-basic-test
-  (testing "blocking-await resolves a Spell future only in future context"
+  (testing "blocking-await resolves a Spell future"
     (let [token {:spell/future true :ref (future :blocking-ok)}]
-      (is (= :blocking-ok
-             (binding [eval/*spell-env* {eval/future-context-key true}]
-               (runtime/blocking-await token))))
-      (is (thrown-with-msg? Exception #"must be called from within a future"
-            (runtime/blocking-await token)))
+      (is (= :blocking-ok (runtime/blocking-await token)))
       (is (thrown-with-msg? Exception #"requires a future"
-            (binding [eval/*spell-env* {eval/future-context-key true}]
-              (runtime/blocking-await 42)))))))
+            (runtime/blocking-await 42))))))
 
 (deftest send-await-basic-test
-  (testing "send-await captures completion, sends, and awaits in future context"
+  (testing "send-await captures completion, sends, and awaits"
     (let [handle :send-await-child
           child-raw "(quine completion (eval (do )))"
           eval-fn (fn [_] :send-await-done)]
       (runtime/start-box handle eval-fn child-raw)
       (Thread/sleep 100)
       (is (= :send-await-done
-             (binding [eval/*spell-env* {eval/future-context-key true}
-                       runtime/*current-handle* :send-await-parent]
+             (binding [runtime/*current-handle* :send-await-parent]
                (runtime/send-await handle {:kind :wake}))))))
-  (testing "send-await rejects outside future context"
-    (is (thrown-with-msg? Exception #"must be called from within a future"
+  (testing "send-await surfaces completion-promise errors"
+    (is (thrown-with-msg? Exception #"handle not registered"
           (runtime/send-await :missing {:kind :wake})))))
 
 (deftest futures-ask-await-wakeup-test
@@ -725,6 +710,22 @@
     (let [fut (binding [eval/*future-env* {'blocking runtime/blocking-namespace}]
                 (eval/run-spell '(future (blocking/await (future 7)))))]
       (is (= 7 (deref (:ref fut) 5000 :timeout))))))
+
+(deftest future-star-unbinds-current-raw-test
+  (testing "future* unbinds runtime/*current-raw* so agent-only APIs reject in futures"
+    (let [future* (get eval/core-builtins 'future*)
+          result-token (binding [runtime/*current-handle* :future-parent
+                                 runtime/*current-raw* "(quine completion (eval (do )))"
+                                 eval/*spell-env* {}
+                                 eval/*future-env* {}]
+                         (future* (fn []
+                                    (try
+                                      (runtime/ask-builtin :nope "hi")
+                                      :unexpected-success
+                                      (catch Exception e
+                                        (.getMessage e))))))]
+      (is (= "ask: no raw completion available"
+             (deref (:ref result-token) 5000 :timeout))))))
 
 ;; =============================================================================
 ;; Ask tests
