@@ -17,7 +17,9 @@
 
 (defn- run-fix-loop [opts env]
   (binding [eval/*spell-env* (merge {'strings stdlib/strings
-                                     'io (assoc sio/io-namespace :sh sio/sh)}
+                                     'io (assoc sio/io-namespace :sh sio/sh)
+                                     'futures {:!ask-await (fn [fut]
+                                                             (deref (:ref fut) 5000 :timeout))}}
                                     env)]
     (eval/invoke-fn fix-loop [opts])))
 

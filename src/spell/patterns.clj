@@ -44,7 +44,8 @@ final {:pass result} or {:fail last-result} to the caller.
 
 fix-loop: Test-driven code fixing loop. Registers a persistent reflector agent and
 a persistent worker agent for the run. The root loop coordinates both via
-blocking/send-await inside a future: reflector proposes diagnosis + test command,
+blocking/send-await inside a future, and the caller waits via futures/!ask-await:
+reflector proposes diagnosis + test command,
 worker applies edits, and the loop retries until tests pass or retries are exhausted.
   '(!call-now result (patterns/fix-loop issue))
   Returns {:pass true} or {:fail \"reason\"}
@@ -94,7 +95,8 @@ Execution model:
 1. Commit dirty state (if any), create a fix branch
 2. Register dormant reflector + worker agents for this run
 3. Run loop in a future; use blocking/send-await for reflector/worker turns
-4. Loop runs tests, wakes worker to edit code, reruns tests, and retries with
+4. Wait from caller turn with futures/!ask-await
+5. Loop runs tests, wakes worker to edit code, reruns tests, and retries with
    updated diagnosis + git diff context until pass or retries exhausted
 
 Reflector output contract:

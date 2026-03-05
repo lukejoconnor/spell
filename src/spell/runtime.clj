@@ -354,10 +354,34 @@
     (deref (:ref fut))
     (throw (ex-info "blocking/await requires a future" {:value fut}))))
 
+(defn blocking-await-all
+  "Future-only helper: await a collection of Spell futures."
+  [futures]
+  (assert-future-context! "blocking/await-all")
+  (when-not (sequential? futures)
+    (throw (ex-info "blocking/await-all: argument must be a collection" {:got futures})))
+  (mapv (fn [f]
+          (when-not (eval/spell-future? f)
+            (throw (ex-info "blocking/await-all: all elements must be futures" {:got f})))
+          (deref (:ref f)))
+        futures))
+
+(defn blocking-pmap
+  "Future-only parallel map. Applies f to each item concurrently and awaits results."
+  [f coll]
+  (assert-future-context! "blocking/pmap")
+  (let [futures (mapv (fn [item]
+                        (completion-token
+                          (clojure.core/future
+                            ((bound-fn [] (eval/invoke-fn f [item])))))
+                        )
+                      coll)]
+    (blocking-await-all futures)))
+
 (defn send-await
   "Future-only helper: capture completion token, send message, await completion."
   [handle msg]
-  (assert-future-context! "send-await")
+  (assert-future-context! "blocking/send-await")
   (let [token (completion-promise handle)]
     (send handle msg)
     (blocking-await token)))
@@ -565,10 +589,13 @@
 (def blocking-namespace
   "Future-only blocking namespace.
    Injected into env by future*; unavailable outside futures."
-  {:short-docs "Future-only blocking helpers: await, completion-promise, send-await."
+  {:short-docs "Future-only blocking helpers: await, await-all, pmap, completion-promise, send-await."
    :docs {:guide "BLOCKING — Future-only blocking primitives.
 
   (blocking/await fut)                 — await a Spell future token (future-only)
+  (blocking/await-all [f1 f2 ...])     — await multiple Spell futures (future-only)
+  (blocking/pmap f coll)               — parallel map with blocking join (future-only)
+  (blocking/plet [a expr1 b expr2] body) — macro; parallel let with blocking/await
   (blocking/completion-promise handle) — await token for handle completion (future-only)
   (blocking/send-await handle msg)     — capture completion, send, await (future-only)
 
@@ -576,9 +603,14 @@ Use from inside (future ...) orchestration code."
           }
    :detail
    {:await "(blocking/await fut) — future-only await. Throws outside (future ...)."
+    :await-all "(blocking/await-all [f1 f2 ...]) — future-only await-many helper."
+    :pmap "(blocking/pmap f coll) — future-only parallel map with blocking join."
+    :plet "(blocking/plet [bindings] body...) — macro; parallel let using blocking/await."
     :completion-promise "(blocking/completion-promise handle) — future-only completion token capture."
     :send-await "(blocking/send-await handle msg) — future-only capture->send->await helper."}
    :await blocking-await
+   :await-all blocking-await-all
+   :pmap blocking-pmap
    :completion-promise completion-promise
    :send-await send-await})
 

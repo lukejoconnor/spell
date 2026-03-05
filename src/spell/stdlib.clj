@@ -276,7 +276,7 @@ Categories (use (!describe builtins :category) for full listing):
   combinators   — comp, partial, juxt, complement, constantly, ...
   bitwise       — bit-and, bit-or, bit-xor, bit-shift-left, ...
   spell         — spell-eval, reopen, wrap-cat, prune-and-reopen, serialize, stored
-  concurrency   — future*, await
+  concurrency   — future*
   error         — throw, gensym
 
 Use (!describe builtins :category) for full listing of any category.
@@ -328,7 +328,6 @@ Common mistakes:
   -> — thread-first; insert value as first argument through a chain of forms
   ->> — thread-last; insert value as last argument through a chain of forms
   future — wrap expr in a thunk and launch as a parallel future; returns a future handle
-  plet — parallel let; launch all bindings as futures and await all before entering body
   !print — evaluate exprs, extend completion with their serialized values as visible literals
   define — Scheme-style alias for def; binds a symbol to a value
   defmacro — define a user-level macro; expander receives unevaluated argument forms
@@ -822,50 +821,22 @@ Example:
 ;; =============================================================================
 
 (def futures-namespace
-  "Parallel computation namespace — effect-guarded (trailing expression only)."
-  {:short-docs "Parallel computation: future, await-all, pmap, !ask-await."
-   :docs {:guide "FUTURES — Deterministic parallel computation (effect namespace).
+  "Future bridge namespace — effect-guarded (trailing expression only)."
+  {:short-docs "Main-turn bridge: !ask-await."
+   :docs {:guide "FUTURES — Main-turn bridge for Spell futures (effect namespace).
 
-  (future expr)          — run expr in background, returns a future
-  (await f)              — block until future f completes, returns value
-  (futures/!ask-await f) — wait via message wakeup (no thread-blocking in caller turn)
-  (futures/await-all [f1 f2 ...])  — await multiple futures, returns vector of results
-  (plet [a expr1 b expr2] body)   — parallel let: compute bindings concurrently
-  (futures/pmap f coll)            — parallel map: applies f to each element concurrently
+  (futures/!ask-await fut) — wait for fut via message wakeup (safe in the caller turn)
 
-Use (!describe futures :fn-name) for detailed docs on any function.
+Blocking operations live in future-only blocking/:
+  (blocking/await fut)
+  (blocking/await-all [f1 f2 ...])
+  (blocking/pmap f coll)
+  (blocking/plet [a expr1 b expr2] body)
 
-future, await, and plet are core builtins (no namespace prefix needed).
-Only await-all, pmap, and !ask-await require the futures/ prefix.
-
-These are for pure computation only — never use them for LLM calls.
-LLM calls in futures would share the parent handle and contend over the box.
-For LLM-driven parallelism, use agents/spawn instead.
-
-All futures/ calls are effect functions — quote them in the trailing expression.
-
-Common mistakes:
-
-1. using future for LLM calls: (future (!llm-self \"...\")) causes handle contention; use agents/spawn for parallel LLM work
-2. forgetting to await: a future runs in the background; its result is only available after (await f) or via plet
-3. calling futures/pmap with effect functions: pmap is for pure computation; mapping over io or agent calls will fail or race
-4. unnecessary future+await: (await (future expr)) is just expr with overhead; use futures when you have multiple independent computations
-5. using await in orchestration loops: use blocking/send-await in a future, or futures/!ask-await in the caller turn
-
-In examples, ▌ marks cursor position in a completion. It is doc-only; do not type it into code.
-
-Example — parallel computation with plet:
-
-  ...▌(plet [a (reduce + (range 1000000))
-           b (reduce * (range 1 21))]
-      (def total (+ a b)))
-  '(!extend)
-"
+Use (!describe futures :!ask-await) for details."
           }
    :detail
-   {:!ask-await "(futures/!ask-await fut) — installs waiter future, sends result to self, then blocks for wakeup message."
-    :await-all "(futures/await-all [f1 f2 ...]) — await multiple futures, returns vector of results"
-    :pmap "(futures/pmap f coll) — parallel map, applies f to each element concurrently"}
+   {:!ask-await "(futures/!ask-await fut) — installs waiter future, sends result to self, then blocks for wakeup message."}
    :!ask-await (fn [fut]
                  (when-not (eval/spell-future? fut)
                    (throw (ex-info "!ask-await requires a future" {:value fut})))
@@ -880,21 +851,7 @@ Example — parallel computation with plet:
                        (catch Exception e
                          (binding [runtime/*current-handle* :future]
                            (runtime/send target {:future-await/error (.getMessage e)})))))
-                   (runtime/block-for-message)))
-   :await-all (fn [futures]
-                (when-not (sequential? futures)
-                  (throw (ex-info "await-all: argument must be a collection" {:got futures})))
-                (mapv (fn [f]
-                        (when-not (eval/spell-future? f)
-                          (throw (ex-info "await-all: all elements must be futures" {:got f})))
-                        (deref (:ref f)))
-                      futures))
-   :pmap (fn [f coll]
-           (let [futures (mapv (fn [item]
-                                 {:spell/future true
-                                  :ref (clojure.core/future ((bound-fn [] (eval/invoke-fn f [item]))))})
-                               coll)]
-             (mapv #(deref (:ref %)) futures)))})
+                   (runtime/block-for-message)))})
 
 ;; =============================================================================
 ;; All standard library namespaces

@@ -3,6 +3,7 @@
             [clojure.test :refer [deftest is testing]]
             [spell.eval :as eval :refer [spell-eval run-spell]]
             [spell.macros :as macros]
+            [spell.runtime :as runtime]
             [spell.stdlib :as stdlib]
             [spell.core :as core]))
 
@@ -27,7 +28,8 @@
 (defmacro with-effects
   "Run body with effect namespaces merged into *builtins* (simulates eval's second pass)."
   [& body]
-  `(binding [eval/*builtins* (merge eval/*builtins* core/all-namespaces)]
+  `(binding [eval/*builtins* (merge eval/*builtins* core/all-namespaces)
+             eval/*future-env* {~(list 'quote 'blocking) runtime/blocking-namespace}]
      ~@body))
 
 (defn eval-ok
@@ -902,13 +904,14 @@
             (eval-ok 'bash {}))))))
 
 ;; =============================================================================
-;; Future / Await tests
+;; Future / blocking tests
 ;; =============================================================================
 
-(deftest future-await-basic
+(deftest future-blocking-await-basic
   (with-effects
-    (testing "basic future + await returns value"
-      (is (= 3 (run-spell '(await (future (+ 1 2)))))))
+    (testing "blocking/await works inside a future"
+      (let [fut (run-spell '(future (blocking/await (future (+ 1 2)))))]
+        (is (= 3 (deref (:ref fut) 5000 :timeout)))))
 
     (testing "future returns a spell future map"
       (let [[val _] (eval-ok '(future 42) {})]
@@ -916,31 +919,35 @@
         (is (:spell/future val))
         (is (instance? clojure.lang.IDeref (:ref val)))))
 
-    (testing "await on non-future throws"
-      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"await requires a future"
-            (run-spell '(await 42)))))
+    (testing "blocking/await on non-future throws"
+      (let [fut (run-spell '(future (blocking/await 42)))]
+        (is (thrown-with-msg? Exception #"blocking/await requires a future"
+              (deref (:ref fut))))))
 
-    (testing "double await returns cached value"
-      (is (= 5 (run-spell '(do (def f (future (+ 2 3)))
-                                (def first-await (await f))
-                                (await f))))))))
+    (testing "double blocking/await returns cached value"
+      (let [fut (run-spell '(future (do (def f (future (+ 2 3)))
+                                        (def first-await (blocking/await f))
+                                        (blocking/await f))))]
+        (is (= 5 (deref (:ref fut) 5000 :timeout)))))))
 
 (deftest future-env-capture
   (with-effects
     (testing "future captures enclosing env"
-      (is (= 6 (run-spell '(let [x 5] (await (future (+ x 1))))))))
+      (let [fut (run-spell '(let [x 5] (future (+ x 1))))]
+        (is (= 6 (deref (:ref fut) 5000 :timeout)))))
 
     (testing "future sees defs from before its creation"
-      (is (= 15 (run-spell '(do (def x 10) (def y 5)
-                                 (await (future (+ x y))))))))))
+      (let [fut (run-spell '(do (def x 10) (def y 5)
+                                (future (+ x y))))]
+        (is (= 15 (deref (:ref fut) 5000 :timeout)))))))
 
 (deftest future-isolation
   (with-effects
     (testing "defs inside future don't leak to parent env"
-      (let [[val env] (eval-ok '(do (def f (future (do (def leaked 99) leaked)))
-                                        (await f))
-                                   {})]
-        (is (= 99 val))
+      (let [[fut env] (eval-ok '(do (def f (future (do (def leaked 99) leaked)))
+                                    f)
+                              {})]
+        (is (= 99 (deref (:ref fut) 5000 :timeout)))
         (is (not (contains? env 'leaked)))))))
 
 (deftest future-concurrency
@@ -949,12 +956,14 @@
     (let [sleep-fn (fn [ms] (Thread/sleep (long ms)) ms)
           builtins (merge eval/core-builtins core/all-namespaces {'sleep sleep-fn})
           start (System/currentTimeMillis)
-          result (binding [eval/*builtins* builtins]
-                   (first (eval-ok
-                            '(do (def a (future (sleep 100)))
-                                 (def b (future (sleep 100)))
-                                 (list (await a) (await b)))
-                            {})))
+          fut (binding [eval/*builtins* builtins
+                        eval/*future-env* {'blocking runtime/blocking-namespace}]
+                (first (eval-ok
+                         '(future (do (def a (future (sleep 100)))
+                                      (def b (future (sleep 100)))
+                                      (list (blocking/await a) (blocking/await b))))
+                         {})))
+          result (deref (:ref fut) 5000 :timeout)
           elapsed (- (System/currentTimeMillis) start)]
       (is (= '(100 100) result))
       ;; Allow generous margin but should be well under 200ms
@@ -962,32 +971,35 @@
 
 (deftest future-error-propagation
   (with-effects
-    (testing "exception in future body re-throws on await"
-      (is (thrown? Exception
-            (run-spell '(await (future (/ 1 0)))))))))
+    (testing "exception in future body re-throws on deref"
+      (let [fut (run-spell '(future (/ 1 0)))]
+        (is (thrown? Exception (deref (:ref fut))))))))
 
 (deftest future-nested
   (with-effects
-    (testing "nested future + await"
-      (is (= 42 (run-spell '(await (future (await (future 42))))))))
+    (testing "nested future + blocking/await"
+      (let [fut (run-spell '(future (blocking/await (future 42))))]
+        (is (= 42 (deref (:ref fut) 5000 :timeout)))))
 
     (testing "DAG: future C awaits futures A and B"
-      (let [result (run-spell
-                     '(do (def a (future (+ 10 1)))
-                          (def b (future (+ 20 2)))
-                          (def c (future (do (def ra (await a))
-                                             (def rb (await b))
-                                             (+ ra rb))))
-                          (await c)))]
-        (is (= 33 result))))))
+      (let [fut (run-spell
+                  '(future
+                     (do (def a (future (+ 10 1)))
+                         (def b (future (+ 20 2)))
+                         (def c (future (do (def ra (blocking/await a))
+                                            (def rb (blocking/await b))
+                                            (+ ra rb))))
+                         (blocking/await c))))]
+        (is (= 33 (deref (:ref fut) 5000 :timeout)))))))
 
 (deftest future-dynamic-bindings
   (testing "future conveys *builtins* via bound-fn"
     (let [custom-builtins (merge eval/core-builtins core/all-namespaces
                                  {'my-tool (fn [] "tool-result")})]
-      (binding [eval/*builtins* custom-builtins]
-        (is (= "tool-result"
-               (first (eval-ok '(await (future (my-tool))) {}))))))))
+      (binding [eval/*builtins* custom-builtins
+                eval/*future-env* {'blocking runtime/blocking-namespace}]
+        (let [[fut _] (eval-ok '(future (my-tool)) {})]
+          (is (= "tool-result" (deref (:ref fut) 5000 :timeout))))))))
 
 (deftest future-expand
   (testing "expand handles future form (macro-expanded to future*)"
@@ -995,87 +1007,107 @@
       (is (= '(future* (fn [] (+ 10 1))) val)))))
 
 ;; =============================================================================
-;; await-all, pmap, plet tests
+;; blocking/await-all, blocking/pmap, blocking/plet tests
 ;; =============================================================================
 
-(deftest await-all-basic
+(deftest blocking-await-all-basic
   (with-effects
-    (testing "await-all resolves multiple futures"
-      (is (= [1 2 3] (run-spell '(futures/await-all [(future 1) (future 2) (future 3)])))))
+    (testing "blocking/await-all resolves multiple futures"
+      (let [fut (run-spell '(future (blocking/await-all [(future 1) (future 2) (future 3)])))]
+        (is (= [1 2 3] (deref (:ref fut) 5000 :timeout)))))
 
-    (testing "await-all on empty collection"
-      (is (= [] (run-spell '(futures/await-all [])))))
+    (testing "blocking/await-all on empty collection"
+      (let [fut (run-spell '(future (blocking/await-all [])))]
+        (is (= [] (deref (:ref fut) 5000 :timeout)))))
 
-    (testing "await-all on non-collection throws"
-      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"await-all: argument must be a collection"
-            (run-spell '(futures/await-all 42)))))
+    (testing "blocking/await-all on non-collection throws"
+      (let [fut (run-spell '(future (blocking/await-all 42)))]
+        (is (thrown-with-msg? Exception #"blocking/await-all: argument must be a collection"
+              (deref (:ref fut))))))
 
-    (testing "await-all with non-future element throws"
-      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"await-all: all elements must be futures"
-            (run-spell '(futures/await-all [42])))))))
+    (testing "blocking/await-all with non-future element throws"
+      (let [fut (run-spell '(future (blocking/await-all [42])))]
+        (is (thrown-with-msg? Exception #"blocking/await-all: all elements must be futures"
+              (deref (:ref fut))))))))
 
-(deftest pmap-basic
+(deftest blocking-pmap-basic
   (with-effects
-    (testing "pmap applies function in parallel"
-      (is (= [2 4 6] (run-spell '(futures/pmap (fn [x] (* x 2)) [1 2 3])))))
+    (testing "blocking/pmap applies function in parallel"
+      (let [fut (run-spell '(future (blocking/pmap (fn [x] (* x 2)) [1 2 3])))]
+        (is (= [2 4 6] (deref (:ref fut) 5000 :timeout)))))
 
-    (testing "pmap on empty collection"
-      (is (= [] (run-spell '(futures/pmap (fn [x] x) [])))))
+    (testing "blocking/pmap on empty collection"
+      (let [fut (run-spell '(future (blocking/pmap (fn [x] x) [])))]
+        (is (= [] (deref (:ref fut) 5000 :timeout)))))
 
-    (testing "pmap with spell-fn"
-      (is (= [1 4 9] (run-spell '(do (defn sq [x] (* x x))
-                                      (futures/pmap sq [1 2 3]))))))))
+    (testing "blocking/pmap with spell-fn"
+      (let [fut (run-spell '(future (do (defn sq [x] (* x x))
+                                        (blocking/pmap sq [1 2 3]))))]
+        (is (= [1 4 9] (deref (:ref fut) 5000 :timeout)))))))
 
-(deftest pmap-concurrency
-  (testing "pmap runs items concurrently"
+(deftest blocking-pmap-concurrency
+  (testing "blocking/pmap runs items concurrently"
     (let [sleep-fn (fn [ms] (Thread/sleep (long ms)) ms)
           builtins (merge eval/core-builtins core/all-namespaces {'sleep sleep-fn})
           start (System/currentTimeMillis)
-          result (binding [eval/*builtins* builtins]
-                   (first (eval-ok
-                            '(futures/pmap (fn [ms] (sleep ms)) [100 100 100])
-                            {})))
+          fut (binding [eval/*builtins* builtins
+                        eval/*future-env* {'blocking runtime/blocking-namespace}]
+                (first (eval-ok
+                         '(future (blocking/pmap (fn [ms] (sleep ms)) [100 100 100]))
+                         {})))
+          result (deref (:ref fut) 5000 :timeout)
           elapsed (- (System/currentTimeMillis) start)]
       (is (= [100 100 100] result))
       ;; 3 x 100ms sequential would be 300ms; concurrent should be ~100ms
       (is (< elapsed 250) (str "Expected concurrent execution, took " elapsed "ms")))))
 
-(deftest plet-basic
-  (testing "plet binds parallel results and evaluates body"
-    (is (= 3 (run-spell '(plet [a (+ 1 0) b (+ 2 0)] (+ a b))))))
+(deftest blocking-plet-basic
+  (with-effects
+    (testing "blocking/plet binds parallel results and evaluates body"
+      (let [fut (run-spell '(future (blocking/plet [a (+ 1 0) b (+ 2 0)] (+ a b))))]
+        (is (= 3 (deref (:ref fut) 5000 :timeout)))))
 
-  (testing "plet provides resolved values in body"
-    (is (= [10 20] (run-spell '(plet [a (* 5 2) b (* 10 2)]
-                                 (list a b))))))
+    (testing "blocking/plet provides resolved values in body"
+      (let [fut (run-spell '(future (blocking/plet [a (* 5 2) b (* 10 2)]
+                                           (list a b))))]
+        (is (= [10 20] (deref (:ref fut) 5000 :timeout)))))
 
-  (testing "plet bindings don't escape"
-    (let [[val env] (eval-ok '(do (plet [x 42] x)) {})]
-      (is (= 42 val))
-      (is (nil? (get env 'x))))))
+    (testing "blocking/plet bindings don't escape"
+      (let [[fut env] (eval-ok '(do (def f (future (blocking/plet [x 42] x)))
+                                    f)
+                              {})]
+        (is (= 42 (deref (:ref fut) 5000 :timeout)))
+        (is (nil? (get env 'x)))))))
 
-(deftest plet-concurrency
-  (testing "plet runs bindings concurrently"
+(deftest blocking-plet-concurrency
+  (testing "blocking/plet runs bindings concurrently"
     (let [sleep-fn (fn [ms] (Thread/sleep (long ms)) ms)
           builtins (merge eval/core-builtins {'sleep sleep-fn})
           start (System/currentTimeMillis)
-          result (binding [eval/*builtins* builtins]
-                   (first (eval-ok
-                            '(plet [a (sleep 100)
-                                    b (sleep 100)
-                                    c (sleep 100)]
-                               (list a b c))
-                            {})))
+          fut (binding [eval/*builtins* builtins
+                        eval/*future-env* {'blocking runtime/blocking-namespace}]
+                (first (eval-ok
+                         '(future
+                            (blocking/plet [a (sleep 100)
+                                            b (sleep 100)
+                                            c (sleep 100)]
+                              (list a b c)))
+                         {})))
+          result (deref (:ref fut) 5000 :timeout)
           elapsed (- (System/currentTimeMillis) start)]
       (is (= '(100 100 100) result))
       ;; 3 x 100ms sequential would be 300ms; concurrent should be ~100ms
       (is (< elapsed 250) (str "Expected concurrent execution, took " elapsed "ms")))))
 
-(deftest plet-expand
-  (testing "expand handles plet form (macro-expanded to let + future + await)"
-    (let [[val _] (eval-ok '(do (def x 10) (expand '(plet [a (+ x 1) b (+ x 2)] (list a b)))) {})]
-      ;; plet expands to nested let with future* and await calls
+(deftest blocking-plet-expand
+  (testing "expand handles blocking/plet form (macro-expanded to let + future + blocking/await)"
+    (let [[val _] (eval-ok '(do (def x 10)
+                                (expand '(blocking/plet [a (+ x 1) b (+ x 2)] (list a b))))
+                           {})]
       (is (seq? val))
-      (is (= 'let (first val))))))
+      (is (= 'let (first val)))
+      (is (some #(= 'blocking/await %)
+                (tree-seq coll? seq val))))))
 
 ;; =============================================================================
 ;; Qualified symbol tests

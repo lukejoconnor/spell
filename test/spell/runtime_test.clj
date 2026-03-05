@@ -692,9 +692,9 @@
     (is (thrown-with-msg? Exception #"Unbound symbol: blocking"
           (binding [eval/*future-env* {'blocking runtime/blocking-namespace}]
             (eval/run-spell '(blocking/await (future 1))))))
-    (is (= 7
-           (binding [eval/*future-env* {'blocking runtime/blocking-namespace}]
-             (eval/run-spell '(await (future (blocking/await (future 7))))))))))
+    (let [fut (binding [eval/*future-env* {'blocking runtime/blocking-namespace}]
+                (eval/run-spell '(future (blocking/await (future 7)))))]
+      (is (= 7 (deref (:ref fut) 5000 :timeout))))))
 
 ;; =============================================================================
 ;; Ask tests
@@ -1092,9 +1092,9 @@
           (eval/run-spell '(agents/current-handle))))
     (is (thrown-with-msg? Exception #"Unbound symbol: agents"
           (eval/run-spell '(agents/parent-handle))))
-    ;; futures/ — concurrency effect (await is still a core builtin)
+    ;; futures/ — effect namespace is not available in first pass
     (is (thrown-with-msg? Exception #"Unbound symbol: futures"
-          (eval/run-spell '(futures/pmap inc [1 2 3]))))
+          (eval/run-spell '(futures/!ask-await (future 1)))))
     ;; io/, globals/ — side-effectful namespaces
     (is (thrown-with-msg? Exception #"Unbound symbol: io"
           (eval/run-spell '(io/sh "echo hi"))))

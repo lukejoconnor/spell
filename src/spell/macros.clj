@@ -278,8 +278,9 @@
   (fn [body]
     (list 'future* (list 'fn [] body))))
 
-;; plet: (plet [a e1 b e2] body...) -> launch futures, await all, bind, run body
-(defspellmacro 'plet
+;; blocking/plet: (blocking/plet [a e1 b e2] body...)
+;; -> launch futures, await all (future-only), bind, run body
+(defspellmacro 'blocking/plet
   (fn [bindings & body]
     (let [pairs (partition 2 bindings)
           fut-syms (map (fn [[sym _]] (gensym (str sym "__fut__"))) pairs)
@@ -287,9 +288,9 @@
           fut-bindings (vec (mapcat (fn [fut-sym [_ expr]]
                                       [fut-sym (list 'future expr)])
                                     fut-syms pairs))
-          ;; Build await bindings: [a (await a__fut) b (await b__fut)]
+          ;; Build await bindings: [a (blocking/await a__fut) b (blocking/await b__fut)]
           await-bindings (vec (mapcat (fn [[sym _] fut-sym]
-                                        [sym (list 'await fut-sym)])
+                                        [sym (list 'blocking/await fut-sym)])
                                       pairs fut-syms))]
       (list 'let fut-bindings
             (list* 'let await-bindings body)))))

@@ -290,7 +290,7 @@
         (io/sh (str "git checkout -b " branch))
         (agents/register reflector-handle reflector-init-completion)
         (agents/register worker-handle worker-init-completion)
-        (await
+        (futures/!ask-await
           (future
             (loop [attempt 0
                    last-test-output ""

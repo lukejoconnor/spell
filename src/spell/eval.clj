@@ -655,12 +655,7 @@
                                                      *future-env*
                                                      {future-context-key true})]
                           (invoke-fn thunk [])))]
-                {:spell/future true :ref (clojure.core/future (f))})),
-   ;; await — deref a future handle, blocking until the result is available
-   'await (fn [fut]
-            (if (spell-future? fut)
-              (deref (:ref fut))
-              (throw (ex-info "await requires a future" {:value fut}))))})
+                {:spell/future true :ref (clojure.core/future (f))}))})
 
 (def ^:dynamic *builtins*
   "Active builtins map. Rebound by each llm variant during evaluation.
