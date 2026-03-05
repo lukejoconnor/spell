@@ -44,7 +44,7 @@ Future threads also get an env-gated `blocking/` namespace (`blocking/await`, `b
 - `agents/spawn`: asynchronous agent creation with a new handle.
 
 ### Concurrency Models
-- Deterministic computation concurrency: `future`, `await`, `plet`, `futures/pmap`.
+- Deterministic computation concurrency: `future` (launch), `blocking/await` (join), `blocking/plet`, `blocking/pmap` (future-only).
 - Agent concurrency: `agents/spawn` plus coordination via `agents/!ask` and `globals/*`.
 - Main-thread non-blocking future wait bridge: `futures/!ask-await`.
 
