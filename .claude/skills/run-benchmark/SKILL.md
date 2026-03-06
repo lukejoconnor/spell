@@ -46,7 +46,9 @@ Create a notebook entry at dispatch time (not after completion). Name: `YYYY-MM-
 
 ### 4. Run the analysis
 
-Run items in parallel batches of 4-8 at a time. Don't wait for every item in a batch to finish — when most items in a batch are complete (e.g., 4/5 done), start the next batch and begin scoring completed items + checking traces immediately. This gives the user a running picture of accuracy and catches systematic failures early.
+**Runs often take a long time. Do not wait for everything to complete before giving the user interpretable results.** Report accuracy, dispatch trace-investigation subagents, and surface findings as results stream in — don't accumulate silently. The user should see a running picture of progress throughout the run, not a single dump at the end.
+
+Run items in parallel batches of 4-8 at a time. Don't wait for every item in a batch to finish — when most items in a batch are complete (e.g., 4/5 done), start the next batch and begin scoring completed items + checking traces immediately. This catches systematic failures early.
 
 Guidelines:
 - Always use `--trace` to capture traces and track costs + latency.
@@ -81,7 +83,9 @@ Every item in your results must have been individually examined by a subagent th
 
 ### Trace Tooling (`spell.trace-tool`)
 
-For quick local inspection before/while subagent review, use the Clojure trace helper:
+**Prefer `spell.trace-tool` over grep/rg for trace investigation.** The tool understands Spell's trace structure (extension nodes, parsed programs, rethink chains) and produces clean, structured output. Grepping raw trace JSON is fragile and misses context. Use the tool first; fall back to grep only for searches the tool doesn't support.
+
+Common investigation patterns:
 
 ```bash
 # Skeletonize latest extension node in one trace
