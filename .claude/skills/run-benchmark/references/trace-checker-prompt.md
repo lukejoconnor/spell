@@ -47,6 +47,22 @@ For CC: read `agent.log` or `stream-json/` output for the actual error.
 - **Both wrong (P4):** What makes this problem hard? Did both agents fail the same way or differently?
 - **Both right (P5):** Check cost/latency differences. Note any interesting technique differences.
 
+## Context Management Analysis
+
+After correctness findings, analyze context-window behavior:
+
+1. Run `clj -M -m spell.trace-tool --trace-dir {TASK_DIR} --rethinks` and report:
+   - total rethink events
+   - system-injected (`!peek-now binding disappears`) vs model-initiated counts
+   - total pruned characters and dominant pruned content types
+2. Run `clj -M -m spell.trace-tool --trace-dir {TASK_DIR} --context-trajectory` and report:
+   - start and end context size
+   - largest growth and largest drop
+   - whether trajectory is monotonic or sawtooth
+3. Check for map duplication risk:
+   - if compound peek bindings are pruned, check whether persistent defs inline the same map repeatedly
+   - call this out explicitly when present
+
 ## Output format
 
 Return your findings in EXACTLY this format:
@@ -57,6 +73,8 @@ Return your findings in EXACTLY this format:
 - **Key detail:** [the most important finding — error message, interesting technique, etc.]
 - **Evidence:** `{filename}:{line_number}` — "{quoted text from the file}"
 - **Spell features used:** [list, or "N/A" for CC traces]
+- **Context trajectory:** [start -> end, largest jump, total pruned, monotonic/sawtooth]
+- **Context issues:** [none | duplication risk | weak pruning | other]
 - **Notes:** [anything else relevant]
 
 ## Rules

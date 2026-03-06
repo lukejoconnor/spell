@@ -112,6 +112,37 @@ Notes:
 - `--string-truncate N` controls displayed string truncation (default `32`, `-1` disables truncation).
 - `--count-all-nodes` is useful for whole-trace stats; selected-node mode is better for extension-chain end state.
 
+### Context Management Analysis
+
+After correctness analysis, always inspect whether context management was effective:
+
+1. **Rethink inventory (`--rethinks`)**
+   - Count system-injected rethink events (`!peek-now binding disappears`) vs model-initiated rethinks.
+   - Record total pruned character volume and the pruned content types (`def/string`, `def/map`, `def/expr`, etc.).
+   - Verify the pruned bindings are substantial enough to justify peek-now usage.
+
+2. **Context trajectory (`--context-trajectory`)**
+   - Check whether context is monotonic (risk) or sawtooth (healthy prune cycles).
+   - Identify largest single-node growth and largest drop.
+   - Flag likely agent boundary resets (large negative deltas).
+
+3. **Map duplication check**
+   - When peek-now prunes a compound value (map/list), inspect downstream persistent defs.
+   - If multiple `(def x (get map :k))` style bindings inline the original map repeatedly, call out duplication as context waste.
+
+Useful commands:
+
+```bash
+# Rethink inventory and pruned-size stats
+clj -M -m spell.trace-tool --trace-dir traces/2026-03-02T07-04-01 --rethinks
+
+# Context size trajectory with per-node deltas
+clj -M -m spell.trace-tool --trace-dir traces/2026-03-02T07-04-01 --context-trajectory
+
+# Sweep many traces
+clj -M -m spell.trace-tool --trace-root traces --context-trajectory
+```
+
 ### 6. Scoring and reporting
 
 **Source of truth:** Always score from the benchmark harness's own output, never from agent self-reports. Spell's `ok: true` means "runtime didn't crash" — only the harness `is_resolved: true` means "tests passed." These diverge often.
@@ -135,6 +166,17 @@ For comparison runs, use a table:
 |--------|----------|--------|-------|------|----------------|
 | Spell  | 90% (27/30) | 1 | 2 | $20.14 | 31s |
 | CC     | 100% (30/30) | 0 | 0 | $7.44 | 37s |
+```
+
+Include context metrics when traces were analyzed:
+
+```markdown
+### Context Management
+- Final context size: 112,340c
+- Largest growth: +28,944c (node 0017)
+- Total pruned via rethink: 146,201c
+- Pattern: monotonic growth | sawtooth cycles
+- Duplication check: none | suspected map inlining in persistent defs
 ```
 
 Include error categorization when there are failures:
