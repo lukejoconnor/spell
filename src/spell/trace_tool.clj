@@ -24,7 +24,6 @@
    [nil "--fn SYMBOL" "Function symbol to count (repeatable)"
     :assoc-fn (fn [m k v] (update m k (fnil conj []) v))]
    [nil "--count-all-nodes" "Count function calls across all nodes (default: selected node only)"]
-   [nil "--no-dedupe" "Disable cross-node dedupe (counts repeated inherited prefix calls)"]
    [nil "--rethinks" "Report rethink forms and preceding expressions (single trace or trace root)"]
    ["-h" "--help" "Show help"]])
 
@@ -41,7 +40,7 @@
     "Notes:"
     "  - --results-jsonl resolves the latest errored item and uses its trace_dir"
     "  - Function call counting defaults to selected node only (typically latest extension node)"
-    "  - Use --count-all-nodes to aggregate across nodes; this mode dedupes by default"
+    "  - Use --count-all-nodes to aggregate response-only calls across nodes"
     ""
     "Options:"
     summary]))
@@ -193,23 +192,14 @@
                     :else nil)]
      (concat current children))))
 
-(defn- call-fingerprint [inst]
-  ;; Use skeletonized form to keep fingerprints stable while avoiding giant strings.
-  [(:fn inst)
-   (:path inst)
-   ;; Always collapse strings fully for dedupe stability regardless of display settings.
-   (pr-str (skeletonize-form (:form inst) {:max-string-chars 0}))])
-
 (defn count-function-calls
-  "Count function call instances across all trace nodes with optional dedupe.
+  "Count function call instances across all trace nodes.
 
    opts:
-   - :fns set of symbols to include (nil = all)
-   - :dedupe? true => do not double-count repeated inherited prefix calls across nodes"
-  [trace {:keys [fns dedupe?] :or {dedupe? true}}]
+   - :fns set of symbols to include (nil = all)"
+  [trace {:keys [fns]}]
   (let [nodes (filter :program (:nodes trace))]
     (loop [remaining nodes
-           seen #{}
            counts {}
            instances []]
       (if (empty? remaining)
@@ -218,16 +208,10 @@
         (let [node (first remaining)
               raw-instances (->> (collect-call-instances (response-form (:program node)))
                                  (filter #(or (nil? fns) (contains? fns (:fn %)))))
-              accepted (if dedupe?
-                         (remove #(contains? seen (call-fingerprint %)) raw-instances)
-                         raw-instances)
-              seen' (if dedupe?
-                      (into seen (map call-fingerprint accepted))
-                      seen)
+              accepted raw-instances
               counts' (reduce (fn [m inst] (update m (:fn inst) (fnil inc 0))) counts accepted)
               tagged (map #(assoc % :node-id (:id node)) accepted)]
           (recur (rest remaining)
-                 seen'
                  counts'
                  (into instances tagged)))))))
 
@@ -373,7 +357,7 @@
     (println)))
 
 (defn run-tool
-  [{:keys [trace-dir trace-root results-jsonl node no-dedupe count-all-nodes rethinks help string-truncate]
+  [{:keys [trace-dir trace-root results-jsonl node count-all-nodes rethinks help string-truncate]
     :as options}
    summary]
   (cond
@@ -418,13 +402,13 @@
                   (do
                     (print-node-summary dir trace target-node)
                     (print-skeleton target-node (or string-truncate 32))))
-                (when fn-set
-                  (if count-all-nodes
-                    (do
-                      (println (str "Call counting scope: all nodes (" (if no-dedupe "naive" "deduped") ")"))
+                  (when fn-set
+                    (if count-all-nodes
+                      (do
+                      (println "Call counting scope: all nodes (response-only)")
                       (println)
                       (print-call-counts
-                       (count-function-calls trace {:fns fn-set :dedupe? (not no-dedupe)})))
+                       (count-function-calls trace {:fns fn-set})))
                     (do
                       (println "Call counting scope: selected node only")
                       (println)

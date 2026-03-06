@@ -35,22 +35,16 @@
     (is (= '(do (foo 1))
            (tt/response-form '(do (foo 1)))))))
 
-(deftest count-function-calls-dedupe-test
+(deftest count-function-calls-all-nodes-test
   (let [trace {:nodes [{:id 0 :program '(do (foo 1) (bar "x"))}
                        {:id 1 :program '(do (foo 1) (bar "x") (foo 2))}
                        {:id 2 :program '(do (foo 1) (bar "x") (foo 2) (foo 2))}]}
         fns #{'foo}]
-    (testing "dedupe avoids inherited-prefix double counting"
-      (is (= {'foo 3}
-             (:counts (tt/count-function-calls trace {:fns fns :dedupe? true}))))
-      (is (= 3
-             (count (:instances (tt/count-function-calls trace {:fns fns :dedupe? true}))))))
-
-    (testing "no-dedupe counts all repeated occurrences across nodes"
+    (testing "counts all repeated occurrences across nodes"
       (is (= {'foo 6}
-             (:counts (tt/count-function-calls trace {:fns fns :dedupe? false}))))
+             (:counts (tt/count-function-calls trace {:fns fns}))))
       (is (= 6
-             (count (:instances (tt/count-function-calls trace {:fns fns :dedupe? false}))))))))
+             (count (:instances (tt/count-function-calls trace {:fns fns}))))))))
 
 (deftest count-function-calls-quine-response-only-test
   (let [trace {:nodes [{:id 0 :program '(quine completion (eval (do (foo 1) (bar "x"))))}
@@ -58,9 +52,19 @@
                                                           (eval (do (foo 2))))}]}
         fns #{'foo 'bar}]
     (testing "only counts calls in last quine arg per node"
-      (let [{:keys [counts]} (tt/count-function-calls trace {:fns fns :dedupe? false})]
+      (let [{:keys [counts]} (tt/count-function-calls trace {:fns fns})]
         (is (= {'foo 2 'bar 1} counts)
             "foo 1 from node 0 response + foo 2 from node 1 response; bar only in node 0 response")))))
+
+(deftest count-function-calls-quine-repeated-response-form-test
+  (let [trace {:nodes [{:id 0 :program '(quine completion (eval (do (foo 1))))}
+                       {:id 1 :program '(quine completion
+                                         (eval (do (foo 1)))
+                                         (eval (do (foo 1))))}]}
+        fns #{'foo}]
+    (testing "same local call in different responses is counted twice"
+      (is (= {'foo 2}
+             (:counts (tt/count-function-calls trace {:fns fns})))))))
 
 (deftest count-function-calls-in-form-test
   (let [program '(do (foo 1) (foo 1) (bar "x"))]
