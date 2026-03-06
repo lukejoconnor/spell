@@ -47,10 +47,10 @@
         (is (= "hello world" (llm "(eval (do ")))))))
 
 (deftest peek-now-e2e-persisted-binding-test
-  (testing "!peek-now supports def-from-peek in next turn and persists only explicit defs after !extend"
+  (testing "!peek-now supports persist-from-peek in next turn and persists only explicit persists after !extend"
     (let [call-count (atom 0)
           responses ["'(!peek-now x 42)))"
-                     "(def y x) '(!extend completion)))"
+                     "(persist y x) '(!extend completion)))"
                      "y)))"]
           llm-map (th/make-test-llm
                     {:response-fn (fn [_]

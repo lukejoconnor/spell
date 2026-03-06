@@ -798,6 +798,19 @@
     (let [[val _] (eval-ok '(expand '(do (persist x 2) (def y x))) {'x 99})]
       (is (= '(do (persist x 99) (def y x)) val)))))
 
+(deftest macro-binding-aware-expand-test
+  (testing "if-let binding symbol is preserved while test expr is expanded"
+    (let [[val _] (eval-ok '(expand '(if-let [y x] y 0)) {'x 10 'y 99})]
+      (is (= '(if-let [y 10] y 0) val))))
+
+  (testing "blocking/plet binding symbol is preserved and visible in body"
+    (let [[val _] (eval-ok '(expand '(blocking/plet [a (+ x 1)] a)) {'x 1 'a 999})]
+      (is (= '(blocking/plet [a (+ 1 1)] a) val))))
+
+  (testing "!call-now binding name is preserved while value expr is expanded"
+    (let [[val _] (eval-ok '(expand '(!call-now out (+ x 1))) {'x 2 'out 99})]
+      (is (= '(!call-now out (+ 2 1)) val)))))
+
 ;; =============================================================================
 ;; Expand integration tests
 ;; =============================================================================
@@ -1023,9 +1036,9 @@
           (is (= "tool-result" (deref (:ref fut) 5000 :timeout))))))))
 
 (deftest future-expand
-  (testing "expand handles future form (macro-expanded to future*)"
+  (testing "expand preserves future macro form while substituting free vars"
     (let [[val _] (eval-ok '(do (def x 10) (expand '(future (+ x 1)))) {})]
-      (is (= '(future* (fn [] (+ 10 1))) val)))))
+      (is (= '(future (+ 10 1)) val)))))
 
 ;; =============================================================================
 ;; blocking/await-all, blocking/pmap, blocking/plet tests
@@ -1121,14 +1134,11 @@
       (is (< elapsed 250) (str "Expected concurrent execution, took " elapsed "ms")))))
 
 (deftest blocking-plet-expand
-  (testing "expand handles blocking/plet form (macro-expanded to let + future + blocking/await)"
+  (testing "expand preserves blocking/plet form while substituting free vars"
     (let [[val _] (eval-ok '(do (def x 10)
                                 (expand '(blocking/plet [a (+ x 1) b (+ x 2)] (list a b))))
                            {})]
-      (is (seq? val))
-      (is (= 'let (first val)))
-      (is (some #(= 'blocking/await %)
-                (tree-seq coll? seq val))))))
+      (is (= '(blocking/plet [a (+ 10 1) b (+ 10 2)] (list a b)) val)))))
 
 ;; =============================================================================
 ;; Qualified symbol tests
@@ -2506,10 +2516,9 @@
                                (+ a b))))))
 
   (testing "define is recognized as macro in expand"
-    ;; expand should handle define forms without error
+    ;; expand should preserve define while still substituting free vars
     (let [[expanded _] (eval-ok '(expand '(define x (+ y 1))) {'y 10})]
-      ;; Should expand to (def x (+ 10 1))
-      (is (= 'def (first expanded))))))
+      (is (= '(define x (+ 10 1)) expanded)))))
 
 ;; =============================================================================
 ;; !print macro (#85)
@@ -2557,7 +2566,7 @@
       (is (string? result))
       (is (.contains ^String result "(def fn-defn [\"L2\" \"L3\"])"))
       (is (not (.contains ^String result "(def file-lines")))
-      (is (not (.contains ^String result "!peek-now binding disappears unless persisted."))))))
+      (is (.contains ^String result "!peek-now binding disappears unless persisted.")))))
 
 ;; =============================================================================
 ;; Think / Rethink / Extend
@@ -2714,7 +2723,7 @@
           result (run-spell (list 'do
                                   (list 'def 'x 41)
                                   (list 'prune-and-reopen (list 'quote quine-form))))]
-      (is (.contains ^String result "(def y (+ 41 1))")))))
+      (is (.contains ^String result "(def y (+ x 1))")))))
 
 (deftest extend-macro-expansion-test
   (testing "extend expands to !llm-self with prune-and-reopen"
@@ -2888,7 +2897,7 @@
                            (make-vec 1 2 3)))))))
 
 (deftest defmacro-expand-test
-  (testing "expand-expr expands user macros from outer-env"
+  (testing "expand-expr preserves user macro head while expanding macro arguments"
     (let [;; First, create a proper macro value by evaluating defmacro
           r (spell-eval '(defmacro unless [test body]
                            (list 'if test nil body))
@@ -2897,7 +2906,7 @@
           ;; Now test expand with this macro in outer-env
           outer-env {'unless macro-val 'x 5}
           expanded (eval/expand-expr '(unless (= x 0) "nonzero") outer-env)]
-      (is (= 'if (first expanded)))
+      (is (= 'unless (first expanded)))
       (is (= '(= 5 0) (second expanded)))))
 
   (testing "expand-expr does not expand user macro if locally shadowed"

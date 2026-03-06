@@ -519,6 +519,8 @@ Note: map? returns false for spell functions ({:spell/fn true ...}) and futures 
 Walks the expression and replaces symbols that have bindings in the current
 environment with their quoted values. Function values are reconstructed as
 (fn ...) source forms (since Spell uses dynamic scoping with source-form data).
+Macro calls are preserved as macro calls (no macroexpansion during expand).
+Core macros with binding positions are handled with binding-aware substitution.
 
 Called automatically by llm when processing prompts, but available explicitly.
 
