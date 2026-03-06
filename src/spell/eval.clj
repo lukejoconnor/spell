@@ -225,7 +225,7 @@
 ;; Builtins
 ;; =============================================================================
 
-(declare spell-eval expand-expr quote-value)
+(declare spell-eval expand-expr)
 
 (defn spell-fn?
   "Returns true if v is a Spell function (dynamic-scoping function map)."
@@ -461,26 +461,13 @@
                              [_ do-form] (seq pruned-last)
                              body-forms (rest do-form)
                              env (or *spell-env* {})
-                             ;; Persist is explicit and top-level here: only rewrite literal
-                             ;; (persist sym ...) forms that survive pruning. This avoids
-                             ;; full-body expansion/macroexpansion in reopened source.
-                             rewritten-body-forms
-                             (map (fn [form]
-                                    (if (and (seq? form)
-                                             (= 'persist (first form))
-                                             (symbol? (second form)))
-                                      (let [sym (second form)]
-                                        (if (contains? env sym)
-                                          (list 'persist sym (quote-value (get env sym)))
-                                          (throw (ex-info (str "persist: symbol '" sym "' not bound in environment")
-                                                          {:symbol sym}))))
-                                      form))
-                                  body-forms)]
+                             expanded-body (expand-expr (list* 'do body-forms) env)
+                             expanded-body-forms (rest expanded-body)]
                          (str "(quine completion "
                               (when (seq inert-args)
                                 (str (str/join " " (map pr-str inert-args)) " "))
                               "(eval (do "
-                              (str/join " " (map pr-str rewritten-body-forms))
+                              (str/join " " (map pr-str expanded-body-forms))
                               " "))),
    ;; Value store (for !call-now out-of-band large values)
    'stored stored,
@@ -723,26 +710,32 @@
 
     ;; List
     (seq? expr)
-    (let [head (first expr)
-          head-val (when (and (symbol? head)
-                              (not (contains? inner head))
-                              (not (special-forms head)))
-                     (get outer-env head))
-          expand1 #(first (-expand-expr % outer-env inner))
-          keep-macro-head? (and (symbol? head)
-                                (or (contains? @macros/spell-macros head)
-                                    (spell-macro? head-val)))]
-      (case head
+    (if (and (symbol? (first expr)) (get @macros/spell-macros (first expr)))
+      ;; Clojure-side macro: expand first, then continue expanding the result
+      (-expand-expr (macros/spell-macroexpand-1 expr) outer-env inner)
+      ;; Check for user-defined macros in outer-env
+      (let [head (first expr)
+            head-val (when (and (symbol? head)
+                                (not (contains? inner head))
+                                (not (special-forms head)))
+                       (get outer-env head))]
+        (if (spell-macro? head-val)
+          ;; User macro: invoke expander, then continue expanding result
+          (let [expander (:expander head-val)
+                macro-env (into outer-env (destructure-bind (:params expander) (vec (rest expr))))
+                r (spell-eval (cons 'do (:body expander)) macro-env)]
+            (if (ok? r)
+              (-expand-expr (:ok r) outer-env inner)
+              (throw (ex-info (str "Macro expansion failed during expand: " (:err r))
+                              {:form expr}))))
+      (let [expand1 #(first (-expand-expr % outer-env inner))]
+      (case (first expr)
         nil   [expr inner]
         quote [expr inner]
 
         def (let [sym (second expr)
                   [val-expanded _] (-expand-expr (nth expr 2) outer-env inner)]
               [(list 'def sym val-expanded) (conj inner sym)])
-
-        define (let [sym (second expr)
-                     [val-expanded _] (-expand-expr (nth expr 2) outer-env inner)]
-                 [(list 'define sym val-expanded) (conj inner sym)])
 
         persist (let [sym (second expr)]
                   (if (contains? outer-env sym)
@@ -773,85 +766,6 @@
         (fn fn*) (let [all-syms (set (mapcat param-symbols (second expr)))
                        body-inner (into inner all-syms)]
                    [(list* 'fn (second expr) (map #(first (-expand-expr % outer-env body-inner)) (drop 2 expr))) inner])
-
-        defn (let [name-sym (second expr)
-                   params (nth expr 2)
-                   body (drop 3 expr)
-                   param-set (set (mapcat param-symbols params))
-                   body-inner (into inner param-set)
-                   expanded-body (map #(first (-expand-expr % outer-env body-inner)) body)]
-               [(list* 'defn name-sym params expanded-body) (conj inner name-sym)])
-
-        defmacro (let [name-sym (second expr)
-                       params (nth expr 2)
-                       body (drop 3 expr)]
-                   [(list* 'defmacro name-sym params body) (conj inner name-sym)])
-
-        if-let (let [bindings (second expr)
-                     sym (first bindings)
-                     test-expr (second bindings)
-                     then-expr (nth expr 2)
-                     else-expr (nth expr 3 nil)
-                     [expanded-test _] (-expand-expr test-expr outer-env inner)
-                     [expanded-then _] (-expand-expr then-expr outer-env (conj inner sym))
-                     [expanded-else _] (-expand-expr else-expr outer-env inner)]
-                 [(if (= 3 (count expr))
-                    (list 'if-let [sym expanded-test] expanded-then)
-                    (list 'if-let [sym expanded-test] expanded-then expanded-else))
-                  inner])
-
-        when-let (let [bindings (second expr)
-                       sym (first bindings)
-                       test-expr (second bindings)
-                       body (drop 2 expr)
-                       [expanded-test _] (-expand-expr test-expr outer-env inner)
-                       body-inner (conj inner sym)
-                       expanded-body (map #(first (-expand-expr % outer-env body-inner)) body)]
-                   [(list* 'when-let [sym expanded-test] expanded-body) inner])
-
-        as-> (let [initial-expr (second expr)
-                   name-sym (nth expr 2)
-                   forms (drop 3 expr)
-                   [expanded-initial _] (-expand-expr initial-expr outer-env inner)
-                   body-inner (conj inner name-sym)
-                   expanded-forms (map #(first (-expand-expr % outer-env body-inner)) forms)]
-               [(list* 'as-> expanded-initial name-sym expanded-forms) inner])
-
-        blocking/plet (let [pairs (partition 2 (second expr))
-                            [expanded-bindings final-inner]
-                            (reduce (fn [[acc i] [pattern val-expr]]
-                                      [(conj acc pattern (first (-expand-expr val-expr outer-env i)))
-                                       (into i (param-symbols pattern))])
-                                    [[] inner] pairs)
-                            expanded-body (map #(first (-expand-expr % outer-env final-inner)) (drop 2 expr))]
-                        [(list* 'blocking/plet (vec expanded-bindings) expanded-body) inner])
-
-        (!call-now !peek-now !peek)
-        (let [args (rest expr)
-              n (count args)]
-          (cond
-            (= n 2)
-            (let [name-sym (first args)
-                  [expanded-val _] (-expand-expr (second args) outer-env inner)]
-              [(list head name-sym expanded-val) inner])
-
-            (= n 3)
-            (let [name-sym (first args)
-                  [expanded-val _] (-expand-expr (second args) outer-env inner)
-                  [expanded-limit _] (-expand-expr (nth args 2) outer-env inner)]
-              [(list head name-sym expanded-val expanded-limit) inner])
-
-            (and (even? n) (>= n 4))
-            (let [expanded-args (mapcat (fn [[name-sym val-expr]]
-                                          [name-sym (first (-expand-expr val-expr outer-env inner))])
-                                        (partition 2 args))]
-              [(list* head expanded-args) inner])
-
-            :else
-            [(if keep-macro-head?
-               (list* head (map expand1 (rest expr)))
-               (apply list (map expand1 expr)))
-             inner]))
 
 
 
@@ -933,10 +847,7 @@
                inner])
 
         ;; Default: recurse into all sub-expressions
-        [(if keep-macro-head?
-           (list* head (map expand1 (rest expr)))
-           (apply list (map expand1 expr)))
-         inner]))
+        [(apply list (map expand1 expr)) inner])))))
 
     :else [expr inner]))
 

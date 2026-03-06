@@ -227,7 +227,6 @@ You can also use rethink to delete a tool call result from context:
     '(!extend)
     ;; next turn: data is pruned, target survives as a literal value
     (persist target "big-dir/the-file-i-wanted.txt")
-Note: write `persist` explicitly in source. Macro-generated `persist` forms may not be materialized during reopen.
 
 NAMESPACES
 
