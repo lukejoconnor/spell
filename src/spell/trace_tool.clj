@@ -4,7 +4,8 @@
    Primary goals:
    - Skeletonize a selected trace node's program by collapsing strings to ellipsis
    - Count function call usage without double-counting inherited prefixes across extensions
-   - Resolve the latest errored benchmark record to a concrete trace directory"
+   - Resolve the latest errored benchmark record to a concrete trace directory
+   - Analyze rethink pruning and context-size trajectory across trace nodes"
   (:require [clojure.data.json :as json]
             [clojure.java.io :as io]
             [clojure.pprint :as pp]
@@ -26,6 +27,7 @@
    [nil "--count-all-nodes" "Count function calls across all nodes (default: selected node only)"]
    [nil "--no-dedupe" "Disable cross-node dedupe (counts repeated inherited prefix calls)"]
    [nil "--rethinks" "Report rethink forms and preceding expressions (single trace or trace root)"]
+   [nil "--context-trajectory" "Report per-node .spl context size trajectory and deltas"]
    ["-h" "--help" "Show help"]])
 
 (defn- usage [summary]
@@ -36,6 +38,7 @@
    "Usage:"
    "  clj -M -m spell.trace-tool --trace-dir DIR [--node ID] [--fn SYMBOL ...]"
    "  clj -M -m spell.trace-tool --trace-root DIR --rethinks"
+   "  clj -M -m spell.trace-tool --trace-root DIR --context-trajectory"
    "  clj -M -m spell.trace-tool --results-jsonl FILE [--fn SYMBOL ...]"
     ""
     "Notes:"
@@ -295,6 +298,79 @@
 (defn- path->str [path]
   (str "[" (str/join " " (map pr-str path)) "]"))
 
+(defn- fmt-char-count [n]
+  (format "%,dc" (long n)))
+
+(defn- fmt-signed-char-count [n]
+  (format "%+,dc" (long n)))
+
+(defn classify-pruned-content
+  "Classify pruned content for rethink reports."
+  [form]
+  (cond
+    (nil? form) "none"
+    (and (seq? form) (= 'def (first form)))
+    (let [bound (nth form 2 nil)]
+      (cond
+        (string? bound) "def/string"
+        (map? bound) "def/map"
+        :else "def/expr"))
+    (and (seq? form) (= 'think (first form))) "think"
+    :else "other"))
+
+(defn- system-injected-rethink? [rethink-form]
+  (let [msg (when (seq? rethink-form) (second rethink-form))]
+    (and (string? msg)
+         (str/includes? msg "!peek-now binding disappears"))))
+
+(defn- enrich-rethink-item [it]
+  (let [prev-str (when-let [prev (:previous it)] (pr-str prev))
+        pruned-size (count (or prev-str ""))
+        system? (system-injected-rethink? (:rethink it))]
+    (assoc it
+           :pruned-size pruned-size
+           :content-type (classify-pruned-content (:previous it))
+           :system-injected? system?)))
+
+(defn- summarize-rethinks [items]
+  (let [system-items (filter :system-injected? items)
+        model-items (remove :system-injected? items)]
+    {:total (count items)
+     :system-count (count system-items)
+     :system-pruned (reduce + 0 (map :pruned-size system-items))
+     :model-count (count model-items)
+     :model-pruned (reduce + 0 (map :pruned-size model-items))}))
+
+(defn- rethinks-by-node [items]
+  (reduce (fn [m {:keys [node-id pruned-size]}]
+            (-> m
+                (update-in [node-id :count] (fnil inc 0))
+                (update-in [node-id :pruned-size] (fnil + 0) pruned-size)))
+          {}
+          items))
+
+(defn- spl-node-entries [trace-dir trace]
+  (->> (:nodes trace)
+       (keep (fn [node]
+               (let [node-file (or (:file node) (format "%04d.spl" (:id node)))
+                     spl? (str/ends-with? node-file ".spl")]
+                 (when spl?
+                   (let [path (io/file trace-dir node-file)]
+                     {:node node
+                      :node-id (:id node)
+                      :file node-file
+                      :size (when (.exists path) (count (slurp path)))})))))
+       (sort-by :node-id)
+       vec))
+
+(defn- likely-agent-boundary?
+  [prev-node node delta]
+  (and (some? delta)
+       (neg? delta)
+       (>= (Math/abs (long delta)) 1000)
+       (or (not= (:parent node) (:id prev-node))
+           (< (:depth node) (:depth prev-node)))))
+
 (defn- print-error-resolution [results-file latest-error record trace-dir]
   (println (str "Results file: " results-file))
   (println "Latest error (source-of-truth):")
@@ -346,23 +422,75 @@
       (println))))
 
 (defn- print-rethinks-for-trace [trace-dir trace max-string-chars]
-  (let [items (collect-trace-rethinks trace)]
+  (let [items (->> (collect-trace-rethinks trace)
+                   (map enrich-rethink-item)
+                   vec)
+        {:keys [total system-count system-pruned model-count model-pruned]}
+        (summarize-rethinks items)]
     (println (str "Trace: " trace-dir))
-    (println (str "Rethinks: " (count items)))
+    (println (str "Rethinks: " total))
     (if (empty? items)
       (println "  (none)")
       (doseq [it items]
-        (println (format "  node=%s path=%s" (:node-id it) (path->str (:path it))))
+        (println (format "  node=%s path=%s  pruned=%s  type=%s"
+                         (:node-id it)
+                         (path->str (:path it))
+                         (fmt-char-count (:pruned-size it))
+                         (:content-type it)))
         (print "    rethink: ")
         (pp/pprint (skeletonize-form (:rethink it) {:max-string-chars max-string-chars}))
         (print "    previous: ")
         (if-let [prev (:previous it)]
           (pp/pprint prev)
           (println "<none>"))))
+    (println "Rethink Summary:")
+    (println (format "  total: %d" total))
+    (println (format "  system-injected (peek-now): %d (pruned %s)"
+                     system-count
+                     (fmt-char-count system-pruned)))
+    (println (format "  model-initiated: %d (pruned %s)"
+                     model-count
+                     (fmt-char-count model-pruned)))
+    (println)))
+
+(defn- print-context-trajectory-for-trace [trace-dir trace]
+  (let [rethink-items (->> (collect-trace-rethinks trace)
+                           (map enrich-rethink-item)
+                           vec)
+        rethink-summary (rethinks-by-node rethink-items)
+        entries (spl-node-entries trace-dir trace)]
+    (println (str "Trace: " trace-dir))
+    (println "Context Trajectory:")
+    (if (empty? entries)
+      (println "  (no .spl nodes found)")
+      (doseq [[idx entry] (map-indexed vector entries)]
+        (let [prev (when (pos? idx) (nth entries (dec idx)))
+              delta (when (and prev
+                               (some? (:size prev))
+                               (some? (:size entry)))
+                      (- (:size entry) (:size prev)))
+              rethink-ann (when-let [{:keys [count pruned-size]} (get rethink-summary (:node-id entry))]
+                            (format "rethink: %d, pruned %s" count (fmt-char-count pruned-size)))
+              boundary-ann (when (and prev (likely-agent-boundary? (:node prev) (:node entry) delta))
+                             "agent boundary")
+              missing-ann (when (nil? (:size entry))
+                            (str "missing file " (:file entry)))
+              anns (cond-> []
+                     rethink-ann (conj rethink-ann)
+                     boundary-ann (conj boundary-ann)
+                     missing-ann (conj missing-ann))
+              line (str (format "  %04d: %8s"
+                                (:node-id entry)
+                                (if-let [sz (:size entry)] (fmt-char-count sz) "<missing>"))
+                        (when (some? delta)
+                          (format "  (%s)" (fmt-signed-char-count delta)))
+                        (when (seq anns)
+                          (str "  [" (str/join "] [" anns) "]")))]
+          (println line))))
     (println)))
 
 (defn run-tool
-  [{:keys [trace-dir trace-root results-jsonl node no-dedupe count-all-nodes rethinks help string-truncate]
+  [{:keys [trace-dir trace-root results-jsonl node no-dedupe count-all-nodes rethinks context-trajectory help string-truncate]
     :as options}
    summary]
   (cond
@@ -372,8 +500,11 @@
     (and rethinks (nil? trace-dir) (nil? trace-root))
     {:exit 1 :message "Rethink mode requires --trace-dir or --trace-root"}
 
-    (and trace-root (not rethinks))
-    {:exit 1 :message "--trace-root is currently supported with --rethinks mode only"}
+    (and context-trajectory (nil? trace-dir) (nil? trace-root))
+    {:exit 1 :message "Context trajectory mode requires --trace-dir or --trace-root"}
+
+    (and trace-root (not (or rethinks context-trajectory)))
+    {:exit 1 :message "--trace-root is currently supported with --rethinks and/or --context-trajectory modes only"}
 
     (and (nil? trace-dir) (nil? results-jsonl) (nil? trace-root))
     {:exit 1 :message (str "Must provide --trace-dir, --trace-root, or --results-jsonl\n\n" (usage summary))}
@@ -383,7 +514,10 @@
       (do
         (doseq [d (find-trace-dirs trace-root)]
           (let [{:keys [trace dir]} (load-trace d)]
-            (print-rethinks-for-trace dir trace (or string-truncate 32))))
+            (when rethinks
+              (print-rethinks-for-trace dir trace (or string-truncate 32)))
+            (when context-trajectory
+              (print-context-trajectory-for-trace dir trace))))
         {:exit 0 :message nil})
       (let [resolution (if results-jsonl
                        (if-let [{:keys [latest-error record trace-dir]} (resolve-trace-from-results results-jsonl)]
@@ -402,8 +536,12 @@
                     fn-set (parse-symbol-set (:fn options))]
                 (when from-results?
                   (print-error-resolution results-jsonl latest-error record trace-dir))
-                (if rethinks
-                  (print-rethinks-for-trace dir trace (or string-truncate 32))
+                (if (or rethinks context-trajectory)
+                  (do
+                    (when rethinks
+                      (print-rethinks-for-trace dir trace (or string-truncate 32)))
+                    (when context-trajectory
+                      (print-context-trajectory-for-trace dir trace)))
                   (do
                     (print-node-summary dir trace target-node)
                     (print-skeleton target-node (or string-truncate 32))))

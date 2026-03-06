@@ -1,5 +1,7 @@
 (ns spell.trace-tool-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.java.io :as io]
+            [clojure.string :as str]
+            [clojure.test :refer [deftest is testing]]
             [spell.trace-tool :as tt]))
 
 (deftest skeletonize-form-test
@@ -60,6 +62,66 @@
       (is (= '(think "first") (:previous r1)))
       (is (= '(rethink "drop x") (:rethink r2)))
       (is (= '(def x 1) (:previous r2))))))
+
+(deftest classify-pruned-content-test
+  (is (= "def/string" (tt/classify-pruned-content '(def x "abc"))))
+  (is (= "def/map" (tt/classify-pruned-content '(def x {:a 1}))))
+  (is (= "def/expr" (tt/classify-pruned-content '(def x (foo 1)))))
+  (is (= "think" (tt/classify-pruned-content '(think "note"))))
+  (is (= "other" (tt/classify-pruned-content '(foo 1)))))
+
+(deftest run-tool-rethinks-and-context-trajectory-test
+  (let [tmp-dir (.toFile (java.nio.file.Files/createTempDirectory "trace-tool-test" (make-array java.nio.file.attribute.FileAttribute 0)))
+        trace-dir (.getPath tmp-dir)
+        trace {:nodes [{:id 0
+                        :parent nil
+                        :depth 0
+                        :variant :default
+                        :file "0000.spl"
+                        :program '(do
+                                    (def peeked "abc")
+                                    (rethink "!peek-now binding disappears after this turn")
+                                    (def keep 1))}
+                       {:id 1
+                        :parent 0
+                        :depth 1
+                        :variant :default
+                        :file "0001.spl"
+                        :program '(do
+                                    (def tool-result {:a 1})
+                                    (rethink "manual cleanup")
+                                    (def y 2))}
+                       {:id 2
+                        :parent nil
+                        :depth 0
+                        :variant :default
+                        :file "0002.spl"
+                        :program '(do (def z 3))}]
+               :next-id 3
+               :root 0}]
+    (spit (io/file tmp-dir "trace.edn") (pr-str trace))
+    (spit (io/file tmp-dir "0000.spl") (apply str (repeat 1200 "a")))
+    (spit (io/file tmp-dir "0001.spl") (apply str (repeat 2400 "b")))
+    (spit (io/file tmp-dir "0002.spl") (apply str (repeat 900 "c")))
+
+    (let [rethinks-out
+          (with-out-str
+            (is (= {:exit 0 :message nil}
+                   (tt/run-tool {:trace-dir trace-dir :rethinks true :string-truncate 64} ""))))]
+      (is (str/includes? rethinks-out "type=def/string"))
+      (is (str/includes? rethinks-out "type=def/map"))
+      (is (str/includes? rethinks-out "system-injected (peek-now): 1"))
+      (is (str/includes? rethinks-out "model-initiated: 1")))
+
+    (let [trajectory-out
+          (with-out-str
+            (is (= {:exit 0 :message nil}
+                   (tt/run-tool {:trace-dir trace-dir :context-trajectory true} ""))))]
+      (is (str/includes? trajectory-out "Context Trajectory:"))
+      (is (str/includes? trajectory-out "0000:"))
+      (is (str/includes? trajectory-out "0001:"))
+      (is (str/includes? trajectory-out "(+1,200c)"))
+      (is (str/includes? trajectory-out "agent boundary")))))
 
 (deftest select-node-default-prefers-latest-default-program-test
   (let [trace {:nodes [{:id 0 :variant :default :program '(do 1)}

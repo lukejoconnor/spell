@@ -47,6 +47,29 @@ For CC: read `agent.log` or `stream-json/` output for the actual error.
 - **Both wrong (P4):** What makes this problem hard? Did both agents fail the same way or differently?
 - **Both right (P5):** Check cost/latency differences. Note any interesting technique differences.
 
+## Context Management (after correctness analysis)
+
+Use `spell.trace-tool` for context checks:
+
+1. Run `--rethinks` and record:
+   - Pruned binding sizes
+   - Pruned content types
+   - System-injected peek-now rethinks vs model-initiated rethinks
+
+2. Run `--context-trajectory` and check:
+   - Monotonic growth (risk) vs sawtooth grow/prune behavior
+   - Largest growth jumps (often large tool outputs)
+   - Boundary resets where context drops at handoff points
+
+3. Check for map-duplication patterns:
+   - If peek-now binds a compound map/list, then persistent key extraction may inline the entire value repeatedly after pruning.
+   - Compare total size of extracted persistent defs against the original peek binding size.
+
+4. Report in your findings:
+   - Context trajectory summary (start -> end, largest jump, total pruned)
+   - Whether peek-now/rethink usage was effective
+   - Any duplication or context waste risk found
+
 ## Output format
 
 Return your findings in EXACTLY this format:

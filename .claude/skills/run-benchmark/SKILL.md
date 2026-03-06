@@ -103,6 +103,12 @@ clj -M -m spell.trace-tool --trace-dir traces/2026-03-02T07-04-01 --rethinks
 # Rethink report across a directory of traces
 clj -M -m spell.trace-tool --trace-root traces --rethinks
 
+# Context size trajectory for one trace
+clj -M -m spell.trace-tool --trace-dir traces/2026-03-02T07-04-01 --context-trajectory
+
+# Context size trajectory across a directory of traces
+clj -M -m spell.trace-tool --trace-root traces --context-trajectory
+
 # Resolve latest errored benchmark row to trace_dir, then inspect
 clj -M -m spell.trace-tool --results-jsonl benchmarking/results/unified/full_omni_spell_opus.jsonl
 ```
@@ -111,6 +117,30 @@ Notes:
 - Default node selection prefers the latest `:default` node with a parsed program (usually the last extension node).
 - `--string-truncate N` controls displayed string truncation (default `32`, `-1` disables truncation).
 - `--count-all-nodes` is useful for whole-trace stats; selected-node mode is better for extension-chain end state.
+
+### Context Management Analysis
+
+After correctness analysis, inspect context-management behavior explicitly:
+
+1. **Rethink inventory** (`--rethinks`)
+   - Count total rethinks and split system-injected peek-now rethinks vs model-initiated rethinks.
+   - Review total pruned content size and content type (`def/string`, `def/map`, etc.).
+   - Check whether pruned bindings are large enough to justify peek-now usage.
+
+2. **Context trajectory** (`--context-trajectory`)
+   - Determine whether context follows healthy sawtooth behavior (grow + prune) or monotonic growth.
+   - Identify largest growth spikes and where large drops happen.
+   - Use agent-boundary annotations to see whether handoffs reset context effectively.
+
+3. **Map duplication check**
+   - Watch for peek-now of compound values (maps/lists), then persistent `(def x (get ...))` extraction.
+   - If many extractions each inline most of the original value post-prune, flag context duplication risk.
+
+Report these metrics with correctness findings:
+- Final context size
+- Largest single-node growth
+- Total pruned content
+- Whether context management looked effective or problematic
 
 ### 6. Scoring and reporting
 
