@@ -529,6 +529,12 @@
       (is (= 2 (env 'y)))
       (is (= [1 2] (env 'v))))))
 
+(deftest persist-form
+  (testing "persist behaves like def at eval-time"
+    (let [[val env] (eval-ok '(persist x (+ 2 3)) {})]
+      (is (= 5 val))
+      (is (= 5 (env 'x))))))
+
 ;; =============================================================================
 ;; Env input tests (passing bindings into spell-eval)
 ;; =============================================================================
@@ -776,6 +782,21 @@
   (testing "qualified symbols are preserved"
     (let [[val _] (eval-ok '(expand '(strings/trim x)) {'x "  hi  "})]
       (is (= '(strings/trim "  hi  ") val)))))
+
+(deftest persist-expand-test
+  (testing "persist expansion uses bound symbol value"
+    (let [[val _] (eval-ok '(do (def x 1) (expand '(persist x 2))) {})]
+      (is (= '(persist x 1) val))))
+
+  (testing "persist expansion throws when symbol is unbound"
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo
+         #"persist: symbol 'x' not bound in environment"
+         (eval-ok '(expand '(persist x 2)) {}))))
+
+  (testing "persist adds symbol to inner scope during do expansion"
+    (let [[val _] (eval-ok '(expand '(do (persist x 2) (def y x))) {'x 99})]
+      (is (= '(do (persist x 99) (def y x)) val)))))
 
 ;; =============================================================================
 ;; Expand integration tests
@@ -2536,7 +2557,7 @@
       (is (string? result))
       (is (.contains ^String result "(def fn-defn [\"L2\" \"L3\"])"))
       (is (not (.contains ^String result "(def file-lines")))
-      (is (.contains ^String result "(think \"!peek-now binding disappears unless persisted.\")")))))
+      (is (not (.contains ^String result "!peek-now binding disappears unless persisted."))))))
 
 ;; =============================================================================
 ;; Think / Rethink / Extend
@@ -2644,11 +2665,9 @@
       ;; Should contain the pruned body as an open prefix
       (is (string? result))
       (is (.startsWith ^String result "(quine completion (eval (do "))
-      ;; Should contain think "B" (the converted rethink)
-      (is (.contains ^String result "think"))
-      (is (.contains ^String result "\"B\""))
-      ;; Should NOT contain think "A" (pruned)
-      (is (not (.contains ^String result "\"A\"")))))
+      ;; Should contain the rethought replacement and not the pruned prior sibling.
+      (is (.contains ^String result "(def x 2)"))
+      (is (not (.contains ^String result "(def x 1)")))))
 
   (testing "prune-and-reopen with no rethinks passes through"
     (let [quine-form '(quine completion (eval (do (def x 1) (def y 2))))
@@ -2673,7 +2692,29 @@
     (let [quine-form '(quine completion (eval (do (def a 10))))
           result (run-spell (list 'prune-and-reopen (list 'quote quine-form)))]
       (is (.startsWith ^String result "(quine completion (eval (do "))
-      (is (.contains ^String result "(def a 10)")))))
+      (is (.contains ^String result "(def a 10)"))))
+
+  (testing "prune-and-reopen keeps persist with baked value after rethink pruning"
+    (let [quine-form '(quine completion
+                        (eval (do (def big [1 2 3])
+                                  (rethink "drop big")
+                                  (persist y (get big 1))
+                                  (quote (!extend completion)))))
+          result (run-spell (list 'do
+                                  (list 'def 'big [1 2 3])
+                                  (list 'persist 'y (list 'get 'big 1))
+                                  (list 'prune-and-reopen (list 'quote quine-form))))]
+      (is (.contains ^String result "(persist y 2)"))
+      (is (not (.contains ^String result "(def big [1 2 3])")))))
+
+  (testing "prune-and-reopen still expands def value expressions with env bindings"
+    (let [quine-form '(quine completion
+                        (eval (do (def y (+ x 1))
+                                  (quote (!extend completion)))))
+          result (run-spell (list 'do
+                                  (list 'def 'x 41)
+                                  (list 'prune-and-reopen (list 'quote quine-form))))]
+      (is (.contains ^String result "(def y (+ 41 1))")))))
 
 (deftest extend-macro-expansion-test
   (testing "extend expands to !llm-self with prune-and-reopen"

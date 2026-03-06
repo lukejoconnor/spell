@@ -461,19 +461,8 @@
                              [_ do-form] (seq pruned-last)
                              body-forms (rest do-form)
                              env (or *spell-env* {})
-                             ;; Re-materialize free vars in persisted defs before serializing
-                             ;; back to source. This makes (def y x)-style persistence survive
-                             ;; when an earlier sibling binding is pruned, while preserving
-                             ;; source markers such as think/rethink.
-                             expanded-body-forms
-                             (map (fn [form]
-                                    (if (and (seq? form)
-                                             (= 'def (first form))
-                                             (symbol? (second form))
-                                             (>= (count form) 3))
-                                      (list 'def (second form) (expand-expr (nth form 2) env))
-                                      form))
-                                  body-forms)]
+                             expanded-body (expand-expr (list* 'do body-forms) env)
+                             expanded-body-forms (rest expanded-body)]
                          (str "(quine completion "
                               (when (seq inert-args)
                                 (str (str/join " " (map pr-str inert-args)) " "))
@@ -668,7 +657,7 @@
 
 (def special-forms
   "Special forms that are not free variables."
-  #{'quote 'def 'do 'if 'let 'fn 'fn* 'expand 'quine 'loop 'recur 'for 'try})
+  #{'quote 'def 'persist 'do 'if 'let 'fn 'fn* 'expand 'quine 'loop 'recur 'for 'try})
 
 (defn quote-value
   "Wrap non-self-evaluating values in (quote ...) for safe embedding in generated code."
@@ -747,6 +736,12 @@
         def (let [sym (second expr)
                   [val-expanded _] (-expand-expr (nth expr 2) outer-env inner)]
               [(list 'def sym val-expanded) (conj inner sym)])
+
+        persist (let [sym (second expr)]
+                  (if (contains? outer-env sym)
+                    [(list 'persist sym (quote-value (get outer-env sym))) (conj inner sym)]
+                    (throw (ex-info (str "persist: symbol '" sym "' not bound in environment")
+                                    {:symbol sym}))))
 
         do (let [[forms final-inner]
                  (reduce (fn [[acc i] sub-expr]
@@ -978,6 +973,13 @@
                 val-result
                 (ok (:ok val-result)
                     (assoc (:env val-result) sym (:ok val-result)))))
+
+      persist (let [sym (second expr)
+                    val-result (spell-eval (nth expr 2) env)]
+                (if (err? val-result)
+                  val-result
+                  (ok (:ok val-result)
+                      (assoc (:env val-result) sym (:ok val-result)))))
 
       do    (eval-seq (rest expr) env)
 
