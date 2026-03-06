@@ -153,6 +153,17 @@
                :else x))]
      (walk form))))
 
+(defn response-form
+  "Extract the response-only portion of a program (the last quine arg).
+   For quine forms (quine name arg1 ... argN), returns argN.
+   For non-quine forms, returns the entire program."
+  [program]
+  (if (and (seq? program)
+           (>= (count program) 3)
+           (= 'quine (first program)))
+    (last program)
+    program))
+
 (defn- call-head [form]
   (when (seq? form)
     (let [h (first form)]
@@ -205,7 +216,7 @@
         {:counts counts
          :instances instances}
         (let [node (first remaining)
-              raw-instances (->> (collect-call-instances (:program node))
+              raw-instances (->> (collect-call-instances (response-form (:program node)))
                                  (filter #(or (nil? fns) (contains? fns (:fn %)))))
               accepted (if dedupe?
                          (remove #(contains? seen (call-fingerprint %)) raw-instances)
@@ -274,7 +285,7 @@
        (filter :program)
        (mapcat (fn [node]
                  (map #(assoc % :node-id (:id node))
-                      (collect-rethinks (:program node)))))))
+                      (collect-rethinks (response-form (:program node))))))))
 
 (defn find-trace-dirs
   "Return sorted paths for directories under root containing trace.edn."
@@ -419,7 +430,7 @@
                       (println)
                       (if-let [program (:program target-node)]
                         (print-call-counts
-                         (count-function-calls-in-form program {:fns fn-set :node-id (:id target-node)}))
+                         (count-function-calls-in-form (response-form program) {:fns fn-set :node-id (:id target-node)}))
                         (println "Selected node has no :program; no call counts available.\n")))))
                 {:exit 0 :message nil}))))))))
 
