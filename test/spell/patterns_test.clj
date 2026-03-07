@@ -14,6 +14,7 @@
 
 (def fix-loop (:fix-loop stdlib/patterns))
 (def ralph (:ralph stdlib/patterns))
+(def team (:team stdlib/patterns))
 
 (defn- run-fix-loop [opts env]
   (binding [eval/*spell-env* (merge {'strings stdlib/strings
@@ -28,6 +29,15 @@
                                      'io (assoc sio/io-namespace :sh sio/sh)}
                                     env)]
     (eval/invoke-fn ralph [opts])))
+
+(defn- run-team [opts env]
+  (binding [eval/*spell-env* (merge {'strings stdlib/strings
+                                     'patterns stdlib/patterns
+                                     'io (assoc sio/io-namespace :sh sio/sh)
+                                     'futures {:!ask-await (fn [fut]
+                                                             (deref (:ref fut) 5000 :timeout))}}
+                                    env)]
+    (eval/invoke-fn team [opts])))
 
 (defn- create-temp-git-repo
   [files]
@@ -139,6 +149,142 @@
         (is (= 3 (count worker-calls)))
         (is (= [0 1 2] (mapv #(get-in % [:msg :attempt]) worker-calls)))
         (is (= parent-handle (:target (last @send-calls))))))))
+
+(deftest team-pattern-conflict-resolution-test
+  (testing "team executes dependency waves, resolves a merge conflict, and branches later work from integrated HEAD"
+    (let [dir (create-temp-git-repo {"shared.txt" "base\n"})
+          register-calls (atom [])
+          planner-calls (atom 0)
+          verifier-msgs (atom [])
+          send-calls (atom [])
+          worker-results (atom {})
+          register-fn (fn [handle completion]
+                        (swap! register-calls conj {:handle handle :completion completion})
+                        handle)
+          send-fn (fn [target msg]
+                    (swap! send-calls conj {:target target :msg msg})
+                    (let [task-id (get-in msg [:task :id])
+                          worktree (:worktree-path msg)]
+                      (case task-id
+                        :task-a
+                        (spit (str worktree "/shared.txt") "alpha\n")
+
+                        :task-b
+                        (spit (str worktree "/shared.txt") "beta\n")
+
+                        :task-c
+                        (do
+                          (is (= "alpha\nbeta\n" (slurp (str worktree "/shared.txt"))))
+                          (spit (str worktree "/done.txt") "ok")))
+                      (swap! worker-results assoc target {:summary (str "finished " (name task-id))})))
+          send-await-fn (fn [handle msg]
+                          (cond
+                            (str/starts-with? (name handle) "team-planner-")
+                            (do
+                              (swap! planner-calls inc)
+                              "[{:id :task-a :title \"Task A\" :context \"Write alpha\" :depends []}
+                                {:id :task-b :title \"Task B\" :context \"Write beta\" :depends []}
+                                {:id :task-c :title \"Task C\" :context \"Check merged file and add done\" :depends [:task-a :task-b]}]")
+
+                            (str/starts-with? (name handle) "team-verifier-")
+                            (do
+                              (swap! verifier-msgs conj msg)
+                              (if (= :conflict (:merge-status msg))
+                                (do
+                                  (spit (str (:integration-path msg) "/shared.txt") "alpha\nbeta\n")
+                                  (sio/sh "git add shared.txt")
+                                  {:approved true
+                                   :summary "resolved shared.txt conflict"
+                                   :commit-msg "team: resolve shared conflict"
+                                   :retry false
+                                   :resolved-conflict true})
+                                {:approved true
+                                 :summary (str "approved " (get-in msg [:task :id]))
+                                 :commit-msg (str "team: " (name (get-in msg [:task :id])))
+                                 :retry false
+                                 :resolved-conflict false}))
+
+                            :else
+                            {:approved false :summary "unexpected handle"}))
+          completion-promise-fn (fn [handle] handle)
+          await-all-fn (fn [tokens]
+                         (mapv #(get @worker-results %) tokens))]
+      (try
+        (with-redefs [sio/sh (sh-in-dir dir)]
+          (let [result (run-team {:goal "Implement the shared file flow"
+                                  :shared-context "Use shared.txt"
+                                  :max-retries 1}
+                                 {'agents {:register register-fn
+                                           :send send-fn}
+                                  'blocking {:send-await send-await-fn
+                                             :completion-promise completion-promise-fn
+                                             :await-all await-all-fn}})
+                end-branch (str/trim (:out (sio/sh "git rev-parse --abbrev-ref HEAD")))]
+            (is (= :completed (:status result)))
+            (is (= 1 @planner-calls))
+            (is (= 5 (count @register-calls)))
+            (is (= [:task-a :task-b :task-c]
+                   (mapv #(get-in % [:msg :task :id]) @send-calls)))
+            (is (= [:clean :conflict :clean]
+                   (mapv :merge-status @verifier-msgs)))
+            (is (= "alpha\nbeta\n" (slurp (str dir "/shared.txt"))))
+            (is (= "ok" (slurp (str dir "/done.txt"))))
+            (is (= (:branch result) end-branch))
+            (is (every? #(= :completed (:status %)) (:tasks result)))
+            (is (some #(str/includes? (:completion %) "planner agent in patterns/team")
+                      @register-calls))
+            (is (some #(str/includes? (:completion %) "verifier agent in patterns/team")
+                      @register-calls))))
+        (finally
+          (cleanup-dir dir))))))
+
+(deftest team-pattern-failure-cleans-up-test
+  (testing "team returns to the original branch on total failure and blocks dependent tasks"
+    (let [dir (create-temp-git-repo {"shared.txt" "base\n"})
+          register-calls (atom [])
+          send-calls (atom [])
+          worker-results (atom {})
+          register-fn (fn [handle completion]
+                        (swap! register-calls conj {:handle handle :completion completion})
+                        handle)
+          send-fn (fn [target msg]
+                    (swap! send-calls conj {:target target :msg msg})
+                    (spit (str (:worktree-path msg) "/rejected.txt") "nope")
+                    (swap! worker-results assoc target {:summary "made rejected change"}))
+          send-await-fn (fn [handle _msg]
+                          (if (str/starts-with? (name handle) "team-planner-")
+                            "[{:id :task-a :title \"Task A\" :context \"Create rejected.txt\" :depends []}
+                              {:id :task-b :title \"Task B\" :context \"Depends on task A\" :depends [:task-a]}]"
+                            {:approved false
+                             :summary "rejecting merge for test"
+                             :commit-msg "unused"
+                             :retry false
+                             :resolved-conflict false}))
+          completion-promise-fn (fn [handle] handle)
+          await-all-fn (fn [tokens]
+                         (mapv #(get @worker-results %) tokens))]
+      (try
+        (with-redefs [sio/sh (sh-in-dir dir)]
+          (let [orig-branch (str/trim (:out (sio/sh "git rev-parse --abbrev-ref HEAD")))
+                result (run-team {:goal "Try a failing task"
+                                  :max-retries 1}
+                                 {'agents {:register register-fn
+                                           :send send-fn}
+                                  'blocking {:send-await send-await-fn
+                                             :completion-promise completion-promise-fn
+                                             :await-all await-all-fn}})
+                end-branch (str/trim (:out (sio/sh "git rev-parse --abbrev-ref HEAD")))]
+            (is (= :failed (:status result)))
+            (is (nil? (:branch result)))
+            (is (= orig-branch end-branch))
+            (is (= [:task-a] (mapv #(get-in % [:msg :task :id]) @send-calls)))
+            (is (= [:failed :failed] (mapv :status (:tasks result))))
+            (is (not (.exists (java.io.File. (str dir "/rejected.txt")))))
+            (is (str/blank? (:out (sio/sh "git status --porcelain"))))
+            (is (= 2 (count (:failed result))))
+            (is (= 3 (count @register-calls)))))
+        (finally
+          (cleanup-dir dir))))))
 
 (deftest fix-loop-happy-path-blocking-send-await-lifecycle-test
   (testing "uses blocking/send-await for reflector and worker"
