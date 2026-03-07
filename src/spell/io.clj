@@ -478,22 +478,28 @@
     (zero? (double timeout)) nil
     :else (long (Math/ceil (double timeout)))))
 
+(defn- ensure-string-args
+  "Throw an informative ex-info if any argument is not a string."
+  [label args extra-msg]
+  (when-let [bad (first (remove string? args))]
+    (throw (ex-info (str label " must be strings, got "
+                         (pr-str bad)
+                         extra-msg)
+                    {:args (vec args)}))))
+
 (defn sh
   "Execute shell command. Returns {:exit N :out \"...\" :err \"...\"}.
    Optional last arg may be an opts map with :timeout seconds.
    :timeout 0 disables timeout for this call.
    When SPELL_DOCKER_CONTAINER env var is set, commands execute inside
-   that Docker container via `docker exec`."
+  that Docker container via `docker exec`."
   [command & more]
   (let [[opts parts] (if (and (seq more) (map? (last more)))
                        [(last more) (butlast more)]
                        [nil more])
-        _ (when-let [bad (first (remove string? parts))]
-            (throw (ex-info (str "io/sh: all command segments must be strings, got "
-                                 (pr-str bad)
-                                 ". For options, pass a map as the last argument: "
-                                 "{:timeout 60}")
-                            {:command command :parts (vec parts)})))
+        _ (ensure-string-args "io/sh: all command segments"
+                              (cons command parts)
+                              ". For options, pass a map as the last argument: {:timeout 60}")
         timeout-seconds (resolve-timeout-seconds
                           (if (contains? opts :timeout)
                             (:timeout opts)
@@ -527,6 +533,7 @@
   "Execute command directly (no shell). Takes command as vector of strings.
    Returns {:exit N :out \"...\" :err \"...\"}."
   [args]
+  (ensure-string-args "io/exec: all argv entries" args "")
   (let [pb (ProcessBuilder. ^java.util.List (vec args))
         process (.start pb)
         out-future (future (slurp (.getInputStream process)))

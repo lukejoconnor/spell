@@ -523,12 +523,22 @@
   (testing "keyword args instead of opts map throws informative error"
     (is (thrown-with-msg? clojure.lang.ExceptionInfo
                           #"all command segments must be strings"
-                          (io/sh "echo hello" :timeout 60)))))
+                          (io/sh "echo hello" :timeout 60))))
+
+  (testing "non-string first command segment throws informative error"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"all command segments must be strings"
+                          (io/sh :echo " hello")))))
 
 (deftest exec-test
   (let [result (io/exec ["echo" "hello"])]
     (is (= 0 (:exit result)))
-    (is (= "hello" (:out result)))))
+    (is (= "hello" (:out result))))
+
+  (testing "non-string argv entries throw informative error"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"all argv entries must be strings"
+                          (io/exec ["echo" :timeout 60])))))
 
 (deftest env-test
   (testing "get all env vars"
