@@ -219,6 +219,19 @@ You can also use rethink to delete a tool call result from context:
     '(!extend completion)
     ;; next turn: fn-defn remains, file-lines is pruned
 
+`persist` retains a computed value across rethink pruning:
+    ...'(!call-now data (io/bash "ls big-dir"))
+    (def data "list of 1000 files")
+    (persist target (nth (strings/split data "\n") 42))
+    (rethink)
+    '(!extend)
+    ;; next turn: data is pruned, target survives as a literal value
+    (persist target "big-dir/the-file-i-wanted.txt")
+
+Do not write Spell macros that emit persist.
+Macro-generated persist may not materialize during reopen.
+Use explicit source-level persist forms.
+
 NAMESPACES
 
 Access functions with qualified symbols.

@@ -263,7 +263,7 @@ All functions take and return numbers. Use (!describe math :fn-name) for any fun
    :docs {:guide "BUILTINS — Core functions always available without namespace prefix.
 
 Categories (use (!describe builtins :category) for full listing):
-  special-forms — quote, def, do, if, let, fn, expand, quine, loop, recur, for, try
+  special-forms — quote, def, persist, do, if, let, fn, quine, loop, recur, for, try
   macros        — when, defn, cond, case, ->, ->>, !call-now, !peek/!peek-now, !print, !describe, think/rethink/!extend/!compact, ...
   effect        — eval, !llm-self, leaf-llm, describe-fn, llm (trailing expression only)
   math          — +, -, *, /, inc, dec, mod, abs, max, min, floor, ceil, rand, ...
@@ -296,12 +296,12 @@ Common mistakes:
     :special-forms
     "  quote — return expression unevaluated as data; prevents evaluation of its argument
   def — bind a value to a symbol in the current environment
+  persist — bind like def, but survive prune-and-reopen only when written explicitly in source
   do — evaluate expressions sequentially; return the value of the last one
   if — conditional branch; evaluates test, then either then-expr or else-expr
   let — introduce local bindings scoped to the body; supports destructuring
   fn — create a function; returns source-form data with dynamic scoping semantics
   fn* — internal alias for fn; produced by the #() reader macro
-  expand — substitute free variables in a quoted expression from the current environment
   quine — bind a name to the enclosing form as data, enabling self-referential programs
   loop — establish a recursion point with initial bindings; used with recur
   recur — jump back to the enclosing loop with new values; tail-recursive iteration
@@ -511,23 +511,22 @@ Note: map? returns false for spell functions ({:spell/fn true ...}) and futures 
 
     ;; ---- Individual Spell-specific function docs ----
 
-    :expand
-    "Special form. Substitute free variables in a quoted expression from the current environment.
+    :persist
+    "Special form. Bind like def, but mark the binding for explicit reopen-time retention.
 
-(expand expr)
+(persist sym expr)
 
-Walks the expression and replaces symbols that have bindings in the current
-environment with their quoted values. Function values are reconstructed as
-(fn ...) source forms (since Spell uses dynamic scoping with source-form data).
+Eval-time semantics are identical to def: expr is evaluated, sym is bound, and
+the resulting value is returned.
 
-Called automatically by llm when processing prompts, but available explicitly.
+During prune-and-reopen, explicit source-level persist forms are rewritten to:
+  (persist sym <literal-runtime-value-of-sym>)
 
-Example:
-  (def x 42)
-  (expand '(+ x 1))  ;; => (+ 42 1)
+No other forms are auto-materialized. If you need a value to survive pruning,
+write persist explicitly in the source before extending.
 
-  (defn sq [n] (* n n))
-  (expand '(sq 3))   ;; => ((fn [n] (* n n)) 3)"
+Do not write Spell macros that emit persist. Macro-generated persist may not
+materialize during reopen. Use explicit source-level persist forms."
 
     :quine
     "Special form. Bind a name to the entire enclosing form as data.
@@ -545,13 +544,13 @@ Use quine only when a child LLM needs to see source code.
 For regular value bindings, use def."
 
     :spell-eval
-    "Evaluate expression in a fresh environment, auto-expanding free variables.
+    "Evaluate expression in a fresh environment after closing over caller bindings.
 
 (spell-eval expr)
 
 This is the function that evaluates your completion. It:
 1. Takes the expression and the caller's environment
-2. Expands free variables in expr using expand (substitutes their values)
+2. Closes over free variables in expr using the caller's environment
 3. Evaluates the expanded expression in a fresh environment {}
 
 Because it starts fresh, the child cannot see or modify the parent's bindings.
@@ -599,7 +598,12 @@ directly into the child's do block rather than as a single string prompt."
 Unlike reopen (which just strips 3 trailing parens), prune-and-reopen:
 1. Parses the quine form
 2. Removes expressions marked for pruning by rethink
-3. Rebuilds the prefix from the cleaned AST
+3. Rewrites explicit source-level (persist sym expr) forms to
+   (persist sym <literal-runtime-value-of-sym>)
+4. Rebuilds the prefix from the cleaned AST
+
+No other forms are auto-materialized. Do not write Spell macros that emit
+persist; macro-generated persist may not materialize during reopen.
 
 Used internally by !call-now, !print, !describe, and !extend."
 
@@ -720,7 +724,7 @@ unless you explicitly persist what you need."
   (rethink \"!peek-now binding disappears unless persisted.\")
 
 On your next extension, that rethink prunes the peek binding from source.
-If you need part of the value, persist it first with your own def.
+If you need part of the value, persist it first with your own persist form.
 
 Example:
   '(!peek-now code (io/read-lines \"main.py\"))
