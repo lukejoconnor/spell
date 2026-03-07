@@ -183,6 +183,10 @@ You can also use rethink to delete a tool call result from context:
     ;; next turn: data is pruned, target survives as a literal value
     (persist target "big-dir/the-file-i-wanted.txt")
 
+Do not write Spell macros that emit persist.
+Macro-generated persist may not materialize during reopen.
+Use explicit source-level persist forms.
+
 NAMESPACES
 
 Access functions with qualified symbols.

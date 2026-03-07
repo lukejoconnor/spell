@@ -2,7 +2,7 @@
   "Spell macro system: registry, expansion, and all macro definitions.
 
    Macros are code→code transformers registered in the spell-macros atom.
-   The evaluator and expand call spell-macroexpand-1 to expand macro forms.")
+   The evaluator and internal env-closing expansion call spell-macroexpand-1.")
 
 ;; =============================================================================
 ;; Macro system

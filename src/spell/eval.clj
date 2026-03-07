@@ -1,5 +1,5 @@
 (ns spell.eval
-  "Spell evaluator: spell-eval, expand, free variable analysis, builtins.
+  "Spell evaluator: spell-eval, internal env-closing expansion, builtins.
 
    spell-eval takes (expr, env) and returns a result map:
    - On success: {:ok value :env env'}
@@ -225,7 +225,7 @@
 ;; Builtins
 ;; =============================================================================
 
-(declare spell-eval expand-expr)
+(declare spell-eval expand-expr materialize-persist-form)
 
 (defn spell-fn?
   "Returns true if v is a Spell function (dynamic-scoping function map)."
@@ -461,13 +461,12 @@
                              [_ do-form] (seq pruned-last)
                              body-forms (rest do-form)
                              env (or *spell-env* {})
-                             expanded-body (expand-expr (list* 'do body-forms) env)
-                             expanded-body-forms (rest expanded-body)]
+                             materialized-body-forms (map #(materialize-persist-form % env) body-forms)]
                          (str "(quine completion "
                               (when (seq inert-args)
                                 (str (str/join " " (map pr-str inert-args)) " "))
                               "(eval (do "
-                              (str/join " " (map pr-str expanded-body-forms))
+                              (str/join " " (map pr-str materialized-body-forms))
                               " "))),
    ;; Value store (for !call-now out-of-band large values)
    'stored stored,
@@ -475,7 +474,7 @@
                ([value] (serialize-for-continuation value))
                ([value limit] (serialize-for-continuation value limit))),
    'deep-truncate (fn [value limit] (deep-truncate value (int limit))),
-   ;; Eval — auto-expands free vars from caller's env, then evaluates in fresh env
+   ;; Eval — close over caller bindings, then evaluate in a fresh env
    'spell-eval (fn [expr]
                  (let [r (spell-eval (expand-expr expr *spell-env*) {})]
                    (if (ok? r) (:ok r) (throw (ex-info (:err r) {:result r}))))),
@@ -657,7 +656,7 @@
 
 (def special-forms
   "Special forms that are not free variables."
-  #{'quote 'def 'persist 'do 'if 'let 'fn 'fn* 'expand 'quine 'loop 'recur 'for 'try})
+  #{'quote 'def 'persist 'do 'if 'let 'fn 'fn* 'quine 'loop 'recur 'for 'try})
 
 (defn quote-value
   "Wrap non-self-evaluating values in (quote ...) for safe embedding in generated code."
@@ -666,6 +665,37 @@
     (or (nil? v) (number? v) (string? v) (boolean? v) (keyword? v)) v
     (spell-fn? v) (list* 'fn (:params v) (:body v))
     :else (list 'quote v)))
+
+(defn- materialize-persist-form
+  "Rewrite explicit source-level persist forms to hold the current runtime value."
+  [form env]
+  (cond
+    (and (seq? form)
+         (= 'persist (first form))
+         (= 3 (count form))
+         (symbol? (second form)))
+    (let [sym (second form)]
+      (if (contains? env sym)
+        (list 'persist sym (quote-value (get env sym)))
+        (throw (ex-info (str "persist: symbol '" sym "' not bound in environment")
+                        {:symbol sym}))))
+
+    (and (seq? form) (= 'quote (first form)))
+    form
+
+    (seq? form)
+    (apply list (map #(materialize-persist-form % env) form))
+
+    (vector? form)
+    (mapv #(materialize-persist-form % env) form)
+
+    (map? form)
+    (into {} (map (fn [[k v]]
+                    [(materialize-persist-form k env)
+                     (materialize-persist-form v env)]))
+          form)
+
+    :else form))
 
 (defn- -expand-expr
   "Walk expr substituting outer-env values for free symbols not in inner (locally defined).
@@ -737,11 +767,9 @@
                   [val-expanded _] (-expand-expr (nth expr 2) outer-env inner)]
               [(list 'def sym val-expanded) (conj inner sym)])
 
-        persist (let [sym (second expr)]
-                  (if (contains? outer-env sym)
-                    [(list 'persist sym (quote-value (get outer-env sym))) (conj inner sym)]
-                    (throw (ex-info (str "persist: symbol '" sym "' not bound in environment")
-                                    {:symbol sym}))))
+        persist (let [sym (second expr)
+                      [val-expanded _] (-expand-expr (nth expr 2) outer-env inner)]
+                  [(list 'persist sym val-expanded) (conj inner sym)])
 
         do (let [[forms final-inner]
                  (reduce (fn [[acc i] sub-expr]
@@ -1012,15 +1040,6 @@
       ;; fn* is Clojure's internal form produced by #() reader macro
       (fn fn*)
             (ok {:spell/fn true :params (second expr) :body (drop 2 expr)} env)
-
-
-
-      ;; expand: (expand expr) - single-pass walk mirroring spell-eval
-      expand (let [quoted-result (spell-eval (second expr) env)]
-               (if (err? quoted-result)
-                 quoted-result
-                 (ok (expand-expr (:ok quoted-result) (:env quoted-result))
-                     (:env quoted-result))))
 
       ;; quine: (quine name body...) — bind name to the source form, eval last arg
       ;; Multi-arg: (quine name arg1 arg2) evaluates only arg2; earlier args are inert context.
