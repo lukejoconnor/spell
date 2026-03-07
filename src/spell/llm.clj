@@ -88,7 +88,7 @@
   "Attempt quine-extension recovery: append error info + !extend to the quine.
    Returns eval result (ok or err). Throws on non-quine or retry limit.
    If program doesn't start with (quine completion ...), wraps it first and recurses."
-  [program result variant-builtins eval-builtin]
+  [program result variant-builtins eval-builtin gated-ns-hints]
   (if-not (and (seq? program)
                (= 'quine (first program))
                (= 'completion (second program)))
@@ -96,7 +96,7 @@
     (let [indent (apply str (repeat eval/*llm-depth* "  "))
           wrapped (list 'quine 'completion program)]
       (eval/vlog (str indent "Wrapping in quine completion for recovery"))
-      (try-quine-recovery wrapped result variant-builtins eval-builtin))
+      (try-quine-recovery wrapped result variant-builtins eval-builtin gated-ns-hints))
     ;; Normal path: program is already (quine completion ...)
     (let [quine-arg-count (- (count (seq program)) 2)]
       (if (< quine-arg-count (+ 1 max-recovery-attempts))
@@ -119,7 +119,8 @@
               _     (eval/vlog (str indent "Recovery quine: " (pr-str recovery-quine)))
               retry (binding [eval/*llm-depth* (inc eval/*llm-depth*)
                               eval/*raw-text*  nil
-                              eval/*builtins*  variant-builtins]
+                              eval/*builtins*  variant-builtins
+                              eval/*gated-ns-hints* gated-ns-hints]
                       (eval/spell-eval recovery-quine {'eval eval-builtin}))]
           (if (eval/ok? retry)
             retry
@@ -131,7 +132,7 @@
   "Attempt recovery from a reader/parse error by embedding the raw text
    as a string in a fresh recovery quine. The LLM sees its broken output
    and the error message, then gets a fresh chance via !extend."
-  [raw parse-error variant-builtins eval-builtin]
+  [raw parse-error variant-builtins eval-builtin gated-ns-hints]
   (let [error-msg (or (.getMessage parse-error) "Unknown reader error")
         indent    (apply str (repeat eval/*llm-depth* "  "))
         _         (when (>= *reader-recovery-depth* max-recovery-attempts)
@@ -156,6 +157,7 @@
         result    (binding [eval/*llm-depth*           (inc eval/*llm-depth*)
                             eval/*raw-text*            nil
                             eval/*builtins*            variant-builtins
+                            eval/*gated-ns-hints*      gated-ns-hints
                             *reader-recovery-depth*    (inc *reader-recovery-depth*)]
                     (eval/spell-eval recovery-quine {'eval eval-builtin}))]
     (if (eval/ok? result)
@@ -169,53 +171,57 @@
    Closes over eval-builtin from config. Calls balance-parens because
    send transforms can produce unbalanced strings (reopen strips parens).
    trace-data-atom, when non-nil, receives {:program} for tracing."
-  [{:keys [variant-builtins eval-builtin recover-fn allow-multiple-top-level?]} trace-data-atom]
+  [{:keys [variant-builtins eval-builtin recover-fn allow-multiple-top-level? gated-ns-hints]} trace-data-atom]
   (fn [raw]
-    (let [raw       (parse/balance-parens raw)
-          [forms parse-err] (try [(parse/read-all raw) nil]
-                                 (catch Exception e [nil e]))]
-      (if parse-err
-        ;; Reader error: embed raw text as string in recovery quine
-        (if recover-fn
-          (try-reader-recovery raw parse-err variant-builtins eval-builtin)
-          (throw parse-err))
-        ;; Normal path: eval and recovery
-        (let [forms-v   (vec forms)
-              form-count (count forms-v)
-              _         (when (and (> form-count 1) (not allow-multiple-top-level?))
-                          (throw (ex-info "Multiple top-level forms are not allowed"
-                                          {:type :multiple-top-level-forms
-                                           :count form-count})))
-              program   (if (> form-count 1) (list* 'do forms-v) (first forms-v))
-              indent    (apply str (repeat eval/*llm-depth* "  "))
-              result    (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
-                                 eval/*raw-text*       raw
-                                 eval/*builtins*       variant-builtins]
-                          (eval/spell-eval program {'eval eval-builtin}))
-              final-result
-              (if (and (eval/err? result) recover-fn)
-                (let [_        (do (eval/vlog (str indent "=== Error Recovery ==="))
-                                 (eval/vlog (str indent "Error: " (:err result))))
-                      result-with-program (assoc result :program program)]
-                  ;; Try namespace recovery first (fast, deterministic)
-                  (if-let [fix-expr (recover-fn result-with-program)]
-                    (let [_     (eval/vlog (str indent "Namespace recovery: " (pr-str fix-expr)))
-                          retry (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
-                                          eval/*raw-text*       nil
-                                          eval/*builtins*       variant-builtins]
-                                  (eval/spell-eval fix-expr (merge (:env result) {'eval eval-builtin})))]
-                      (if (eval/ok? retry)
-                        retry
-                        ;; Namespace fix didn't work, try quine-extension
-                        (try-quine-recovery program result variant-builtins eval-builtin)))
-                    ;; No namespace fix, try quine-extension
-                    (try-quine-recovery program result variant-builtins eval-builtin)))
-                result)]
-          (when trace-data-atom
-            (reset! trace-data-atom {:program program}))
-          (if (eval/ok? final-result)
-            (:ok final-result)
-            (throw (ex-info (:err final-result) {:result final-result}))))))))
+    (binding [eval/*gated-ns-hints* (or gated-ns-hints {})]
+      (let [raw       (parse/balance-parens raw)
+            [forms parse-err] (try [(parse/read-all raw) nil]
+                                   (catch Exception e [nil e]))]
+        (if parse-err
+          ;; Reader error: embed raw text as string in recovery quine
+          (if recover-fn
+            (try-reader-recovery raw parse-err variant-builtins eval-builtin
+                                 eval/*gated-ns-hints*)
+            (throw parse-err))
+          ;; Normal path: eval and recovery
+          (let [forms-v   (vec forms)
+                form-count (count forms-v)
+                _         (when (and (> form-count 1) (not allow-multiple-top-level?))
+                            (throw (ex-info "Multiple top-level forms are not allowed"
+                                            {:type :multiple-top-level-forms
+                                             :count form-count})))
+                program   (if (> form-count 1) (list* 'do forms-v) (first forms-v))
+                indent    (apply str (repeat eval/*llm-depth* "  "))
+                result    (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
+                                    eval/*raw-text*       raw
+                                    eval/*builtins*       variant-builtins]
+                            (eval/spell-eval program {'eval eval-builtin}))
+                final-result
+                (if (and (eval/err? result) recover-fn)
+                  (let [_        (do (eval/vlog (str indent "=== Error Recovery ==="))
+                                     (eval/vlog (str indent "Error: " (:err result))))
+                        result-with-program (assoc result :program program)]
+                    ;; Try namespace recovery first (fast, deterministic)
+                    (if-let [fix-expr (recover-fn result-with-program)]
+                      (let [_     (eval/vlog (str indent "Namespace recovery: " (pr-str fix-expr)))
+                            retry (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
+                                            eval/*raw-text*       nil
+                                            eval/*builtins*       variant-builtins]
+                                    (eval/spell-eval fix-expr (merge (:env result) {'eval eval-builtin})))]
+                        (if (eval/ok? retry)
+                          retry
+                          ;; Namespace fix didn't work, try quine-extension
+                          (try-quine-recovery program result variant-builtins eval-builtin
+                                              eval/*gated-ns-hints*)))
+                      ;; No namespace fix, try quine-extension
+                      (try-quine-recovery program result variant-builtins eval-builtin
+                                          eval/*gated-ns-hints*)))
+                  result)]
+            (when trace-data-atom
+              (reset! trace-data-atom {:program program}))
+            (if (eval/ok? final-result)
+              (:ok final-result)
+              (throw (ex-info (:err final-result) {:result final-result})))))))))
 
 (defn- register-agent
   "Register a dormant agent with stored completion as context.
@@ -420,10 +426,20 @@
                            effect-builtins)
         ;; Create eval builtin using make-eval
         eval-builtin (make-eval variant-builtins effect-builtins' future-only-builtins)
+        gated-ns-hints (merge
+                         (into {}
+                               (for [ns-sym (keys effect-ns-builtins)]
+                                 [ns-sym (str (name ns-sym)
+                                              "/ is an effect namespace - use it in the trailing expression via eval")]))
+                         (into {}
+                               (for [ns-sym (keys future-only-builtins)]
+                                 [ns-sym (str (name ns-sym)
+                                              "/ is only available inside (future ...) blocks")])))
         ;; Config with variant-builtins and eval-builtin
         config'  {:call-fn call-fn
                   :variant-builtins variant-builtins
                   :eval-builtin eval-builtin
+                  :gated-ns-hints gated-ns-hints
                   :recover-fn recover-fn}
         _        (deliver final-config config')
         the-llm  (fn the-llm
