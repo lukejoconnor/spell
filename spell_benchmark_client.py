@@ -52,6 +52,17 @@ class SpellBenchmarkClient:
             return trace_dir
         return None
 
+    @staticmethod
+    def _try_parse_payload(stdout: str) -> dict[str, Any] | None:
+        text = (stdout or "").strip()
+        if not text:
+            return None
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+        return payload if isinstance(payload, dict) else None
+
     def run(self, request: dict[str, Any], timeout: int = 300, cwd: Path | str | None = None) -> BenchmarkAPIResponse:
         cmd = [*self.clj_cmd, "--request", "-", "--response", "-"]
         run_cwd = Path(cwd or self.project_root)
@@ -93,9 +104,13 @@ class SpellBenchmarkClient:
                 stderr = stderr or self._coerce_text(kill_stderr)
 
             trace_dir = self._trace_dir_with_files(run_cwd, payload_request.get("trace_dir"))
+            recovered_payload = self._try_parse_payload(stdout)
             payload = {
                 "ok": False,
                 "mode": payload_request.get("mode", "unknown"),
+                "result": recovered_payload.get("result") if recovered_payload else None,
+                "usage": recovered_payload.get("usage") if recovered_payload else None,
+                "latency_ms": recovered_payload.get("latency_ms") if recovered_payload else None,
                 "error": f"spell.benchmark-api timed out after {timeout}s",
                 "error_type": "timeout",
                 "error_data": {
@@ -103,19 +118,20 @@ class SpellBenchmarkClient:
                     "stdout": stdout[:4000],
                     "stderr": stderr[:4000],
                     "cmd": cmd,
+                    "recovered_payload": bool(recovered_payload),
                 },
-                "trace_dir": trace_dir,
+                "trace_dir": recovered_payload.get("trace_dir") if recovered_payload and recovered_payload.get("trace_dir") else trace_dir,
             }
             return BenchmarkAPIResponse(
                 ok=False,
                 mode=str(payload["mode"]),
-                result=None,
-                usage=None,
-                latency_ms=None,
+                result=payload["result"],
+                usage=payload["usage"],
+                latency_ms=payload["latency_ms"],
                 error=payload["error"],
                 error_type=payload["error_type"],
                 error_data=payload["error_data"],
-                trace_dir=trace_dir,
+                trace_dir=payload["trace_dir"],
                 raw=payload,
             )
 
