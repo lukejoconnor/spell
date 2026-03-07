@@ -1,5 +1,6 @@
 (ns spell.trace-tool-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.java.io :as io]
+            [clojure.test :refer [deftest is testing]]
             [spell.trace-tool :as tt]))
 
 (deftest skeletonize-form-test
@@ -114,6 +115,18 @@
         (is (= [[2] [2]]
                (mapv :path items)))))))
 
+(deftest run-tool-mode-validation-test
+  (testing "context-management modes have coherent option validation"
+    (is (= {:exit 1
+            :message "Choose either --rethinks or --context-trajectory, not both"}
+           (tt/run-tool {:trace-dir "unused"
+                         :rethinks true
+                         :context-trajectory true}
+                        "")))
+    (is (= {:exit 1
+            :message "Mode requires --trace-dir, --trace-root, or --results-jsonl"}
+           (tt/run-tool {:context-trajectory true} "")))))
+
 (deftest select-node-default-prefers-latest-default-program-test
   (let [trace {:nodes [{:id 0 :variant :default :program '(do 1)}
                        {:id 1 :variant :leaf :program '(do 2)}
@@ -130,3 +143,48 @@
         row (tt/last-error-record rows)]
     (is (= "bad-2" (:item_id row)))
     (is (= "traces/2026-03-01T20-37-56" (tt/trace-dir-from-record row)))))
+
+(deftest context-trajectory-items-response-only-test
+  (let [tmp-dir (-> (java.nio.file.Files/createTempDirectory "trace-tool-test"
+                                                              (make-array java.nio.file.attribute.FileAttribute 0))
+                    (.toFile))
+        file-0 (io/file tmp-dir "0000.spl")
+        file-1 (io/file tmp-dir "0001.spl")
+        file-2 (io/file tmp-dir "0002.spl")
+        _ (spit file-0 (apply str (repeat 300 "a")))
+        _ (spit file-1 (apply str (repeat 3500 "b")))
+        _ (spit file-2 (apply str (repeat 400 "c")))
+        trace {:nodes [{:id 0
+                        :file "0000.spl"
+                        :program '(do (think "a") (rethink "drop a"))
+                        :response "(think \"a\") (rethink \"drop a\")"}
+                       {:id 1
+                        :file "0001.spl"
+                        :program '(do
+                                    (think "a")
+                                    (rethink "drop a")
+                                    (def payload {:id 1})
+                                    (rethink "drop payload"))
+                        :response "(def payload {:id 1}) (rethink \"drop payload\")"}
+                       {:id 2
+                        :file "0002.spl"
+                        :program '(do
+                                    (think "a")
+                                    (rethink "drop a")
+                                    (def payload {:id 1})
+                                    (rethink "drop payload")
+                                    (think "continue"))
+                        :response ""}
+                       {:id 3
+                        :file "missing.spl"
+                        :program '(do (foo "bar"))
+                        :response nil}]}
+        rows (#'tt/context-trajectory-items (.getPath tmp-dir) trace)
+        fallback-size (count (pr-str '(do (foo "bar"))))]
+    (is (= [300 3500 400 fallback-size] (mapv :chars rows)))
+    (is (= [nil 3200 -3100 (- fallback-size 400)] (mapv :delta rows)))
+    (is (= [1 1 0 0] (mapv :rethink-count rows)))
+    (is (pos? (:pruned-chars (first rows))))
+    (is (pos? (:pruned-chars (second rows))))
+    (is (zero? (:pruned-chars (nth rows 2))))
+    (is (zero? (:pruned-chars (nth rows 3))))))
