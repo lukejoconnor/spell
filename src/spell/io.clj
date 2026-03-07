@@ -488,6 +488,12 @@
   (let [[opts parts] (if (and (seq more) (map? (last more)))
                        [(last more) (butlast more)]
                        [nil more])
+        _ (when-let [bad (first (remove string? parts))]
+            (throw (ex-info (str "io/sh: all command segments must be strings, got "
+                                 (pr-str bad)
+                                 ". For options, pass a map as the last argument: "
+                                 "{:timeout 60}")
+                            {:command command :parts (vec parts)})))
         timeout-seconds (resolve-timeout-seconds
                           (if (contains? opts :timeout)
                             (:timeout opts)
