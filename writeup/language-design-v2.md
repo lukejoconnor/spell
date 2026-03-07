@@ -191,6 +191,10 @@ At evaluation time, `rethink` behaves identically to `think`. The pruning happen
 
 An optional count argument controls how many previous siblings to prune: `(rethink 2 "reason" ...)` prunes the two preceding siblings. The default is 1.
 
+### Persist
+
+
+
 ### Compact
 
 For longer-running agents, even pruned context may grow too large. `!compact` provides self-referential context compaction: the agent compresses its own completion without an external summarizer. The macro expands to a self-call with instructions asking the LLM to rewrite its context as a sequence of quoted forms (definitions, key reasoning steps), dropping routine steps and truncating large values. Because the same agent performs the compaction, it can make informed decisions about what to keep.
