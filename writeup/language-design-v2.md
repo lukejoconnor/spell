@@ -107,7 +107,7 @@ In Clojure, most functions have lexical scope: the environment when the function
 
 `spell-eval` solves this challenge by taking an environment as input, evaluating an expression in this environment, and returning an environment as its output. The LLM has perfect knowledge of the environment in which its completion will be evaluated. This choice reflects an important principle in Spell: maximizing alignment between the model's context (what it can reason about), the program's environment (what determines its behavior), and the program itself (what it can manipulate).
 
-For the same reason, functions in Spell are dynamically scoped. Only source code is passed between LLMs, not environmental variables, and in particular, there is no way to pass closures between LLMs while preserving alignment between context and environment. Of course, it is always possible - just not convenient - to simulate lexical scoping in a dynamically scoped Lisp, by substituting values for every symbol defined outside of the function definition. Spell makes this more convenient using its built-in `expand` function, which is is discussed below.
+For the same reason, functions in Spell are dynamically scoped. Only source code is passed between LLMs, not environmental variables, and in particular, there is no way to pass closures between LLMs while preserving alignment between context and environment. Of course, it is always possible - just not convenient - to simulate lexical scoping in a dynamically scoped Lisp, by substituting values for every symbol defined outside of the function definition. 
 
 ## Self-reference
 Often, the LLM will wish to call a tool and concatenate the result of the tool call with its own chain of thought. To do so, the program it writes must reproduce its own source code, which is then passed to the child LLM. This kind of program is called a quine. Spell makes it convenient to write quines, and more generally, programs that reproduce parts of themselves.
@@ -165,21 +165,6 @@ This line calls a tool, formats its result into Spell code (for example, `(def t
 '(!call-now result-name (tool-call))
 ```
 
-
-## Expanding quoted expressions
-Instead of extending its completion, a parent LLM may choose to pass just a subset of its completion to a child LLM - for example, one item in a to-do list. However, a challenge arises when passing a quoted expression, `q`, containing free variables defined outside of `q`:
-
-```clojure
-(def answer 42)
-(def thought '(do (def question "What is the meaning of life? ") (str question answer)))
-(llm thought)
-```
-Here, the quoted expression `thought` could be evaluated in its original context, but the child LLM is missing the binding for `answer`, so the same expression cannot be evaluated by the child LLM. This would cause the child LLM to produce an invalid completion no matter what response it generated. The parent LLM could solve this by unquoting `answer`, but this solution is very fragile.
-
-Define a quoted expression `q` of a program or subprogram `P` to be *closed in `P`* if it could be evaluated in-place. Define `q` to be *closed* if it is closed in `q`. We define a special form, `expand`, which maps a quote `q` which is closed in the program `P` to an equivalent quote `Q` which is closed. `q` and `Q` have the same value (in the context of `P`) as well as the same side effects. The way this works is that `expand` inputs an environment `outer-env`, that which is produced by evaluating `P` up until `expand` is called. It creates a new environment `inner-env`. It evaluates the quote `q` using almost exactly the same algorithm as `spell-eval`, except that it only replaces symbols with values when they are not found in `inner-env`.
-
-With `expand`, the LLM only needs to reason about the environment of its own program; any expression that evaluates in its own program will evaluate in its child's program after passing through `expand`. LLMs do not even need to call `expand` themselves, as the `llm` function does this automatically.
-
 ## Context management: rethink and compact
 
 As a completion grows through successive extensions, it accumulates reasoning steps, intermediate bindings, and abandoned approaches. Spell provides two mechanisms for the LLM to manage its own context: `rethink` for pruning unproductive reasoning, and `!compact` for compressing an entire completion.
@@ -202,7 +187,7 @@ At evaluation time, `think` behaves like `do` — it evaluates its body forms an
 (rethink "approach A was wrong, try B" (def result-b (approach-b)))
 ```
 
-At evaluation time, `rethink` behaves identically to `think`. The pruning happens later, when the completion is extended via `!extend`: the `prune-and-reopen` function walks the quine's source, removes the sibling expressions marked by each `rethink`, converts each `rethink` to a `think`, and rebuilds the prefix string. The child LLM sees only the surviving reasoning chain.
+At evaluation time, `rethink` behaves identically to `think`. The pruning happens later, when the completion is extended via `!extend`: the `prune-substitute` function walks the quine's source, removes the sibling expressions marked by each `rethink`, converts each `rethink` to a `think`, and rebuilds the prefix string. The child LLM sees only the surviving reasoning chain.
 
 An optional count argument controls how many previous siblings to prune: `(rethink 2 "reason" ...)` prunes the two preceding siblings. The default is 1.
 

@@ -30,6 +30,7 @@ results/
 # Scratch/temp files
 .__tmp_*
 temp.txt
+PLAN-team-pattern.md
 *.bak
 *.bak2
 spell_benchmark_client.py
