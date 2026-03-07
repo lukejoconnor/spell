@@ -152,7 +152,7 @@
 ;;    :max-retries 5}
 ;;
 ;; Reflector must return a map-like value with:
-;;   {:resolved true|false :diagnosis "..." :test "..." :panic false}
+;;   {:resolved true|false :diagnosis "..." :test <test-spec> :panic false :reset-worker false}
 ;;
 ;; Notes:
 ;; - The reflector writes/updates tests and decides when issue is resolved.
@@ -169,7 +169,9 @@
         run-id           (abs (rand-int 1000000))
         branch           (str "spell-fix-" run-id)
         reflector-handle (read-string (str ":fix-reflector-" run-id))
-        worker-handle    (read-string (str ":fix-worker-" run-id))
+        make-worker-handle (fn [generation]
+                             (read-string (str ":fix-worker-" run-id "-" generation)))
+        worker-handle    (make-worker-handle 0)
         orig-branch      (strings/trim (:out (io/sh "git rev-parse --abbrev-ref HEAD")))
         reset-worktree   (fn []
                            (io/sh "git reset --hard HEAD")
@@ -196,7 +198,7 @@
                 (if (not (map? parsed))
                   {:ok false
                    :feedback (str "Invalid reflector response. Return a Spell map literal with keys "
-                                  ":resolved, :diagnosis, :test, :panic.\n"
+                                  ":resolved, :diagnosis, :test, :panic, :reset-worker.\n"
                                   "Raw response:\n"
                                   (pr-str raw))}
                   (let [panic? (= true (:panic parsed))
@@ -204,8 +206,9 @@
                         diagnosis (if (string? diagnosis-raw)
                                     diagnosis-raw
                                     (if (nil? diagnosis-raw) "" (pr-str diagnosis-raw)))
-                        test-cmd (:test parsed)
-                        resolved (:resolved parsed)]
+                        test-spec (:test parsed)
+                        resolved (:resolved parsed)
+                        reset-worker (= true (:reset-worker parsed))]
                     (if panic?
                       {:ok true
                        :panic true
@@ -219,10 +222,18 @@
                             errors-2 (if (strings/blank? diagnosis)
                                        (conj errors-1 ":diagnosis must be a non-empty string")
                                        errors-1)
-                            errors-3 (if (and (string? test-cmd)
-                                              (not (strings/blank? test-cmd)))
+                            errors-3 (if (or (and (string? test-spec)
+                                                   (not (strings/blank? test-spec)))
+                                              (fn? test-spec)
+                                              (and (vector? test-spec)
+                                                   (not (empty? test-spec))
+                                                   (every? (fn [t]
+                                                             (or (fn? t)
+                                                                 (and (string? t)
+                                                                      (not (strings/blank? t)))))
+                                                           test-spec)))
                                        errors-2
-                                       (conj errors-2 ":test must be a non-empty shell command"))
+                                       (conj errors-2 ":test must be a non-empty shell command, test thunk, or non-empty vector of them"))
                             has-errors (not (empty? errors-3))
                             error-text (apply str (map (fn [x] (str "- " x "\n")) errors-3))]
                         (if has-errors
@@ -235,7 +246,8 @@
                            :panic false
                            :resolved resolved
                            :diagnosis diagnosis
-                           :test test-cmd})))))))
+                           :test test-spec
+                           :reset-worker reset-worker})))))))
             collect-diff
             (fn []
               (str "GIT STATUS:\n"
@@ -244,18 +256,64 @@
                    (:out (io/sh "git diff"))
                    "\n\nGIT DIFF (staged):\n"
                    (:out (io/sh "git diff --cached"))))
+            describe-test-spec
+            (fn [test-spec]
+              (if (vector? test-spec)
+                (str "["
+                     (apply str
+                            (map-indexed
+                              (fn [i t]
+                                (str (if (= i 0) "" ", ")
+                                     (if (string? t) t "<test thunk>")))
+                              test-spec))
+                     "]")
+                (if (string? test-spec)
+                  test-spec
+                  "<test thunk>")))
             run-gate
-            (fn [active-test]
-              (let [primary (io/sh active-test)]
-                {:pass (= 0 (:exit primary))
-                 :cmd active-test
-                 :result primary}))
+            (fn [test-spec]
+              (let [tests (if (vector? test-spec) test-spec [test-spec])
+                    run-one
+                    (fn [t]
+                      (if (fn? t)
+                        (try
+                          (let [r (t)]
+                            (if (map? r)
+                              {:pass (if (contains? r :pass) (:pass r) (not (not r)))
+                               :output (if (contains? r :output)
+                                         (str (:output r))
+                                         (pr-str r))
+                               :error false}
+                              {:pass (not (not r))
+                               :output (pr-str r)
+                               :error false}))
+                          (catch e
+                            {:pass false
+                             :output (str "THUNK ERROR: " (pr-str e))
+                             :error true}))
+                        (let [r (io/sh t)]
+                          {:pass (= 0 (:exit r))
+                           :output (str "COMMAND: " t "\n"
+                                        "EXIT: " (:exit r) "\n"
+                                        "OUT:\n" (:out r) "\n"
+                                        "ERR:\n" (:err r))
+                           :error false})))
+                    results (vec (map run-one tests))]
+                {:pass (every? (fn [r] (:pass r)) results)
+                 :error (some (fn [r] (:error r)) results)
+                 :results results}))
             format-test-result
-            (fn [cmd result]
-              (str "COMMAND: " cmd "\n"
-                   "EXIT: " (:exit result) "\n"
-                   "OUT:\n" (:out result) "\n"
-                   "ERR:\n" (:err result)))
+            (fn [gate-result]
+              (apply str
+                     (map-indexed
+                       (fn [i r]
+                         (str "--- TEST " (inc i) " ---\n"
+                              (if (:pass r) "PASS" "FAIL") "\n"
+                              (:output r)
+                              (if (= (inc i) (count (:results gate-result)))
+                                ""
+                                "\n\n")))
+                       (:results gate-result))))
             reflector-msg
             (fn [attempt last-test-output last-diff last-diagnosis active-test last-worker-summary feedback]
               {:kind :reflect
@@ -291,7 +349,7 @@
             (str "You are the reflector agent in patterns/fix-loop.\n\n"
                  "On each wake, inspect the newest msg-* binding.\n"
                  "Its :body has keys:\n"
-                 "{:kind :reflect :attempt int :issue str :active-test str|nil\n"
+                 "{:kind :reflect :attempt int :issue str :active-test any|nil\n"
                  " :last-test-output str :last-diff str :last-diagnosis str\n"
                  " :last-worker-summary str|nil :feedback str}\n\n"
                  "You own diagnosis and test strategy. The worker only applies edits.\n\n"
@@ -310,8 +368,19 @@
                  "Return ONLY a Spell map literal with exactly:\n"
                  "{:resolved true|false\n"
                  " :diagnosis \"why issue is or is not resolved\"\n"
-                 " :test \"shell command to validate your claim\"\n"
-                 " :panic false}\n\n"
+                 " :test <test-spec>\n"
+                 " :panic false\n"
+                 " :reset-worker false}\n\n"
+                 "<test-spec> may be:\n"
+                 "  \"shell command\"                       ; legacy shorthand\n"
+                 "  (io/sh-test \"shell command\")          ; shell-backed thunk\n"
+                 "  (fn [] {:pass bool :output str})       ; direct thunk\n"
+                 "  [(fn [] ...) \"shell command\" ...]     ; all must pass\n"
+                 "Thunk tests must be self-contained. Spell functions are dynamically scoped,\n"
+                 "not closures, so free vars from reflector locals will be unbound when the\n"
+                 "harness runs the test later. Prefer io/sh-test or only return thunks with no\n"
+                 "free variables.\n\n"
+                 "Set :reset-worker true to get a fresh worker with cleared context.\n"
                  "Set :panic true only if fundamentally unsolvable; include diagnosis.")
             reflector-init-completion
             (str "(quine completion (eval (do "
@@ -321,7 +390,7 @@
             (str "You are a code repair worker used by patterns/fix-loop.\n\n"
                  "On each wake, inspect the newest msg-* binding.\n"
                  "Its :body is a map with keys:\n"
-                 "{:kind :repair :attempt int :issue str :diagnosis str :test str\n"
+                 "{:kind :repair :attempt int :issue str :diagnosis str :test any\n"
                  " :failed-cmd str :failed-output str}\n\n"
                  "Use :issue + :diagnosis to make targeted implementation edits.\n"
                  "Use io/sh, io/read-file, io/str-replace, and io/write-file as needed.\n"
@@ -343,6 +412,8 @@
         (futures/!ask-await
           (future
             (loop [attempt 0
+                   worker-generation 0
+                   active-worker-handle worker-handle
                    last-test-output ""
                    last-diff ""
                    last-diagnosis ""
@@ -361,6 +432,8 @@
                 (cond
                   (not (:ok reflector))
                   (recur attempt
+                         worker-generation
+                         active-worker-handle
                          last-test-output
                          last-diff
                          last-diagnosis
@@ -371,7 +444,11 @@
                   (:panic reflector)
                   (do
                     (cleanup)
-                    {:fail (:diagnosis reflector)})
+                    {:fail (:diagnosis reflector)
+                     :panic true
+                     :test active-test
+                     :reflector-handle reflector-handle
+                     :worker-handle active-worker-handle})
 
                   :else
                   (let [diagnosis (:diagnosis reflector)
@@ -379,8 +456,25 @@
                         resolved (:resolved reflector)
                         check (run-gate chosen-test)
                         check-pass (:pass check)
-                        check-output (format-test-result (:cmd check) (:result check))]
+                        check-output (format-test-result check)]
                     (cond
+                      (:error check)
+                      (let [test-error-feedback
+                            (str "Test execution failed before any worker call.\n"
+                                 "If you return a thunk test, it must be self-contained with no free vars.\n"
+                                 "Spell functions are dynamically scoped, so reflector-local bindings will\n"
+                                 "not be captured. Prefer io/sh-test for shell commands.\n\n"
+                                 check-output)]
+                        (recur attempt
+                               worker-generation
+                               active-worker-handle
+                               check-output
+                               (collect-diff)
+                               diagnosis
+                               chosen-test
+                               last-worker-summary
+                               test-error-feedback))
+
                       (not (= check-pass resolved))
                       (let [mismatch-feedback
                             (str "Expected test pass == resolved flag.\n"
@@ -390,6 +484,8 @@
                                  "If :resolved is true, :test must pass.\n\n"
                                  check-output)]
                         (recur attempt
+                               worker-generation
+                               active-worker-handle
                                check-output
                                (collect-diff)
                                diagnosis
@@ -402,7 +498,10 @@
                         (maybe-commit (str "fix-loop: resolved (worker attempts " attempt ")"))
                         {:pass true
                          :diagnosis diagnosis
-                         :last-worker-summary last-worker-summary})
+                         :test chosen-test
+                         :last-worker-summary last-worker-summary
+                         :reflector-handle reflector-handle
+                         :worker-handle active-worker-handle})
 
                       (>= attempt max-retries)
                       (do
@@ -410,33 +509,47 @@
                         {:fail (str "Max worker retries (" max-retries "). Last diagnosis: " diagnosis
                                     (if last-worker-summary
                                       (str ". Last worker summary: " last-worker-summary)
-                                      ""))})
+                                      ""))
+                         :test chosen-test
+                         :last-worker-summary last-worker-summary
+                         :reflector-handle reflector-handle
+                         :worker-handle active-worker-handle})
 
                       :else
                       (let [pre-output check-output]
                         ;; Checkpoint reflector-authored tests/diagnosis artifacts so
                         ;; reflector can roll back worker edits with git reset --hard HEAD.
                         (maybe-commit (str "fix-loop: reflector checkpoint (attempt " (inc attempt) ")"))
-                        (let [worker-result (blocking/send-await
-                                             worker-handle
+                        (let [next-worker-generation (if (:reset-worker reflector)
+                                                       (inc worker-generation)
+                                                       worker-generation)
+                              next-worker-handle (if (:reset-worker reflector)
+                                                   (make-worker-handle next-worker-generation)
+                                                   active-worker-handle)
+                              _ (when (:reset-worker reflector)
+                                  (agents/register next-worker-handle worker-init-completion))
+                              worker-result (blocking/send-await
+                                             next-worker-handle
                                              {:kind :repair
                                               :attempt (inc attempt)
                                               :issue issue
                                               :diagnosis diagnosis
                                               :test chosen-test
-                                              :failed-cmd (:cmd check)
+                                              :failed-cmd (describe-test-spec chosen-test)
                                               :failed-output pre-output})
                               worker-summary (extract-worker-summary worker-result)
                               post-check (run-gate chosen-test)
                               post-output
-                              (str (format-test-result (:cmd post-check) (:result post-check))
+                              (str (format-test-result post-check)
                                    "\n\nWORKER RESULT:\n"
                                    (pr-str worker-result))
                               attempt-diff (collect-diff)]
                           (recur (inc attempt)
+                                 next-worker-generation
+                                 next-worker-handle
                                  post-output
                                  attempt-diff
-                                  diagnosis
+                                 diagnosis
                                  chosen-test
                                  worker-summary
                                  ""))))))))))))))
