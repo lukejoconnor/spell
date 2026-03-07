@@ -665,10 +665,12 @@
     (let [sym (second form)]
       (if (contains? env sym)
         (list 'persist sym (quote-value (get env sym)))
-        (throw (ex-info (str "persist: symbol '" sym "' not bound")
-                        {:symbol sym}))))
+        form))
 
     (and (seq? form) (= 'quote (first form)))
+    form
+
+    (and (seq? form) (#{'fn 'fn*} (first form)))
     form
 
     (seq? form)

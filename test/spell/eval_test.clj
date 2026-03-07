@@ -2561,14 +2561,21 @@
       (is (.contains ^String result "(def y (+ x 1))"))
       (is (not (.contains ^String result "(def y (+ 41 1))")))))
 
-  (testing "prune-and-reopen throws when persisted symbol is unbound"
+  (testing "prune-and-reopen leaves unbound persist forms untouched"
     (let [quine-form '(quine completion
                         (eval (do (persist y (+ x 1))
                                   (quote (!extend completion)))))]
-      (is (thrown-with-msg?
-           clojure.lang.ExceptionInfo
-           #"persist: symbol 'y' not bound"
-           (run-spell (list 'prune-and-reopen (list 'quote quine-form))))))))
+      (is (= "(quine completion (eval (do (persist y (+ x 1)) (quote (!extend completion)) "
+             (run-spell (list 'prune-and-reopen (list 'quote quine-form)))))))
+
+  (testing "prune-and-reopen does not materialize persist inside nested fn/fn*"
+    (let [quine-form '(quine completion
+                        (eval (do (fn [x] (persist y x))
+                                  (fn* [x] (persist z x))
+                                  (quote (!extend completion)))))
+          result (run-spell (list 'prune-and-reopen (list 'quote quine-form)))]
+      (is (.contains ^String result "(fn [x] (persist y x))"))
+      (is (.contains ^String result "(fn* [x] (persist z x))")))))
 
 (deftest extend-macro-expansion-test
   (testing "extend expands to !llm-self with prune-and-reopen"
