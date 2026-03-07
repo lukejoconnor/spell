@@ -82,7 +82,9 @@ Example - verify then correct:
    :detail
    {:check-result "(patterns/check-result prompt answer) - verify answer with leaf-llm, returns {:ok answer} or {:wrong msg}"
     :clean-prompt "(patterns/clean-prompt raw-prompt) - clean up raw prompt via leaf-llm and execute it"
-    :explore "(patterns/explore question) - one-shot exploration agent, returns {:answer \"...\" :files [...]}"
+    :explore "(patterns/explore question) - one-shot exploration agent, returns {:answer \"...\" :files [...]}.
+
+Requires agent profile with agents/ and io/ support."
     :ralph "(patterns/ralph opts) - future-based retry orchestrator.
 opts:
   string                   - task text
@@ -90,7 +92,9 @@ opts:
   :test-fn                 - predicate over worker result (default: (:ok result))
   :max-retries             - retry limit (default: 3)
   :worker-prompt           - custom worker prompt
-Sends {:pass result} or {:fail last-result} to caller."
+Sends {:pass result} or {:fail last-result} to caller.
+
+Requires agent profile with agents/ and blocking/ support."
     :team "(patterns/team goal-or-opts) - planner + scheduler + worktree workers + verifier.
 primary argument:
   goal-or-opts             - string goal or opts map
@@ -136,6 +140,16 @@ Requires agent profile with strings/, io/, agents/, futures/, and blocking/ name
 Example:
   '(!call-now result (patterns/fix-loop
     issue-description))"}})
+
+(def ^:private pattern-requires
+  "Namespace requirements for documented pattern entrypoints.
+   Validated when an agent is constructed."
+  {:check-result [:strings]
+   :clean-prompt []
+   :explore [:agents :io]
+   :ralph [:agents :blocking]
+   :team [:strings :io :agents :futures :blocking]
+   :fix-loop [:strings :io :agents :futures :blocking]})
 
 (defn- defn-form?
   [form]
@@ -197,6 +211,18 @@ Example:
                          :names (map first entries)})))
       fns-map)))
 
+(defn- attach-pattern-requires
+  [fns-map]
+  (reduce-kv (fn [acc k fn-map]
+               (assoc acc k
+                      (cond-> fn-map
+                        (contains? pattern-requires k)
+                        (assoc :requires (get pattern-requires k)))))
+             {}
+             fns-map))
+
 (def patterns
   "Reusable orchestration patterns (Spell-specific)."
-  (merge patterns-docs (load-pattern-fns)))
+  (merge patterns-docs
+         (-> (load-pattern-fns)
+             attach-pattern-requires)))

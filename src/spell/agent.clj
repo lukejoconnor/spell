@@ -20,6 +20,7 @@
    - {:file f :items m} → submap of vars from file
    - {:file f}          → slurp file as string"
   (:require [clojure.edn :as edn]
+            [clojure.set :as set]
             [clojure.string :as str]
             [spell.runtime :as runtime]
             [spell.format :as format]
@@ -179,14 +180,53 @@
     (throw (ex-info (str "Invalid namespace value: " value)
                     {:value value :type (type value)}))))
 
+(def ^:private implicitly-available-namespace-names
+  "Namespaces available without explicit agent :namespaces declarations."
+  (conj (set (keys llm/core-namespaces)) 'blocking))
+
+(defn- required-namespace-symbols
+  [required]
+  (->> required
+       (map (fn [ns-name]
+              (cond
+                (symbol? ns-name) ns-name
+                (keyword? ns-name) (symbol (name ns-name))
+                :else (symbol (str ns-name)))))
+       set))
+
+(defn- validate-pattern-dependencies!
+  "Check that any annotated public patterns in the agent's patterns namespace
+   have their required namespaces available."
+  [namespaces]
+  (when-let [patterns-ns (get namespaces 'patterns)]
+    (let [available (into implicitly-available-namespace-names (keys namespaces))]
+      (doseq [pattern-name (sort (keys patterns-ns))
+              :let [pattern-fn (get patterns-ns pattern-name)]
+              :when (and (map? pattern-fn) (contains? pattern-fn :requires))]
+        (let [required (required-namespace-symbols (:requires pattern-fn))
+              missing (vec (sort (set/difference required available)))]
+          (when (seq missing)
+            (throw (ex-info
+                    (str "Pattern " (name pattern-name)
+                         " requires namespaces " (pr-str (vec (sort required)))
+                         " but agent is missing: " (pr-str missing)
+                         ". Add them to :namespaces in the agent's .agent.edn.")
+                    {:pattern pattern-name
+                     :requires (vec (sort required))
+                     :available (vec (sort available))
+                     :missing missing}))))))))
+
 (defn- resolve-namespaces
   "Resolve all namespace entries in the agent definition."
   [namespaces base-dir make-llm-fn]
   (let [clj-cache (atom {})]
-    (into {}
-          (map (fn [[k v]]
-                 [(symbol k) (resolve-namespace-value v base-dir clj-cache make-llm-fn)])
-               namespaces))))
+    (let [resolved
+          (into {}
+                (map (fn [[k v]]
+                       [(symbol k) (resolve-namespace-value v base-dir clj-cache make-llm-fn)])
+                     namespaces))]
+      (validate-pattern-dependencies! resolved)
+      resolved)))
 
 ;; =============================================================================
 ;; System prompt resolution

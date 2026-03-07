@@ -175,6 +175,44 @@
           result (llm/make-llm {:model "test-model" :namespaces {} :provider prov})]
       (is (fn? (:llm result))))))
 
+(deftest validate-pattern-dependencies-test
+  (testing "permits required namespaces plus implicit core and blocking"
+    (is (nil? (#'agent/validate-pattern-dependencies!
+               {'patterns {:fix-loop {:requires [:strings :io :agents :futures :blocking]}}
+                'io {}
+                'agents {}
+                'futures {}}))))
+
+  (testing "throws actionable error when a pattern dependency is missing"
+    (let [ex (try
+               (#'agent/validate-pattern-dependencies!
+                {'patterns {:team {:requires [:io :agents :futures :strings :blocking]}}
+                 'io {}
+                 'agents {}})
+               nil
+               (catch clojure.lang.ExceptionInfo ex
+                 ex))
+          data (ex-data ex)]
+      (is (instance? clojure.lang.ExceptionInfo ex))
+      (is (= :team (:pattern data)))
+      (is (= ['futures] (:missing data)))
+      (is (some #{'blocking} (:available data)))
+      (is (re-find #"Pattern team requires namespaces" (.getMessage ex))))))
+
+(deftest resolve-llms-validates-pattern-dependencies-test
+  (testing "inline llm specs fail fast when they include patterns without required effect namespaces"
+    (let [ex (is (thrown? clojure.lang.ExceptionInfo
+                          (agent/resolve-llms
+                           {'helper {:doc "Helper"
+                                     :namespaces {'patterns 'stdlib/patterns}}}
+                           llm/make-llm
+                           nil
+                           nil
+                           nil)))
+          data (ex-data ex)]
+      (is (= :explore (:pattern data)))
+      (is (= ['agents 'io] (:missing data))))))
+
 ;; =============================================================================
 ;; load-agent-config with :llms
 ;; =============================================================================

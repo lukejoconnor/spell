@@ -30,3 +30,14 @@
             (str k " should have vector params"))
         (is (seq (get-in patterns/patterns [k :body]))
             (str k " should have non-empty body"))))))
+
+(deftest public-pattern-requires-test
+  (testing "public pattern entrypoints declare expected namespace dependencies"
+    (is (= [:strings] (get-in patterns/patterns [:check-result :requires])))
+    (is (= [] (get-in patterns/patterns [:clean-prompt :requires])))
+    (is (= [:agents :io] (get-in patterns/patterns [:explore :requires])))
+    (is (= [:agents :blocking] (get-in patterns/patterns [:ralph :requires])))
+    (is (= [:strings :io :agents :futures :blocking]
+           (get-in patterns/patterns [:team :requires])))
+    (is (= [:strings :io :agents :futures :blocking]
+           (get-in patterns/patterns [:fix-loop :requires])))))
