@@ -606,14 +606,16 @@
           (is (str/includes? (:output result) "EXIT: 0")))))))
 
 (deftest fix-loop-thunk-error-handling-test
-  (testing "thunk test errors are treated as failures and surfaced to the worker"
+  (testing "thunk test errors reprompt the reflector without calling the worker"
     (let [dir (create-temp-git-repo {})
-          captured-output (atom nil)
+          worker-calls (atom 0)
           reflect-count (atom 0)
+          reflector-msgs (atom [])
           send-await-fn (fn [_handle msg]
                           (case (:kind msg)
                             :reflect (do
                                        (swap! reflect-count inc)
+                                       (swap! reflector-msgs conj msg)
                                        (if (= 1 @reflect-count)
                                          {:resolved false
                                           :diagnosis "Investigate failing thunk."
@@ -622,7 +624,7 @@
                                          {:panic true
                                           :diagnosis "Stopping after thunk failure"}))
                             :repair (do
-                                      (reset! captured-output (:failed-output msg))
+                                      (swap! worker-calls inc)
                                       {:summary "saw thunk error"})
                             {:panic true :diagnosis "unexpected message"}))]
       (try
@@ -634,6 +636,11 @@
                          'blocking {:send-await send-await-fn}})]
             (is (nil? (:pass result)))
             (is (str/includes? (:fail result) "Stopping after thunk failure"))
-            (is (str/includes? @captured-output "THUNK ERROR"))))
+            (is (= 0 @worker-calls))
+            (is (= 2 @reflect-count))
+            (is (str/includes? (:feedback (second @reflector-msgs))
+                               "Test execution failed before any worker call"))
+            (is (str/includes? (:feedback (second @reflector-msgs))
+                               "THUNK ERROR"))))
         (finally
           (cleanup-dir dir))))))
