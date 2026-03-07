@@ -64,7 +64,7 @@
 (deftest reopen-last-top-level-form-test
   (testing "reopen targets the last top-level quine and preserves prior forms"
     (let [raw "(quine completion (eval (do (def first-msg \"kept\") nil ))) (quine completion (eval (do (def second-msg \"open-me\") )))"
-          reopened (#'runtime/reopen raw)]
+          reopened (#'runtime/reopen-completion raw)]
       (is (.contains ^String reopened "(def first-msg \"kept\")"))
       (is (.contains ^String reopened "(def second-msg \"open-me\")"))
       (is (.endsWith ^String reopened "(def second-msg \"open-me\") "))

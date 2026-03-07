@@ -145,15 +145,24 @@
     (let [dir (create-temp-git-repo {"run_tests.sh" "#!/bin/bash\ntest -f fixed.txt"})
           register-calls (atom [])
           send-await-calls (atom [])
+          reflect-count (atom 0)
           register-fn (fn [handle completion]
                         (swap! register-calls conj {:handle handle :completion completion})
                         handle)
           send-await-fn (fn [handle msg]
                           (swap! send-await-calls conj {:handle handle :msg msg})
                           (case (:kind msg)
-                            :reflect {:diagnosis "Create fixed.txt."
-                                      :test "./run_tests.sh"
-                                      :panic false}
+                            :reflect (do
+                                       (swap! reflect-count inc)
+                                       (if (= 1 @reflect-count)
+                                         {:resolved false
+                                          :diagnosis "Create fixed.txt."
+                                          :test "./run_tests.sh"
+                                          :panic false}
+                                         {:resolved true
+                                          :diagnosis "Issue resolved."
+                                          :test "./run_tests.sh"
+                                          :panic false}))
                             :repair (do
                                       (spit (str dir "/fixed.txt") "ok")
                                       {:summary "created fixed.txt"})
@@ -164,15 +173,23 @@
                         "Missing fixed.txt causes failure"
                         {'agents {:register register-fn}
                          'blocking {:send-await send-await-fn}})]
-            (is (= true (:pass result)))
+            (is (= {:pass true
+                    :diagnosis "Issue resolved."
+                    :last-worker-summary "created fixed.txt"}
+                   result))
             (is (= 2 (count @register-calls)))
-            (is (= 2 (count @send-await-calls)))
-            (is (= [:reflect :repair]
+            (is (= 3 (count @send-await-calls)))
+            (is (= [:reflect :repair :reflect]
                    (mapv #(get-in % [:msg :kind]) @send-await-calls)))
+            (is (= "created fixed.txt"
+                   (get-in (last @send-await-calls) [:msg :last-worker-summary])))
+            (is (str/includes? (get-in (last @send-await-calls) [:msg :last-test-output]) "EXIT: 0"))
             (is (some #(str/includes? (:completion %) "reflector agent in patterns/fix-loop")
                       @register-calls))
             (is (some #(str/includes? (:completion %) "code repair worker used by patterns/fix-loop")
-                      @register-calls))))
+                      @register-calls))
+            (is (every? #(str/includes? (:completion %) "shell commands, process execution and file watching.")
+                        @register-calls))))
         (finally
           (cleanup-dir dir))))))
 
@@ -192,10 +209,16 @@
                                        (swap! reflect-count inc)
                                        (swap! reflector-msgs conj msg)
                                        (case @reflect-count
-                                         1 {:diagnosis "Create file-a.txt and file-b.txt."
+                                         1 {:resolved false
+                                            :diagnosis "Create file-a.txt and file-b.txt."
                                             :test "./run_tests.sh"
                                             :panic false}
-                                         {:diagnosis "file-a.txt exists. Create file-b.txt next."
+                                         2 {:resolved false
+                                            :diagnosis "file-a.txt exists. Create file-b.txt next."
+                                            :test "./run_tests.sh"
+                                            :panic false}
+                                         {:resolved true
+                                          :diagnosis "Both files exist and issue is resolved."
                                           :test "./run_tests.sh"
                                           :panic false}))
                             :repair (do
@@ -206,7 +229,9 @@
                                             (spit (str dir "/file-a.txt") "a")
                                             (spit (str dir "/file-b.txt") "b"))
                                         nil)
-                                      {:summary "partial progress"})
+                                      (case @repair-count
+                                        1 {:summary "added file-a only"}
+                                        {:summary "added file-b too"}))
                             {:panic true :diagnosis "unexpected message"}))]
       (try
         (with-redefs [sio/sh (sh-in-dir dir)]
@@ -216,11 +241,16 @@
                         {'agents {:register register-fn}
                          'blocking {:send-await send-await-fn}})]
             (is (= true (:pass result)))
-            (is (= 2 @reflect-count))
+            (is (= "Both files exist and issue is resolved." (:diagnosis result)))
+            (is (= "added file-b too" (:last-worker-summary result)))
+            (is (= 3 @reflect-count))
             (is (= 2 @repair-count))
             (is (= 2 (count @register-calls)))
+            (is (= [0 1 2] (mapv :attempt @reflector-msgs)))
             (is (= "Create file-a.txt and file-b.txt."
                    (:last-diagnosis (second @reflector-msgs))))
+            (is (= "added file-a only"
+                   (:last-worker-summary (second @reflector-msgs))))
             (is (= "./run_tests.sh"
                    (:active-test (second @reflector-msgs))))))
         (finally
@@ -267,6 +297,7 @@
                {"focused.sh" "#!/bin/bash\ntest -f target.txt && test -f secondary.txt"
                 "broad.sh" "#!/bin/bash\nexit 1"})
           commands (atom [])
+          reflect-count (atom 0)
           sh-base (sh-in-dir dir)
           tracking-sh (fn [cmd & more]
                         (swap! commands conj cmd)
@@ -274,7 +305,11 @@
           register-fn (fn [handle completion] handle)
           send-await-fn (fn [_handle msg]
                           (case (:kind msg)
-                            :reflect "{:diagnosis \"Create target.txt and secondary.txt\" :test \"./focused.sh\" :panic false}"
+                            :reflect (do
+                                       (swap! reflect-count inc)
+                                       (if (= 1 @reflect-count)
+                                         "{:resolved false :diagnosis \"Create target.txt and secondary.txt\" :test \"./focused.sh\" :panic false}"
+                                         "{:resolved true :diagnosis \"Issue is resolved\" :test \"./focused.sh\" :panic false}"))
                             :repair (do
                                       (spit (str dir "/target.txt") "t")
                                       (spit (str dir "/secondary.txt") "s")
@@ -294,14 +329,24 @@
           (cleanup-dir dir))))))
 
 (deftest fix-loop-reflector-must-provide-test-command
-  (testing "fails with clear message when reflector omits :test and no prior test exists"
+  (testing "invalid reflector schema reprompts reflector without running worker"
     (let [dir (create-temp-git-repo {"run_tests.sh" "#!/bin/bash\ntest -f target.txt"})
           worker-calls (atom 0)
+          reflect-count (atom 0)
+          reflector-msgs (atom [])
           register-fn (fn [handle completion] handle)
           send-await-fn (fn [_handle msg]
+                          (when (= :reflect (:kind msg))
+                            (swap! reflect-count inc)
+                            (swap! reflector-msgs conj msg))
                           (case (:kind msg)
-                            :reflect {:diagnosis "Need to create target.txt"
-                                      :panic false}
+                            :reflect (if (= 1 @reflect-count)
+                                       {:diagnosis "Need to create target.txt"
+                                        :resolved false
+                                        :panic false}
+                                       {:diagnosis "Stopping after invalid schema"
+                                        :test "./run_tests.sh"
+                                        :panic true})
                             :repair (do
                                       (swap! worker-calls inc)
                                       {:summary "should not run"})
@@ -315,8 +360,11 @@
                          'blocking {:send-await send-await-fn}})]
             (is (nil? (:pass result)))
             (is (string? (:fail result)))
-            (is (str/includes? (:fail result) "non-empty :test"))
-            (is (= 0 @worker-calls))))
+            (is (str/includes? (:fail result) "Stopping after invalid schema"))
+            (is (= 0 @worker-calls))
+            (is (= 2 @reflect-count))
+            (is (str/includes? (:feedback (second @reflector-msgs))
+                               "Invalid reflector schema"))))
         (finally
           (cleanup-dir dir))))))
 
@@ -326,7 +374,8 @@
           register-fn (fn [handle completion] handle)
           send-await-fn (fn [_handle msg]
                           (case (:kind msg)
-                            :reflect {:diagnosis "Create target.txt"
+                            :reflect {:resolved false
+                                      :diagnosis "Create target.txt"
                                       :test "./run_tests.sh"
                                       :panic false}
                             :repair (do
@@ -343,9 +392,68 @@
                          'blocking {:send-await send-await-fn}})
                 end-branch (str/trim (:out (sio/sh "git rev-parse --abbrev-ref HEAD")))]
             (is (nil? (:pass result)))
-            (is (str/includes? (:fail result) "Max retries"))
+            (is (str/includes? (:fail result) "Max worker retries"))
             (is (= orig-branch end-branch))
             (is (not (.exists (java.io.File. (str dir "/leak.txt")))))
             (is (str/blank? (:out (sio/sh "git status --porcelain"))))))
+        (finally
+          (cleanup-dir dir))))))
+
+(deftest fix-loop-reflector-result-mismatch-reprompts-without-consuming-worker-retries
+  (testing "resolved/test-result mismatch reprompts reflector and does not increment worker attempt"
+    (let [dir (create-temp-git-repo
+               {"run_tests.sh" "#!/bin/bash\ntest -f target.txt"
+                "always_pass.sh" "#!/bin/bash\nexit 0"
+                "always_fail.sh" "#!/bin/bash\nexit 1"})
+          reflect-count (atom 0)
+          repair-count (atom 0)
+          reflector-msgs (atom [])
+          register-fn (fn [handle completion] handle)
+          send-await-fn
+          (fn [_handle msg]
+            (case (:kind msg)
+              :reflect (do
+                         (swap! reflect-count inc)
+                         (swap! reflector-msgs conj msg)
+                         (case @reflect-count
+                           1 {:resolved false
+                              :diagnosis "Need target file."
+                              :test "./always_pass.sh"
+                              :panic false}
+                           2 {:resolved false
+                              :diagnosis "Need target file."
+                              :test "./run_tests.sh"
+                              :panic false}
+                           3 {:resolved true
+                              :diagnosis "Looks resolved."
+                              :test "./always_fail.sh"
+                              :panic false}
+                           {:resolved true
+                            :diagnosis "Issue is resolved."
+                            :test "./run_tests.sh"
+                            :panic false}))
+              :repair (do
+                        (swap! repair-count inc)
+                        (spit (str dir "/target.txt") "ok")
+                        {:summary "created target.txt"})
+              {:panic true :diagnosis "unexpected message"}))]
+      (try
+        (with-redefs [sio/sh (sh-in-dir dir)]
+          (let [result (run-fix-loop
+                        {:issue "Need target file"
+                         :max-retries 1}
+                        {'agents {:register register-fn}
+                         'blocking {:send-await send-await-fn}})]
+            (is (= {:pass true
+                    :diagnosis "Issue is resolved."
+                    :last-worker-summary "created target.txt"}
+                   result))
+            (is (= 4 @reflect-count))
+            (is (= 1 @repair-count))
+            (is (= [0 0 1 1] (mapv :attempt @reflector-msgs)))
+            (is (str/includes? (:feedback (second @reflector-msgs))
+                               "Expected test pass == resolved flag"))
+            (is (str/includes? (:feedback (nth @reflector-msgs 3))
+                               "Expected test pass == resolved flag"))))
         (finally
           (cleanup-dir dir))))))

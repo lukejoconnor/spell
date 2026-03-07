@@ -152,12 +152,12 @@
 ;;    :max-retries 5}
 ;;
 ;; Reflector must return a map-like value with:
-;;   {:diagnosis "..." :test "..." :panic false}
+;;   {:resolved true|false :diagnosis "..." :test "..." :panic false}
 ;;
 ;; Notes:
-;; - The reflector writes/updates tests and proposes the active test command.
+;; - The reflector writes/updates tests and decides when issue is resolved.
 ;; - Dirty state is committed before branch creation to preserve user work.
-;; - Failed worker attempts are reset before retry for branch safety.
+;; - Reflector artifacts are committed before each worker call as rollback points.
 ;;
 (defn fix-loop [issue-or-opts]
   (let [opts             (if (map? issue-or-opts)
@@ -185,36 +185,57 @@
     (if (strings/blank? issue)
       {:fail "fix-loop requires non-empty issue description"}
       (let [normalize-reflector
-            (fn [raw previous-test]
+            (fn [raw]
               (let [parsed (if (map? raw)
                              raw
                              (if (string? raw)
                                (try
                                  (read-string raw)
                                  (catch e raw))
-                               raw))
-                    parsed (if (map? parsed)
-                             parsed
-                             {:diagnosis (str "Invalid reflector response: " (pr-str raw))
-                              :test previous-test
-                              :panic true})
-                    diagnosis-base (if (string? (:diagnosis parsed))
-                                     (:diagnosis parsed)
-                                     (pr-str (:diagnosis parsed)))
-                    test-cmd (if (and (string? (:test parsed))
-                                      (not (strings/blank? (:test parsed))))
-                               (:test parsed)
-                               previous-test)
-                    missing-test? (or (not (string? test-cmd))
-                                      (strings/blank? test-cmd))
-                    diagnosis (if missing-test?
-                                (str diagnosis-base
-                                     "\n\nReflector must return a non-empty :test command.")
-                                diagnosis-base)]
-                {:diagnosis diagnosis
-                 :test test-cmd
-                 :panic (or (= true (:panic parsed))
-                            missing-test?)}))
+                               raw))]
+                (if (not (map? parsed))
+                  {:ok false
+                   :feedback (str "Invalid reflector response. Return a Spell map literal with keys "
+                                  ":resolved, :diagnosis, :test, :panic.\n"
+                                  "Raw response:\n"
+                                  (pr-str raw))}
+                  (let [panic? (= true (:panic parsed))
+                        diagnosis-raw (:diagnosis parsed)
+                        diagnosis (if (string? diagnosis-raw)
+                                    diagnosis-raw
+                                    (if (nil? diagnosis-raw) "" (pr-str diagnosis-raw)))
+                        test-cmd (:test parsed)
+                        resolved (:resolved parsed)]
+                    (if panic?
+                      {:ok true
+                       :panic true
+                       :diagnosis (if (strings/blank? diagnosis)
+                                    "Reflector set :panic true without diagnosis."
+                                    diagnosis)}
+                      (let [errors-0 []
+                            errors-1 (if (or (= true resolved) (= false resolved))
+                                       errors-0
+                                       (conj errors-0 ":resolved must be true or false"))
+                            errors-2 (if (strings/blank? diagnosis)
+                                       (conj errors-1 ":diagnosis must be a non-empty string")
+                                       errors-1)
+                            errors-3 (if (and (string? test-cmd)
+                                              (not (strings/blank? test-cmd)))
+                                       errors-2
+                                       (conj errors-2 ":test must be a non-empty shell command"))
+                            has-errors (not (empty? errors-3))
+                            error-text (apply str (map (fn [x] (str "- " x "\n")) errors-3))]
+                        (if has-errors
+                          {:ok false
+                           :feedback (str "Invalid reflector schema.\n"
+                                          error-text
+                                          "Raw response:\n"
+                                          (pr-str raw))}
+                          {:ok true
+                           :panic false
+                           :resolved resolved
+                           :diagnosis diagnosis
+                           :test test-cmd})))))))
             collect-diff
             (fn []
               (str "GIT STATUS:\n"
@@ -226,46 +247,72 @@
             run-gate
             (fn [active-test]
               (let [primary (io/sh active-test)]
-                (if (not= 0 (:exit primary))
-                  {:pass false
-                   :failed-cmd active-test
-                   :result primary}
-                  {:pass true})))
-            format-failure
-            (fn [failed-cmd result]
-              (str "COMMAND: " failed-cmd "\n"
+                {:pass (= 0 (:exit primary))
+                 :cmd active-test
+                 :result primary}))
+            format-test-result
+            (fn [cmd result]
+              (str "COMMAND: " cmd "\n"
                    "EXIT: " (:exit result) "\n"
                    "OUT:\n" (:out result) "\n"
                    "ERR:\n" (:err result)))
             reflector-msg
-            (fn [attempt last-test-output last-diff last-diagnosis active-test]
+            (fn [attempt last-test-output last-diff last-diagnosis active-test last-worker-summary feedback]
               {:kind :reflect
                :attempt attempt
                :issue issue
                :active-test active-test
                :last-test-output last-test-output
                :last-diff last-diff
-               :last-diagnosis last-diagnosis})
+               :last-diagnosis last-diagnosis
+               :last-worker-summary last-worker-summary
+               :feedback feedback})
+            extract-worker-summary
+            (fn [worker-result]
+              (if (and (string? worker-result)
+                       (not (strings/blank? worker-result)))
+                worker-result
+                (if (and (map? worker-result)
+                         (string? (:summary worker-result))
+                         (not (strings/blank? (:summary worker-result))))
+                  (:summary worker-result)
+                  nil)))
+            io-guide
+            (let [docs (:docs io)
+                  guide (:guide docs)]
+              (if (string? guide) guide ""))
+            io-guide-context
+            (if (strings/blank? io-guide)
+              ""
+              (str "\n\nIO namespace guide:\n"
+                   io-guide
+                   "\n\nPrefer io/ APIs and signatures exactly as documented above.\n"))
             reflector-init-prompt
             (str "You are the reflector agent in patterns/fix-loop.\n\n"
                  "On each wake, inspect the newest msg-* binding.\n"
-                 "Its :body is a map with keys:\n"
+                 "Its :body has keys:\n"
                  "{:kind :reflect :attempt int :issue str :active-test str|nil\n"
-                 " :last-test-output str :last-diff str :last-diagnosis str}\n\n"
-                 "Responsibilities:\n"
-                 "1) Attempt 0: explore codebase and run relevant existing tests FIRST.\n"
-                 "2) Prefer an existing failing test command when it already reproduces the issue.\n"
-                 "3) Only write/update a new regression test if no existing test reproduces the bug.\n"
-                 "4) :test must cover relevant existing behavior, not only a newly added narrow test.\n"
-                 "5) Run the exact :test command and ensure it FAILS before returning.\n"
-                 "6) Retry attempts: use prior test output and diff to refine diagnosis and test command.\n"
-                 "7) Reflector owns diagnosis and tests; do not implement production fixes.\n\n"
+                 " :last-test-output str :last-diff str :last-diagnosis str\n"
+                 " :last-worker-summary str|nil :feedback str}\n\n"
+                 "You own diagnosis and test strategy. The worker only applies edits.\n\n"
+                 "Contract:\n"
+                 "1) Return :resolved false only when issue is NOT fixed yet.\n"
+                 "2) When :resolved false, :test must currently FAIL.\n"
+                 "3) Return :resolved true only when issue IS fixed.\n"
+                 "4) When :resolved true, :test must currently PASS.\n"
+                 "5) Harness checks this strictly: test-pass must equal :resolved.\n"
+                 "6) If mismatch or invalid schema, you will be re-prompted with :feedback.\n"
+                 "7) Harness commits reflector artifacts before worker edits.\n"
+                 "   If worker edits are bad, you can roll back with git reset --hard HEAD.\n"
+                 "8) After every worker call, you get post-worker test output + diff + worker summary.\n"
+                 "9) Reflector owns final decision to continue, resolve, or panic.\n\n"
+                 io-guide-context
                  "Return ONLY a Spell map literal with exactly:\n"
-                 "{:diagnosis \"what is wrong and how to fix it\"\n"
-                 " :test \"shell command to evaluate the fix\"\n"
+                 "{:resolved true|false\n"
+                 " :diagnosis \"why issue is or is not resolved\"\n"
+                 " :test \"shell command to validate your claim\"\n"
                  " :panic false}\n\n"
-                 ":test is REQUIRED and must be a runnable shell command.\n"
-                 "Set :panic true only if fundamentally unsolvable.")
+                 "Set :panic true only if fundamentally unsolvable; include diagnosis.")
             reflector-init-completion
             (str "(quine completion (eval (do "
                  "(quine prompt " (pr-str reflector-init-prompt) ") "
@@ -279,7 +326,10 @@
                  "Use :issue + :diagnosis to make targeted implementation edits.\n"
                  "Use io/sh, io/read-file, io/str-replace, and io/write-file as needed.\n"
                  "Do NOT run tests; parent loop runs tests.\n"
-                 "Return a brief summary (string or {:summary \"...\"}).")
+                 io-guide-context
+                 "Return either:\n"
+                 "- nil/no summary, or\n"
+                 "- a brief summary (string or {:summary \"...\"}) describing what changed and why it should fix diagnosis.")
             worker-init-completion
             (str "(quine completion (eval (do "
                  "(quine prompt " (pr-str worker-init-prompt) ") "
@@ -296,59 +346,97 @@
                    last-test-output ""
                    last-diff ""
                    last-diagnosis ""
-                   active-test nil]
-              (if (>= attempt max-retries)
-                (do
-                  (cleanup)
-                  {:fail (str "Max retries (" max-retries "). Last diagnosis: " last-diagnosis)})
-                (let [reflector-raw (blocking/send-await reflector-handle
-                                                         (reflector-msg attempt
-                                                                        last-test-output
-                                                                        last-diff
-                                                                        last-diagnosis
-                                                                        active-test))
-                      reflector (normalize-reflector reflector-raw active-test)
-                      diagnosis (:diagnosis reflector)
-                      chosen-test (:test reflector)]
-                  (if (:panic reflector)
-                    (do
-                      (cleanup)
-                      {:fail diagnosis})
-                    (let [pre-check (run-gate chosen-test)]
-                      (if (:pass pre-check)
-                        (do
-                          (maybe-commit (str "fix-loop: resolved before worker (attempt " (inc attempt) ")"))
-                          {:pass true})
-                        (let [pre-result (:result pre-check)
-                              pre-failed-cmd (:failed-cmd pre-check)
-                              pre-output (format-failure pre-failed-cmd pre-result)]
-                          ;; Checkpoint reflector-authored tests/diagnosis artifacts so
-                          ;; worker rollback can discard attempt-local edits.
-                          (maybe-commit (str "fix-loop: reflector checkpoint (attempt " (inc attempt) ")"))
-                          (let [worker-result (blocking/send-await
-                                               worker-handle
-                                               {:kind :repair
-                                                :attempt (inc attempt)
-                                                :issue issue
-                                                :diagnosis diagnosis
-                                                :test chosen-test
-                                                :failed-cmd pre-failed-cmd
-                                                :failed-output pre-output})
-                                post-check (run-gate chosen-test)]
-                            (if (:pass post-check)
-                              (do
-                                (maybe-commit (str "fix-loop: applied fix (attempt " (inc attempt) ")"))
-                                {:pass true})
-                              (let [post-result (:result post-check)
-                                    post-failed-cmd (:failed-cmd post-check)
-                                    post-output
-                                    (str (format-failure post-failed-cmd post-result)
-                                         "\n\nWORKER RESULT:\n"
-                                         (pr-str worker-result))
-                                    attempt-diff (collect-diff)]
-                                (reset-worktree)
-                                (recur (inc attempt)
-                                       post-output
-                                       attempt-diff
-                                       diagnosis
-                                       chosen-test)))))))))))))))))
+                   active-test nil
+                   last-worker-summary nil
+                   feedback ""]
+              (let [reflector-raw (blocking/send-await reflector-handle
+                                                       (reflector-msg attempt
+                                                                      last-test-output
+                                                                      last-diff
+                                                                      last-diagnosis
+                                                                      active-test
+                                                                      last-worker-summary
+                                                                      feedback))
+                    reflector (normalize-reflector reflector-raw)]
+                (cond
+                  (not (:ok reflector))
+                  (recur attempt
+                         last-test-output
+                         last-diff
+                         last-diagnosis
+                         active-test
+                         last-worker-summary
+                         (:feedback reflector))
+
+                  (:panic reflector)
+                  (do
+                    (cleanup)
+                    {:fail (:diagnosis reflector)})
+
+                  :else
+                  (let [diagnosis (:diagnosis reflector)
+                        chosen-test (:test reflector)
+                        resolved (:resolved reflector)
+                        check (run-gate chosen-test)
+                        check-pass (:pass check)
+                        check-output (format-test-result (:cmd check) (:result check))]
+                    (cond
+                      (not (= check-pass resolved))
+                      (let [mismatch-feedback
+                            (str "Expected test pass == resolved flag.\n"
+                                 "Reflector said :resolved " resolved
+                                 " but test pass was " check-pass ".\n"
+                                 "If :resolved is false, :test must fail.\n"
+                                 "If :resolved is true, :test must pass.\n\n"
+                                 check-output)]
+                        (recur attempt
+                               check-output
+                               (collect-diff)
+                               diagnosis
+                               chosen-test
+                               last-worker-summary
+                               mismatch-feedback))
+
+                      resolved
+                      (do
+                        (maybe-commit (str "fix-loop: resolved (worker attempts " attempt ")"))
+                        {:pass true
+                         :diagnosis diagnosis
+                         :last-worker-summary last-worker-summary})
+
+                      (>= attempt max-retries)
+                      (do
+                        (cleanup)
+                        {:fail (str "Max worker retries (" max-retries "). Last diagnosis: " diagnosis
+                                    (if last-worker-summary
+                                      (str ". Last worker summary: " last-worker-summary)
+                                      ""))})
+
+                      :else
+                      (let [pre-output check-output]
+                        ;; Checkpoint reflector-authored tests/diagnosis artifacts so
+                        ;; reflector can roll back worker edits with git reset --hard HEAD.
+                        (maybe-commit (str "fix-loop: reflector checkpoint (attempt " (inc attempt) ")"))
+                        (let [worker-result (blocking/send-await
+                                             worker-handle
+                                             {:kind :repair
+                                              :attempt (inc attempt)
+                                              :issue issue
+                                              :diagnosis diagnosis
+                                              :test chosen-test
+                                              :failed-cmd (:cmd check)
+                                              :failed-output pre-output})
+                              worker-summary (extract-worker-summary worker-result)
+                              post-check (run-gate chosen-test)
+                              post-output
+                              (str (format-test-result (:cmd post-check) (:result post-check))
+                                   "\n\nWORKER RESULT:\n"
+                                   (pr-str worker-result))
+                              attempt-diff (collect-diff)]
+                          (recur (inc attempt)
+                                 post-output
+                                 attempt-diff
+                                  diagnosis
+                                 chosen-test
+                                 worker-summary
+                                 ""))))))))))))))
