@@ -14,7 +14,7 @@
 
 (def fix-loop (:fix-loop stdlib/patterns))
 (def ralph (:ralph stdlib/patterns))
-(def sh-test (:sh-test stdlib/patterns))
+(def sh-test (:sh-test sio/io-namespace))
 
 (defn- run-fix-loop [opts env]
   (binding [eval/*spell-env* (merge {'strings stdlib/strings
@@ -594,7 +594,7 @@
           (cleanup-dir dir))))))
 
 (deftest sh-test-pattern-test
-  (testing "patterns/sh-test bakes a shell command into a reusable Spell thunk"
+  (testing "io/sh-test bakes a shell command into a reusable Spell thunk"
     (let [thunk (eval/invoke-fn sh-test ["echo hello"])]
       (is (= true (:spell/fn thunk)))
       (with-redefs [sio/sh (fn [cmd & _]

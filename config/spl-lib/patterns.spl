@@ -368,7 +368,7 @@
                  " :reset-worker false}\n\n"
                  "<test-spec> may be:\n"
                  "  \"shell command\"                       ; legacy shorthand\n"
-                 "  (patterns/sh-test \"shell command\")    ; shell-backed thunk\n"
+                 "  (io/sh-test \"shell command\")          ; shell-backed thunk\n"
                  "  (fn [] {:pass bool :output str})       ; direct thunk\n"
                  "  [(fn [] ...) \"shell command\" ...]     ; all must pass\n\n"
                  "Set :reset-worker true to get a fresh worker with cleared context.\n"
