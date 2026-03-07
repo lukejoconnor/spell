@@ -518,7 +518,12 @@
     (let [result (io/sh "sleep 1 && echo done" {:timeout 0})]
       (is (= 0 (:exit result)))
       (is (= "done" (:out result)))
-      (is (= "" (:err result))))))
+      (is (= "" (:err result)))))
+
+  (testing "keyword args instead of opts map throws informative error"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"all command segments must be strings"
+                          (io/sh "echo hello" :timeout 60)))))
 
 (deftest exec-test
   (let [result (io/exec ["echo" "hello"])]
