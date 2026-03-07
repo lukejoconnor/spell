@@ -543,13 +543,25 @@
   ([] (into {} (System/getenv)))
   ([key] (System/getenv (str key))))
 
+(defn sh-test
+  "Wrap a shell command in a zero-arg Spell test thunk."
+  [cmd]
+  {:spell/fn true
+   :params []
+   :body [(list 'let ['r (list 'io/sh cmd)]
+                {:pass (list '= 0 (list :exit 'r))
+                 :output (list 'str "COMMAND: " cmd "\n"
+                               "EXIT: " (list :exit 'r) "\n"
+                               "OUT:\n" (list :out 'r) "\n"
+                               "ERR:\n" (list :err 'r))})]})
+
 ;; =============================================================================
 ;; Namespace definition for Spell
 ;; =============================================================================
 
 (def io-namespace
   "The io/ namespace map for Spell agents."
-  {:short-docs "File operations, shell commands, and process execution."
+  {:short-docs "File operations, shell commands, process execution, and shell-backed test thunks."
    :docs {:guide "IO — File operations, shell commands, process execution and file watching.
 
   (io/read-lines path)                      — read file as vector of line strings with line-offset metadata
@@ -563,6 +575,7 @@
   (io/replace-lines path [[s e c] ...])      — multi-edit (line numbers refer to original file)
   (io/sh command)                            — execute shell command, returns {:exit :out :err}
   (io/sh command {:timeout 10})              — timeout in seconds (0 disables)
+  (io/sh-test command)                       — build a zero-arg shell-backed fix-loop test thunk
   (io/exec [cmd arg1 ...])                   — execute command directly (no shell)
   (io/watch-send path handle)                — watch directory, send events as message to handle
 
@@ -721,6 +734,18 @@ Timeout:
 
 Timeout returns {:exit -1 :err \"...timed out...\"}."
 
+    :sh-test
+    "Wrap a shell command as a zero-arg Spell test thunk.
+
+(io/sh-test command)
+  command: shell command string
+
+Returns a Spell fn that yields:
+  {:pass bool :output string}
+
+Useful for fix-loop reflector tests that should run a shell command without
+relying on closure capture semantics."
+
     :exec
     "Execute command directly without a shell. Takes a vector of strings.
 
@@ -788,5 +813,6 @@ The content is the raw file contents. For numbered lines, use io/read-file."}
    :watch-send watch-send
    ;; Process execution
    :sh sh
+   :sh-test sh-test
    :exec exec
    :env env})
