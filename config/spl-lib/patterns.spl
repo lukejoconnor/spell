@@ -210,6 +210,7 @@
                               (when (> (count group) 1) id))
                             id-groups))
         id-set (set (map :id tasks))
+        dep-slots (into {} (map (fn [task] [(:id task) (:slot task)]) tasks))
         missing-dep
         (first
          (keep (fn [task]
@@ -224,7 +225,19 @@
         (first
          (filter (fn [task]
                    (contains? (set (:depends task)) (:id task)))
-                 tasks))]
+                 tasks))
+        late-dep
+        (first
+         (keep (fn [task]
+                 (let [late
+                       (first
+                        (filter (fn [dep]
+                                  (>= (get dep-slots dep 0) (:slot task)))
+                                (:depends task)))]
+                   (when late
+                     {:task task
+                      :dep late})))
+               tasks))]
     (cond
       (empty? tasks)
       {:ok false
@@ -243,54 +256,77 @@
       {:ok false
        :feedback (str "Task " (:id self-dep) " cannot depend on itself.")}
 
+      late-dep
+      {:ok false
+       :feedback (str "Tasks must be returned in dependency order. Task "
+                      (get-in late-dep [:task :id])
+                      " depends on "
+                      (:dep late-dep)
+                      ", which appears later in the plan.")}
+
       :else
       {:ok true :tasks tasks})))
 
-(defn team-quote-shell [s]
-  (pr-str (str s)))
+(defn team-git [path args]
+  (io/exec (into ["git" "-C" path] args)))
 
-(defn team-in-dir [path cmd]
-  (io/sh (str "cd " (patterns/team-quote-shell path) " && " cmd)))
+(defn team-checkout [repo-root checkout-target detached?]
+  (patterns/team-git repo-root
+                     (if detached?
+                       ["checkout" "--detach" checkout-target]
+                       ["checkout" checkout-target])))
 
 (defn team-maybe-commit [path message]
-  (let [status (:out (patterns/team-in-dir path "git status --porcelain"))]
-    (when (not (strings/blank? status))
-      (patterns/team-in-dir path "git add -A")
-      (patterns/team-in-dir path (str "git commit -m " (patterns/team-quote-shell message)))))
-  true)
+  (let [status (:out (patterns/team-git path ["status" "--porcelain"]))]
+    (if (strings/blank? status)
+      {:ok true
+       :status :clean}
+      (let [add-result (patterns/team-git path ["add" "-A"])]
+        (if (not= 0 (:exit add-result))
+          {:ok false
+           :status :add-failed
+           :result add-result
+           :git-state (patterns/team-collect-git-state path)}
+          (let [commit-result (patterns/team-git path ["commit" "-m" message])
+                status-after (:out (patterns/team-git path ["status" "--porcelain"]))]
+            (if (= 0 (:exit commit-result))
+              {:ok true
+               :status :committed
+               :result commit-result}
+              {:ok false
+               :status :commit-failed
+               :result commit-result
+               :git-state (patterns/team-collect-git-state path)})))))))
 
 (defn team-collect-git-state [path]
   (str "PATH: " path "\n\n"
        "GIT STATUS:\n"
-       (:out (patterns/team-in-dir path "git status --short"))
+       (:out (patterns/team-git path ["status" "--short"]))
        "\n\nGIT DIFF (unstaged):\n"
-       (:out (patterns/team-in-dir path "git diff"))
+       (:out (patterns/team-git path ["diff"]))
        "\n\nGIT DIFF (staged):\n"
-       (:out (patterns/team-in-dir path "git diff --cached"))
+       (:out (patterns/team-git path ["diff" "--cached"]))
        "\n\nUNMERGED FILES:\n"
-       (:out (patterns/team-in-dir path "git diff --name-only --diff-filter=U"))))
+       (:out (patterns/team-git path ["diff" "--name-only" "--diff-filter=U"]))))
 
 (defn team-conflicted? [path]
-  (not (strings/blank? (:out (patterns/team-in-dir path "git diff --name-only --diff-filter=U")))))
+  (not (strings/blank? (:out (patterns/team-git path ["diff" "--name-only" "--diff-filter=U"])))))
 
 (defn team-merge-in-progress? [path]
-  (= 0 (:exit (patterns/team-in-dir path "git rev-parse -q --verify MERGE_HEAD"))))
+  (= 0 (:exit (patterns/team-git path ["rev-parse" "-q" "--verify" "MERGE_HEAD"]))))
 
 (defn team-abort-merge [path]
   (when (patterns/team-merge-in-progress? path)
-    (patterns/team-in-dir path "git merge --abort"))
-  (patterns/team-in-dir path "git reset --hard HEAD")
-  (patterns/team-in-dir path "git clean -fd")
+    (patterns/team-git path ["merge" "--abort"]))
+  (patterns/team-git path ["reset" "--hard" "HEAD"])
+  (patterns/team-git path ["clean" "-fd"])
   true)
 
 (defn team-remove-worktree-branch [repo-root worktree-path branch]
   (when (and worktree-path (io/exists? worktree-path))
-    (patterns/team-in-dir repo-root
-                 (str "git worktree remove --force "
-                      (patterns/team-quote-shell worktree-path))))
+    (patterns/team-git repo-root ["worktree" "remove" "--force" worktree-path]))
   (when branch
-    (patterns/team-in-dir repo-root
-                 (str "git branch -D " (patterns/team-quote-shell branch))))
+    (patterns/team-git repo-root ["branch" "-D" branch]))
   true)
 
 (defn team-extract-summary [result]
@@ -325,7 +361,7 @@
                                 (not (strings/blank? commit-raw)))
                          commit-raw
                          (patterns/team-default-commit-msg task))
-           :retry (= true (:retry parsed))
+           :panic (= true (:panic parsed))
            :resolved-conflict (= true (:resolved-conflict parsed))}
           {:ok false
            :feedback (str "Verifier must return {:approved true|false ...}. Raw response:\n"
@@ -346,7 +382,7 @@
            :approved false
            :summary (:feedback review)
            :commit-msg (patterns/team-default-commit-msg task)
-           :retry false
+           :panic false
            :resolved-conflict false}
           (recur (:feedback review) (inc attempt)))))))
 
@@ -421,11 +457,7 @@
         orig-checkout (if (= orig-branch "HEAD")
                         (strings/trim (:out (io/sh "git rev-parse HEAD")))
                         orig-branch)
-        orig-checkout-cmd (if (= orig-branch "HEAD")
-                            (str "git checkout --detach "
-                                 (patterns/team-quote-shell orig-checkout))
-                            (str "git checkout "
-                                 (patterns/team-quote-shell orig-checkout)))
+        orig-detached? (= orig-branch "HEAD")
         dirty? (not (strings/blank? (:out (io/sh "git status --porcelain"))))
         planner-handle (read-string (str ":team-planner-" run-id))
         verifier-handle (read-string (str ":team-verifier-" run-id))
@@ -450,6 +482,7 @@
              "Planning rules:\n"
              "- Break the goal into the smallest useful independently executable tasks\n"
              "- Use :depends only for real prerequisites\n"
+             "- Return tasks in topological order: task i may depend only on tasks earlier in the vector\n"
              "- Keep :context specific enough for an isolated worker to act without extra planning\n"
              "- Re-use shared context inside each task where relevant\n"
              "- If feedback is non-empty, fix your previous plan and return a corrected vector only\n")
@@ -469,14 +502,16 @@
              "If :merge-status is :conflict, you may edit files in :integration-path to resolve conflicts.\n"
              "Stage resolved files with git add when needed.\n"
              "Approve only if the integrated state is acceptable for this task.\n"
-             "Reject if the change is incorrect, incomplete, or should be retried.\n"
+             "Reject if the change is incorrect or incomplete.\n"
+             "Rejected tasks are retried with a fresh worker/worktree until max retries.\n"
              io-guide-context
              "Return ONLY a Spell map literal with keys:\n"
              "{:approved true|false\n"
              " :summary \"what you checked or why you rejected\"\n"
              " :commit-msg \"commit message for approved merge\"\n"
-             " :retry true|false\n"
-             " :resolved-conflict true|false}\n")
+             " :panic true|false\n"
+             " :resolved-conflict true|false}\n"
+             "Set :panic true only when the task should fail immediately and not be retried.\n")
         verifier-init-completion
         (str "(quine completion (eval (do "
              "(quine prompt " (pr-str verifier-init-prompt) ") "
@@ -502,8 +537,8 @@
       (do
         (when dirty?
           (io/sh "git add -A")
-          (io/sh "git commit -m \"baseline: pre-team state\""))
-        (io/sh (str "git checkout -b " branch))
+          (patterns/team-git repo-root ["commit" "-m" "baseline: pre-team state"]))
+        (patterns/team-git repo-root ["checkout" "-b" branch])
         (io/mkdirs worktree-base)
         (agents/register planner-handle planner-init-completion)
         (agents/register verifier-handle verifier-init-completion)
@@ -512,8 +547,8 @@
            (let [plan-result (patterns/team-plan-tasks planner-handle goal shared-context max-retries)]
              (if (not (:ok plan-result))
                (do
-                 (patterns/team-in-dir repo-root orig-checkout-cmd)
-                 (patterns/team-in-dir repo-root (str "git branch -D " (patterns/team-quote-shell branch)))
+                 (patterns/team-checkout repo-root orig-checkout orig-detached?)
+                 (patterns/team-git repo-root ["branch" "-D" branch])
                  {:status :failed
                   :summary (:fail plan-result)
                   :tasks []})
@@ -547,13 +582,11 @@
                                               worktree-path
                                               (str worktree-base "/task-" (:slot task) "-a" attempt-num)
                                               _ (agents/register worker-handle worker-init-completion)
-                                              _ (patterns/team-in-dir repo-root
-                                                             (str "git worktree add -b "
-                                                                  (patterns/team-quote-shell task-branch)
-                                                                  " "
-                                                                  (patterns/team-quote-shell worktree-path)
-                                                                  " "
-                                                                  (patterns/team-quote-shell branch)))
+                                              _ (patterns/team-git repo-root
+                                                                   ["worktree" "add" "-b"
+                                                                    task-branch
+                                                                    worktree-path
+                                                                    branch])
                                               token (blocking/completion-promise worker-handle)
                                               _ (agents/send worker-handle
                                                              {:kind :task
@@ -586,126 +619,157 @@
                                           task (:task entry)
                                           worker-result (nth wave-results idx)
                                           worker-summary (patterns/team-extract-summary worker-result)
-                                          _ (patterns/team-maybe-commit (:worktree task)
-                                                               (str "team worker: " (:title task)
-                                                                    " (attempt " (:attempt task) ")"))
-                                          merge-result
-                                          (patterns/team-in-dir repo-root
-                                                       (str "git merge --no-commit --no-ff "
-                                                            (patterns/team-quote-shell (:branch task))))
-                                          merge-status
-                                          (if (patterns/team-conflicted? repo-root)
-                                            :conflict
-                                            (if (= 0 (:exit merge-result))
-                                              :clean
-                                              :merge-failed))
-                                          review-msg
-                                          {:kind :verify
-                                           :goal goal
-                                           :shared-context shared-context
-                                           :task task
-                                           :task-branch (:branch task)
-                                           :worker-result worker-result
-                                           :integration-path repo-root
-                                           :merge-status merge-status
-                                           :merge-output (str "EXIT: " (:exit merge-result)
-                                                              "\nOUT:\n" (:out merge-result)
-                                                              "\nERR:\n" (:err merge-result))
-                                           :git-state (patterns/team-collect-git-state repo-root)}
-                                          review (patterns/team-review-merge verifier-handle review-msg task)]
-                                      (if (:approved review)
-                                        (let [_ (patterns/team-in-dir repo-root "git add -A")
-                                              status-before-commit
-                                              (:out (patterns/team-in-dir repo-root "git status --porcelain"))
-                                              commit-result
-                                              (if (strings/blank? status-before-commit)
-                                                {:exit 0 :out "" :err ""}
-                                                (patterns/team-in-dir repo-root
-                                                             (str "git commit -m "
-                                                                  (patterns/team-quote-shell (:commit-msg review)))))
-                                              commit-status-after
-                                              (:out (patterns/team-in-dir repo-root "git status --porcelain"))
-                                              commit-review
-                                              (if (or (= 0 (:exit commit-result))
-                                                      (strings/blank? commit-status-after))
-                                                review
-                                                (patterns/team-review-merge
-                                                 verifier-handle
-                                                 {:kind :commit-failed
-                                                  :goal goal
-                                                  :shared-context shared-context
-                                                  :task task
-                                                  :task-branch (:branch task)
-                                                  :worker-result worker-result
-                                                  :integration-path repo-root
-                                                  :merge-status :commit-failed
-                                                  :merge-output (str "EXIT: " (:exit commit-result)
-                                                                     "\nOUT:\n" (:out commit-result)
-                                                                     "\nERR:\n" (:err commit-result))
-                                                  :git-state (patterns/team-collect-git-state repo-root)}
-                                                 task))
-                                              _ (if (and (not (= 0 (:exit commit-result)))
-                                                         (:approved commit-review)
-                                                         (not (strings/blank? commit-status-after)))
-                                                  (do
-                                                    (patterns/team-in-dir repo-root "git add -A")
-                                                    (patterns/team-in-dir repo-root
-                                                                 (str "git commit -m "
-                                                                      (patterns/team-quote-shell (:commit-msg commit-review)))))
-                                                  true)
-                                              final-status
-                                              (:out (patterns/team-in-dir repo-root "git status --porcelain"))
-                                              approved? (and (not= :merge-failed merge-status)
-                                                             (strings/blank? final-status))]
-                                          (patterns/team-remove-worktree-branch repo-root
-                                                                       (:worktree task)
-                                                                       (:branch task))
+                                          worker-commit
+                                          (patterns/team-maybe-commit
+                                           (:worktree task)
+                                           (str "team worker: " (:title task)
+                                                " (attempt " (:attempt task) ")"))]
+                                      (if (not (:ok worker-commit))
+                                        (let [commit-error
+                                              (str "Worker commit failed for "
+                                                   (:id task)
+                                                   ". Preserved worktree at "
+                                                   (:worktree task)
+                                                   " on branch "
+                                                   (:branch task)
+                                                   ".\nEXIT: "
+                                                   (get-in worker-commit [:result :exit])
+                                                   "\nOUT:\n"
+                                                   (get-in worker-commit [:result :out])
+                                                   "\nERR:\n"
+                                                   (get-in worker-commit [:result :err]))]
                                           (patterns/team-replace-task
                                            acc
-                                           (if approved?
-                                             (assoc task
-                                                    :status :completed
-                                                    :result worker-result
-                                                    :feedback ""
-                                                    :error nil
-                                                    :verification (:summary commit-review))
-                                             (do
-                                               (patterns/team-abort-merge repo-root)
-                                               (if (< (:attempt task) (:max-retries task))
+                                           (assoc task
+                                                  :status :failed
+                                                  :error commit-error
+                                                  :result worker-result
+                                                  :verification commit-error)))
+                                        (let [merge-result
+                                              (patterns/team-git repo-root
+                                                                 ["merge" "--no-commit" "--no-ff"
+                                                                  (:branch task)])
+                                              merge-status
+                                              (if (patterns/team-conflicted? repo-root)
+                                                :conflict
+                                                (if (= 0 (:exit merge-result))
+                                                  :clean
+                                                  :merge-failed))
+                                              review-msg
+                                              {:kind :verify
+                                               :goal goal
+                                               :shared-context shared-context
+                                               :task task
+                                               :task-branch (:branch task)
+                                               :worker-result worker-result
+                                               :integration-path repo-root
+                                               :merge-status merge-status
+                                               :merge-output (str "EXIT: " (:exit merge-result)
+                                                                  "\nOUT:\n" (:out merge-result)
+                                                                  "\nERR:\n" (:err merge-result))
+                                               :git-state (patterns/team-collect-git-state repo-root)}
+                                              review (patterns/team-review-merge verifier-handle review-msg task)]
+                                          (if (:approved review)
+                                            (let [final-commit
+                                                  (patterns/team-maybe-commit repo-root (:commit-msg review))
+                                                  commit-review
+                                                  (if (:ok final-commit)
+                                                    review
+                                                    (patterns/team-review-merge
+                                                     verifier-handle
+                                                     {:kind :commit-failed
+                                                      :goal goal
+                                                      :shared-context shared-context
+                                                      :task task
+                                                      :task-branch (:branch task)
+                                                      :worker-result worker-result
+                                                      :integration-path repo-root
+                                                      :merge-status :commit-failed
+                                                      :merge-output (str "EXIT: " (get-in final-commit [:result :exit])
+                                                                         "\nOUT:\n" (get-in final-commit [:result :out])
+                                                                         "\nERR:\n" (get-in final-commit [:result :err]))
+                                                      :git-state (patterns/team-collect-git-state repo-root)}
+                                                     task))
+                                                  retried-commit
+                                                  (if (and (not (:ok final-commit))
+                                                           (:approved commit-review))
+                                                    (patterns/team-maybe-commit repo-root (:commit-msg commit-review))
+                                                    final-commit)
+                                                  approved? (and (not= :merge-failed merge-status)
+                                                                 (:ok retried-commit))]
+                                              (patterns/team-replace-task
+                                               acc
+                                               (if approved?
+                                                 (do
+                                                   (patterns/team-remove-worktree-branch repo-root
+                                                                                        (:worktree task)
+                                                                                        (:branch task))
+                                                   (assoc task
+                                                          :status :completed
+                                                          :result worker-result
+                                                          :feedback ""
+                                                          :error nil
+                                                          :verification (:summary commit-review)))
+                                                 (do
+                                                   (patterns/team-abort-merge repo-root)
+                                                   (if (not (:ok retried-commit))
+                                                     (assoc task
+                                                            :status :failed
+                                                            :error (str "Approved merge could not be committed for "
+                                                                        (:id task)
+                                                                        ". Preserved worktree at "
+                                                                        (:worktree task)
+                                                                        " on branch "
+                                                                        (:branch task)
+                                                                        ".\nEXIT: "
+                                                                        (get-in retried-commit [:result :exit])
+                                                                        "\nOUT:\n"
+                                                                        (get-in retried-commit [:result :out])
+                                                                        "\nERR:\n"
+                                                                        (get-in retried-commit [:result :err]))
+                                                            :result worker-result
+                                                            :verification (:summary commit-review))
+                                                     (do
+                                                       (patterns/team-remove-worktree-branch repo-root
+                                                                                            (:worktree task)
+                                                                                            (:branch task))
+                                                       (if (or (:panic commit-review)
+                                                               (>= (:attempt task) (:max-retries task)))
+                                                         (assoc task
+                                                                :status :failed
+                                                                :error (:summary commit-review)
+                                                                :result worker-result
+                                                                :verification (:summary commit-review))
+                                                         (assoc task
+                                                                :status :pending
+                                                                :feedback (:summary commit-review)
+                                                                :result worker-result
+                                                                :branch nil
+                                                                :worktree nil
+                                                                :worker nil
+                                                                :verification (:summary commit-review)))))))))
+                                            (do
+                                              (patterns/team-abort-merge repo-root)
+                                              (patterns/team-remove-worktree-branch repo-root
+                                                                                   (:worktree task)
+                                                                                   (:branch task))
+                                              (patterns/team-replace-task
+                                               acc
+                                               (if (or (:panic review)
+                                                       (>= (:attempt task) (:max-retries task)))
+                                                 (assoc task
+                                                        :status :failed
+                                                        :error (:summary review)
+                                                        :result worker-result
+                                                        :verification (:summary review))
                                                  (assoc task
                                                         :status :pending
-                                                        :feedback (:summary commit-review)
+                                                        :feedback (:summary review)
                                                         :result worker-result
                                                         :branch nil
                                                         :worktree nil
                                                         :worker nil
-                                                        :verification (:summary commit-review))
-                                                 (assoc task
-                                                        :status :failed
-                                                        :error (:summary commit-review)
-                                                        :result worker-result
-                                                        :verification (:summary commit-review)))))))
-                                        (do
-                                          (patterns/team-abort-merge repo-root)
-                                          (patterns/team-remove-worktree-branch repo-root
-                                                                       (:worktree task)
-                                                                       (:branch task))
-                                          (patterns/team-replace-task
-                                           acc
-                                           (if (< (:attempt task) (:max-retries task))
-                                             (assoc task
-                                                    :status :pending
-                                                    :feedback (:summary review)
-                                                    :result worker-result
-                                                    :branch nil
-                                                    :worktree nil
-                                                    :worker nil
-                                                    :verification (:summary review))
-                                             (assoc task
-                                                    :status :failed
-                                                    :error (:summary review)
-                                                    :result worker-result
-                                                    :verification (:summary review))))))))
+                                                        :verification (:summary review))))))))))
                                   tasks-in-flight
                                   (range (count wave)))]
                              (recur (vec tasks-next))))))]
@@ -718,8 +782,8 @@
                        summary (str (count completed) " completed, "
                                     (count failed) " failed")]
                    (when (= status :failed)
-                     (patterns/team-in-dir repo-root orig-checkout-cmd)
-                     (patterns/team-in-dir repo-root (str "git branch -D " (patterns/team-quote-shell branch))))
+                     (patterns/team-checkout repo-root orig-checkout orig-detached?)
+                     (patterns/team-git repo-root ["branch" "-D" branch]))
                    {:status status
                     :tasks final-tasks
                     :summary summary
