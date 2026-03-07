@@ -45,7 +45,7 @@ final {:pass result} or {:fail last-result} to the caller.
 fix-loop: Test-driven code fixing loop. Registers a persistent reflector agent and
 a persistent worker agent for the run. The root loop coordinates both via
 blocking/send-await inside a future, and the caller waits via futures/!ask-await:
-reflector proposes diagnosis + test command,
+reflector proposes diagnosis + test spec,
 worker applies edits, and the loop retries until tests pass or retries are exhausted.
   '(!call-now result (patterns/fix-loop issue))
   Returns {:pass true} or {:fail \"reason\"}
@@ -100,9 +100,12 @@ Execution model:
    updated diagnosis + git diff context until pass or retries exhausted
 
 Reflector output contract:
-  {:diagnosis string :test string :panic boolean}
+  {:diagnosis string
+   :test string|fn|[string|fn ...]
+   :panic boolean
+   :reset-worker boolean}
 
-Requires agent profile with io/ and agents/ namespaces.
+Requires agent profile with strings/, io/, agents/, futures/, and blocking/ namespaces.
 
 Example:
   '(!call-now result (patterns/fix-loop
