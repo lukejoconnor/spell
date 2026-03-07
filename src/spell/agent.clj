@@ -20,6 +20,7 @@
    - {:file f :items m} → submap of vars from file
    - {:file f}          → slurp file as string"
   (:require [clojure.edn :as edn]
+            [clojure.set :as set]
             [clojure.string :as str]
             [spell.runtime :as runtime]
             [spell.format :as format]
@@ -522,6 +523,35 @@
      :resolve-namespaces-fn resolve-fn
      :resolve-llms-fn resolve-llms-fn'}))
 
+(def ^:private future-only-namespaces
+  "Namespaces injected by the evaluator rather than agent :namespaces config."
+  #{'blocking})
+
+(defn- available-namespace-names
+  [namespaces]
+  (into future-only-namespaces
+        (concat (keys llm/core-namespaces)
+                (keys (or namespaces {})))))
+
+(defn- validate-pattern-dependencies!
+  "Fail fast when an agent exposes patterns whose declared namespace
+   dependencies are not available in that agent profile."
+  [namespaces]
+  (when-let [patterns-ns (get namespaces 'patterns)]
+    (let [available (available-namespace-names namespaces)]
+      (doseq [[pattern-name pattern-fn] patterns-ns
+              :let [required (set (:requires pattern-fn))
+                    missing (set/difference required available)]
+              :when (seq missing)]
+        (throw (ex-info (str "Pattern " (name pattern-name)
+                             " requires namespaces " (sort required)
+                             " but agent is missing " (sort missing)
+                             ". Add the missing namespace(s) to :namespaces in the agent's .agent.edn.")
+                        {:pattern pattern-name
+                         :requires (sort required)
+                         :missing (sort missing)
+                         :available (sort available)}))))))
+
 (defn make-agent-llm
   "Create an llm+run map from an agent config.
    Agents are always evaluated with Spell. Use the leaf-llm builtin from within
@@ -534,6 +564,7 @@
                 provider]} agent-config
         namespaces (when resolve-namespaces-fn
                      (resolve-namespaces-fn llm/make-llm))
+        _ (validate-pattern-dependencies! namespaces)
         llms-ns (when resolve-llms-fn
                   (resolve-llms-fn llm/make-llm model provider))
         all-namespaces (cond-> (or namespaces {})
