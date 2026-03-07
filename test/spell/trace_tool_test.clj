@@ -24,54 +24,67 @@
       (is (= form
              (tt/skeletonize-form form {:max-string-chars -1})))))) 
 
-(deftest response-form-test
-  (testing "extracts last quine arg"
-    (is (= '(eval (do (foo 2)))
-           (tt/response-form '(quine completion (eval (do (foo 1))) (eval (do (foo 2))))))))
-  (testing "single quine arg returns it"
-    (is (= '(eval (do (foo 1)))
-           (tt/response-form '(quine completion (eval (do (foo 1))))))))
-  (testing "non-quine returns entire program"
-    (is (= '(do (foo 1))
-           (tt/response-form '(do (foo 1)))))))
+(deftest response-forms-test
+  (testing "parses response suffix forms directly"
+    (is (= '[(foo 1) (bar "x")]
+           (tt/response-forms "(foo 1) (bar \"x\")"))))
+  (testing "strips trailing prompt-closing delimiters until suffix parses"
+    (is (= '[(def x 42)]
+           (tt/response-forms "(def x 42)))"))))
+  (testing "preserves top-level form boundaries for quoted forms"
+    (is (= '[(think "a") (quote (!call-now x))]
+           (tt/response-forms "(think \"a\") '(!call-now x)")))))
 
 (deftest count-function-calls-all-nodes-test
-  (let [trace {:nodes [{:id 0 :program '(do (foo 1) (bar "x"))}
-                       {:id 1 :program '(do (foo 1) (bar "x") (foo 2))}
-                       {:id 2 :program '(do (foo 1) (bar "x") (foo 2) (foo 2))}]}
+  (let [trace {:nodes [{:id 0
+                        :program '(do (foo 1))
+                        :response "(foo 1)"}
+                       {:id 1
+                        :program '(do (foo 1) (bar "x") (foo 2))
+                        :response "(bar \"x\") (foo 2)"}
+                       {:id 2
+                        :program '(do (foo 1) (bar "x") (foo 2) (foo 2))
+                        :response "(foo 2)"}]}
         fns #{'foo}]
-    (testing "counts all repeated occurrences across nodes"
-      (is (= {'foo 6}
+    (testing "counts response suffixes only, not inherited program prefixes"
+      (is (= {'foo 3}
              (:counts (tt/count-function-calls trace {:fns fns}))))
-      (is (= 6
+      (is (= 3
              (count (:instances (tt/count-function-calls trace {:fns fns}))))))))
 
-(deftest count-function-calls-quine-response-only-test
-  (let [trace {:nodes [{:id 0 :program '(quine completion (eval (do (foo 1) (bar "x"))))}
-                       {:id 1 :program '(quine completion (eval (do (foo 1) (bar "x")))
-                                                          (eval (do (foo 2))))}]}
+(deftest count-function-calls-response-only-test
+  (let [trace {:nodes [{:id 0
+                        :program '(quine completion (eval (do (foo 1) (bar "x"))))
+                        :response "(foo 1) (bar \"x\")"}
+                       {:id 1
+                        :program '(do (foo 1) (bar "x") (foo 2))
+                        :response "(foo 2)"}]}
         fns #{'foo 'bar}]
-    (testing "only counts calls in last quine arg per node"
-      (let [{:keys [counts]} (tt/count-function-calls trace {:fns fns})]
+    (testing "counts only stored response forms regardless of full program shape"
+      (let [{:keys [counts instances]} (tt/count-function-calls trace {:fns fns})]
         (is (= {'foo 2 'bar 1} counts)
-            "foo 1 from node 0 response + foo 2 from node 1 response; bar only in node 0 response")))))
+            "foo 1 from node 0 response + foo 2 from node 1 response; bar only in node 0 response")
+        (is (= [[0] [1] [0]]
+               (mapv :path instances)))))))
 
-(deftest count-function-calls-quine-repeated-response-form-test
-  (let [trace {:nodes [{:id 0 :program '(quine completion (eval (do (foo 1))))}
-                       {:id 1 :program '(quine completion
-                                         (eval (do (foo 1)))
-                                         (eval (do (foo 1))))}]}
+(deftest count-function-calls-repeated-response-form-test
+  (let [trace {:nodes [{:id 0
+                        :program '(do (foo 1))
+                        :response "(foo 1)"}
+                       {:id 1
+                        :program '(do (foo 1) (foo 1))
+                        :response "(foo 1)"}]}
         fns #{'foo}]
     (testing "same local call in different responses is counted twice"
       (is (= {'foo 2}
              (:counts (tt/count-function-calls trace {:fns fns})))))))
 
-(deftest count-function-calls-in-form-test
-  (let [program '(do (foo 1) (foo 1) (bar "x"))]
+(deftest count-function-calls-in-forms-test
+  (let [forms (tt/response-forms "(foo 1) (foo 1) (bar \"x\")")]
     (is (= {'foo 2}
-           (:counts (tt/count-function-calls-in-form program {:fns #{'foo}}))))
+           (:counts (tt/count-function-calls-in-forms forms {:fns #{'foo}}))))
     (is (= 2
-           (count (:instances (tt/count-function-calls-in-form program {:fns #{'foo}})))))))
+           (count (:instances (tt/count-function-calls-in-forms forms {:fns #{'foo}})))))))
 
 (deftest collect-rethinks-test
   (let [program '(do
@@ -86,18 +99,20 @@
       (is (= '(rethink "drop x") (:rethink r2)))
       (is (= '(def x 1) (:previous r2))))))
 
-(deftest collect-trace-rethinks-quine-response-only-test
+(deftest collect-trace-rethinks-response-only-test
   (let [trace {:nodes [{:id 0
-                         :program '(quine completion
-                                     (eval (do (think "a") (rethink "drop a"))))}
-                        {:id 1
-                         :program '(quine completion
-                                     (eval (do (think "a") (rethink "drop a")))
-                                     (eval (do (think "b") (rethink "drop b"))))}]}]
-    (testing "inherited rethink in first quine arg is not re-counted in node 1"
+                        :program '(quine completion
+                                    (eval (do (think "a") (rethink "drop a"))))
+                        :response "(think \"a\") (rethink \"drop a\")"}
+                       {:id 1
+                        :program '(do (think "a") (rethink "drop a") (think "b") (rethink "drop b"))
+                        :response "(think \"b\") (rethink \"drop b\")"}]}]
+    (testing "inherited rethink state in full programs is not re-counted"
       (let [items (tt/collect-trace-rethinks trace)]
         (is (= 2 (count items)))
-        (is (= #{0 1} (set (map :node-id items))))))))
+        (is (= #{0 1} (set (map :node-id items))))
+        (is (= [[2] [2]]
+               (mapv :path items)))))))
 
 (deftest select-node-default-prefers-latest-default-program-test
   (let [trace {:nodes [{:id 0 :variant :default :program '(do 1)}

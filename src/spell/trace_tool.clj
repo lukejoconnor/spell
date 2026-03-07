@@ -9,7 +9,8 @@
             [clojure.java.io :as io]
             [clojure.pprint :as pp]
             [clojure.string :as str]
-            [clojure.tools.cli :refer [parse-opts]])
+            [clojure.tools.cli :refer [parse-opts]]
+            [spell.parse :as parse])
   (:gen-class))
 
 (def cli-options
@@ -152,16 +153,34 @@
                :else x))]
      (walk form))))
 
-(defn response-form
-  "Extract the response-only portion of a program (the last quine arg).
-   For quine forms (quine name arg1 ... argN), returns argN.
-   For non-quine forms, returns the entire program."
-  [program]
-  (if (and (seq? program)
-           (>= (count program) 3)
-           (= 'quine (first program)))
-    (last program)
-    program))
+(def ^:private unmatched-delimiter-re
+  #"^Unmatched delimiter: (.)$")
+
+(defn- strip-trailing-unmatched-delimiter
+  "If the reader reports an unmatched trailing delimiter, strip exactly one
+   trailing instance of that delimiter and return the trimmed response text."
+  [s error-msg]
+  (when-let [[_ bad-delim] (re-matches unmatched-delimiter-re (or error-msg ""))]
+    (let [trimmed (str/trimr s)
+          n (count trimmed)
+          delim-char (.charAt ^String bad-delim 0)]
+      (when (and (pos? n)
+                 (= delim-char (.charAt ^String trimmed (dec n))))
+        (subs trimmed 0 (dec n))))))
+
+(defn response-forms
+  "Parse the stored trace :response suffix into top-level forms.
+   Uses only :response, without inferring boundaries from :program."
+  [response]
+  (let [response (or response "")]
+    (letfn [(parse-text [text]
+              (try
+                (parse/read-all text)
+                (catch RuntimeException e
+                  (if-let [trimmed (strip-trailing-unmatched-delimiter text (.getMessage e))]
+                    (parse-text trimmed)
+                    (throw e)))))]
+      (parse-text (parse/balance-parens response)))))
 
 (defn- call-head [form]
   (when (seq? form)
@@ -192,6 +211,14 @@
                     :else nil)]
      (concat current children))))
 
+(defn- collect-call-instances-in-forms
+  "Collect call instances across top-level response forms.
+   Paths are rooted at top-level response-form indexes."
+  [forms]
+  (mapcat (fn [[idx form]]
+            (collect-call-instances form [idx]))
+          (map-indexed vector forms)))
+
 (defn count-function-calls
   "Count function call instances across all trace nodes.
 
@@ -206,7 +233,7 @@
         {:counts counts
          :instances instances}
         (let [node (first remaining)
-              raw-instances (->> (collect-call-instances (response-form (:program node)))
+              raw-instances (->> (collect-call-instances-in-forms (response-forms (:response node)))
                                  (filter #(or (nil? fns) (contains? fns (:fn %)))))
               accepted raw-instances
               counts' (reduce (fn [m inst] (update m (:fn inst) (fnil inc 0))) counts accepted)
@@ -215,13 +242,13 @@
                  counts'
                  (into instances tagged)))))))
 
-(defn count-function-calls-in-form
-  "Count function call instances inside one program form.
+(defn count-function-calls-in-forms
+  "Count function call instances inside parsed response forms.
    opts:
    - :fns set of symbols to include (nil = all)
    - :node-id node id for reporting context"
-  [program {:keys [fns node-id]}]
-  (let [instances (->> (collect-call-instances program)
+  [forms {:keys [fns node-id]}]
+  (let [instances (->> (collect-call-instances-in-forms forms)
                        (filter #(or (nil? fns) (contains? fns (:fn %))))
                        (map #(assoc % :node-id node-id)))]
     {:counts (reduce (fn [m inst] (update m (:fn inst) (fnil inc 0))) {} instances)
@@ -261,6 +288,13 @@
                            (map-indexed vector (sort-by pr-str form)))
        :else nil))))
 
+(defn- collect-rethinks-in-forms
+  "Collect rethink forms across top-level response forms.
+   Uses a synthetic `do` wrapper so top-level sibling relationships are preserved."
+  [forms]
+  (when (seq forms)
+    (collect-rethinks (list* 'do forms))))
+
 (defn collect-trace-rethinks
   "Collect rethinks from all program nodes in one trace.
    Adds :node-id for reporting."
@@ -269,7 +303,7 @@
        (filter :program)
        (mapcat (fn [node]
                  (map #(assoc % :node-id (:id node))
-                      (collect-rethinks (response-form (:program node))))))))
+                      (collect-rethinks-in-forms (response-forms (:response node))))))))
 
 (defn find-trace-dirs
   "Return sorted paths for directories under root containing trace.edn."
@@ -410,12 +444,13 @@
                       (print-call-counts
                        (count-function-calls trace {:fns fn-set})))
                     (do
-                      (println "Call counting scope: selected node only")
+                      (println "Call counting scope: selected node response only")
                       (println)
-                      (if-let [program (:program target-node)]
+                      (if-let [_ (:program target-node)]
                         (print-call-counts
-                         (count-function-calls-in-form (response-form program) {:fns fn-set :node-id (:id target-node)}))
-                        (println "Selected node has no :program; no call counts available.\n")))))
+                         (count-function-calls-in-forms (response-forms (:response target-node))
+                                                        {:fns fn-set :node-id (:id target-node)}))
+                        (println "Selected node has no parsed program; no response code available.\n")))))
                 {:exit 0 :message nil}))))))))
 
 (defn -main [& args]
