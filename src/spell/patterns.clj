@@ -11,7 +11,7 @@
   "config/spl-lib/patterns.spl")
 
 (def ^:private patterns-docs
-  {:short-docs "Reusable orchestration patterns: check-result, clean-prompt, explore, ralph, fix-loop."
+  {:short-docs "Reusable orchestration patterns: check-result, clean-prompt, explore, ralph, fix-loop, sh-test."
    :docs {:guide "PATTERNS - Reusable orchestration patterns (effect namespace).
 
   (patterns/check-result prompt answer)  - verify answer with leaf-llm
@@ -19,6 +19,7 @@
   (patterns/explore question)            - one-shot codebase exploration agent
   (patterns/ralph opts)                  - future-based retry orchestrator
   (patterns/fix-loop issue)              - test-driven code fixing loop (reflector + worker agents)
+  (patterns/sh-test cmd)                 - wrap a shell command as a reusable fix-loop test thunk
 
 Use (!describe patterns :fn-name) for detailed docs on any function.
 
@@ -45,10 +46,15 @@ final {:pass result} or {:fail last-result} to the caller.
 fix-loop: Test-driven code fixing loop. Registers a persistent reflector agent and
 a persistent worker agent for the run. The root loop coordinates both via
 blocking/send-await inside a future, and the caller waits via futures/!ask-await:
-reflector proposes diagnosis + test command,
+reflector proposes diagnosis + test spec,
 worker applies edits, and the loop retries until tests pass or retries are exhausted.
   '(!call-now result (patterns/fix-loop issue))
   Returns {:pass true} or {:fail \"reason\"}
+
+sh-test: Builds a zero-arg test thunk around a shell command for patterns/fix-loop.
+Useful when the reflector wants to return executable Spell instead of a raw string.
+  (patterns/sh-test \"clojure -M:test -n spell.patterns-test\")
+  Returns a Spell fn that yields {:pass bool :output str}.
 
 All patterns/ calls are effect functions - quote them in the trailing expression.
 
@@ -100,13 +106,32 @@ Execution model:
    updated diagnosis + git diff context until pass or retries exhausted
 
 Reflector output contract:
-  {:diagnosis string :test string :panic boolean}
+  {:diagnosis string
+   :test string|fn|[string|fn ...]
+   :panic boolean
+   :reset-worker boolean}
 
-Requires agent profile with io/ and agents/ namespaces.
+Requires agent profile with strings/, io/, agents/, futures/, and blocking/ namespaces.
 
 Example:
   '(!call-now result (patterns/fix-loop
-    issue-description))"}})
+    issue-description))"
+    :sh-test "(patterns/sh-test cmd) - create a zero-arg shell-backed test thunk for fix-loop.
+cmd:
+  string                   - shell command to run
+Returns a Spell fn yielding {:pass bool :output string}."}})
+
+(def ^:private sh-test-fn
+  "Wrap a shell command in a zero-arg Spell test thunk."
+  (fn [cmd]
+    {:spell/fn true
+     :params []
+     :body [(list 'let ['r (list 'io/sh cmd)]
+                  {:pass (list '= 0 (list :exit 'r))
+                   :output (list 'str "COMMAND: " cmd "\n"
+                                 "EXIT: " (list :exit 'r) "\n"
+                                 "OUT:\n" (list :out 'r) "\n"
+                                 "ERR:\n" (list :err 'r))})]}))
 
 (defn- defn-form?
   [form]
@@ -170,4 +195,4 @@ Example:
 
 (def patterns
   "Reusable orchestration patterns (Spell-specific)."
-  (merge patterns-docs (load-pattern-fns)))
+  (merge patterns-docs (load-pattern-fns) {:sh-test sh-test-fn}))
