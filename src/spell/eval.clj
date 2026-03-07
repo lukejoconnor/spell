@@ -225,7 +225,7 @@
 ;; Builtins
 ;; =============================================================================
 
-(declare spell-eval expand-expr materialize-persist-form)
+(declare spell-eval expand-expr prune-substitute reopen)
 
 (defn spell-fn?
   "Returns true if v is a Spell function (dynamic-scoping function map)."
@@ -453,21 +453,7 @@
                     " ")),
    ;; Prune rethinks and reopen as prefix string
    'prune-and-reopen (fn [quine-form]
-                       (let [elements (vec (seq quine-form))
-                             ;; [quine, name, arg1, ..., argN]
-                             inert-args (subvec elements 2 (max 2 (dec (count elements))))
-                             last-arg (last elements)
-                             pruned-last (macros/prune-rethinks last-arg)
-                             [_ do-form] (seq pruned-last)
-                             body-forms (rest do-form)
-                             env (or *spell-env* {})
-                             materialized-body-forms (map #(materialize-persist-form % env) body-forms)]
-                         (str "(quine completion "
-                              (when (seq inert-args)
-                                (str (str/join " " (map pr-str inert-args)) " "))
-                              "(eval (do "
-                              (str/join " " (map pr-str materialized-body-forms))
-                              " "))),
+                       (reopen (prune-substitute quine-form (or *spell-env* {})))),
    ;; Value store (for !call-now out-of-band large values)
    'stored stored,
    'serialize (fn
@@ -666,36 +652,66 @@
     (spell-fn? v) (list* 'fn (:params v) (:body v))
     :else (list 'quote v)))
 
-(defn- materialize-persist-form
-  "Rewrite explicit source-level persist forms to hold the current runtime value."
+(defn prune-substitute
+  "Single walk: prune rethink siblings and materialize persist forms.
+   Works on any form. When env is nil, persist forms are left intact."
   [form env]
   (cond
     (and (seq? form)
          (= 'persist (first form))
          (= 3 (count form))
-         (symbol? (second form)))
+         (symbol? (second form))
+         (some? env))
     (let [sym (second form)]
       (if (contains? env sym)
         (list 'persist sym (quote-value (get env sym)))
-        (throw (ex-info (str "persist: symbol '" sym "' not bound in environment")
+        (throw (ex-info (str "persist: symbol '" sym "' not bound")
                         {:symbol sym}))))
 
     (and (seq? form) (= 'quote (first form)))
     form
 
     (seq? form)
-    (apply list (map #(materialize-persist-form % env) form))
+    (let [head (prune-substitute (first form) env)
+          tail (map #(prune-substitute % env) (rest form))
+          pruned (macros/process-siblings tail)]
+      (apply list head pruned))
 
     (vector? form)
-    (mapv #(materialize-persist-form % env) form)
+    (mapv #(prune-substitute % env) form)
 
     (map? form)
     (into {} (map (fn [[k v]]
-                    [(materialize-persist-form k env)
-                     (materialize-persist-form v env)]))
+                    [(prune-substitute k env)
+                     (prune-substitute v env)]))
           form)
 
     :else form))
+
+(defn reopen
+  "Serialize a quine form as an open prefix string (no trailing close-parens)."
+  [quine-form]
+  (when-not (and (seq? quine-form)
+                 (= 'quine (first quine-form))
+                 (<= 3 (count quine-form)))
+    (throw (ex-info "reopen expects a quine form" {:form quine-form})))
+  (let [elements (vec (seq quine-form))
+        inert-args (subvec elements 2 (max 2 (dec (count elements))))
+        last-arg (last elements)
+        [eval-sym do-form & extra] (seq last-arg)]
+    (when-not (and (= 'eval eval-sym)
+                   (empty? extra)
+                   (seq? do-form)
+                   (= 'do (first do-form)))
+      (throw (ex-info "reopen expects quine tail of the form (eval (do ...))"
+                      {:form quine-form :tail last-arg})))
+    (let [body-forms (rest do-form)]
+      (str "(quine completion "
+           (when (seq inert-args)
+             (str (str/join " " (map pr-str inert-args)) " "))
+           "(eval (do "
+           (str/join " " (map pr-str body-forms))
+           " "))))
 
 (defn- -expand-expr
   "Walk expr substituting outer-env values for free symbols not in inner (locally defined).

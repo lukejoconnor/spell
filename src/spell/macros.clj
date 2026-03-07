@@ -364,12 +364,12 @@
 ;; Think / Rethink / Extend — context pruning for unproductive thoughts
 ;; =============================================================================
 
-(defn- rethink-form?
+(defn rethink-form?
   "Returns true if form is a (rethink ...) expression."
   [form]
   (and (seq? form) (= 'rethink (first form))))
 
-(defn- rethink-n
+(defn rethink-n
   "Return the number of previous siblings to prune. Default 1.
    (rethink \"reason\" body...) → 1
    (rethink 2 \"reason\" body...) → 2"
@@ -378,7 +378,7 @@
     (int (second form))
     1))
 
-(defn- rethink->think
+(defn rethink->think
   "Convert a rethink form to a think form, dropping the optional count.
    (rethink \"reason\" body...) → (think \"reason\" body...)
    (rethink 2 \"reason\" body...) → (think \"reason\" body...)"
@@ -387,7 +387,7 @@
     (list* 'think (drop 2 form))
     (list* 'think (rest form))))
 
-(defn- process-siblings
+(defn process-siblings
   "Reduce over sibling forms, pruning previous siblings on rethink."
   [forms]
   (reduce
@@ -400,30 +400,9 @@
     []
     forms))
 
-(defn prune-rethinks
-  "Recursively walk form, processing rethink pruning at every list level.
-   Rethink prunes N previous sibling expressions (default 1) and converts
-   itself to a think. The head of each list (operator position) is preserved;
-   only argument-position elements are subject to sibling pruning."
-  [form]
-  (cond
-    (seq? form)
-    (let [head (prune-rethinks (first form))
-          tail (map prune-rethinks (rest form))
-          pruned (process-siblings tail)]
-      (apply list head pruned))
-
-    (vector? form)
-    (mapv prune-rethinks form)
-
-    (map? form)
-    (into {} (map (fn [[k v]] [k (prune-rethinks v)]) form))
-
-    :else form))
-
 ;; think: (think label body...) → (do body... nil)
 ;; Evaluates body for side effects (bindings, computation), returns nil.
-;; Preserved as a source marker for extend/prune-rethinks.
+;; Preserved as a source marker for extend/prune-substitute.
 (defspellmacro 'think
   (fn [_label & body]
     (if (seq body)

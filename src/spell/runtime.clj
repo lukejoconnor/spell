@@ -9,7 +9,6 @@
   (:refer-clojure :exclude [send])
   (:require [clojure.string :as str]
             [spell.eval :as eval]
-            [spell.macros :as macros]
             [spell.parse :as parse]))
 
 ;; =============================================================================
@@ -235,7 +234,7 @@
 ;; Create-msg helper
 ;; =============================================================================
 
-(defn- reopen
+(defn- reopen-completion
   "Reopen a completion wrapper by parsing to AST, pruning rethink-marked
    expressions, and rebuilding an open prefix.
    If multiple top-level forms are present, reopens the LAST form and keeps
@@ -248,20 +247,10 @@
         form     (last forms)]
     (if (and (seq? form) (= 'quine (first form)))
       (let [prior-forms (butlast forms)
-            elements   (vec (seq form))
-            inert-args (subvec elements 2 (max 2 (dec (count elements))))
-            last-arg   (last elements)
-            pruned-last (macros/prune-rethinks last-arg)
-            [_ do-form] (seq pruned-last)
-            body-forms (rest do-form)]
+            processed (eval/prune-substitute form nil)]
         (str (when (seq prior-forms)
                (str (str/join " " (map pr-str prior-forms)) " "))
-             "(quine completion "
-             (when (seq inert-args)
-               (str (str/join " " (map pr-str inert-args)) " "))
-             "(eval (do "
-             (str/join " " (map pr-str body-forms))
-             " "))
+             (eval/reopen processed)))
       (parse/strip-trailing-parens 3 s))))
 
 (defn- create-msg
@@ -272,7 +261,7 @@
    Internal plumbing for signaling (waiting-for, spawn-result)."
   [name value]
   (fn [raw]
-    (str (reopen raw) "(think \"[preempted or awakened by " name "]\") (def " name " " (eval/serialize-for-continuation value) ") '(!llm-self (prune-and-reopen completion)) ")))
+    (str (reopen-completion raw) "(think \"[preempted or awakened by " name "]\") (def " name " " (eval/serialize-for-continuation value) ") '(!llm-self (prune-and-reopen completion)) ")))
 
 (defn send
   "Send a message to target with auto-tagged sender handle.

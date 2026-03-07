@@ -2419,58 +2419,60 @@
                                (rethink "new" (def x 99))
                                x))))))
 
-(deftest prune-rethinks-test
+(deftest prune-substitute-test
   (testing "no rethinks — pass through unchanged"
     (is (= '(do (think "A" 1) (think "B" 2))
-           (macros/prune-rethinks '(do (think "A" 1) (think "B" 2))))))
+           (eval/prune-substitute '(do (think "A" 1) (think "B" 2)) nil))))
 
   (testing "rethink prunes previous sibling"
     (is (= '(do (think "B" 2))
-           (macros/prune-rethinks '(do (think "A" 1) (rethink "B" 2))))))
+           (eval/prune-substitute '(do (think "A" 1) (rethink "B" 2)) nil))))
 
   (testing "rethink prunes any previous sibling, not just think"
     (is (= '(do (think "B" 2))
-           (macros/prune-rethinks '(do (def x 1) (rethink "B" 2))))))
+           (eval/prune-substitute '(do (def x 1) (rethink "B" 2)) nil))))
 
   (testing "rethink with count prunes N previous siblings"
     (is (= '(do (think "C" 3))
-           (macros/prune-rethinks '(do (think "A" 1) (def x 2) (rethink 2 "C" 3))))))
+           (eval/prune-substitute '(do (think "A" 1) (def x 2) (rethink 2 "C" 3)) nil))))
 
   (testing "rethink converts to think after pruning"
-    (let [result (macros/prune-rethinks '(do (think "A" 1) (rethink "B" 2)))]
+    (let [result (eval/prune-substitute '(do (think "A" 1) (rethink "B" 2)) nil)]
       (is (= 'think (first (second result))))))
 
   (testing "chained rethinks"
     (is (= '(do (think "C" 3))
-           (macros/prune-rethinks '(do (think "A" 1)
+           (eval/prune-substitute '(do (think "A" 1)
                                        (rethink "B" 2)
-                                       (rethink "C" 3))))))
+                                       (rethink "C" 3))
+                                  nil))))
 
   (testing "rethink leaves earlier non-targeted siblings intact"
     (is (= '(do (def x 1) (think "B" 3))
-           (macros/prune-rethinks '(do (def x 1) (think "A" 2) (rethink "B" 3))))))
+           (eval/prune-substitute '(do (def x 1) (think "A" 2) (rethink "B" 3)) nil))))
 
   (testing "recursive — rethink inside nested do"
     (is (= '(do (do (think "B" 2)) (def y 3))
-           (macros/prune-rethinks '(do (do (think "A" 1) (rethink "B" 2)) (def y 3))))))
+           (eval/prune-substitute '(do (do (think "A" 1) (rethink "B" 2)) (def y 3)) nil))))
 
   (testing "inner rethink cannot prune outer think"
     ;; rethink inside think's body targets siblings within the body, not the think itself
-    (let [result (macros/prune-rethinks '(do (think "outer" (def a 1) (rethink "inner" (def a 2)))))]
+    (let [result (eval/prune-substitute '(do (think "outer" (def a 1) (rethink "inner" (def a 2)))) nil)]
       ;; outer think should survive, inner rethink prunes (def a 1) within its body
       (is (= 'think (first (second result))))
       (is (= "outer" (second (second result))))))
 
   (testing "rethink with count larger than available siblings removes all"
     (is (= '(do (think "Z" 99))
-           (macros/prune-rethinks '(do (def a 1) (rethink 5 "Z" 99))))))
+           (eval/prune-substitute '(do (def a 1) (rethink 5 "Z" 99)) nil))))
 
   (testing "prune through quine structure"
-    (let [result (macros/prune-rethinks
+    (let [result (eval/prune-substitute
                    '(quine completion (eval (do
                       (think "A" (def x 1))
                       (rethink "B" (def x 2))
-                      (quote (!extend completion))))))]
+                      (quote (!extend completion)))))
+                   nil)]
       ;; Should prune think "A", convert rethink to think "B"
       (is (= '(quine completion (eval (do
                 (think "B" (def x 2))
@@ -2479,7 +2481,23 @@
 
   (testing "vectors are recursed into but not sibling-processed"
     (is (= '(do [(do (think "B" 2))])
-           (macros/prune-rethinks '(do [(do (think "A" 1) (rethink "B" 2))]))))))
+           (eval/prune-substitute '(do [(do (think "A" 1) (rethink "B" 2))]) nil))))
+
+  (testing "single walk can prune and materialize persist together"
+    (is (= '(quine completion
+              (eval (do
+                      (think "keep" (def y (get big 1)))
+                      (persist y 2)
+                      (quote (!extend completion)))))
+           (eval/prune-substitute
+             '(quine completion
+                (eval (do
+                        (def big [1 2 3])
+                        (rethink "keep" (def y (get big 1)))
+                        (persist y (get big 1))
+                        (quote (!extend completion)))))
+             {'big [1 2 3]
+              'y 2})))))
 
 (deftest prune-and-reopen-test
   (testing "prune-and-reopen produces open prefix string"
@@ -2549,7 +2567,7 @@
                                   (quote (!extend completion)))))]
       (is (thrown-with-msg?
            clojure.lang.ExceptionInfo
-           #"persist: symbol 'y' not bound in environment"
+           #"persist: symbol 'y' not bound"
            (run-spell (list 'prune-and-reopen (list 'quote quine-form))))))))
 
 (deftest extend-macro-expansion-test
