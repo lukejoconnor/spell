@@ -5,7 +5,13 @@ I propose a self-programmed agentic system in which a language model (LM) emits 
 
 ## Introduction
 
-The performance of agentic systems on complicated tasks depends sensitively on the agentic harness, particularly its approach to orchestration and context management. An ongoing trend is to grant agents greater control over their own context and their own orchestration, within the bounds of human-designed templates. However, autonomy remains limited: for example, agents control the ingress of data into their context window via tool calls, but they lack control over egress. 
+The performance of agentic systems on complicated tasks depends sensitively on the agentic harness, particularly its approach to orchestration and context management. The language model and the harness share three responsibilities: content generation, which is the responsibility of the LM; execution, which is the responsibility of the harness; and control flow or orchestration, which is shared between them.
+
+An ongoing trend is to grant agents greater control over their own context and their own orchestration, within the bounds of human-designed templates. However, autonomy remains limited. Three responsibilities are 
+
+: the harness is not only an execution layer
+
+: for example, agents control the ingress of data into their context window via tool calls, but they lack control over egress. 
 
 Very recently, *orchestration* has emerged as a key differentiator among agentic systems. The term usually implies parallelization: an ensemble of AI agents work on a task in concert, reducing latency. Orchestration is one strategy for *context engineering*; it allows tokens to be divided across multiple context windows. 
 
