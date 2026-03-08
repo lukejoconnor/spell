@@ -4,6 +4,7 @@
             [spell.core :as spell]
             [spell.eval :as eval]
             [spell.provider :as provider]
+            [spell.stdlib :as stdlib]
             [spell.test-helpers :as th]))
 
 ;; Clean registry between tests
@@ -698,11 +699,11 @@
     (is (thrown-with-msg? Exception #"must be called from within a future"
           (runtime/send-await :missing {:kind :wake})))))
 
-(deftest futures-ask-await-wakeup-test
-  (testing "futures/!ask-await blocks for wakeup and resumes with a future result message"
+(deftest ask-await-builtin-wakeup-test
+  (testing "!ask-await blocks for wakeup and resumes with a future result message"
     (let [handle :futures-ask-await
           raw "(quine completion (eval (do )))"
-          ask-await (get-in spell/all-namespaces ['futures :!ask-await])
+          ask-await stdlib/ask-await-builtin
           first? (atom true)
           eval-fn (fn [current-raw]
                     (if (compare-and-set! first? true false)
@@ -1122,9 +1123,9 @@
           (eval/run-spell '(agents/current-handle))))
     (is (thrown-with-msg? Exception #"Unbound symbol: agents"
           (eval/run-spell '(agents/parent-handle))))
-    ;; futures/ — effect namespace is not available in first pass
-    (is (thrown-with-msg? Exception #"Unbound symbol: futures"
-          (eval/run-spell '(futures/!ask-await (future 1)))))
+    ;; !ask-await — effect builtin is not available in first pass
+    (is (thrown-with-msg? Exception #"Unbound symbol: !ask-await"
+          (eval/run-spell '(!ask-await (future 1)))))
     ;; io/, globals/ — side-effectful namespaces
     (is (thrown-with-msg? Exception #"Unbound symbol: io"
           (eval/run-spell '(io/sh "echo hi"))))

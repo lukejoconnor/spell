@@ -398,10 +398,9 @@
                    (fn [_]
                      {'patterns {:check-result {:requires ['strings]}
                                  :ralph {:requires ['agents 'blocking]}
-                                 :team {:requires ['strings 'io 'agents 'futures 'blocking]}}
+                                 :team {:requires ['strings 'io 'agents 'blocking]}}
                       'agents {}
-                      'io {}
-                      'futures {}})})]
+                      'io {}})})]
       (is (fn? (:llm result)))
       (is (fn? (:run result)))))
 
@@ -418,4 +417,12 @@
         (is (= '[agents io] (:requires (ex-data e))))
         (is (= '[io] (:missing (ex-data e))))
         (is (re-find #"Pattern explore requires namespaces"
-                     (.getMessage e)))))))
+                     (.getMessage e))))))
+
+  (testing "shipped io agent profiles remain loadable without futures/ configured"
+    (doseq [path ["config/agents/io-msg.agent.edn"
+                  "config/agents/io-pf.agent.edn"
+                  "config/agents/io-tc.agent.edn"]]
+      (let [result (agent/make-agent-llm (agent/load-agent-config path))]
+        (is (fn? (:llm result)) path)
+        (is (fn? (:run result)) path)))))

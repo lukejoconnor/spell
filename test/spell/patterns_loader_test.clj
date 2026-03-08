@@ -11,8 +11,8 @@
    :clean-prompt []
    :explore ['io 'agents]
    :ralph ['agents 'blocking]
-   :team ['strings 'io 'agents 'futures 'blocking]
-   :fix-loop ['strings 'io 'agents 'futures 'blocking]})
+   :team ['strings 'io 'agents 'blocking]
+   :fix-loop ['strings 'io 'agents 'blocking]})
 
 (defn- defn-keys-from-spl
   []

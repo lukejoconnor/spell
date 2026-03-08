@@ -357,7 +357,7 @@ Functions are organized into namespaces — simple maps with a `:docs` key and f
 
 These primitives are for deterministic computation only — not for LLM calls. Parallel LLM work uses `spawn`, which creates a separate handle (see *Concurrent agents*).
 
-For non-future turns, `futures/!ask-await` provides a message-wakeup bridge that keeps the caller responsive while a waiter thread resolves the future and delivers the result as a normal message.
+For non-future turns, `!ask-await` provides a message-wakeup bridge that keeps the caller responsive while a waiter thread resolves the future and delivers the result as a normal message.
 
 ## Patterns
 

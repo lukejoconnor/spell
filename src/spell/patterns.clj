@@ -51,7 +51,7 @@ verifier approves merges or resolves conflicts on the integration branch.
 
 fix-loop: Test-driven code fixing loop. Registers a persistent reflector agent and
 a persistent worker agent for the run. The root loop coordinates both via
-blocking/send-await inside a future, and the caller waits via futures/!ask-await:
+blocking/send-await inside a future, and the caller waits via !ask-await:
 reflector proposes diagnosis + test spec,
 worker applies edits, and the loop retries until tests pass or retries are exhausted.
   '(!call-now result (patterns/fix-loop issue))
@@ -64,7 +64,7 @@ Common mistakes:
 1. calling check-result outside the trailing expression: must be quoted like all effect calls
 2. forgetting !call-now with explore: '(patterns/explore \"...\") runs the agent but you lose the return value; use '(!call-now findings (patterns/explore \"...\"))
 3. using explore for simple tasks: explore spawns a child agent - overkill for a quick io/read-file or io/sh
-4. using team without an io-capable agent profile: workers and verifier need io/, agents/, futures/, and blocking/
+4. using team without an io-capable agent profile: workers and verifier need io/ and agents/; blocking/ is future-only and !ask-await is a builtin
 
 In examples, | marks cursor position in a completion. It is doc-only; do not type it into code.
 
@@ -110,7 +110,7 @@ Execution model:
 5. Verifier approves merged state or resolves conflicts/rejects for retry
 6. Returns {:status :completed|:partial|:failed :tasks [...] :branch ...}
 
-Requires agent profile with io/, agents/, and futures/ support.
+Requires agent profile with io/ and agents/ support.
 Uses core strings/ plus future-only blocking/ helpers internally."
     :fix-loop "(patterns/fix-loop issue) - test-driven code fixing loop.
 primary argument:
@@ -124,7 +124,7 @@ Execution model:
 1. Commit dirty state (if any), create a fix branch
 2. Register dormant reflector + worker agents for this run
 3. Run loop in a future; use blocking/send-await for reflector/worker turns
-4. Wait from caller turn with futures/!ask-await
+4. Wait from caller turn with !ask-await
 5. Loop runs tests, wakes worker to edit code, reruns tests, and retries with
    updated diagnosis + git diff context until pass or retries exhausted
 
@@ -134,7 +134,7 @@ Reflector output contract:
    :panic boolean
    :reset-worker boolean}
 
-Requires agent profile with io/, agents/, and futures/ support.
+Requires agent profile with io/ and agents/ support.
 Uses core strings/ plus future-only blocking/ helpers internally.
 
 Example:
@@ -150,8 +150,8 @@ Example:
    :clean-prompt []
    :explore ['io 'agents]
    :ralph ['agents 'blocking]
-   :team ['strings 'io 'agents 'futures 'blocking]
-   :fix-loop ['strings 'io 'agents 'futures 'blocking]})
+   :team ['strings 'io 'agents 'blocking]
+   :fix-loop ['strings 'io 'agents 'blocking]})
 
 (defn- defn-form?
   [form]

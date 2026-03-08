@@ -542,7 +542,7 @@
         (io/mkdirs worktree-base)
         (agents/register planner-handle planner-init-completion)
         (agents/register verifier-handle verifier-init-completion)
-        (futures/!ask-await
+        (!ask-await
          (future
            (let [plan-result (patterns/team-plan-tasks planner-handle goal shared-context max-retries)]
              (if (not (:ok plan-result))
@@ -1070,7 +1070,7 @@
         (io/sh (str "git checkout -b " branch))
         (agents/register reflector-handle reflector-init-completion)
         (agents/register worker-handle worker-init-completion)
-        (futures/!ask-await
+        (!ask-await
           (future
             (loop [attempt 0
                    worker-generation 0

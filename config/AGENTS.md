@@ -21,7 +21,7 @@ Loaded by `src/spell/agent.clj`.
 - `base-tc.agent.edn` — tool-call providers, uses `minimal-no-prefill-toolcall.txt`
 
 **Specialized agents** inherit from a base and add namespaces:
-- `cli.agent.edn` — CLI default (base-tc + io, futures, patterns, agents, globals)
+- `cli.agent.edn` — CLI default (base-tc + io, patterns, agents, globals)
 - `io-pf.agent.edn` — benchmark/runtime I/O profile for prefill providers
 - `io-msg.agent.edn` — benchmark/runtime I/O profile for message providers
 - `io-tc.agent.edn` — benchmark/runtime I/O profile for mandatory toolcall providers

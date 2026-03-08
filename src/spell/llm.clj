@@ -405,6 +405,7 @@
                    (@self-ref prompt handle)))
         ;; Create effect-builtins (closes over !llm-self)
         effect-builtins (merge {'!llm-self self-fn
+                               '!ask-await stdlib/ask-await-builtin
                                'leaf-llm (make-leaf-llm (cond-> {}
                                                           provider (assoc :provider provider)
                                                           model (assoc :model model)))}
