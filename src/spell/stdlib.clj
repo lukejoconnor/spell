@@ -5,8 +5,7 @@
    Namespaces here match Clojure's namespace structure:
    - strings: matches clojure.string
    - math: matches Java's Math (since Clojure uses Math/ interop)
-   - patterns: Spell-specific orchestration patterns
-   - futures: parallel computation utilities"
+   - patterns: Spell-specific orchestration patterns"
   (:require [clojure.string :as str]
             [spell.eval :as eval]
             [spell.runtime :as runtime]
@@ -265,7 +264,7 @@ All functions take and return numbers. Use (!describe math :fn-name) for any fun
 Categories (use (!describe builtins :category) for full listing):
   special-forms — quote, def, persist, do, if, let, fn, quine, loop, recur, for, try
   macros        — when, defn, cond, case, ->, ->>, !call-now, !peek/!peek-now, !print, !describe, think/rethink/!extend/!compact, ...
-  effect        — eval, !llm-self, leaf-llm, describe-fn, llm (trailing expression only)
+  effect        — eval, !llm-self, !ask-await, leaf-llm, describe-fn, llm (trailing expression only)
   math          — +, -, *, /, inc, dec, mod, abs, max, min, floor, ceil, rand, ...
   comparison    — <, >, =, not, nil?, empty?, identity, ...
   types         — string?, number?, vector?, map?, fn?, keyword?, name, type, int, double, ...
@@ -281,11 +280,11 @@ Categories (use (!describe builtins :category) for full listing):
 
 Use (!describe builtins :category) for full listing of any category.
 Use (!describe builtins :fn-name) for individual function docs.
-For namespace functions (io/, agents/, globals/, futures/, strings/, math/, patterns/), use (!describe <namespace>).
+For namespace functions (io/, agents/, globals/, strings/, math/, patterns/), use (!describe <namespace>).
 
 Common mistakes:
 
-1. calling effect builtins outside the trailing expression: !llm-self, leaf-llm, eval, and describe-fn are effect functions; they must appear in the quoted trailing expression or inside !call-now / !peek / !print
+1. calling effect builtins outside the trailing expression: !llm-self, !ask-await, leaf-llm, eval, and describe-fn are effect functions; they must appear in the quoted trailing expression or inside !call-now / !peek / !print
 2. confusing def with let: def binds in the environment (visible to later expressions); let creates local scope
 3. forgetting quote on the trailing expression: the last expression must be quoted so the outer eval can run it with effect bindings
 4. str vs cat vs pr-str: str joins arguments as strings; cat is an alias; pr-str serializes as Spell-readable data (vectors, maps, etc.)
@@ -342,6 +341,7 @@ Common mistakes:
 
   eval — transparent evaluator; inverse of quote. Merges effect builtins with pure builtins
   !llm-self — call yourself recursively with a new prompt; child inherits your handle
+  !ask-await — wait for a future via message wakeup (safe in the caller turn)
   leaf-llm — plain text-in/text-out LLM call; no Spell parsing or evaluation, returns string
   describe-fn — retrieve documentation from a namespace: (describe-fn ns) or (describe-fn ns :key)
   llm — reference to the current LLM function (when available via :llm-var configuration)"
@@ -645,7 +645,7 @@ Lower-level than reopen. Use reopen for the standard 3-paren case."
 
 (eval expr)
 
-Merges effect builtins (!llm-self, leaf-llm, agents/, io/, globals/, futures/)
+Merges effect builtins (!llm-self, !ask-await, leaf-llm, agents/, io/, globals/)
 with pure builtins, then evaluates expr. This is what makes effect functions
 available in the trailing expression of the completion wrapper.
 
@@ -671,6 +671,23 @@ The child writes Spell code that is parsed and evaluated. Use for:
 - Multi-step tool use chains
 
 For parallel LLM work, use agents/spawn instead (separate handles)."
+
+    :!ask-await
+    "Wait for a Spell future via message wakeup from a normal agent turn.
+
+(!ask-await fut)
+
+fut: Spell future returned by (future ...)
+Returns: the next wakeup message from the waiter thread
+
+This installs a background waiter future that dereferences fut, sends the
+result back to the current handle as a normal message, then blocks the current
+turn until that message arrives. Use this when you need to wait on a future
+without entering future-only blocking/ APIs from a normal agent turn.
+
+Example:
+  '(!ask-await some-future)
+  ;; next turn receives msg with {:from :future :body result}"
 
     :leaf-llm
     "Plain text-in/text-out LLM call. No Spell parsing or evaluation.
@@ -820,42 +837,25 @@ Example:
                 (get-in ns [:docs key])
                 (get ns key))))
 
-;; =============================================================================
-;; futures namespace (parallel computation)
-;; =============================================================================
-
-(def futures-namespace
-  "Future bridge namespace — effect-guarded (trailing expression only)."
-  {:short-docs "Main-turn bridge: !ask-await."
-   :docs {:guide "FUTURES — Main-turn bridge for Spell futures (effect namespace).
-
-  (futures/!ask-await fut) — wait for fut via message wakeup (safe in the caller turn)
-
-Blocking operations live in future-only blocking/:
-  (blocking/await fut)
-  (blocking/await-all [f1 f2 ...])
-  (blocking/pmap f coll)
-  (blocking/plet [a expr1 b expr2] body)
-
-Use (!describe futures :!ask-await) for details."
-          }
-   :detail
-   {:!ask-await "(futures/!ask-await fut) — installs waiter future, sends result to self, then blocks for wakeup message."}
-   :!ask-await (fn [fut]
-                 (when-not (eval/spell-future? fut)
-                   (throw (ex-info "!ask-await requires a future" {:value fut})))
-                 (let [target runtime/*current-handle*]
-                   (when-not target
-                     (throw (ex-info "!ask-await: not inside an agent context" {})))
-                   (future
-                     (try
-                       (let [result (deref (:ref fut))]
-                         (binding [runtime/*current-handle* :future]
-                           (runtime/send target result)))
-                       (catch Exception e
-                         (binding [runtime/*current-handle* :future]
-                           (runtime/send target {:future-await/error (.getMessage e)})))))
-                   (runtime/block-for-message)))})
+(defn ask-await-builtin
+  "Effect builtin for waiting on a Spell future from a normal agent turn.
+   The waiter future sends the result back as a normal message, then the
+   caller blocks until that wakeup arrives."
+  [fut]
+  (when-not (eval/spell-future? fut)
+    (throw (ex-info "!ask-await requires a future" {:value fut})))
+  (let [target runtime/*current-handle*]
+    (when-not target
+      (throw (ex-info "!ask-await: not inside an agent context" {})))
+    (future
+      (try
+        (let [result (deref (:ref fut))]
+          (binding [runtime/*current-handle* :future]
+            (runtime/send target result)))
+        (catch Exception e
+          (binding [runtime/*current-handle* :future]
+            (runtime/send target {:future-await/error (.getMessage e)})))))
+    (runtime/block-for-message)))
 
 ;; =============================================================================
 ;; All standard library namespaces

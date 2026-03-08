@@ -334,10 +334,10 @@ Agent-orchestration waits live in the future-only `blocking/` namespace:
 
 `blocking/` is injected into future eval environments only, so these blocking primitives are not available in non-future turns.
 
-For non-future turns, `futures/!ask-await` provides a message-wakeup bridge:
+For non-future turns, `!ask-await` provides a message-wakeup bridge:
 
 ```clojure
-'(futures/!ask-await some-future)
+'(!ask-await some-future)
 ;; next turn receives msg with {:from :future :body result}
 ```
 

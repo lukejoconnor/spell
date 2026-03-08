@@ -16,12 +16,12 @@
 (def ralph (:ralph stdlib/patterns))
 (def team (:team stdlib/patterns))
 (def sh-test (:sh-test sio/io-namespace))
+(def stub-ask-await (fn [fut] (deref (:ref fut) 5000 :timeout)))
 
 (defn- run-fix-loop [opts env]
-  (binding [eval/*spell-env* (merge {'strings stdlib/strings
-                                     'io (assoc sio/io-namespace :sh sio/sh)
-                                     'futures {:!ask-await (fn [fut]
-                                                             (deref (:ref fut) 5000 :timeout))}}
+  (binding [eval/*builtins* (assoc eval/*builtins* '!ask-await stub-ask-await)
+            eval/*spell-env* (merge {'strings stdlib/strings
+                                     'io (assoc sio/io-namespace :sh sio/sh)}
                                     env)]
     (eval/invoke-fn fix-loop [opts])))
 
@@ -32,11 +32,10 @@
     (eval/invoke-fn ralph [opts])))
 
 (defn- run-team [opts env]
-  (binding [eval/*spell-env* (merge {'strings stdlib/strings
+  (binding [eval/*builtins* (assoc eval/*builtins* '!ask-await stub-ask-await)
+            eval/*spell-env* (merge {'strings stdlib/strings
                                      'patterns stdlib/patterns
-                                     'io (assoc sio/io-namespace :sh sio/sh :exec sio/exec)
-                                     'futures {:!ask-await (fn [fut]
-                                                             (deref (:ref fut) 5000 :timeout))}}
+                                     'io (assoc sio/io-namespace :sh sio/sh :exec sio/exec)}
                                     env)]
     (eval/invoke-fn team [opts])))
 

@@ -6,6 +6,14 @@
 (def ^:private doc-keys
   #{:short-docs :docs :detail})
 
+(def ^:private expected-requires
+  {:check-result ['strings]
+   :clean-prompt []
+   :explore ['io 'agents]
+   :ralph ['agents 'blocking]
+   :team ['strings 'io 'agents 'blocking]
+   :fix-loop ['strings 'io 'agents 'blocking]})
+
 (defn- defn-keys-from-spl
   []
   (->> (parse/read-all (slurp "config/spl-lib/patterns.spl"))
@@ -29,4 +37,13 @@
         (is (vector? (get-in patterns/patterns [k :params]))
             (str k " should have vector params"))
         (is (seq (get-in patterns/patterns [k :body]))
-            (str k " should have non-empty body"))))))
+            (str k " should have non-empty body"))
+        (is (vector? (get-in patterns/patterns [k :requires]))
+            (str k " should carry a :requires vector"))))))
+
+(deftest patterns-loader-requires-test
+  (testing "public patterns carry the expected namespace requirements"
+    (doseq [[pattern-key requires] expected-requires]
+      (is (= requires
+             (get-in patterns/patterns [pattern-key :requires]))
+          (str pattern-key " should declare the expected namespace requirements")))))

@@ -69,4 +69,4 @@ Common prompt/response patterns in tests:
     (reset! runtime/registry {})))
 ```
 
-**Effect namespace testing** — effects (io, agents, globals, futures) are only available through eval's double evaluation. Test prompts must use the `(eval (do '...))` or `(eval '(do ...))` pattern.
+**Effect testing** — effect namespaces and builtins (for example `io/`, `agents/`, `globals/`, `patterns/`, `!ask-await`) are only available through eval's double evaluation. Test prompts must use the `(eval (do '...))` or `(eval '(do ...))` pattern.

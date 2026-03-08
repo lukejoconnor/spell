@@ -386,3 +386,43 @@
         (finally
           (.delete main-file) (.delete helper-file)
           (.delete dir))))))
+
+;; =============================================================================
+;; Pattern dependency validation
+;; =============================================================================
+
+(deftest make-agent-llm-pattern-dependency-validation-test
+  (testing "core and future-only namespaces satisfy pattern requirements without explicit config"
+    (let [result (agent/make-agent-llm
+                  {:resolve-namespaces-fn
+                   (fn [_]
+                     {'patterns {:check-result {:requires ['strings]}
+                                 :ralph {:requires ['agents 'blocking]}
+                                 :team {:requires ['strings 'io 'agents 'blocking]}}
+                      'agents {}
+                      'io {}})})]
+      (is (fn? (:llm result)))
+      (is (fn? (:run result)))))
+
+  (testing "missing effect namespaces fail fast with actionable ex-data"
+    (try
+      (agent/make-agent-llm
+       {:resolve-namespaces-fn
+        (fn [_]
+          {'patterns {:explore {:requires ['io 'agents]}}
+           'agents {}})})
+      (is false "expected pattern dependency validation failure")
+      (catch clojure.lang.ExceptionInfo e
+        (is (= :explore (:pattern (ex-data e))))
+        (is (= '[agents io] (:requires (ex-data e))))
+        (is (= '[io] (:missing (ex-data e))))
+        (is (re-find #"Pattern explore requires namespaces"
+                     (.getMessage e))))))
+
+  (testing "shipped io agent profiles remain loadable without futures/ configured"
+    (doseq [path ["config/agents/io-msg.agent.edn"
+                  "config/agents/io-pf.agent.edn"
+                  "config/agents/io-tc.agent.edn"]]
+      (let [result (agent/make-agent-llm (agent/load-agent-config path))]
+        (is (fn? (:llm result)) path)
+        (is (fn? (:run result)) path)))))
