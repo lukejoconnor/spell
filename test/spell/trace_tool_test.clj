@@ -115,10 +115,141 @@
         (is (= [[2] [2]]
                (mapv :path items)))))))
 
+(deftest trace-summary-test
+  (let [trace {:nodes [{:id 0
+                        :depth 0
+                        :program '(do
+                                    (think "a")
+                                    (rethink "drop a")
+                                    (io/sh "ls")
+                                    (globals/set :k 1)
+                                    (defn helper [x] (math/sqrt x))
+                                    (persist state))
+                        :response "(think \"a\") (rethink \"drop a\") (io/sh \"ls\") (globals/set :k 1) (defn helper [x] (math/sqrt x)) (persist state)"}
+                       {:id 1
+                        :depth 1
+                       :error "boom"
+                        :program '(do
+                                    (fn [y] (strings/replace y "a" "b"))
+                                    (!compact)
+                                    (future (io/slurp "foo")))
+                        :response "(fn [y] (strings/replace y \"a\" \"b\")) (!compact) (future (io/slurp \"foo\"))"}
+                       {:id 2
+                        :depth 0
+                        :program '(do
+                                    (!ask-await worker)
+                                    (agents/!ask worker "hi")
+                                    (patterns/team {:goal "x"})
+                                    (leaf-llm prompt)
+                                    (!llm-self "continue")
+                                    (llms/coder "prompt"))
+                        :response "(!ask-await worker) (agents/!ask worker \"hi\") (patterns/team {:goal \"x\"}) (leaf-llm prompt) (!llm-self \"continue\") (llms/coder \"prompt\")"}
+                       {:id 3
+                        :depth 0
+                        :error "fatal"
+                        :program '(do (!print :done))
+                        :response "(!print :done)"}]}
+        summary (tt/trace-summary "traces/example" trace)
+        pruned (count (pr-str '(think "a")))]
+    (is (= "traces/example" (:trace-dir summary)))
+    (is (= 4 (:node-count summary)))
+    (is (= {'think 1
+            'rethink 1
+            '!compact 1
+            '!llm-self 1
+            '!ask-await 1
+            'persist 1
+            '!print 1
+            'leaf-llm 1
+            'future 1
+            'defn 1
+            'fn 1}
+           (:tracked-counts summary)))
+    (is (= {"sh" 1 "slurp" 1}
+           (get-in summary [:namespace-usage "io"])))
+    (is (= {"set" 1}
+           (get-in summary [:namespace-usage "globals"])))
+    (is (= {"!ask" 1}
+           (get-in summary [:namespace-usage "agents"])))
+    (is (= {"team" 1}
+           (get-in summary [:namespace-usage "patterns"])))
+    (is (= {"sqrt" 1}
+           (get-in summary [:namespace-usage "math"])))
+    (is (= {"replace" 1}
+           (get-in summary [:namespace-usage "strings"])))
+    (is (= {"coder" 1}
+           (get-in summary [:namespace-usage "llms"])))
+    (is (= {:count 1
+            :total-chars pruned
+            :mean-chars (double pruned)
+            :max-chars pruned}
+           (:rethink-stats summary)))
+    (is (= [{:node-id 0
+             :path [2]
+             :chars-pruned pruned
+             :head-sym 'think}]
+           (:rethink-details summary)))
+    (is (= [{:node-id 1
+             :error "boom"
+             :recovered? true
+             :recovered-by 2}
+            {:node-id 3
+             :error "fatal"
+             :recovered? false
+             :recovered-by nil}]
+           (:errors summary)))
+    (is (= #{:persist-used
+             :globals-used
+             :agents-used
+             :patterns-used
+             :nontrivial-math
+             :nontrivial-strings
+             :compact-used
+             :llm-self-used
+             :concurrency-used
+             :leaf-llm-used
+             :function-definitions}
+           (:flags summary)))))
+
+(deftest summary-tsv-row-test
+  (let [summary {:trace-dir "traces/example"
+                 :node-count 2
+                 :tracked-counts {'think 3
+                                  'rethink 1
+                                  '!extend 2
+                                  '!call-now 4
+                                  '!peek-now 1
+                                  '!peek 2
+                                  '!compact 1
+                                  '!llm-self 1
+                                  '!ask-await 2
+                                  'persist 1
+                                  '!print 5
+                                  '!describe 1
+                                  'leaf-llm 1
+                                  'future 2
+                                  'defn 1
+                                  'fn 3}
+                 :rethink-stats {:count 1 :mean-chars 12.0 :total-chars 12 :max-chars 12}
+                 :namespace-usage {"io" {"sh" 2}
+                                   "agents" {"spawn" 1}
+                                   "globals" {"get" 1}
+                                   "blocking" {"await" 2}
+                                   "patterns" {"team" 1}
+                                   "math" {"sqrt" 1}
+                                   "strings" {"replace" 3}
+                                   "llms" {"fast" 1}}
+                 :errors [{:node-id 1 :recovered? true}
+                          {:node-id 2 :recovered? false}]
+                 :flags #{:concurrency-used :function-definitions}}]
+    (is (= ["traces/example" 2 3 1 "12.0" 12 12 2 4 3 1 1 2 1 5 1 1 2 1 3 2 1 1 2 1 1 3 1 1 1
+            ":concurrency-used :function-definitions"]
+           (tt/summary-tsv-row summary)))))
+
 (deftest run-tool-mode-validation-test
   (testing "context-management modes have coherent option validation"
     (is (= {:exit 1
-            :message "Choose either --rethinks or --context-trajectory, not both"}
+            :message "Choose at most one of --rethinks, --context-trajectory, or --summary"}
            (tt/run-tool {:trace-dir "unused"
                          :rethinks true
                          :context-trajectory true}
@@ -126,6 +257,31 @@
     (is (= {:exit 1
             :message "Mode requires --trace-dir, --trace-root, or --results-jsonl"}
            (tt/run-tool {:context-trajectory true} "")))))
+
+(deftest summary-tsv-validation-test
+  (is (= {:exit 1
+          :message "--tsv requires --summary with --trace-root"}
+         (tt/run-tool {:trace-dir "unused" :tsv true} "")))
+  (is (= {:exit 1
+          :message "--tsv requires --summary with --trace-root"}
+         (tt/run-tool {:trace-root "unused" :tsv true} ""))))
+
+(deftest run-tool-summary-trace-root-test
+  (let [tmp-root (-> (java.nio.file.Files/createTempDirectory "trace-tool-summary-root"
+                                                              (make-array java.nio.file.attribute.FileAttribute 0))
+                     (.toFile))
+        trace-dir (io/file tmp-root "trace-a")
+        trace-file (io/file trace-dir "trace.edn")]
+    (.mkdirs trace-dir)
+    (spit trace-file "{:nodes []}")
+    (let [result (atom nil)]
+      (with-out-str
+        (reset! result
+                (tt/run-tool {:trace-root (.getPath tmp-root)
+                              :summary true}
+                             "")))
+      (is (= {:exit 0 :message nil}
+             @result)))))
 
 (deftest select-node-default-prefers-latest-default-program-test
   (let [trace {:nodes [{:id 0 :variant :default :program '(do 1)}

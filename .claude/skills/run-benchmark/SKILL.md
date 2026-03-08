@@ -69,6 +69,18 @@ cd benchmarking && uv run run_swebench.py --dataset mini --condition spell --tra
 
 After the run completes (or as results stream in), investigate traces by dispatching **Sonnet subagents** — one per item or small group. **Always** dispatch subagents for trace investigation, even for a single item. Use the prompt template in [references/trace-checker-prompt.md](references/trace-checker-prompt.md) verbatim, filling in the placeholders.
 
+**Summary-first triage:** Before dispatching trace investigation subagents, run `spell.trace-tool --summary` on the trace root for a quick overview of orchestration, tracked functions, errors, and investigation flags.
+
+```bash
+# Human-readable batch summary
+clj -M -m spell.trace-tool --trace-root traces/2026-03-08T10-00-00 --summary
+
+# TSV for sorting/filtering many traces
+clj -M -m spell.trace-tool --trace-root traces/2026-03-08T10-00-00 --summary --tsv
+```
+
+Use investigation flags as a prioritization aid when deciding which traces to examine first, especially within the same priority bucket.
+
 Investigation priority:
 
 | Priority | Condition | Why |
@@ -88,6 +100,12 @@ Every item in your results must have been individually examined by a subagent th
 Common investigation patterns:
 
 ```bash
+# Summary-first triage for one run directory
+clj -M -m spell.trace-tool --trace-root traces/2026-03-08T10-00-00 --summary
+
+# Batch comparison table for many traces
+clj -M -m spell.trace-tool --trace-root traces/2026-03-08T10-00-00 --summary --tsv
+
 # Skeletonize latest extension node in one trace
 clj -M -m spell.trace-tool --trace-dir traces/2026-03-02T07-04-01
 
@@ -111,6 +129,7 @@ Notes:
 - Default node selection prefers the latest `:default` node with a parsed program (usually the last extension node).
 - `--string-truncate N` controls displayed string truncation (default `32`, `-1` disables truncation).
 - `--count-all-nodes` is useful for whole-trace stats; selected-node mode is better for extension-chain end state.
+- Investigation flags from `--summary` help you spot traces that likely merit deeper review, but they do not replace reading the actual trace files.
 
 ### 6. Scoring and reporting
 
