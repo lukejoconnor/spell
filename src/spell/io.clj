@@ -829,3 +829,77 @@ The content is the raw file contents. For numbered lines, use io/read-file."}
    :sh-test sh-test
    :exec exec
    :env env})
+
+(def ^:private io-read-keys
+  [:slurp :slurp-bytes :read-file :read-lines :exists? :directory? :ls :cwd :stat :env])
+
+(def ^:private io-write-keys
+  [:write-file :spit :str-replace :replace-lines :mkdir :mkdirs :delete :copy :move :temp-file])
+
+(def ^:private io-exec-keys
+  [:sh :sh-test :exec :watch-send])
+
+(defn- build-io-subset-namespace
+  [keys short-docs guide]
+  (merge {:short-docs short-docs
+          :docs {:guide guide}
+          :detail (select-keys (:detail io-namespace) keys)}
+         (select-keys io-namespace keys)))
+
+(def io-read-namespace
+  "Read-only io/ subset for file and environment inspection."
+  (build-io-subset-namespace
+   io-read-keys
+   "Read-only file, directory, and environment inspection."
+   "IO-READ — Read-only file, directory, and environment inspection.
+
+  (io/read-lines path)         — read file as vector of line strings with line-offset metadata
+  (io/read-lines path start end) — line range [start, end) Python-style half-open
+  (io/read-file path)          — read file as numbered-lines string
+  (io/read-file path start end) — [start, end) half-open
+
+Functions identical to Clojure: slurp, exists?, directory?, ls, cwd, stat, env.
+Also includes slurp-bytes for binary inspection.
+
+Use (!describe io :fn-name) for detailed docs on any function.
+All io/ calls are effect functions — quote them in the trailing expression.
+
+This subset intentionally excludes file mutation and process execution helpers."))
+
+(def io-write-namespace
+  "Mutable io/ subset for editing files and directories."
+  (build-io-subset-namespace
+   io-write-keys
+   "File and directory mutation helpers."
+   "IO-WRITE — File and directory mutation helpers.
+
+  (io/str-replace path old new)              — replace string in file (must appear exactly once)
+  (io/str-replace path old new {:all true})  — replace all occurrences
+  (io/replace-lines path start end content)  — deletes lines in half-open range [start, end)
+  (io/replace-lines path start start content) — inserts content before line start
+  (io/replace-lines path [[s e c] ...])      — multi-edit (line numbers refer to original file)
+
+Functions identical to Clojure: spit, write-file, mkdir, mkdirs, delete, copy, move, temp-file.
+
+Use (!describe io :fn-name) for detailed docs on any function.
+All io/ calls are effect functions — quote them in the trailing expression.
+
+This subset intentionally excludes file reads beyond edit inputs and all process execution helpers."))
+
+(def io-exec-namespace
+  "Process execution and background watch helpers."
+  (build-io-subset-namespace
+   io-exec-keys
+   "Process execution and file-watch helpers."
+   "IO-EXEC — Process execution and file-watch helpers.
+
+  (io/sh command)               — execute shell command, returns {:exit :out :err}
+  (io/sh command {:timeout 10}) — timeout in seconds (0 disables)
+  (io/sh-test command)          — build a zero-arg shell-backed fix-loop test thunk
+  (io/exec [cmd arg1 ...])      — execute command directly (no shell)
+  (io/watch-send path handle)   — watch directory, send events as message to handle
+
+Use (!describe io :fn-name) for detailed docs on any function.
+All io/ calls are effect functions — quote them in the trailing expression.
+
+This subset intentionally excludes direct file mutation helpers."))

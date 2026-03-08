@@ -644,6 +644,28 @@
 ;; io-namespace tests
 ;; =============================================================================
 
+(def ^:private io-doc-keys
+  #{:short-docs :docs :detail})
+
+(deftest io-subset-namespaces-test
+  (testing "io-read namespace exposes only read helpers"
+    (is (= #{:slurp :slurp-bytes :read-file :read-lines :exists? :directory? :ls :cwd :stat :env}
+           (set (remove io-doc-keys (keys io/io-read-namespace)))))
+    (is (contains? (:detail io/io-read-namespace) :read-file))
+    (is (not (contains? io/io-read-namespace :write-file))))
+
+  (testing "io-write namespace exposes only mutation helpers"
+    (is (= #{:write-file :spit :str-replace :replace-lines :mkdir :mkdirs :delete :copy :move :temp-file}
+           (set (remove io-doc-keys (keys io/io-write-namespace)))))
+    (is (contains? (:detail io/io-write-namespace) :replace-lines))
+    (is (not (contains? io/io-write-namespace :read-file))))
+
+  (testing "io-exec namespace exposes only execution helpers"
+    (is (= #{:sh :sh-test :exec :watch-send}
+           (set (remove io-doc-keys (keys io/io-exec-namespace)))))
+    (is (contains? (:detail io/io-exec-namespace) :exec))
+    (is (not (contains? io/io-exec-namespace :str-replace)))))
+
 ;; =============================================================================
 ;; Event-send tests
 ;; =============================================================================

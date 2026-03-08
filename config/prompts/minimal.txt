@@ -194,7 +194,7 @@ Access functions with qualified symbols.
 Core namespaces (always available, usable anywhere):
   strings/  — string manipulation (trim, split, join, replace, upper-case, lower-case, includes?, starts-with?, re-find, ...)
   math/     — math functions (sqrt, pow, abs, floor, ceil, rand, rand-int, factorial, PI, ...)
-  patterns/ — orchestration patterns (check-result, clean-prompt, explore, fix-loop)
+  patterns/ — orchestration patterns (check-result, clean-prompt, fix-loop)
   builtins/ — reference for core builtins by category (docs only)
 
 Effect namespaces (configurable, only usable in the quoted trailing expression):
@@ -209,7 +209,7 @@ Fetching documentation:
 
 Multiple tool calls in one turn:
   '(!call-now files (io/sh "ls") content (io/read-file "main.py"))
-  ;; for subagent exploration, see patterns/explore
+  ;; for subagent exploration, see llms/explore (if available)
 
 Synchronous fork for self-delegation:
   '(!call-now doc-summary (!llm-self "Summarize long-document.txt"))

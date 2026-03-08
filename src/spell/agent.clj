@@ -40,6 +40,9 @@
    Note: io/ is effectful and can be omitted in custom agent profiles.
    Seqs, fns, and bit- ops are in core-builtins (matching Clojure)."
   {'io io/io-namespace
+   'io-read io/io-read-namespace
+   'io-write io/io-write-namespace
+   'io-exec io/io-exec-namespace
    'web web/web-namespace
    'globals globals/globals-namespace
    'agents runtime/agents-namespace
@@ -47,6 +50,36 @@
    'strings stdlib/strings
    'math stdlib/math
    'patterns stdlib/patterns})
+
+(defn- merge-doc-guides
+  [left right]
+  (let [parts (remove str/blank? [left right])]
+    (when (seq parts)
+      (str/join "\n\n" parts))))
+
+(defn- merge-short-docs
+  [left right]
+  (let [parts (remove str/blank? [left right])]
+    (when (seq parts)
+      (str/join "; " parts))))
+
+(defn- merge-namespace-maps
+  [& namespace-maps]
+  (reduce
+   (fn [acc ns-map]
+     (let [merged (merge acc ns-map)
+           docs (merge (:docs acc) (:docs ns-map))
+           detail (merge (:detail acc) (:detail ns-map))
+           short-docs (merge-short-docs (:short-docs acc) (:short-docs ns-map))
+           guide (merge-doc-guides (get-in acc [:docs :guide])
+                                   (get-in ns-map [:docs :guide]))]
+       (cond-> merged
+         short-docs (assoc :short-docs short-docs)
+         (seq docs) (assoc :docs (cond-> docs
+                                   guide (assoc :guide guide)))
+         (seq detail) (assoc :detail detail))))
+   {}
+   namespace-maps))
 
 (defn- resolve-stdlib-path
   "Resolve a stdlib/X or stdlib/X/Y path.
@@ -148,6 +181,11 @@
                      (:items value))))
         ;; {:file f} → slurp as string
         (slurp-file file-path base-dir)))
+
+    ;; Vector of namespace references - resolve and merge namespace maps
+    (vector? value)
+    (let [resolved (map #(resolve-namespace-value % base-dir clj-cache make-llm-fn) value)]
+      (apply merge-namespace-maps resolved))
 
     ;; Symbol - check pattern
     (symbol? value)

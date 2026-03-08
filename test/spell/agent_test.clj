@@ -237,6 +237,23 @@
         (finally
           (.delete child-file))))))
 
+(deftest resolve-namespace-value-vector-merge-test
+  (testing "vector namespace values resolve and merge docs without clobbering"
+    (let [resolved (#'agent/resolve-namespace-value
+                    ['stdlib/io-read 'stdlib/io-exec]
+                    nil
+                    (atom {})
+                    llm/make-llm)]
+      (is (fn? (:read-file resolved)))
+      (is (fn? (:sh resolved)))
+      (is (nil? (:write-file resolved)))
+      (is (re-find #"Read-only file, directory, and environment inspection"
+                   (:short-docs resolved)))
+      (is (re-find #"Process execution and file-watch helpers"
+                   (:short-docs resolved)))
+      (is (re-find #"IO-READ" (get-in resolved [:docs :guide])))
+      (is (re-find #"IO-EXEC" (get-in resolved [:docs :guide]))))))
+
 ;; =============================================================================
 ;; effect-ns-names includes 'llms
 ;; =============================================================================
@@ -387,6 +404,15 @@
           (.delete main-file) (.delete helper-file)
           (.delete dir))))))
 
+(deftest load-agent-config-explore-llm-test
+  (testing "cli agent exposes explore child llm"
+    (let [config (agent/load-agent-config "config/agents/cli.agent.edn")
+          prov (provider/test-provider {:response "\"explored\")"})
+          llms-ns ((:resolve-llms-fn config) llm/make-llm "test-model" prov)]
+      (is (fn? (:explore llms-ns)))
+      (is (= "Read-only codebase exploration agent"
+             (get-in llms-ns [:docs :explore]))))))
+
 ;; =============================================================================
 ;; Pattern dependency validation
 ;; =============================================================================
@@ -409,14 +435,14 @@
       (agent/make-agent-llm
        {:resolve-namespaces-fn
         (fn [_]
-          {'patterns {:explore {:requires ['io 'agents]}}
+          {'patterns {:team {:requires ['strings 'io 'agents 'blocking]}}
            'agents {}})})
       (is false "expected pattern dependency validation failure")
       (catch clojure.lang.ExceptionInfo e
-        (is (= :explore (:pattern (ex-data e))))
-        (is (= '[agents io] (:requires (ex-data e))))
+        (is (= :team (:pattern (ex-data e))))
+        (is (= '[agents blocking io strings] (:requires (ex-data e))))
         (is (= '[io] (:missing (ex-data e))))
-        (is (re-find #"Pattern explore requires namespaces"
+        (is (re-find #"Pattern team requires namespaces"
                      (.getMessage e))))))
 
   (testing "shipped io agent profiles remain loadable without futures/ configured"
