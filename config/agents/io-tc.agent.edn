@@ -3,6 +3,7 @@
 {:base base-tc.agent.edn
  :name io-tc
  :doc "Tool-call transport agent with io+web namespaces for benchmark/runtime access"
+ :llms {explore explore.agent.edn}
 
  :namespaces
  {io       stdlib/io

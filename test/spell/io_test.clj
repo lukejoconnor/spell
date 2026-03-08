@@ -644,6 +644,36 @@
 ;; io-namespace tests
 ;; =============================================================================
 
+(deftest io-read-namespace-subset-test
+  (let [ns-map io/io-read-namespace]
+    (is (contains? ns-map :read-file))
+    (is (contains? ns-map :slurp))
+    (is (contains? ns-map :env))
+    (is (not (contains? ns-map :write-file)))
+    (is (not (contains? ns-map :sh)))
+    (is (= "Read a file with numbered lines."
+           (get-in ns-map [:docs :read-file])))))
+
+(deftest io-write-namespace-subset-test
+  (let [ns-map io/io-write-namespace]
+    (is (contains? ns-map :write-file))
+    (is (contains? ns-map :replace-lines))
+    (is (contains? ns-map :temp-file))
+    (is (not (contains? ns-map :read-file)))
+    (is (not (contains? ns-map :sh)))
+    (is (= "Write file contents, creating parent directories as needed."
+           (get-in ns-map [:docs :write-file])))))
+
+(deftest io-exec-namespace-subset-test
+  (let [ns-map io/io-exec-namespace]
+    (is (contains? ns-map :sh))
+    (is (contains? ns-map :exec))
+    (is (contains? ns-map :watch-send))
+    (is (not (contains? ns-map :read-file)))
+    (is (not (contains? ns-map :write-file)))
+    (is (= "Execute a shell command."
+           (get-in ns-map [:docs :sh])))))
+
 ;; =============================================================================
 ;; Event-send tests
 ;; =============================================================================

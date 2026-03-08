@@ -829,3 +829,97 @@ The content is the raw file contents. For numbered lines, use io/read-file."}
    :sh-test sh-test
    :exec exec
    :env env})
+
+(defn- subset-namespace
+  [short-docs guide docs keys]
+  (merge {:short-docs short-docs
+          :docs (assoc docs :guide guide)
+          :detail (select-keys (:detail io-namespace) keys)}
+         (select-keys io-namespace keys)))
+
+(def io-read-namespace
+  "Read-only io subset for codebase inspection."
+  (subset-namespace
+   "Read-only filesystem inspection and environment lookup."
+   "IO-READ — Read-only filesystem inspection and environment lookup.
+
+  (io/slurp path)                  — read entire file as raw string
+  (io/slurp-bytes path)            — read file as bytes
+  (io/read-file path)              — read file as numbered lines
+  (io/read-file path start end)    — read numbered line range [start, end)
+  (io/read-lines path)             — read file as vector of raw lines
+  (io/read-lines path start end)   — read raw line range [start, end)
+  (io/exists? path)                — check whether a path exists
+  (io/directory? path)             — check whether a path is a directory
+  (io/ls path)                     — list directory contents
+  (io/cwd)                         — print current working directory
+  (io/stat path)                   — inspect file metadata
+  (io/env) / (io/env \"NAME\")      — read env vars
+
+Use io-read when a child should inspect the workspace without editing files or
+running commands. For process execution, add io-exec separately."
+   {:slurp "Read entire file as a raw string."
+    :slurp-bytes "Read entire file as raw bytes."
+    :read-file "Read a file with numbered lines."
+    :read-lines "Read a file as a vector of raw line strings."
+    :exists? "Check whether a path exists."
+    :directory? "Check whether a path is a directory."
+    :ls "List directory contents."
+    :cwd "Get the current working directory."
+    :stat "Inspect file metadata."
+    :env "Read one env var or all env vars."}
+   [:slurp :slurp-bytes :read-file :read-lines :exists? :directory? :ls :cwd :stat :env]))
+
+(def io-write-namespace
+  "Write-capable io subset for filesystem edits."
+  (subset-namespace
+   "Filesystem mutation and file editing."
+   "IO-WRITE — Filesystem mutation and file editing.
+
+  (io/write-file path content)               — write file contents
+  (io/spit path content)                     — write or append file contents
+  (io/str-replace path old new)              — replace a string in a file
+  (io/str-replace path old new {:all true})  — replace all occurrences
+  (io/replace-lines path start end content)  — replace a numbered line range
+  (io/replace-lines path [[s e c] ...])      — apply multiple line edits atomically
+  (io/mkdir path)                            — create one directory
+  (io/mkdirs path)                           — create a directory tree
+  (io/delete path)                           — delete a file or empty directory
+  (io/copy src dest)                         — copy a file
+  (io/move src dest)                         — move or rename a file
+  (io/temp-file)                             — create a temp file
+
+Use io-write when an agent should edit the workspace. Pair it with io-read
+when the same agent also needs inspection helpers."
+   {:write-file "Write file contents, creating parent directories as needed."
+    :spit "Write or append file contents."
+    :str-replace "Replace a string in a file."
+    :replace-lines "Replace one or more numbered line ranges."
+    :mkdir "Create a directory."
+    :mkdirs "Create a directory tree."
+    :delete "Delete a file or empty directory."
+    :copy "Copy a file."
+    :move "Move or rename a file."
+    :temp-file "Create a temporary file."}
+   [:write-file :spit :str-replace :replace-lines :mkdir :mkdirs :delete :copy :move :temp-file]))
+
+(def io-exec-namespace
+  "Process-execution io subset."
+  (subset-namespace
+   "Shell commands, direct exec, and filesystem watch hooks."
+   "IO-EXEC — Process execution helpers.
+
+  (io/sh command)                  — execute a shell command
+  (io/sh command {:timeout 10})    — execute with a timeout override
+  (io/sh-test command)             — build a zero-arg shell-backed test thunk
+  (io/exec [cmd arg1 ...])         — execute a command directly without a shell
+  (io/watch-send path handle)      — watch a directory and send file events
+
+Use io-exec when an agent needs command execution. Pair it with io-read for a
+read-only exploration agent or with io-write for agents that both edit and run
+commands."
+   {:sh "Execute a shell command."
+    :sh-test "Wrap a shell command as a zero-arg test thunk."
+    :exec "Execute a command directly without a shell."
+    :watch-send "Watch a directory and send file events to an agent handle."}
+   [:sh :sh-test :exec :watch-send]))

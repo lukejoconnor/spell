@@ -120,6 +120,10 @@ Specialized agents inherit from a base and add namespaces:
 
 See `writeup/language-design.md` § "Under the hood" for implementation architecture (spell-eval, eval, box, -llm, make-llm). Note: this section is partially stale and needs updating to match current code (box signature, root lifecycle, bang-prefix API).
 
+## Planning
+
+When the user asks for a plan, always enter plan mode (using the EnterPlanMode tool). After the plan is created, tell the user the filesystem path where the plan file is located.
+
 ## Benchmarking
 
 `benchmarking/` is a separate nested git repository (`benchmarking/.git`).

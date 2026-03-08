@@ -237,6 +237,29 @@
         (finally
           (.delete child-file))))))
 
+(deftest resolve-namespace-value-vector-merge-test
+  (testing "vector namespace values resolve and merge namespace maps"
+    (let [v (#'agent/resolve-namespace-value
+             [(symbol "stdlib/io-read") (symbol "stdlib/io-exec")]
+             "." (atom {}) llm/make-llm)]
+      (is (contains? v :read-file))
+      (is (contains? v :sh))
+      (is (not (contains? v :write-file)))
+      (is (= "Read a file with numbered lines." (get-in v [:docs :read-file])))
+      (is (re-find #"Read-only filesystem inspection"
+                   (:short-docs v))))))
+
+(deftest explore-agent-config-test
+  (testing "explore.agent.edn resolves to read+exec io subset"
+    (let [config (agent/load-agent-config "config/agents/explore.agent.edn")
+          namespaces ((:resolve-namespaces-fn config) llm/make-llm)
+          io-ns (get namespaces 'io)]
+      (is (= 'explore (:name config)))
+      (is (nil? (:resolve-llms-fn config)))
+      (is (contains? io-ns :read-file))
+      (is (contains? io-ns :sh))
+      (is (not (contains? io-ns :write-file))))))
+
 ;; =============================================================================
 ;; effect-ns-names includes 'llms
 ;; =============================================================================
@@ -409,18 +432,19 @@
       (agent/make-agent-llm
        {:resolve-namespaces-fn
         (fn [_]
-          {'patterns {:explore {:requires ['io 'agents]}}
+          {'patterns {:team {:requires ['strings 'io 'agents 'blocking]}}
            'agents {}})})
       (is false "expected pattern dependency validation failure")
       (catch clojure.lang.ExceptionInfo e
-        (is (= :explore (:pattern (ex-data e))))
-        (is (= '[agents io] (:requires (ex-data e))))
+        (is (= :team (:pattern (ex-data e))))
+        (is (= '[agents blocking io strings] (:requires (ex-data e))))
         (is (= '[io] (:missing (ex-data e))))
-        (is (re-find #"Pattern explore requires namespaces"
+        (is (re-find #"Pattern team requires namespaces"
                      (.getMessage e))))))
 
   (testing "shipped io agent profiles remain loadable without futures/ configured"
-    (doseq [path ["config/agents/io-msg.agent.edn"
+    (doseq [path ["config/agents/cli.agent.edn"
+                  "config/agents/io-msg.agent.edn"
                   "config/agents/io-pf.agent.edn"
                   "config/agents/io-tc.agent.edn"]]
       (let [result (agent/make-agent-llm (agent/load-agent-config path))]
