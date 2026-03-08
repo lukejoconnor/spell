@@ -325,7 +325,9 @@
   "Throw if not inside an agent context (box execution)."
   [caller]
   (when-not *current-handle*
-    (throw (ex-info (str caller ": not inside an agent context") {})))
+    (throw (ex-info (str caller ": not inside an agent context. "
+                         "This function requires an active agent box (spawn or runtime lifecycle).")
+                    {})))
   (when-not *current-raw*
     (throw (ex-info (str caller ": no raw completion available") {}))))
 
@@ -333,7 +335,9 @@
   "Throw if not running inside a Spell future."
   [caller]
   (when-not (eval/in-future-context?)
-    (throw (ex-info (str caller ": must be called from within a future") {}))))
+    (throw (ex-info (str caller ": must be called from within a future. "
+                         "Future-only blocking helpers are only available inside (future ...) blocks.")
+                    {}))))
 
 (defn completion-promise
   "Return await token for handle's current completion promise.

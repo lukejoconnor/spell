@@ -11,13 +11,14 @@
   "config/spl-lib/patterns.spl")
 
 (def ^:private patterns-docs
-  {:short-docs "Reusable orchestration patterns: check-result, clean-prompt, explore, ralph, fix-loop."
+  {:short-docs "Reusable orchestration patterns: check-result, clean-prompt, explore, ralph, team, fix-loop."
    :docs {:guide "PATTERNS - Reusable orchestration patterns (effect namespace).
 
   (patterns/check-result prompt answer)  - verify answer with leaf-llm
   (patterns/clean-prompt raw-text)       - clean up messy text, then execute it
   (patterns/explore question)            - one-shot codebase exploration agent
   (patterns/ralph opts)                  - future-based retry orchestrator
+  (patterns/team goal-or-opts)           - planner + parallel worktree team orchestrator
   (patterns/fix-loop issue)              - test-driven code fixing loop (reflector + worker agents)
 
 Use (!describe patterns :fn-name) for detailed docs on any function.
@@ -42,6 +43,12 @@ final {:pass result} or {:fail last-result} to the caller.
   '(!call-now started (patterns/ralph \"fix failing tests\"))
   ;; later receives msg with {:pass ...} or {:fail ...}
 
+team: Multi-task implementation orchestrator. A planner decomposes the goal,
+the scheduler executes dependency waves in parallel git worktrees, and a
+verifier approves merges or resolves conflicts on the integration branch.
+  '(!call-now result (patterns/team \"Implement feature X\"))
+  Returns {:status :completed|:partial|:failed :tasks [...] :branch \"spell-team-...\"}
+
 fix-loop: Test-driven code fixing loop. Registers a persistent reflector agent and
 a persistent worker agent for the run. The root loop coordinates both via
 blocking/send-await inside a future, and the caller waits via futures/!ask-await:
@@ -57,6 +64,7 @@ Common mistakes:
 1. calling check-result outside the trailing expression: must be quoted like all effect calls
 2. forgetting !call-now with explore: '(patterns/explore \"...\") runs the agent but you lose the return value; use '(!call-now findings (patterns/explore \"...\"))
 3. using explore for simple tasks: explore spawns a child agent - overkill for a quick io/read-file or io/sh
+4. using team without an io-capable agent profile: workers and verifier need io/, agents/, futures/, and blocking/
 
 In examples, | marks cursor position in a completion. It is doc-only; do not type it into code.
 
@@ -83,6 +91,24 @@ opts:
   :max-retries             - retry limit (default: 3)
   :worker-prompt           - custom worker prompt
 Sends {:pass result} or {:fail last-result} to caller."
+    :team "(patterns/team goal-or-opts) - planner + scheduler + worktree workers + verifier.
+primary argument:
+  goal-or-opts             - string goal or opts map
+
+opts map:
+  :goal                    - required goal text
+  :shared-context          - optional shared instructions for all tasks
+  :max-retries             - retries per task before failure (default: 2)
+
+Execution model:
+1. Commit dirty state (if any), create an integration branch
+2. Planner decomposes the goal into task maps with dependency edges
+3. Scheduler executes dependency waves in parallel git worktrees
+4. Scheduler attempts eager merges into the integration branch
+5. Verifier approves merged state or resolves conflicts/rejects for retry
+6. Returns {:status :completed|:partial|:failed :tasks [...] :branch ...}
+
+Requires agent profile with io/, agents/, futures/, and blocking/ support."
     :fix-loop "(patterns/fix-loop issue) - test-driven code fixing loop.
 primary argument:
   issue                    - description of the problem to fix (required)

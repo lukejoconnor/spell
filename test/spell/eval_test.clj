@@ -230,6 +230,30 @@
     (testing (str expr)
       (is (thrown? Exception (run-spell expr))))))
 
+(deftest gated-namespace-hints-on-lookup-failure
+  (binding [eval/*gated-ns-hints*
+            {'agents "agents/ is an effect namespace - use it in the trailing expression via eval"
+             'blocking "blocking/ is only available inside (future ...) blocks"}]
+    (testing "qualified gated namespace lookup returns effect hint"
+      (is (thrown-with-msg? Exception
+                            #"agents/spawn: agents/ is an effect namespace - use it in the trailing expression via eval"
+                            (run-spell '(agents/spawn identity "x")))))
+
+    (testing "qualified future-only namespace lookup returns future hint"
+      (is (thrown-with-msg? Exception
+                            #"blocking/await: blocking/ is only available inside \(future \.\.\.\) blocks"
+                            (run-spell '(blocking/await (future 1))))))
+
+    (testing "bare namespace root also returns hint"
+      (is (thrown-with-msg? Exception
+                            #"agents: agents/ is an effect namespace - use it in the trailing expression via eval"
+                            (run-spell 'agents))))
+
+    (testing "non-gated symbols still use generic unbound errors"
+      (is (thrown-with-msg? Exception
+                            #"Unbound symbol: foo"
+                            (run-spell 'foo))))))
+
 ;; =============================================================================
 ;; New builtins (not in should-match-eval because API differs from clojure.core)
 ;; =============================================================================

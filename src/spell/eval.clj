@@ -63,6 +63,12 @@
    for KV cache compatibility (avoids pr-str round-trip divergence)."
   nil)
 
+(def ^:dynamic *gated-ns-hints*
+  "Map from namespace root symbol to hint string for gated namespaces.
+   Bound by the LLM pipeline. Consulted on symbol lookup failure to
+   produce context-specific error messages instead of generic 'Unbound symbol'."
+  {})
+
 (def future-context-key
   "Env marker key set by future* for future-only runtime primitives."
   ::in-future)
@@ -951,7 +957,9 @@
         (let [root-sym (symbol (first parts))
               root-result (spell-eval root-sym env)]
           (if (err? root-result)
-            root-result
+            (if-let [hint (get *gated-ns-hints* root-sym)]
+              (err (str expr ": " hint) env expr)
+              root-result)
             (let [root-val (:ok root-result)
                   result (reduce #(get %1 (keyword %2)) root-val (rest parts))]
               (if (nil? result)
@@ -960,7 +968,9 @@
         ;; Unqualified: lookup in env, fallback to *builtins*
         (if-let [entry (or (find env expr) (find (or *builtins* core-builtins) expr))]
           (ok (val entry) env)
-          (err (str unbound-symbol-prefix expr) env expr))))
+          (if-let [hint (get *gated-ns-hints* expr)]
+            (err (str expr ": " hint) env expr)
+            (err (str unbound-symbol-prefix expr) env expr)))))
 
     ;; Vector: evaluate each element, threading env
     (vector? expr)

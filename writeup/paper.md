@@ -1,7 +1,6 @@
-# Self-prompting execution language for large language models
+# Self programmed execution language for large language models
 
-I propose a recursive agentic system in which the agent's entire completion is an executable program. The program can construct a prompt or prefix and feed it back to the model, allowing it to edit or extend its own context window. It can spawn and feed subagents the same way, and it can compose model calls with tool calls and ordinary control flow. The language of the system is a dialect of Lisp called Spell (self-prompting execution language for LLMs), the distinctive feature of which is that it allows the source code of the program to be manipulated by the program itself.
-
+I propose a self-programmed agentic system in which a language model (LM) emits a program, and the agentic harness does nothing except execute it. The program can construct a prompt or prefix and feed it back to the model, allowing it to edit or extend its own context window. It can spawn and feed subagents the same way, and it can compose model calls with tool calls and ordinary control flow. I call this approach *self-programmed execution*. I implement a language, Spell (self-prompting execution language for LMs), a dialect of Lisp with distinctive features that support agentic work.
 
 
 ## Introduction

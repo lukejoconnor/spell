@@ -26,6 +26,7 @@
     :assoc-fn (fn [m k v] (update m k (fnil conj []) v))]
    [nil "--count-all-nodes" "Count function calls across all nodes (default: selected node only)"]
    [nil "--rethinks" "Report rethink forms and preceding expressions (single trace or trace root)"]
+   [nil "--context-trajectory" "Report per-node context size trajectory (single trace or trace root)"]
    ["-h" "--help" "Show help"]])
 
 (defn- usage [summary]
@@ -36,6 +37,7 @@
    "Usage:"
    "  clj -M -m spell.trace-tool --trace-dir DIR [--node ID] [--fn SYMBOL ...]"
    "  clj -M -m spell.trace-tool --trace-root DIR --rethinks"
+   "  clj -M -m spell.trace-tool --trace-root DIR --context-trajectory"
    "  clj -M -m spell.trace-tool --results-jsonl FILE [--fn SYMBOL ...]"
     ""
     "Notes:"
@@ -324,6 +326,50 @@
 (defn- path->str [path]
   (str "[" (str/join " " (map pr-str path)) "]"))
 
+(defn- pruned-size
+  "Size in characters of a printed pruned form."
+  [form]
+  (count (or (some-> form pr-str) "")))
+
+(defn- node-context-size
+  "Estimate context size for a node by counting its node .spl file chars.
+   Falls back to program form size when the file is missing."
+  [trace-dir node]
+  (let [file-name (:file node)
+        file-path (when file-name
+                    (.getPath (io/file trace-dir (str file-name))))]
+    (or (when (and file-path (.exists (io/file file-path)))
+          (count (slurp file-path)))
+        (when-let [program (:program node)]
+          (count (pr-str program)))
+        0)))
+
+(defn- context-trajectory-items [trace-dir trace]
+  (let [nodes (->> (:nodes trace)
+                   (sort-by :id)
+                   vec)]
+    (loop [remaining nodes
+           prev-size nil
+           out []]
+      (if (empty? remaining)
+        out
+        (let [node (first remaining)
+              size (node-context-size trace-dir node)
+              delta (when (some? prev-size) (- size prev-size))
+              rethinks (collect-rethinks-in-forms (response-forms (:response node)))
+              pruned (reduce + 0 (map (comp pruned-size :previous) rethinks))
+              row {:node-id (:id node)
+                   :chars size
+                   :delta delta
+                   :rethink-count (count rethinks)
+                   :pruned-chars pruned}]
+          (recur (rest remaining)
+                 size
+                 (conj out row)))))))
+
+(defn- format-count [n]
+  (format "%,dc" (long n)))
+
 (defn- print-error-resolution [results-file latest-error record trace-dir]
   (println (str "Results file: " results-file))
   (println "Latest error (source-of-truth):")
@@ -390,19 +436,46 @@
           (println "<none>"))))
     (println)))
 
+(defn- print-context-trajectory-for-trace [trace-dir trace]
+  (let [items (context-trajectory-items trace-dir trace)]
+    (println (str "Trace: " trace-dir))
+    (println "Context Trajectory:")
+    (if (empty? items)
+      (println "  (none)")
+      (doseq [{:keys [node-id chars delta rethink-count pruned-chars]} items]
+        (let [delta-part (if (some? delta)
+                           (format "  (%+,dc)" delta)
+                           "")
+              note-part (if (pos? rethink-count)
+                          (str "  [rethink: pruned " (format-count pruned-chars) "]")
+                          "")]
+          (println (format "  %04d: %,7dc%s%s"
+                           node-id
+                           chars
+                           delta-part
+                           note-part)))))
+    (println)))
+
 (defn run-tool
-  [{:keys [trace-dir trace-root results-jsonl node count-all-nodes rethinks help string-truncate]
+  [{:keys [trace-dir trace-root results-jsonl node count-all-nodes rethinks
+           context-trajectory help string-truncate]
     :as options}
    summary]
   (cond
     help
     {:exit 0 :message (usage summary)}
 
-    (and rethinks (nil? trace-dir) (nil? trace-root))
-    {:exit 1 :message "Rethink mode requires --trace-dir or --trace-root"}
+    (and rethinks context-trajectory)
+    {:exit 1 :message "Choose either --rethinks or --context-trajectory, not both"}
 
-    (and trace-root (not rethinks))
-    {:exit 1 :message "--trace-root is currently supported with --rethinks mode only"}
+    (and (or rethinks context-trajectory)
+         (nil? trace-dir)
+         (nil? trace-root)
+         (nil? results-jsonl))
+    {:exit 1 :message "Mode requires --trace-dir, --trace-root, or --results-jsonl"}
+
+    (and trace-root (not (or rethinks context-trajectory)))
+    {:exit 1 :message "--trace-root is currently supported with --rethinks or --context-trajectory mode only"}
 
     (and (nil? trace-dir) (nil? results-jsonl) (nil? trace-root))
     {:exit 1 :message (str "Must provide --trace-dir, --trace-root, or --results-jsonl\n\n" (usage summary))}
@@ -412,7 +485,9 @@
       (do
         (doseq [d (find-trace-dirs trace-root)]
           (let [{:keys [trace dir]} (load-trace d)]
-            (print-rethinks-for-trace dir trace (or string-truncate 32))))
+            (if rethinks
+              (print-rethinks-for-trace dir trace (or string-truncate 32))
+              (print-context-trajectory-for-trace dir trace))))
         {:exit 0 :message nil})
       (let [resolution (if results-jsonl
                        (if-let [{:keys [latest-error record trace-dir]} (resolve-trace-from-results results-jsonl)]
@@ -427,15 +502,20 @@
                :message (str "Resolved error record has no trace_dir in metadata: "
                              (select-keys latest-error [:item_id :status :error_type]))}
               (let [{:keys [trace dir]} (load-trace trace-dir)
-                    target-node (select-node trace node)
+                    needs-target-node? (or (parse-symbol-set (:fn options))
+                                           (not (or rethinks context-trajectory)))
+                    target-node (when needs-target-node?
+                                  (select-node trace node))
                     fn-set (parse-symbol-set (:fn options))]
                 (when from-results?
                   (print-error-resolution results-jsonl latest-error record trace-dir))
                 (if rethinks
                   (print-rethinks-for-trace dir trace (or string-truncate 32))
-                  (do
+                  (if context-trajectory
+                    (print-context-trajectory-for-trace dir trace)
+                    (do
                     (print-node-summary dir trace target-node)
-                    (print-skeleton target-node (or string-truncate 32))))
+                    (print-skeleton target-node (or string-truncate 32)))))
                   (when fn-set
                     (if count-all-nodes
                       (do
