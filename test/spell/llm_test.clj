@@ -154,6 +154,26 @@
       ;; Should not throw
       (provider/track-usage! "model" {:input_tokens 100 :output_tokens 50}))))
 
+(deftest current-cost-cache-pricing-test
+  (testing "uses provider-specific cached input pricing for OpenAI models"
+    (let [usage-atom (atom {:by-model {"gpt-5-codex-2026-01-01"
+                                       {:input_tokens 900
+                                        :cache_read_input_tokens 100
+                                        :output_tokens 200
+                                        :calls 1}}})]
+      (is (< (Math/abs (- 0.0031375 (double (provider/current-cost usage-atom))))
+             1e-12))))
+
+  (testing "retains Anthropic cache write and read pricing"
+    (let [usage-atom (atom {:by-model {"claude-sonnet-4-20250514"
+                                       {:input_tokens 1000
+                                        :cache_creation_input_tokens 100
+                                        :cache_read_input_tokens 100
+                                        :output_tokens 200
+                                        :calls 1}}})]
+      (is (< (Math/abs (- 0.006405 (double (provider/current-cost usage-atom))))
+             1e-12)))))
+
 ;; =============================================================================
 ;; make-llm factory tests
 ;; =============================================================================
@@ -449,7 +469,19 @@
           result (#'provider/parse-openai-response response-body)]
       (is (= "hello" (:text result)))
       (is (= 0 (get-in result [:usage :input_tokens])))
-      (is (= 0 (get-in result [:usage :output_tokens]))))))
+      (is (= 0 (get-in result [:usage :output_tokens])))))
+
+  (testing "splits cached prompt tokens from uncached input"
+    (let [response-body (json/write-str {:choices [{:message {:content "hello"}}]
+                                         :usage {:prompt_tokens 100
+                                                 :completion_tokens 30
+                                                 :prompt_tokens_details {:cached_tokens 40}
+                                                 :completion_tokens_details {:reasoning_tokens 12}}})
+          result (#'provider/parse-openai-response response-body)]
+      (is (= 60 (get-in result [:usage :input_tokens])))
+      (is (= 40 (get-in result [:usage :cache_read_input_tokens])))
+      (is (= 30 (get-in result [:usage :output_tokens])))
+      (is (= 12 (get-in result [:usage :reasoning_tokens]))))))
 
 (deftest openai-responses-parse-response-test
   (testing "parses standard output_text response"
@@ -483,6 +515,19 @@
       (is (= "OK" (:text result)))
       (is (= 3 (get-in result [:usage :input_tokens])))
       (is (= 2 (get-in result [:usage :output_tokens])))))
+
+  (testing "splits cached input tokens and preserves reasoning tokens"
+    (let [response-body (json/write-str {:output_text "OK"
+                                         :usage {:input_tokens 100
+                                                 :output_tokens 20
+                                                 :input_tokens_details {:cached_tokens 25}
+                                                 :output_tokens_details {:reasoning_tokens 9}}})
+          result (#'provider/parse-openai-responses-response response-body)]
+      (is (= "OK" (:text result)))
+      (is (= 75 (get-in result [:usage :input_tokens])))
+      (is (= 25 (get-in result [:usage :cache_read_input_tokens])))
+      (is (= 20 (get-in result [:usage :output_tokens])))
+      (is (= 9 (get-in result [:usage :reasoning_tokens])))))
 
   (testing "throws on error response"
     (let [response-body (json/write-str {:error {:message "invalid api key"

@@ -51,31 +51,48 @@
   [0 10])
 
 (def default-costs
-  "Cost per million tokens: {model-prefix [input-cost output-cost]}"
-  {"claude-3-5-haiku"  [0.80 4.00]
-   "claude-haiku-4-5"  [1.00 5.00]
-   "claude-sonnet-5"   [3.00 15.00]
-   "claude-sonnet-4"   [3.00 15.00]
-   "claude-opus-4-5"   [5.00 25.00]
-   "claude-opus-4-6"   [5.00 25.00]
+  "Cost per million tokens.
+
+   Cost entries can be either:
+   - [input-cost output-cost]
+   - {:input N :output N :cache-write N|nil :cache-read N|nil
+      :cache-write-multiplier N|nil :cache-read-multiplier N|nil}"
+  {"claude-3-5-haiku"  {:input 0.80 :output 4.00
+                        :cache-write-multiplier 1.25
+                        :cache-read-multiplier 0.10}
+   "claude-haiku-4-5"  {:input 1.00 :output 5.00
+                        :cache-write-multiplier 1.25
+                        :cache-read-multiplier 0.10}
+   "claude-sonnet-5"   {:input 3.00 :output 15.00
+                        :cache-write-multiplier 1.25
+                        :cache-read-multiplier 0.10}
+   "claude-sonnet-4"   {:input 3.00 :output 15.00
+                        :cache-write-multiplier 1.25
+                        :cache-read-multiplier 0.10}
+   "claude-opus-4-5"   {:input 5.00 :output 25.00
+                        :cache-write-multiplier 1.25
+                        :cache-read-multiplier 0.10}
+   "claude-opus-4-6"   {:input 5.00 :output 25.00
+                        :cache-write-multiplier 1.25
+                        :cache-read-multiplier 0.10}
    ;; OpenAI models
-   "gpt-4o-mini"       [0.15 0.60]
-   "gpt-4o"            [2.50 10.00]
-   "gpt-4.1-nano"      [0.10 0.40]
-   "gpt-4.1-mini"      [0.40 1.60]
-   "gpt-4.1"           [2.00 8.00]
-   "o3-mini"           [1.10 4.40]
-   "o4-mini"           [1.10 4.40]
-   "o3"                [2.00 8.00]
-   "gpt-5-mini"        [0.25 2.00]
-   "gpt-5-codex"       [1.25 10.00]
-   "gpt-5.1-codex"     [1.25 10.00]
-   "gpt-5"             [1.25 10.00]
-   "gpt-5.1"           [1.25 10.00]
-   "gpt-5.2-codex"     [1.75 14.00]
-   "gpt-5.2"           [1.75 14.00]
-   "gpt-5.3-codex"     [1.75 14.00]
-   "gpt-5.3"           [1.75 14.00]
+   "gpt-4o-mini"       {:input 0.15 :output 0.60 :cache-read 0.075}
+   "gpt-4o"            {:input 2.50 :output 10.00 :cache-read 1.25}
+   "gpt-4.1-nano"      {:input 0.10 :output 0.40 :cache-read 0.025}
+   "gpt-4.1-mini"      {:input 0.40 :output 1.60 :cache-read 0.10}
+   "gpt-4.1"           {:input 2.00 :output 8.00 :cache-read 0.50}
+   "o3-mini"           {:input 1.10 :output 4.40 :cache-read 0.55}
+   "o4-mini"           {:input 1.10 :output 4.40 :cache-read 0.275}
+   "o3"                {:input 2.00 :output 8.00 :cache-read 0.50}
+   "gpt-5-mini"        {:input 0.25 :output 2.00 :cache-read 0.025}
+   "gpt-5-codex"       {:input 1.25 :output 10.00 :cache-read 0.125}
+   "gpt-5.1-codex"     {:input 1.25 :output 10.00 :cache-read 0.125}
+   "gpt-5"             {:input 1.25 :output 10.00 :cache-read 0.125}
+   "gpt-5.1"           {:input 1.25 :output 10.00 :cache-read 0.125}
+   "gpt-5.2-codex"     {:input 1.75 :output 14.00 :cache-read 0.175}
+   "gpt-5.2"           {:input 1.75 :output 14.00 :cache-read 0.175}
+   "gpt-5.3-codex"     {:input 1.75 :output 14.00 :cache-read 0.175}
+   "gpt-5.3"           {:input 1.75 :output 14.00 :cache-read 0.175}
    ;; Moonshot Kimi models
    "kimi-k2.5"         [0.60 3.00]
    "kimi-k2-thinking-turbo" [1.15 8.00]
@@ -87,27 +104,46 @@
    "moonshot-v1-32k"   [1.00 3.00]
    "moonshot-v1-128k"  [2.00 5.00]})
 
+(defn- normalize-cost-entry [entry]
+  (cond
+    (vector? entry) {:input (nth entry 0 nil)
+                     :output (nth entry 1 nil)
+                     :cache-write-multiplier 1.25
+                     :cache-read-multiplier 0.10}
+    (map? entry) entry
+    :else nil))
+
 (defn- lookup-cost
-  "Find cost for a model ID by prefix matching in a cost table."
+  "Find normalized cost info for a model ID by prefix matching in a cost table."
   [model-id cost-table]
   (some (fn [[prefix costs]]
-          (when (.startsWith ^String model-id prefix) costs))
+          (when (.startsWith ^String model-id prefix)
+            (normalize-cost-entry costs)))
         cost-table))
+
+(defn- usage-cost
+  [stats {:keys [input output cache-write cache-read cache-write-multiplier cache-read-multiplier]}]
+  (let [cache-write-rate (or cache-write
+                             (when (and input cache-write-multiplier)
+                               (* input cache-write-multiplier)))
+        cache-read-rate (or cache-read
+                            (when (and input cache-read-multiplier)
+                              (* input cache-read-multiplier)))]
+    (+ (* (:input_tokens stats 0) (/ input 1000000.0))
+       (* (:cache_creation_input_tokens stats 0) (/ (or cache-write-rate 0.0) 1000000.0))
+       (* (:cache_read_input_tokens stats 0) (/ (or cache-read-rate 0.0) 1000000.0))
+       (* (:output_tokens stats 0) (/ output 1000000.0)))))
 
 (defn current-cost
   "Compute total cost in dollars from accumulated usage data.
    Returns nil if no models have known pricing.
-   Accounts for cache pricing: cache writes 1.25x, cache reads 0.1x normal input."
+   Cache pricing is provider-specific when available in the cost table."
   [usage-atom]
   (let [{:keys [by-model cost-table]} @usage-atom
         effective-costs (or cost-table default-costs)
         costs (keep (fn [[model stats]]
-                      (when-let [[in-cost out-cost] (lookup-cost model effective-costs)]
-                        (let [base-input (* (:input_tokens stats 0) (/ in-cost 1000000.0))
-                              cache-write (* (:cache_creation_input_tokens stats 0) (/ in-cost 1000000.0) 1.25)
-                              cache-read (* (:cache_read_input_tokens stats 0) (/ in-cost 1000000.0) 0.1)
-                              output (* (:output_tokens stats 0) (/ out-cost 1000000.0))]
-                          (+ base-input cache-write cache-read output))))
+                      (when-let [cost-entry (lookup-cost model effective-costs)]
+                        (usage-cost stats cost-entry)))
                     by-model)]
     (when (seq costs)
       (reduce + 0.0 costs))))
@@ -150,13 +186,9 @@
         effective-costs (or cost-table default-costs)
         with-costs (into {}
                      (map (fn [[model stats]]
-                            (let [[in-cost out-cost] (lookup-cost model effective-costs)
-                                  cost (when (and in-cost out-cost)
-                                         (let [base-input (* (:input_tokens stats 0) (/ in-cost 1000000.0))
-                                               cache-write (* (:cache_creation_input_tokens stats 0) (/ in-cost 1000000.0) 1.25)
-                                               cache-read (* (:cache_read_input_tokens stats 0) (/ in-cost 1000000.0) 0.1)
-                                               output (* (:output_tokens stats 0) (/ out-cost 1000000.0))]
-                                           (+ base-input cache-write cache-read output)))]
+                            (let [cost-entry (lookup-cost model effective-costs)
+                                  cost (when cost-entry
+                                         (usage-cost stats cost-entry))]
                               [model (cond-> stats cost (assoc :cost cost))]))
                           by-model))
         reasoning-total (reduce + 0 (keep :reasoning_tokens (vals by-model)))
@@ -577,6 +609,18 @@
   [model]
   (some #(str/includes? model %) ["codex"]))
 
+(defn- parse-openai-usage
+  [usage input-key output-key input-details-key output-details-key]
+  (let [cached-input (or (get-in usage [input-details-key :cached_tokens])
+                         (:cached_input_tokens usage)
+                         0)
+        total-input (get usage input-key 0)
+        reasoning-tokens (get-in usage [output-details-key :reasoning_tokens])]
+    (cond-> {:input_tokens (max 0 (- total-input cached-input))
+             :output_tokens (get usage output-key 0)
+             :cache_read_input_tokens cached-input}
+      reasoning-tokens (assoc :reasoning_tokens reasoning-tokens))))
+
 (defn- openai-responses-request
   [api-key base-url model prompt system-prompt max-tokens reasoning-effort verbosity grammar-format]
   (let [reasoning (when reasoning-effort
@@ -616,14 +660,13 @@
                                (when (= "custom_tool_call" (:type item))
                                  (:input item)))
                              (:output parsed))
-            reasoning-tokens (get-in usage [:output_tokens_details :reasoning_tokens])]
+            normalized-usage (parse-openai-usage usage :input_tokens :output_tokens
+                                                 :input_tokens_details :output_tokens_details)]
         {:text (or (not-empty output-text)
                    (not-empty message-text)
                    (not-empty tool-input)
                    "")
-         :usage (cond-> {:input_tokens (get-in parsed [:usage :input_tokens] 0)
-                         :output_tokens (get-in parsed [:usage :output_tokens] 0)}
-                  reasoning-tokens (assoc :reasoning_tokens reasoning-tokens))}))))
+         :usage normalized-usage}))))
 
 (defn- openai-request [api-key base-url model prompt system-prompt _prefix max-tokens reasoning-effort verbosity]
   (let [messages (cond-> []
@@ -646,12 +689,10 @@
   (let [parsed (json/read-str response-body :key-fn keyword)]
     (if-let [error (:error parsed)]
       (throw (ex-info "OpenAI API error" {:error error}))
-      (let [usage (:usage parsed)
-            reasoning-tokens (get-in usage [:completion_tokens_details :reasoning_tokens])]
+      (let [usage (:usage parsed)]
         {:text (get-in parsed [:choices 0 :message :content] "")
-         :usage (cond-> {:input_tokens (:prompt_tokens usage 0)
-                         :output_tokens (:completion_tokens usage 0)}
-                  reasoning-tokens (assoc :reasoning_tokens reasoning-tokens))}))))
+         :usage (parse-openai-usage usage :prompt_tokens :completion_tokens
+                                    :prompt_tokens_details :completion_tokens_details)}))))
 
 (defrecord OpenAIProvider [api-key base-url model max-tokens http-client use-responses-api costs]
   LLMProvider
@@ -854,16 +895,15 @@
                            (when (= "custom_tool_call" (:type item))
                              (:input item)))
                          (:output completed))
-        reasoning-tokens (get-in usage [:output_tokens_details :reasoning_tokens])]
+        normalized-usage (parse-openai-usage usage :input_tokens :output_tokens
+                                             :input_tokens_details :output_tokens_details)]
     (when-not tool-input
       (throw (ex-info "Codex toolcall response missing custom_tool_call"
                       {:type :missing-tool-call
                        :provider :codex-tc
                        :output (:output completed)})))
     {:text tool-input
-     :usage (cond-> {:input_tokens (get-in usage [:input_tokens] 0)
-                     :output_tokens (get-in usage [:output_tokens] 0)}
-              reasoning-tokens (assoc :reasoning_tokens reasoning-tokens))}))
+     :usage normalized-usage}))
 
 
 (defn- parse-codex-tc-stream
