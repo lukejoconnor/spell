@@ -1,5 +1,6 @@
 (ns spell.io-test
   (:require [clojure.test :refer :all]
+            [clojure.string :as str]
             [spell.io :as io]
             [spell.runtime :as runtime]
             [clojure.java.io :as jio]))
@@ -648,6 +649,9 @@
   (let [ns-map io/io-read-namespace]
     (is (contains? ns-map :read-file))
     (is (contains? ns-map :slurp))
+    (is (contains? ns-map :grep))
+    (is (contains? ns-map :glob))
+    (is (contains? ns-map :git))
     (is (contains? ns-map :env))
     (is (not (contains? ns-map :write-file)))
     (is (not (contains? ns-map :sh)))
@@ -669,10 +673,51 @@
     (is (contains? ns-map :sh))
     (is (contains? ns-map :exec))
     (is (contains? ns-map :watch-send))
+    (is (not (contains? ns-map :grep)))
     (is (not (contains? ns-map :read-file)))
     (is (not (contains? ns-map :write-file)))
     (is (= "Execute a shell command."
            (get-in ns-map [:docs :sh])))))
+
+(deftest grep-test
+  (let [clj-path (str test-dir "/grep-target.clj")
+        txt-path (str test-dir "/nested/grep-target.txt")]
+    (.mkdirs (jio/file (str test-dir "/nested")))
+    (spit clj-path "(def needle 1)\n")
+    (spit txt-path "needle in haystack\n")
+    (let [result (io/grep "needle" test-dir)]
+      (is (= 0 (:exit result)))
+      (is (re-find (re-pattern (java.util.regex.Pattern/quote clj-path)) (:out result)))
+      (is (re-find (re-pattern (java.util.regex.Pattern/quote txt-path)) (:out result))))
+    (let [result (io/grep "needle" test-dir {:include "*.clj"})]
+      (is (= 0 (:exit result)))
+      (is (re-find (re-pattern (java.util.regex.Pattern/quote clj-path)) (:out result)))
+      (is (not (re-find (re-pattern (java.util.regex.Pattern/quote txt-path)) (:out result)))))))
+
+(deftest glob-test
+  (let [clj-path (str test-dir "/alpha.clj")
+        md-path (str test-dir "/nested/bravo.md")
+        nested-clj-path (str test-dir "/nested/charlie.clj")]
+    (.mkdirs (jio/file (str test-dir "/nested")))
+    (spit clj-path "alpha")
+    (spit md-path "bravo")
+    (spit nested-clj-path "charlie")
+    (let [result (io/glob "*.clj" test-dir {:type "f" :max-depth 3})]
+      (is (= 0 (:exit result)))
+      (is (= [clj-path nested-clj-path]
+             (str/split-lines (:out result)))))
+    (let [result (io/glob "*.md" test-dir {:type "f" :max-depth 3})]
+      (is (= 0 (:exit result)))
+      (is (= [md-path] (str/split-lines (:out result)))))))
+
+(deftest git-helper-test
+  (let [result (io/git "rev-parse" "--show-toplevel")
+        repo-root (.getCanonicalPath (jio/file "."))]
+    (is (= 0 (:exit result)))
+    (is (= repo-root (:out result))))
+  (let [result (io/git "checkout" "main")]
+    (is (= {:error "git subcommand not allowed: \"checkout\". Allowed: blame, branch, diff, log, rev-parse, show, status"}
+           result))))
 
 ;; =============================================================================
 ;; Event-send tests

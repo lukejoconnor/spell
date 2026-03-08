@@ -246,18 +246,21 @@
       (is (contains? v :sh))
       (is (not (contains? v :write-file)))
       (is (= "Read a file with numbered lines." (get-in v [:docs :read-file])))
-      (is (re-find #"Read-only filesystem inspection"
+      (is (re-find #"Read-only filesystem inspection, codebase exploration"
                    (:short-docs v))))))
 
 (deftest explore-agent-config-test
-  (testing "explore.agent.edn resolves to read+exec io subset"
+  (testing "explore.agent.edn resolves to read-only exploration helpers without shell execution"
     (let [config (agent/load-agent-config "config/agents/explore.agent.edn")
           namespaces ((:resolve-namespaces-fn config) llm/make-llm)
           io-ns (get namespaces 'io)]
       (is (= 'explore (:name config)))
       (is (nil? (:resolve-llms-fn config)))
       (is (contains? io-ns :read-file))
-      (is (contains? io-ns :sh))
+      (is (contains? io-ns :grep))
+      (is (contains? io-ns :glob))
+      (is (contains? io-ns :git))
+      (is (not (contains? io-ns :sh)))
       (is (not (contains? io-ns :write-file))))))
 
 ;; =============================================================================
