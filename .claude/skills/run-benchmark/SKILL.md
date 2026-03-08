@@ -46,9 +46,9 @@ Create a notebook entry at dispatch time (not after completion). Name: `YYYY-MM-
 
 ### 4. Run the analysis
 
-**Runs often take a long time. Do not wait for everything to complete before giving the user interpretable results.** Report accuracy, dispatch trace-investigation subagents, and surface findings as results stream in — don't accumulate silently. The user should see a running picture of progress throughout the run, not a single dump at the end.
+**Runs often take a long time. Do not wait for everything to complete before giving the user interpretable results.** After each batch completes, present an updated results table (using the same format from §6 — accuracy, errors, wrong, cost, median latency). The user should see a running picture of progress throughout the run, not a single dump at the end.
 
-Run items in parallel batches of 4-8 at a time. Don't wait for every item in a batch to finish — when most items in a batch are complete (e.g., 4/5 done), start the next batch and begin scoring completed items + checking traces immediately. This catches systematic failures early.
+Run items in parallel batches of 4-8 at a time. Don't wait for every item in a batch to finish — when most items in a batch are complete (e.g., 4/5 done), **dispatch trace-investigation subagents for completed items and then start the next batch.** Trace investigation for batch N must be dispatched before batch N+1 launches. This ensures trace subagents run concurrently with the next batch and catches systematic failures early.
 
 Guidelines:
 - Always use `--trace` to capture traces and track costs + latency.
