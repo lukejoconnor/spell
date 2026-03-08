@@ -40,6 +40,9 @@
    Note: io/ is effectful and can be omitted in custom agent profiles.
    Seqs, fns, and bit- ops are in core-builtins (matching Clojure)."
   {'io io/io-namespace
+   'io-read io/io-read-namespace
+   'io-write io/io-write-namespace
+   'io-exec io/io-exec-namespace
    'web web/web-namespace
    'globals globals/globals-namespace
    'agents runtime/agents-namespace
@@ -120,11 +123,35 @@
 ;; Value resolution
 ;; =============================================================================
 
+(defn- join-doc-snippets
+  [left right]
+  (str/join "; " (remove str/blank? [left right])))
+
+(defn- join-guides
+  [left right]
+  (str/join "\n\n" (remove str/blank? [left right])))
+
+(defn- merge-namespace-maps
+  [& ns-maps]
+  (reduce (fn [merged ns-map]
+            (let [merged-docs (:docs merged)
+                  ns-docs (:docs ns-map)]
+              (-> (merge merged (dissoc ns-map :short-docs :docs :detail))
+                  (assoc :short-docs (join-doc-snippets (:short-docs merged) (:short-docs ns-map)))
+                  (assoc :docs (cond-> (merge (dissoc merged-docs :guide)
+                                              (dissoc ns-docs :guide))
+                                 (or (:guide merged-docs) (:guide ns-docs))
+                                 (assoc :guide (join-guides (:guide merged-docs) (:guide ns-docs)))))
+                  (assoc :detail (merge (:detail merged) (:detail ns-map))))))
+          {}
+          ns-maps))
+
 (defn- resolve-namespace-value
   "Resolve a single namespace value according to pattern rules.
 
    Patterns:
    - stdlib/X or stdlib/X/Y  → stdlib namespace/item
+   - [a b c]                 → resolve and merge namespace maps
    - file.clj/var            → var from Clojure file
    - file.agent.edn          → load agent → llm fn
    - {:file f :items {...}}  → submap of vars from file
@@ -148,6 +175,15 @@
                      (:items value))))
         ;; {:file f} → slurp as string
         (slurp-file file-path base-dir)))
+
+    ;; Vector - merge resolved namespace maps
+    (vector? value)
+    (let [resolved (mapv #(resolve-namespace-value % base-dir clj-cache make-llm-fn) value)]
+      (when-not (every? map? resolved)
+        (throw (ex-info "Vector namespace values must resolve to namespace maps"
+                        {:value value
+                         :resolved-types (mapv type resolved)})))
+      (apply merge-namespace-maps resolved))
 
     ;; Symbol - check pattern
     (symbol? value)

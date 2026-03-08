@@ -11,12 +11,11 @@
   "config/spl-lib/patterns.spl")
 
 (def ^:private patterns-docs
-  {:short-docs "Reusable orchestration patterns: check-result, clean-prompt, explore, ralph, team, fix-loop."
+  {:short-docs "Reusable orchestration patterns: check-result, clean-prompt, ralph, team, fix-loop."
    :docs {:guide "PATTERNS - Reusable orchestration patterns (effect namespace).
 
   (patterns/check-result prompt answer)  - verify answer with leaf-llm
   (patterns/clean-prompt raw-text)       - clean up messy text, then execute it
-  (patterns/explore question)            - one-shot codebase exploration agent
   (patterns/ralph opts)                  - future-based retry orchestrator
   (patterns/team goal-or-opts)           - planner + parallel worktree team orchestrator
   (patterns/fix-loop issue)              - test-driven code fixing loop (reflector + worker agents)
@@ -31,10 +30,6 @@ clean-prompt: Cleans up a raw prompt (voice-to-text, quick notes) via leaf-llm, 
   '(patterns/clean-prompt \"waht is the captal of franc... like the big city\")
   leaf-llm infers intent and rewrites; !llm-self executes the cleaned prompt.
   Accepts a string or quine form (serializes non-strings automatically).
-
-explore: One-shot delegation to a child exploration agent. Spawns a child that greps, reads, and analyzes, then returns structured findings.
-  '(!call-now findings (patterns/explore \"Where is authentication handled?\"))
-  Returns {:answer \"...\" :files [\"src/auth.py\" ...]}
 
 ralph: Retry orchestrator that runs blocking completion waits inside a future, so
 the caller's agent trace stays responsive. Spawns a worker, sends task/retry
@@ -62,9 +57,7 @@ All patterns/ calls are effect functions - quote them in the trailing expression
 Common mistakes:
 
 1. calling check-result outside the trailing expression: must be quoted like all effect calls
-2. forgetting !call-now with explore: '(patterns/explore \"...\") runs the agent but you lose the return value; use '(!call-now findings (patterns/explore \"...\"))
-3. using explore for simple tasks: explore spawns a child agent - overkill for a quick io/read-file or io/sh
-4. using team without an io-capable agent profile: workers and verifier need io/ and agents/; blocking/ is future-only and !ask-await is a builtin
+2. using team without an io-capable agent profile: workers and verifier need io/ and agents/; blocking/ is future-only and !ask-await is a builtin
 
 In examples, | marks cursor position in a completion. It is doc-only; do not type it into code.
 
@@ -82,8 +75,6 @@ Example - verify then correct:
    :detail
    {:check-result "(patterns/check-result prompt answer) - verify answer with leaf-llm, returns {:ok answer} or {:wrong msg}"
     :clean-prompt "(patterns/clean-prompt raw-prompt) - clean up raw prompt via leaf-llm and execute it"
-    :explore "(patterns/explore question) - one-shot exploration agent, returns {:answer \"...\" :files [...]}.
-Requires agent profile with io/ and agents/ support."
     :ralph "(patterns/ralph opts) - future-based retry orchestrator.
 opts:
   string                   - task text
@@ -148,7 +139,6 @@ Example:
    appear in an agent's :namespaces map."
   {:check-result ['strings]
    :clean-prompt []
-   :explore ['io 'agents]
    :ralph ['agents 'blocking]
    :team ['strings 'io 'agents 'blocking]
    :fix-loop ['strings 'io 'agents 'blocking]})

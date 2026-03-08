@@ -9,7 +9,6 @@
 (def ^:private expected-requires
   {:check-result ['strings]
    :clean-prompt []
-   :explore ['io 'agents]
    :ralph ['agents 'blocking]
    :team ['strings 'io 'agents 'blocking]
    :fix-loop ['strings 'io 'agents 'blocking]})
