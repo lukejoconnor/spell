@@ -13,6 +13,45 @@
             [spell.parse :as parse])
   (:gen-class))
 
+(def ^:private tracked-form-order
+  ['think
+   'rethink
+   '!extend
+   '!call-now
+   '!peek-now
+   '!peek
+   '!compact
+   '!llm-self
+   '!ask-await
+   'persist
+   '!print
+   '!describe
+   'leaf-llm
+   'future
+   'defn
+   'fn])
+
+(def ^:private tracked-form-set
+  (set tracked-form-order))
+
+(def ^:private namespace-order
+  ["io" "agents" "globals" "blocking" "patterns" "math" "strings" "llms"])
+
+(def ^:private namespace-prefixes
+  (set namespace-order))
+
+(def ^:private nontrivial-strings
+  #{"re-find" "re-matches" "re-seq" "replace"
+    "index-of" "last-index-of" "subs"
+    "lower-case" "upper-case" "capitalize"})
+
+(def ^:private summary-tsv-columns
+  ["trace_dir" "nodes" "think" "rethink" "rethink_mean_c" "rethink_total_c" "rethink_max_c"
+   "extend" "call_now" "peek" "compact" "llm_self" "ask_await" "persist" "print" "describe"
+   "leaf_llm" "future" "defn" "fn"
+   "io" "agents" "globals" "blocking" "patterns" "math_fns" "strings_fns" "llms"
+   "errors_fatal" "errors_recovered" "flags"])
+
 (def cli-options
   [[nil "--trace-dir DIR" "Trace directory (e.g., traces/2026-03-02T07-04-01)"]
    [nil "--trace-root DIR" "Directory containing many trace dirs (recursive scan for trace.edn)"]
@@ -27,18 +66,23 @@
    [nil "--count-all-nodes" "Count function calls across all nodes (default: selected node only)"]
    [nil "--rethinks" "Report rethink forms and preceding expressions (single trace or trace root)"]
    [nil "--context-trajectory" "Report per-node context size trajectory (single trace or trace root)"]
+   [nil "--summary" "Report tracked-form, namespace, rethink, and error summary (single trace, trace root, or results JSONL)"]
+   [nil "--tsv" "Print summary output as TSV rows (requires --summary with --trace-root)"]
    ["-h" "--help" "Show help"]])
 
-(defn- usage [summary]
+(defn- usage [usage-summary]
   (str/join
    "\n"
    ["spell.trace-tool - analyze a single Spell trace"
     ""
-   "Usage:"
-   "  clj -M -m spell.trace-tool --trace-dir DIR [--node ID] [--fn SYMBOL ...]"
-   "  clj -M -m spell.trace-tool --trace-root DIR --rethinks"
-   "  clj -M -m spell.trace-tool --trace-root DIR --context-trajectory"
-   "  clj -M -m spell.trace-tool --results-jsonl FILE [--fn SYMBOL ...]"
+    "Usage:"
+    "  clj -M -m spell.trace-tool --trace-dir DIR [--node ID] [--fn SYMBOL ...]"
+    "  clj -M -m spell.trace-tool --trace-dir DIR --summary"
+    "  clj -M -m spell.trace-tool --trace-root DIR --rethinks"
+    "  clj -M -m spell.trace-tool --trace-root DIR --context-trajectory"
+    "  clj -M -m spell.trace-tool --trace-root DIR --summary [--tsv]"
+    "  clj -M -m spell.trace-tool --results-jsonl FILE [--fn SYMBOL ...]"
+    "  clj -M -m spell.trace-tool --results-jsonl FILE --summary"
     ""
     "Notes:"
     "  - --results-jsonl resolves the latest errored item and uses its trace_dir"
@@ -46,7 +90,7 @@
     "  - Use --count-all-nodes to aggregate response-only calls across nodes"
     ""
     "Options:"
-    summary]))
+    usage-summary]))
 
 (defn- read-edn-file [path]
   ;; trace.edn is pretty-printed Clojure data (not strict EDN),
@@ -256,6 +300,32 @@
     {:counts (reduce (fn [m inst] (update m (:fn inst) (fnil inc 0))) {} instances)
      :instances instances}))
 
+(defn- parse-program-node-responses
+  "Parse response suffixes for all program nodes.
+   Summary mode uses this best-effort view so one malformed response does not
+   abort the whole trace/root report."
+  [trace]
+  (->> (:nodes trace)
+       (filter :program)
+       (mapv (fn [node]
+               (try
+                 {:node-id (:id node)
+                  :forms (response-forms (:response node))}
+                 (catch RuntimeException e
+                   {:node-id (:id node)
+                    :parse-error (.getMessage e)}))))))
+
+(defn- count-function-calls-in-parsed-nodes [parsed-nodes {:keys [fns]}]
+  (reduce (fn [{:keys [counts instances]} {:keys [node-id forms]}]
+            (let [{node-counts :counts
+                   node-instances :instances}
+                  (count-function-calls-in-forms forms {:fns fns :node-id node-id})]
+              {:counts (merge-with + counts node-counts)
+               :instances (into instances node-instances)}))
+          {:counts {}
+           :instances []}
+          (filter :forms parsed-nodes)))
+
 (defn- rethink-form? [form]
   (and (seq? form)
        (= 'rethink (first form))))
@@ -297,6 +367,13 @@
   (when (seq forms)
     (collect-rethinks (list* 'do forms))))
 
+(defn- collect-trace-rethinks-in-parsed-nodes [parsed-nodes]
+  (->> parsed-nodes
+       (filter :forms)
+       (mapcat (fn [{:keys [node-id forms]}]
+                 (map #(assoc % :node-id node-id)
+                      (collect-rethinks-in-forms forms))))))
+
 (defn collect-trace-rethinks
   "Collect rethinks from all program nodes in one trace.
    Adds :node-id for reporting."
@@ -322,6 +399,18 @@
 (defn- parse-symbol-set [strs]
   (when (seq strs)
     (set (map symbol strs))))
+
+(defn- classify-sym [sym]
+  (let [sym-ns (namespace sym)
+        sym-name (name sym)]
+    (cond
+      (contains? tracked-form-set sym)
+      {:bucket :tracked :sym sym}
+
+      (contains? namespace-prefixes sym-ns)
+      {:bucket :namespace :namespace sym-ns :fn-name sym-name}
+
+      :else nil)))
 
 (defn- path->str [path]
   (str "[" (str/join " " (map pr-str path)) "]"))
@@ -367,8 +456,130 @@
                  size
                  (conj out row)))))))
 
+(defn- empty-namespace-usage []
+  (zipmap namespace-order (repeat {})))
+
+(defn- tracked-counts-for-summary [counts]
+  (reduce (fn [m sym]
+            (let [n (get counts sym 0)]
+              (if (pos? n)
+                (assoc m sym n)
+                m)))
+          {}
+          tracked-form-order))
+
+(defn- namespace-usage-for-summary [counts]
+  (reduce-kv
+   (fn [usage sym n]
+     (if-let [{:keys [bucket namespace fn-name]} (classify-sym sym)]
+       (if (= :namespace bucket)
+         (update-in usage [namespace fn-name] (fnil + 0) n)
+         usage)
+       usage))
+   (empty-namespace-usage)
+   counts))
+
+(defn- rethink-detail [item]
+  (let [chars-pruned (pruned-size (:previous item))]
+    {:node-id (:node-id item)
+     :path (:path item)
+     :chars-pruned chars-pruned
+     :head-sym (call-head (:previous item))}))
+
+(defn- rethink-stats [details]
+  (let [count' (count details)
+        total (reduce + 0 (map :chars-pruned details))
+        max' (reduce max 0 (map :chars-pruned details))]
+    {:count count'
+     :total-chars total
+     :mean-chars (if (pos? count')
+                   (/ (double total) count')
+                   0.0)
+     :max-chars max'}))
+
+(defn- recovered-by-node-id [sorted-nodes node]
+  (let [later-nodes (filter #(< (:id node) (:id %)) sorted-nodes)
+        depth (:depth node)
+        bounded (if (some? depth)
+                  (filter #(or (nil? (:depth %))
+                               (<= (:depth %) depth))
+                          later-nodes)
+                  later-nodes)
+        recovered-by (remove :error bounded)]
+    (some-> recovered-by first :id)))
+
+(defn- summarize-errors [trace]
+  (let [sorted-nodes (sort-by :id (:nodes trace))]
+    (->> sorted-nodes
+         (filter :error)
+         (mapv (fn [node]
+                 (let [recovered-by (recovered-by-node-id sorted-nodes node)]
+                   {:node-id (:id node)
+                    :error (:error node)
+                    :recovered? (some? recovered-by)
+                    :recovered-by recovered-by}))))))
+
+(defn- namespace-total [summary namespace]
+  (reduce + 0 (vals (get-in summary [:namespace-usage namespace] {}))))
+
+(defn- trace-summary-flags [summary]
+  (let [tracked (:tracked-counts summary)
+        math-used? (pos? (namespace-total summary "math"))
+        strings-used? (get-in summary [:namespace-usage "strings"])
+        nontrivial-strings-used?
+        (some (fn [[fn-name n]]
+                (and (pos? n) (contains? nontrivial-strings fn-name)))
+              strings-used?)
+        function-definitions? (or (pos? (get tracked 'defn 0))
+                                  (pos? (get tracked 'fn 0)))]
+    (cond-> #{}
+      (pos? (get tracked 'persist 0)) (conj :persist-used)
+      (pos? (namespace-total summary "globals")) (conj :globals-used)
+      (pos? (namespace-total summary "agents")) (conj :agents-used)
+      (pos? (namespace-total summary "patterns")) (conj :patterns-used)
+      math-used? (conj :nontrivial-math)
+      nontrivial-strings-used? (conj :nontrivial-strings)
+      (pos? (get tracked '!compact 0)) (conj :compact-used)
+      (pos? (get tracked '!llm-self 0)) (conj :llm-self-used)
+      (or (pos? (get tracked 'future 0))
+          (pos? (get tracked '!ask-await 0))
+          (pos? (namespace-total summary "blocking"))) (conj :concurrency-used)
+      (pos? (get tracked 'leaf-llm 0)) (conj :leaf-llm-used)
+      function-definitions? (conj :function-definitions))))
+
+(defn trace-summary
+  "Compute a single trace summary for batch triage and reporting."
+  [trace-dir trace]
+  (let [parsed-nodes (parse-program-node-responses trace)
+        parse-errors (->> parsed-nodes
+                          (keep (fn [{:keys [node-id parse-error]}]
+                                  (when parse-error
+                                    {:node-id node-id
+                                     :error parse-error})))
+                          vec)
+        {:keys [counts]} (count-function-calls-in-parsed-nodes parsed-nodes {:fns nil})
+        rethink-details (->> (collect-trace-rethinks-in-parsed-nodes parsed-nodes)
+                             (map rethink-detail)
+                             vec)
+        summary {:trace-dir trace-dir
+                 :node-count (count (:nodes trace))
+                 :tracked-counts (tracked-counts-for-summary counts)
+                 :rethink-stats (rethink-stats rethink-details)
+                 :rethink-details rethink-details
+                 :namespace-usage (namespace-usage-for-summary counts)
+                 :response-parse-errors parse-errors
+                 :errors (summarize-errors trace)}]
+    (assoc summary
+           :flags (cond-> (trace-summary-flags summary)
+                    (seq parse-errors) (conj :response-parse-errors)))))
+
 (defn- format-count [n]
   (format "%,dc" (long n)))
+
+(defn- format-mean-count [n]
+  (if (= n (Math/rint n))
+    (format-count n)
+    (format "%.1fc" (double n))))
 
 (defn- print-error-resolution [results-file latest-error record trace-dir]
   (println (str "Results file: " results-file))
@@ -456,37 +667,155 @@
                            note-part)))))
     (println)))
 
+(defn- print-summary [{:keys [trace-dir node-count tracked-counts rethink-stats rethink-details
+                              namespace-usage errors flags]}]
+  (println (str "Trace: " trace-dir))
+  (println (str "Nodes: " node-count))
+  (println)
+  (println "=== Tracked Forms ===")
+  (if-let [items (seq (filter (comp pos? second)
+                              (map (fn [sym] [sym (get tracked-counts sym 0)])
+                                   tracked-form-order)))]
+    (doseq [[sym n] items]
+      (if (= 'rethink sym)
+        (println (format "  %s: %d  (total: %s  mean: %s  max: %s)"
+                         sym
+                         n
+                         (format-count (:total-chars rethink-stats))
+                         (format-mean-count (:mean-chars rethink-stats))
+                         (format-count (:max-chars rethink-stats))))
+        (println (format "  %s: %d" sym n))))
+    (println "  (none)"))
+  (println)
+  (println "=== Namespace Usage ===")
+  (doseq [namespace namespace-order]
+    (let [items (get namespace-usage namespace)]
+      (println
+       (format "  %s: %s"
+               namespace
+               (if (seq items)
+                 (str/join " "
+                           (for [[fn-name n] (sort-by key items)]
+                             (format "%s(%d)" fn-name n)))
+                 "(none)")))))
+  (when (seq rethink-details)
+    (println)
+    (println "=== Rethink Details ===")
+    (doseq [{:keys [node-id path chars-pruned head-sym]} rethink-details]
+      (println (format "  node=%s path=%s pruned=%s head=%s"
+                       node-id
+                       (path->str path)
+                       (format-count chars-pruned)
+                       (or head-sym "<none>")))))
+  (println)
+  (println "=== Errors ===")
+  (if (seq errors)
+    (doseq [{:keys [node-id error recovered? recovered-by]} errors]
+      (println (format "  node=%s: %s  recovered=%s%s"
+                       node-id
+                       (pr-str error)
+                       recovered?
+                       (if recovered-by
+                         (str " recovered-by=" recovered-by)
+                         ""))))
+    (println "  (none)"))
+  (println)
+  (println "=== Investigation Flags ===")
+  (if (seq flags)
+    (println (str "  " (str/join " " (sort-by name flags))))
+    (println "  (none)"))
+  (println))
+
+(defn summary-tsv-row
+  "Return a TSV-ready row for a trace summary."
+  [{:keys [trace-dir node-count tracked-counts rethink-stats errors flags] :as summary}]
+  (let [peek-count (+ (get tracked-counts '!peek-now 0)
+                      (get tracked-counts '!peek 0))
+        fatal-errors (count (remove :recovered? errors))
+        recovered-errors (count (filter :recovered? errors))]
+    [trace-dir
+     node-count
+     (get tracked-counts 'think 0)
+     (get tracked-counts 'rethink 0)
+     (format "%.1f" (double (:mean-chars rethink-stats)))
+     (:total-chars rethink-stats)
+     (:max-chars rethink-stats)
+     (get tracked-counts '!extend 0)
+     (get tracked-counts '!call-now 0)
+     peek-count
+     (get tracked-counts '!compact 0)
+     (get tracked-counts '!llm-self 0)
+     (get tracked-counts '!ask-await 0)
+     (get tracked-counts 'persist 0)
+     (get tracked-counts '!print 0)
+     (get tracked-counts '!describe 0)
+     (get tracked-counts 'leaf-llm 0)
+     (get tracked-counts 'future 0)
+     (get tracked-counts 'defn 0)
+     (get tracked-counts 'fn 0)
+     (namespace-total summary "io")
+     (namespace-total summary "agents")
+     (namespace-total summary "globals")
+     (namespace-total summary "blocking")
+     (namespace-total summary "patterns")
+     (namespace-total summary "math")
+     (namespace-total summary "strings")
+     (namespace-total summary "llms")
+     fatal-errors
+     recovered-errors
+     (str/join " " (sort-by name flags))]))
+
+(defn- print-summary-tsv-header []
+  (println (str/join "\t" summary-tsv-columns)))
+
+(defn- print-summary-tsv-row [summary]
+  (println (str/join "\t" (summary-tsv-row summary))))
+
 (defn run-tool
   [{:keys [trace-dir trace-root results-jsonl node count-all-nodes rethinks
-           context-trajectory help string-truncate]
+           context-trajectory summary tsv help string-truncate]
     :as options}
-   summary]
-  (cond
+   usage-summary]
+  (let [mode-count (count (filter true? [rethinks context-trajectory summary]))]
+    (cond
     help
-    {:exit 0 :message (usage summary)}
+    {:exit 0 :message (usage usage-summary)}
 
-    (and rethinks context-trajectory)
-    {:exit 1 :message "Choose either --rethinks or --context-trajectory, not both"}
+    (> mode-count 1)
+    {:exit 1 :message "Choose at most one of --rethinks, --context-trajectory, or --summary"}
 
-    (and (or rethinks context-trajectory)
+    (and tsv (not (and summary trace-root)))
+    {:exit 1 :message "--tsv requires --summary with --trace-root"}
+
+    (and (pos? mode-count)
          (nil? trace-dir)
          (nil? trace-root)
          (nil? results-jsonl))
     {:exit 1 :message "Mode requires --trace-dir, --trace-root, or --results-jsonl"}
 
-    (and trace-root (not (or rethinks context-trajectory)))
-    {:exit 1 :message "--trace-root is currently supported with --rethinks or --context-trajectory mode only"}
+    (and trace-root (not (or rethinks context-trajectory summary)))
+    {:exit 1 :message "--trace-root is currently supported with --rethinks, --context-trajectory, or --summary mode only"}
 
     (and (nil? trace-dir) (nil? results-jsonl) (nil? trace-root))
-    {:exit 1 :message (str "Must provide --trace-dir, --trace-root, or --results-jsonl\n\n" (usage summary))}
+    {:exit 1 :message (str "Must provide --trace-dir, --trace-root, or --results-jsonl\n\n" (usage usage-summary))}
 
     :else
     (if trace-root
       (do
+        (when tsv
+          (print-summary-tsv-header))
         (doseq [d (find-trace-dirs trace-root)]
           (let [{:keys [trace dir]} (load-trace d)]
-            (if rethinks
+            (cond
+              summary
+              (let [trace-summary (trace-summary dir trace)]
+                (if tsv
+                  (print-summary-tsv-row trace-summary)
+                  (print-summary trace-summary)))
+
+              rethinks
               (print-rethinks-for-trace dir trace (or string-truncate 32))
+              :else
               (print-context-trajectory-for-trace dir trace))))
         {:exit 0 :message nil})
       (let [resolution (if results-jsonl
@@ -502,23 +831,31 @@
                :message (str "Resolved error record has no trace_dir in metadata: "
                              (select-keys latest-error [:item_id :status :error_type]))}
               (let [{:keys [trace dir]} (load-trace trace-dir)
-                    needs-target-node? (or (parse-symbol-set (:fn options))
-                                           (not (or rethinks context-trajectory)))
+                    fn-set (parse-symbol-set (:fn options))
+                    special-mode? (or rethinks context-trajectory summary)
+                    needs-target-node? (or (and fn-set (not count-all-nodes) (not summary))
+                                           (not special-mode?))
                     target-node (when needs-target-node?
-                                  (select-node trace node))
-                    fn-set (parse-symbol-set (:fn options))]
+                                  (select-node trace node))]
                 (when from-results?
                   (print-error-resolution results-jsonl latest-error record trace-dir))
-                (if rethinks
+                (cond
+                  summary
+                  (print-summary (trace-summary dir trace))
+
+                  rethinks
                   (print-rethinks-for-trace dir trace (or string-truncate 32))
-                  (if context-trajectory
-                    (print-context-trajectory-for-trace dir trace)
-                    (do
+
+                  context-trajectory
+                  (print-context-trajectory-for-trace dir trace)
+
+                  :else
+                  (do
                     (print-node-summary dir trace target-node)
-                    (print-skeleton target-node (or string-truncate 32)))))
-                  (when fn-set
-                    (if count-all-nodes
-                      (do
+                    (print-skeleton target-node (or string-truncate 32))))
+                (when (and fn-set (not summary))
+                  (if count-all-nodes
+                    (do
                       (println "Call counting scope: all nodes (response-only)")
                       (println)
                       (print-call-counts
@@ -531,7 +868,7 @@
                          (count-function-calls-in-forms (response-forms (:response target-node))
                                                         {:fns fn-set :node-id (:id target-node)}))
                         (println "Selected node has no parsed program; no response code available.\n")))))
-                {:exit 0 :message nil}))))))))
+                {:exit 0 :message nil})))))))))
 
 (defn -main [& args]
   (let [{:keys [options errors summary]} (parse-opts args cli-options)]
