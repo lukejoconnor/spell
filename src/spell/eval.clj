@@ -639,7 +639,7 @@
 
 (def ^:dynamic *builtins*
   "Active builtins map. Rebound by each llm variant during evaluation.
-   Default is core-builtins; effect builtins added by make-llm pipeline."
+   Default is core-builtins; effect builtins added by the compiled-agent pipeline."
   core-builtins)
 
 ;; =============================================================================

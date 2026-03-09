@@ -315,8 +315,8 @@
       (str "(quine completion (eval (do "
            "(quine prompt \"" (parse/escape-string s) "\") "))))
 
-(defn make-llm
-  "Factory: create an agent object with same-handle llm and root-start spawn paths.
+(defn compile-agent
+  "Factory: compile an agent runtime into a single spawn function.
 
    Options:
    - :namespaces       - map of {symbol -> namespace-map}. Each namespace has :docs and items.
@@ -339,11 +339,9 @@
                          :grammar-max-chars, grammar constraints are skipped for that call.
    - :grammar-max-chars - Max grammar size before skipping constraints (default: 2000).
 
-   Returns {:spell/agent true, :llm fn, :spawn fn}.
-
-   :llm is one-arity only and preserves same-handle prefix-completion semantics.
-   :spawn starts a root/new-handle lifecycle from either an init program string
-   or a natural-language prompt."
+   Returns a compiled spawn function marked with {:spell/compiled-agent true}.
+   The returned function is the root/new-handle startup path. Same-handle
+   prefix completion remains internal via !llm-self only."
   [{:keys [namespaces provider model system llm-var recover format prefill? thinking reasoning-effort verbosity
            suffix-grammar? grammar-max-chars]
     :or {namespaces {} model nil recover true prefill? true suffix-grammar? false grammar-max-chars 2000}}]
@@ -448,25 +446,23 @@
                        (when-not (runtime/handle? handle)
                          (runtime/register! handle))
                        (runtime/run-root-box handle init-program awake-fn inbox-fn)))
-        the-llm (fn the-llm [prompt]
-                  (let [handle (or runtime/*current-handle* :main)
-                        root? (nil? runtime/*current-handle*)
-                        prompt' (if (or (seq? prompt) (list? prompt))
-                                  (eval/expand-expr prompt (or eval/*spell-env* {}))
-                                  prompt)
-                        prompt-str (wrap-nl prompt')
-                        trace-data (atom nil)
-                        inbox-fn (make-inbox-fn config' trace-data)
-                        awake-fn (runtime/make-awake-fn handle inbox-fn)]
-                    (when-not (runtime/handle? handle)
-                      (runtime/register! handle))
-                    (-llm config' handle awake-fn (when root? inbox-fn) prompt-str trace-data)))
-        agent-obj {:spell/agent true
-                   :llm the-llm
-                   :spawn start-root}]
-    (reset! self-ref the-llm)
-    (reset! current-agent-ref agent-obj)
-    agent-obj))
+        same-handle-llm (fn same-handle-llm [prompt]
+                          (when-not runtime/*current-handle*
+                            (throw (ex-info "!llm-self requires an active agent handle"
+                                            {:prompt prompt})))
+                          (let [prompt' (if (or (seq? prompt) (list? prompt))
+                                          (eval/expand-expr prompt (or eval/*spell-env* {}))
+                                          prompt)
+                                prompt-str (wrap-nl prompt')
+                                trace-data (atom nil)
+                                inbox-fn (make-inbox-fn config' trace-data)
+                                awake-fn (runtime/make-awake-fn runtime/*current-handle* inbox-fn)]
+                            (-llm config' runtime/*current-handle* awake-fn nil prompt-str trace-data)))
+        compiled-agent (with-meta start-root {:spell/compiled-agent true
+                                              :spell/agent-spec {:model model}})]
+    (reset! self-ref same-handle-llm)
+    (reset! current-agent-ref compiled-agent)
+    compiled-agent))
 
 (defn build-init
   "Build a balanced init program from a prompt.

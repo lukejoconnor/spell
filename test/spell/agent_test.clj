@@ -4,7 +4,8 @@
             [spell.runtime :as runtime]
             [spell.llm :as llm]
             [spell.provider :as provider]
-            [spell.stdlib :as stdlib]))
+            [spell.stdlib :as stdlib]
+            [spell.test-helpers :as th]))
 
 (use-fixtures :each
   (fn [f]
@@ -18,44 +19,44 @@
 
 (deftest resolve-llms-nil-when-empty-test
   (testing "resolve-llms returns nil when llms-map is nil or empty"
-    (is (nil? (agent/resolve-llms nil llm/make-llm nil nil nil)))
-    (is (nil? (agent/resolve-llms {} llm/make-llm nil nil nil)))))
+    (is (nil? (agent/resolve-llms nil llm/compile-agent agent/compile-agent-spec nil nil nil)))
+    (is (nil? (agent/resolve-llms {} llm/compile-agent agent/compile-agent-spec nil nil nil)))))
 
 (deftest resolve-llms-inline-spec-test
-  (testing "inline spec resolves to an agent object returning evaluated value"
+  (testing "inline spec resolves to a compiled agent returning evaluated value"
     (let [prov (provider/test-provider {:response "\"leaf response\")"})
           llms-map {'summarizer {:doc "Summarizes text"
                                  :system "Summarize concisely."}}
-          llms-ns (agent/resolve-llms llms-map llm/make-llm nil prov nil)]
+          llms-ns (agent/resolve-llms llms-map llm/compile-agent agent/compile-agent-spec nil prov nil)]
       ;; Namespace structure
       (is (map? llms-ns))
       (is (contains? llms-ns :docs))
       (is (= "Summarizes text" (get-in llms-ns [:docs :summarizer])))
-      (is (:spell/agent (:summarizer llms-ns)))
-      (is (= "leaf response" ((:llm (:summarizer llms-ns)) "(do "))))))
+      (is (runtime/compiled-agent? (:summarizer llms-ns)))
+      (is (= "leaf response" (th/run-agent-prefix (:summarizer llms-ns) "(do "))))))
 
 (deftest resolve-llms-inline-eval-test
-  (testing "inline eval spec resolves to an agent object returning evaluated result"
+  (testing "inline eval spec resolves to a compiled agent returning evaluated result"
     (let [prov (provider/test-provider {:response "42)"})
           llms-map {'coder {:doc "Writes Spell code"}}
-          llms-ns (agent/resolve-llms llms-map llm/make-llm nil prov nil)]
-      (is (:spell/agent (:coder llms-ns)))
-      (is (= 42 ((:llm (:coder llms-ns)) "(do "))))))
+          llms-ns (agent/resolve-llms llms-map llm/compile-agent agent/compile-agent-spec nil prov nil)]
+      (is (runtime/compiled-agent? (:coder llms-ns)))
+      (is (= 42 (th/run-agent-prefix (:coder llms-ns) "(do "))))))
 
 (deftest resolve-llms-default-eval-true-test
   (testing "eval defaults to true when omitted"
     (let [prov (provider/test-provider {:response "42)"})
           llms-map {'worker {:doc "Default eval worker"}}
-          llms-ns (agent/resolve-llms llms-map llm/make-llm nil prov nil)]
-      (is (= 42 ((:llm (:worker llms-ns)) "(do "))))))
+          llms-ns (agent/resolve-llms llms-map llm/compile-agent agent/compile-agent-spec nil prov nil)]
+      (is (= 42 (th/run-agent-prefix (:worker llms-ns) "(do "))))))
 
 (deftest resolve-llms-format-wrapping-test
   (testing "format spec wraps with validation"
     (let [prov (provider/test-provider {:response "{:category :animal :confidence 0.95})"})
           llms-map {'classifier {:doc "Classifies text"
                                  :format {:required [:category :confidence]}}}
-          llms-ns (agent/resolve-llms llms-map llm/make-llm nil prov nil)]
-      (let [result ((:llm (:classifier llms-ns)) "(do ")]
+          llms-ns (agent/resolve-llms llms-map llm/compile-agent agent/compile-agent-spec nil prov nil)]
+      (let [result (th/run-agent-prefix (:classifier llms-ns) "(do ")]
         (is (map? result))
         (is (= :animal (:category result)))
         (is (= 0.95 (:confidence result)))))))
@@ -67,9 +68,9 @@
     ;; when parent model is provided
     (let [prov (provider/test-provider {:response "\"inherited\")"})
           llms-map {'helper {:doc "Helper"}}
-          llms-ns (agent/resolve-llms llms-map llm/make-llm "claude-sonnet-4-5-20250929" prov nil)]
-      (is (:spell/agent (:helper llms-ns)))
-      (is (= "inherited" ((:llm (:helper llms-ns)) "(do "))))))
+          llms-ns (agent/resolve-llms llms-map llm/compile-agent agent/compile-agent-spec "claude-sonnet-4-5-20250929" prov nil)]
+      (is (runtime/compiled-agent? (:helper llms-ns)))
+      (is (= "inherited" (th/run-agent-prefix (:helper llms-ns) "(do "))))))
 
 (deftest resolve-llms-docs-populated-test
   (testing ":docs populated from :doc fields"
@@ -77,7 +78,7 @@
           llms-map {'alpha {:doc "Alpha agent"}
                     'beta {:doc "Beta agent"}
                     'gamma {}}
-          llms-ns (agent/resolve-llms llms-map llm/make-llm nil prov nil)]
+          llms-ns (agent/resolve-llms llms-map llm/compile-agent agent/compile-agent-spec nil prov nil)]
       (is (= "Alpha agent" (get-in llms-ns [:docs :alpha])))
       (is (= "Beta agent" (get-in llms-ns [:docs :beta])))
       ;; gamma has no :doc, gets default
@@ -93,9 +94,9 @@
                                  "\"result\")")})
           llms-map {'a {:doc "Agent A"}
                     'b {:doc "Agent B"}}
-          llms-ns (agent/resolve-llms llms-map llm/make-llm nil prov nil)]
-      (is (= "result" ((:llm (:a llms-ns)) "(do ")))
-      (is (= "result" ((:llm (:b llms-ns)) "(do ")))
+          llms-ns (agent/resolve-llms llms-map llm/compile-agent agent/compile-agent-spec nil prov nil)]
+      (is (= "result" (th/run-agent-prefix (:a llms-ns) "(do ")))
+      (is (= "result" (th/run-agent-prefix (:b llms-ns) "(do ")))
       ;; Both got called
       (is (= 2 (count @call-log))))))
 
@@ -104,13 +105,13 @@
     (let [prov (provider/test-provider {:response "\"response\")"})
           llms-map {'leaf1 {:doc "Leaf 1" :system "System 1"}
                     'leaf2 {:doc "Leaf 2" :system "System 2"}}
-          llms-ns (agent/resolve-llms llms-map llm/make-llm nil prov nil)]
-      (is (:spell/agent (:leaf1 llms-ns)))
-      (is (:spell/agent (:leaf2 llms-ns)))
+          llms-ns (agent/resolve-llms llms-map llm/compile-agent agent/compile-agent-spec nil prov nil)]
+      (is (runtime/compiled-agent? (:leaf1 llms-ns)))
+      (is (runtime/compiled-agent? (:leaf2 llms-ns)))
       (is (= "Leaf 1" (get-in llms-ns [:docs :leaf1])))
       (is (= "Leaf 2" (get-in llms-ns [:docs :leaf2])))
-      (is (= "response" ((:llm (:leaf1 llms-ns)) "(do ")))
-      (is (= "response" ((:llm (:leaf2 llms-ns)) "(do "))))))
+      (is (= "response" (th/run-agent-prefix (:leaf1 llms-ns) "(do ")))
+      (is (= "response" (th/run-agent-prefix (:leaf2 llms-ns) "(do "))))))
 
 ;; =============================================================================
 ;; merge-agent-defs llms merging
@@ -153,7 +154,7 @@
     (let [prov (provider/test-provider {:response "ok"})
           llms-map {'researcher {:doc "Researches topics"}
                     'writer {:doc "Writes content"}}
-          llms-ns (agent/resolve-llms llms-map llm/make-llm nil prov nil)]
+          llms-ns (agent/resolve-llms llms-map llm/compile-agent agent/compile-agent-spec nil prov nil)]
       ;; describe returns docs map (no :guide)
       (is (= {:researcher "Researches topics"
               :writer "Writes content"}
@@ -162,40 +163,40 @@
       (is (= "Researches topics" (stdlib/describe llms-ns :researcher))))))
 
 ;; =============================================================================
-;; leaf-llm model inheritance (in make-llm)
+;; leaf-llm model inheritance (in compile-agent)
 ;; =============================================================================
 
 (deftest leaf-llm-inherits-model-test
-  (testing "leaf-llm builtin inherits model from make-llm"
-    ;; We verify that make-llm with :model creates without error
+  (testing "leaf-llm builtin inherits model from compile-agent"
+    ;; We verify that compile-agent with :model creates without error
     ;; and the leaf-llm is callable
     (let [prov (provider/test-provider {:response "leaf-response"})
-          result (llm/make-llm {:model "test-model" :namespaces {} :provider prov})]
-      (is (fn? (:llm result))))))
+          result (llm/compile-agent {:model "test-model" :namespaces {} :provider prov})]
+      (is (runtime/compiled-agent? result)))))
 
 ;; =============================================================================
-;; load-agent-config with :llms
+;; load-agent-spec with :llms
 ;; =============================================================================
 
-(deftest load-agent-config-llms-test
-  (testing "load-agent-config includes resolve-llms-fn when :llms present"
+(deftest load-agent-spec-llms-test
+  (testing "load-agent-spec preserves plain :llms data when present"
     ;; Create a temp agent file with :llms
     (let [tmp-file (java.io.File/createTempFile "test-agent" ".agent.edn")]
       (try
         (spit tmp-file (pr-str {:name 'test-agent
                                 :llms {'helper {:doc "Helper agent"}}}))
-        (let [config (agent/load-agent-config (.getAbsolutePath tmp-file))]
-          (is (some? (:resolve-llms-fn config)))
-          (is (fn? (:resolve-llms-fn config))))
+        (let [spec (agent/load-agent-spec (.getAbsolutePath tmp-file))]
+          (is (= {'helper {:doc "Helper agent"}} (:llms spec)))
+          (is (string? (:base-dir spec))))
         (finally
           (.delete tmp-file)))))
 
-  (testing "load-agent-config has nil resolve-llms-fn when :llms []"
+  (testing "load-agent-spec preserves :llms [] opt-out"
     (let [tmp-file (java.io.File/createTempFile "test-agent" ".agent.edn")]
       (try
         (spit tmp-file (pr-str {:name 'bare-agent :llms []}))
-        (let [config (agent/load-agent-config (.getAbsolutePath tmp-file))]
-          (is (nil? (:resolve-llms-fn config))))
+        (let [spec (agent/load-agent-spec (.getAbsolutePath tmp-file))]
+          (is (= [] (:llms spec))))
         (finally
           (.delete tmp-file))))))
 
@@ -213,15 +214,15 @@
                                   :doc "Child from file"}))
         (let [prov (provider/test-provider {:response "\"file-result\")"})
               llms-map {'child (symbol "child-test.agent.edn")}
-              llms-ns (agent/resolve-llms llms-map llm/make-llm nil prov dir)]
-          (is (:spell/agent (:child llms-ns)))
+              llms-ns (agent/resolve-llms llms-map llm/compile-agent agent/compile-agent-spec nil prov dir)]
+          (is (runtime/compiled-agent? (:child llms-ns)))
           (is (string? (get-in llms-ns [:docs :child])))
-          (is (= "file-result" ((:llm (:child llms-ns)) "(do "))))
+          (is (= "file-result" (th/run-agent-prefix (:child llms-ns) "(do "))))
         (finally
           (.delete child-file))))))
 
 (deftest resolve-namespace-value-agent-file-test
-  (testing ".agent.edn namespace value loads as an evaluated agent object"
+  (testing ".agent.edn namespace value loads as a compiled agent"
     (let [dir (System/getProperty "java.io.tmpdir")
           child-file (java.io.File. dir "ns-child-test.agent.edn")]
       (try
@@ -229,9 +230,8 @@
                                   :system "Leaf system prompt"
                                   :provider {:type :ollama :model "mistral"}}))
         (let [v (#'agent/resolve-namespace-value (symbol "ns-child-test.agent.edn")
-                                                 dir (atom {}) llm/make-llm)]
-          (is (:spell/agent v))
-          (is (fn? (:llm v))))
+                                                 dir (atom {}) agent/compile-agent-spec)]
+          (is (runtime/compiled-agent? v)))
         (finally
           (.delete child-file))))))
 
@@ -239,7 +239,7 @@
   (testing "vector namespace values resolve and merge namespace maps"
     (let [v (#'agent/resolve-namespace-value
              [(symbol "stdlib/io-read") (symbol "stdlib/io-exec")]
-             "." (atom {}) llm/make-llm)]
+             "." (atom {}) agent/compile-agent-spec)]
       (is (contains? v :read-file))
       (is (contains? v :sh))
       (is (not (contains? v :write-file)))
@@ -247,13 +247,13 @@
       (is (re-find #"Read-only filesystem inspection, codebase exploration"
                    (:short-docs v))))))
 
-(deftest explore-agent-config-test
+(deftest explore-agent-spec-test
   (testing "explore.agent.edn resolves to read-only exploration helpers without shell execution"
-    (let [config (agent/load-agent-config "config/agents/explore.agent.edn")
-          namespaces ((:resolve-namespaces-fn config) llm/make-llm)
+    (let [spec (agent/load-agent-spec "config/agents/explore.agent.edn")
+          namespaces (#'agent/resolve-namespaces (:namespaces spec) (:base-dir spec) agent/compile-agent-spec)
           io-ns (get namespaces 'io)]
-      (is (= 'explore (:name config)))
-      (is (nil? (:resolve-llms-fn config)))
+      (is (= 'explore (:name spec)))
+      (is (= [] (:llms spec)))
       (is (contains? io-ns :read-file))
       (is (contains? io-ns :grep))
       (is (contains? io-ns :glob))
@@ -266,17 +266,16 @@
 ;; =============================================================================
 
 (deftest llms-is-effect-namespace-test
-  (testing "llms/ namespace is treated as effect namespace in make-llm"
+  (testing "llms/ namespace is treated as effect namespace in compile-agent"
     (let [llms-ns {:docs {:helper "test helper"}
-                   :helper {:spell/agent true
-                            :spawn (fn [_prompt _handle] :helped)
-                            :llm (fn [prompt] (str "helped: " prompt))}}
+                   :helper (th/compiled-agent-fn
+                            (fn [_prompt _handle] :helped))}
           prov (provider/test-provider {:response "(agents/spawn llms/helper \"(do \")))"})
-          test-llm (:llm (llm/make-llm {:namespaces {'llms llms-ns
-                                                    'agents runtime/agents-namespace}
-                                        :provider prov}))]
+          test-agent (llm/compile-agent {:namespaces {'llms llms-ns
+                                                      'agents runtime/agents-namespace}
+                                         :provider prov})]
       ;; llms/ is an effect namespace, so it is available in the trailing expression.
-      (is (keyword? (test-llm "(eval (do '"))))))
+      (is (keyword? (th/run-agent-prefix test-agent "(eval (do '"))))))
 
 ;; =============================================================================
 ;; Auto-discovery tests
@@ -343,8 +342,8 @@
     (is (= 'opus (#'agent/agent-name-from-file "opus.agent.edn")))
     (is (= 'my-agent (#'agent/agent-name-from-file "my-agent.agent.edn")))))
 
-(deftest load-agent-config-auto-discovery-test
-  (testing "absent :llms auto-discovers siblings"
+(deftest load-agent-spec-auto-discovery-test
+  (testing "absent :llms auto-discovers siblings at compile time"
     (let [dir (java.io.File. (System/getProperty "java.io.tmpdir") "spell-auto-test")
           _ (.mkdirs dir)
           main-file (java.io.File. dir "main.agent.edn")
@@ -352,15 +351,15 @@
       (try
         (spit main-file (pr-str {:name 'main}))
         (spit sibling-file (pr-str {:name 'helper :doc "Helper agent" }))
-        (let [config (agent/load-agent-config (.getAbsolutePath main-file))]
-          ;; Should have resolve-llms-fn because siblings exist
-          (is (some? (:resolve-llms-fn config)))
-          (is (fn? (:resolve-llms-fn config))))
+        (let [spec (agent/load-agent-spec (.getAbsolutePath main-file))
+              compiled (agent/compile-agent-spec
+                        (assoc spec :provider (provider/test-provider {:response "ok"})))]
+          (is (runtime/compiled-agent? compiled)))
         (finally
           (.delete main-file) (.delete sibling-file)
           (.delete dir)))))
 
-  (testing ":llms [] opt-out produces nil resolve-llms-fn"
+  (testing ":llms [] opt-out preserves explicit empty llms config"
     (let [dir (java.io.File. (System/getProperty "java.io.tmpdir") "spell-optout-test")
           _ (.mkdirs dir)
           main-file (java.io.File. dir "main.agent.edn")
@@ -368,8 +367,8 @@
       (try
         (spit main-file (pr-str {:name 'main :llms []}))
         (spit sibling-file (pr-str {:name 'helper :doc "Helper"}))
-        (let [config (agent/load-agent-config (.getAbsolutePath main-file))]
-          (is (nil? (:resolve-llms-fn config))))
+        (let [spec (agent/load-agent-spec (.getAbsolutePath main-file))]
+          (is (= [] (:llms spec))))
         (finally
           (.delete main-file) (.delete sibling-file)
           (.delete dir)))))
@@ -384,13 +383,13 @@
         (spit main-file (pr-str {:name 'main :llms ['a.agent.edn]}))
         (spit a-file (pr-str {:name 'a :doc "Agent A" }))
         (spit b-file (pr-str {:name 'b :doc "Agent B" }))
-        (let [config (agent/load-agent-config (.getAbsolutePath main-file))
+        (let [spec (agent/load-agent-spec (.getAbsolutePath main-file))
               prov (provider/test-provider {:response "ok"})
-              llms-ns ((:resolve-llms-fn config) llm/make-llm nil prov)]
-          (is (some? (:resolve-llms-fn config)))
+              llms (agent/resolve-llms (#'agent/normalize-llms-config (:llms spec) (:base-dir spec))
+                                       llm/compile-agent agent/compile-agent-spec nil prov (:base-dir spec))]
           ;; Only 'a should be present (not 'b)
-          (is (:spell/agent (:a llms-ns)))
-          (is (nil? (:b llms-ns))))
+          (is (runtime/compiled-agent? (:a llms)))
+          (is (nil? (:b llms))))
         (finally
           (.delete main-file) (.delete a-file) (.delete b-file)
           (.delete dir)))))
@@ -403,9 +402,11 @@
       (try
         (spit main-file (pr-str {:name 'main}))
         (spit helper-file (pr-str {:name 'helper :doc "I help with things" }))
-        (let [config (agent/load-agent-config (.getAbsolutePath main-file))
+        (let [spec (agent/load-agent-spec (.getAbsolutePath main-file))
               prov (provider/test-provider {:response "ok"})
-              llms-ns ((:resolve-llms-fn config) llm/make-llm nil prov)]
+              llms-ns (agent/resolve-llms (#'agent/normalize-llms-config (get spec :llms :spell.agent/not-set)
+                                                                        (:base-dir spec))
+                                          llm/compile-agent agent/compile-agent-spec nil prov (:base-dir spec))]
           (is (= "I help with things" (get-in llms-ns [:docs :helper]))))
         (finally
           (.delete main-file) (.delete helper-file)
@@ -415,26 +416,20 @@
 ;; Pattern dependency validation
 ;; =============================================================================
 
-(deftest make-agent-llm-pattern-dependency-validation-test
+(deftest validate-pattern-dependencies-test
   (testing "core and future-only namespaces satisfy pattern requirements without explicit config"
-    (let [result (agent/make-agent-llm
-                  {:resolve-namespaces-fn
-                   (fn [_]
-                     {'patterns {:check-result {:requires ['strings]}
-                                 :ralph {:requires ['agents 'blocking]}
-                                 :team {:requires ['strings 'io 'agents 'blocking]}}
-                      'agents {}
-                      'io {}})})]
-      (is (fn? (:llm result)))
-      (is (fn? (:spawn result)))))
+    (is (nil? (#'agent/validate-pattern-dependencies!
+               {'patterns {:check-result {:requires ['strings]}
+                           :ralph {:requires ['agents 'blocking]}
+                           :team {:requires ['strings 'io 'agents 'blocking]}}
+                'agents {}
+                'io {}}))))
 
   (testing "missing effect namespaces fail fast with actionable ex-data"
     (try
-      (agent/make-agent-llm
-       {:resolve-namespaces-fn
-        (fn [_]
-          {'patterns {:team {:requires ['strings 'io 'agents 'blocking]}}
-           'agents {}})})
+      (#'agent/validate-pattern-dependencies!
+       {'patterns {:team {:requires ['strings 'io 'agents 'blocking]}}
+        'agents {}})
       (is false "expected pattern dependency validation failure")
       (catch clojure.lang.ExceptionInfo e
         (is (= :team (:pattern (ex-data e))))
@@ -448,6 +443,7 @@
                   "config/agents/io-msg.agent.edn"
                   "config/agents/io-pf.agent.edn"
                   "config/agents/io-tc.agent.edn"]]
-      (let [result (agent/make-agent-llm (agent/load-agent-config path))]
-        (is (fn? (:llm result)) path)
-        (is (fn? (:spawn result)) path)))))
+      (let [spec (assoc (agent/load-agent-spec path)
+                        :provider (provider/test-provider {:response "ok"}))
+            result (agent/compile-agent-spec spec)]
+        (is (runtime/compiled-agent? result) path)))))

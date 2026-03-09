@@ -75,7 +75,7 @@
   (clojure.core/reset! store default-state))
 
 ;; ---------------------------------------------------------------------------
-;; Namespace map (for make-llm integration)
+;; Namespace map (for compiled-agent integration)
 ;; ---------------------------------------------------------------------------
 
 (def globals-namespace

@@ -256,7 +256,7 @@
 
 (deftest llm-still-works-unchanged-test
   (testing "basic -llm flow works through box"
-    (let [{:keys [llm]} (th/make-test-llm {:response "(def return 42))"})]
+    (let [llm (th/make-test-runner {:response "(def return 42))"})]
       (is (= 42 (llm "(do "))))))
 
 (deftest llm-nested-still-works-test
@@ -264,11 +264,11 @@
     (let [call-count (atom 0)
           responses ["'(cat \"hello \" (!llm-self \"(eval (do \")))"
                      "'\"world\")))"]]
-      (let [{:keys [llm]} (th/make-test-llm
-                            {:response-fn (fn [_]
-                                            (let [r (nth responses @call-count)]
-                                              (swap! call-count inc)
-                                              r))})]
+      (let [llm (th/make-test-runner
+                 {:response-fn (fn [_]
+                                 (let [r (nth responses @call-count)]
+                                   (swap! call-count inc)
+                                   r))})]
         (is (= "hello world" (llm "(eval (do ")))))))
 
 (deftest ask-no-msg-blocks-send-unblocks-test
@@ -373,11 +373,11 @@
                      "'(list (agents/current-handle) (!llm-self \"(eval (do \")))"
                      ;; Inner: return current-handle (via eval)
                      "'(agents/current-handle)))"]]
-      (let [{:keys [llm]} (th/make-test-llm
-                            {:response-fn (fn [_]
-                                            (let [r (nth responses @call-count)]
-                                              (swap! call-count inc)
-                                              r))})]
+      (let [llm (th/make-test-runner
+                 {:response-fn (fn [_]
+                                 (let [r (nth responses @call-count)]
+                                   (swap! call-count inc)
+                                   r))})]
         (let [result (llm "(eval (do ")]
           ;; result is (h1 h2) — both should be the same handle
           (is (= (first result) (second result))))))))
@@ -388,8 +388,8 @@
 
 (deftest spawn-returns-handle-test
   (testing "spawn returns a keyword handle (handle persists after completion)"
-    (let [agent (th/make-test-llm
-                  {:response-fn (fn [_] "42)")})]
+    (let [agent (th/make-test-agent
+                 {:response-fn (fn [_] "42)")})]
       (let [handle (runtime/spawn agent "(do ")]
         (is (keyword? handle))
         ;; Wait for spawn future to finish — handle persists (no unregister)
@@ -406,11 +406,11 @@
                      ;; Inner !llm-self (inherits handle, not spawned): return nil for parent-handle
                      "'(agents/parent-handle)))"]]
       ;; First test: !llm-self inherits handle, so parent-handle is nil (not spawned)
-      (let [{:keys [llm]} (th/make-test-llm
-                            {:response-fn (fn [_]
-                                            (let [r (nth responses @call-count)]
-                                              (swap! call-count inc)
-                                              r))})]
+      (let [llm (th/make-test-runner
+                 {:response-fn (fn [_]
+                                 (let [r (nth responses @call-count)]
+                                   (swap! call-count inc)
+                                   r))})]
         (let [result (llm "(eval (do ")]
           ;; parent-handle should be nil for non-spawned agents
           (is (nil? (second result)))))))
@@ -431,15 +431,15 @@
 (deftest spawn-ask-test
   (testing "spawn-ask spawns child and blocks until child sends back"
     (let [parent-h :sr-parent
-          child-agent {:spell/agent true
-                       :spawn (fn [_prompt handle]
-                                (let [parent (:parent-handle (get @runtime/registry handle))
-                                      inside-fn (fn [_raw]
-                                                  (runtime/send parent 42)
-                                                  :done)
-                                      p (promise)]
-                                  (deliver p "(quine completion (eval (do )))")
-                                  (runtime/run-root-box handle p inside-fn inside-fn)))}]
+          child-agent (th/compiled-agent-fn
+                       (fn [_prompt handle]
+                         (let [parent (:parent-handle (get @runtime/registry handle))
+                               inside-fn (fn [_raw]
+                                           (runtime/send parent 42)
+                                           :done)
+                               p (promise)]
+                           (deliver p "(quine completion (eval (do )))")
+                           (runtime/run-root-box handle p inside-fn inside-fn))))]
       (runtime/register! parent-h)
       (let [parent-result
             (future
@@ -455,8 +455,8 @@
 (deftest spawn-default-agent-arity-test
   (testing "spawn(prompt) uses bound default agent"
     (let [parent-h :spawn-default-parent
-          default-agent {:spell/agent true
-                         :spawn (fn [prompt _handle] (str "done:" prompt))}]
+          default-agent (th/compiled-agent-fn
+                         (fn [prompt _handle] (str "done:" prompt)))]
       (runtime/register! parent-h)
       (binding [runtime/*current-handle* parent-h
                 runtime/*default-spawn-agent* default-agent]
@@ -478,16 +478,16 @@
           child-a-may-finish (promise)
           child-b-may-finish (promise)
           parent-wake-count (atom 0)
-          child-a-agent {:spell/agent true
-                         :spawn (fn [_prompt _handle]
-                                  (deliver child-a-started true)
-                                  (deref child-a-may-finish 5000 :timeout)
-                                  :child-a-result)}
-          child-b-agent {:spell/agent true
-                         :spawn (fn [_prompt _handle]
-                                  (deliver child-b-started true)
-                                  (deref child-b-may-finish 5000 :timeout)
-                                  :child-b-result)}
+          child-a-agent (th/compiled-agent-fn
+                         (fn [_prompt _handle]
+                           (deliver child-a-started true)
+                           (deref child-a-may-finish 5000 :timeout)
+                           :child-a-result))
+          child-b-agent (th/compiled-agent-fn
+                         (fn [_prompt _handle]
+                           (deliver child-b-started true)
+                           (deref child-b-may-finish 5000 :timeout)
+                           :child-b-result))
           _ (runtime/register! parent-h)
           parent-result
           (future
@@ -526,22 +526,22 @@
           child-c-may-finish (promise)
           parent-wake-count (atom 0)
           first-result-ready (promise)
-          child-a-agent {:spell/agent true
-                         :spawn (fn [_prompt handle]
-                                  (binding [runtime/*current-handle* handle]
-                                    (runtime/send parent-h :early-from-a))
-                                  (deliver child-a-sent-early true)
-                                  (deref child-a-may-finish 5000 :timeout)
-                                  :child-a-final)}
-          child-b-agent {:spell/agent true
-                         :spawn (fn [_prompt _handle]
-                                  (deref child-b-may-finish 5000 :timeout)
-                                  :child-b-final)}
-          child-c-agent {:spell/agent true
-                         :spawn (fn [_prompt _handle]
-                                  (deliver child-c-started true)
-                                  (deref child-c-may-finish 5000 :timeout)
-                                  :child-c-final)}
+          child-a-agent (th/compiled-agent-fn
+                         (fn [_prompt handle]
+                           (binding [runtime/*current-handle* handle]
+                             (runtime/send parent-h :early-from-a))
+                           (deliver child-a-sent-early true)
+                           (deref child-a-may-finish 5000 :timeout)
+                           :child-a-final))
+          child-b-agent (th/compiled-agent-fn
+                         (fn [_prompt _handle]
+                           (deref child-b-may-finish 5000 :timeout)
+                           :child-b-final))
+          child-c-agent (th/compiled-agent-fn
+                         (fn [_prompt _handle]
+                           (deliver child-c-started true)
+                           (deref child-c-may-finish 5000 :timeout)
+                           :child-c-final))
           _ (runtime/register! parent-h)
           parent-future
           (future
@@ -588,8 +588,8 @@
   (testing "spawn-ask([prompt ...]) uses bound default agent for all entries"
     (let [parent-h :sa-prompt-parent
           parent-raw "(quine completion (eval (do )))"
-          default-agent {:spell/agent true
-                         :spawn (fn [prompt _handle] (str "result:" prompt))}]
+          default-agent (th/compiled-agent-fn
+                         (fn [prompt _handle] (str "result:" prompt)))]
       (runtime/register! parent-h)
       (let [parent-future
             (future
@@ -612,11 +612,11 @@
                      "(eval (do '(let [w (agents/spawn \"(do \")] (not (nil? w)))))"
                      ;; Worker: just return 77
                      "77)"]]
-      (let [{:keys [llm]} (th/make-test-llm
-                            {:response-fn (fn [_]
-                                            (let [r (nth responses @call-count)]
-                                              (swap! call-count inc)
-                                              r))})]
+      (let [llm (th/make-test-runner
+                 {:response-fn (fn [_]
+                                 (let [r (nth responses @call-count)]
+                                   (swap! call-count inc)
+                                   r))})]
         (is (= true (llm "(do ")))))))
 
 (deftest spawn-default-arity-via-eval-test
@@ -624,11 +624,11 @@
     (let [call-count (atom 0)
           responses ["(eval (do '(let [w (agents/spawn \"(do \")] (keyword? w))))"
                      "321)"]]
-      (let [{:keys [llm]} (th/make-test-llm
-                            {:response-fn (fn [_]
-                                            (let [r (nth responses @call-count)]
-                                              (swap! call-count inc)
-                                              r))})]
+      (let [llm (th/make-test-runner
+                 {:response-fn (fn [_]
+                                 (let [r (nth responses @call-count)]
+                                   (swap! call-count inc)
+                                   r))})]
         (is (= true (llm "(do ")))))))
 
 ;; =============================================================================
@@ -990,11 +990,11 @@
     (let [call-count (atom 0)
           responses ["'(!llm-self \"(eval (do \"))"
                      "99))"]]
-      (let [{:keys [llm]} (th/make-test-llm
-                            {:response-fn (fn [_]
-                                            (let [r (nth responses @call-count)]
-                                              (swap! call-count inc)
-                                              r))})]
+      (let [llm (th/make-test-runner
+                 {:response-fn (fn [_]
+                                 (let [r (nth responses @call-count)]
+                                   (swap! call-count inc)
+                                   r))})]
         (is (= 99 (llm "(eval (do ")))))))
 
 ;; =============================================================================
@@ -1159,8 +1159,8 @@
 
 (deftest spawn-future-exception-delivers-completed-test
   (testing "spawn future exception delivers :completed (prevents deadlock)"
-    (let [bad-agent {:spell/agent true
-                     :spawn (fn [_prompt _handle] (throw (ex-info "boom" {})))}]
+    (let [bad-agent (th/compiled-agent-fn
+                     (fn [_prompt _handle] (throw (ex-info "boom" {}))))]
       (runtime/register! :boom-parent)
       (binding [runtime/*current-handle* :boom-parent]
         (let [child-h (runtime/spawn bad-agent "test")]
@@ -1174,7 +1174,7 @@
     (let [simple-fn (fn [prompt handle] (str "done:" prompt))]
       (runtime/register! :simple-parent)
       (binding [runtime/*current-handle* :simple-parent]
-        (is (thrown-with-msg? Exception #"agents/spawn requires an agent object"
+        (is (thrown-with-msg? Exception #"agents/spawn requires a compiled agent"
               (runtime/spawn simple-fn "test" :simple-child)))))))
 
 ;; =============================================================================
@@ -1209,7 +1209,7 @@
                 ;; Turn 3: final — send result to parent
                 :else
                 "'(agents/send (agents/parent-handle) :child-done)))")))]
-      (let [child-agent (th/make-test-llm {:response-fn child-responses})
+      (let [child-agent (th/make-test-agent {:response-fn child-responses})
             parent-h :sa-ext-parent
             parent-raw "(quine completion (eval (do )))"
             parent-woke (atom nil)]
@@ -1291,6 +1291,6 @@
 (deftest effect-guard-allows-in-second-pass-test
   (testing "dangerous fns work through double-evaluation (eval special form)"
     ;; agents/!ask resolves through eval double-evaluation but fails at runtime
-    (let [{:keys [llm]} (th/make-test-llm {:response "(agents/!ask :nobody \"hello\")))"})]
+    (let [llm (th/make-test-runner {:response "(agents/!ask :nobody \"hello\")))"})]
       (is (thrown-with-msg? Exception #"not inside an agent context|not registered"
             (llm "(eval (do '"))))))

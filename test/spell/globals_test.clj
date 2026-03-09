@@ -170,19 +170,19 @@
 
 (deftest globals-accessible-from-spell-test
   (testing "globals/get and globals/set work from Spell code (via eval)"
-    (let [{:keys [llm]} (th/make-test-llm {:response "(globals/set :x 42)(globals/get :x))"})]
+    (let [llm (th/make-test-runner {:response "(globals/set :x 42)(globals/get :x))"})]
       (is (= 42 (llm "(eval '(do "))))))
 
 (deftest globals-update-from-spell-test
   (testing "globals/update works from Spell code (via eval)"
-    (let [{:keys [llm]} (th/make-test-llm
-                          {:response "(globals/update :roles (fn [m] (assoc m :h1 \"worker\")))(globals/get :roles))"})]
+    (let [llm (th/make-test-runner
+               {:response "(globals/update :roles (fn [m] (assoc m :h1 \"worker\")))(globals/get :roles))"})]
       (is (= {:h1 "worker"} (llm "(eval '(do "))))))
 
 (deftest globals-pop-from-spell-test
   (testing "globals/pop works from Spell code (via eval)"
     (globals/set-val :tasks [{:id 1} {:id 2}])
-    (let [{:keys [llm]} (th/make-test-llm {:response "(globals/pop :tasks))"})]
+    (let [llm (th/make-test-runner {:response "(globals/pop :tasks))"})]
       (is (= {:id 1} (llm "(eval '(do "))))))
 
 (deftest globals-persist-across-llm-calls-test
@@ -190,9 +190,9 @@
     (let [call-count (atom 0)
           responses ["(globals/set :shared-val 99)(!llm-self \"(eval '(do \"))"
                      "(globals/get :shared-val))"]]
-      (let [{:keys [llm]} (th/make-test-llm
-                            {:response-fn (fn [_]
-                                            (let [r (nth responses @call-count)]
-                                              (swap! call-count inc)
-                                              r))})]
+      (let [llm (th/make-test-runner
+                 {:response-fn (fn [_]
+                                 (let [r (nth responses @call-count)]
+                                   (swap! call-count inc)
+                                   r))})]
         (is (= 99 (llm "(eval '(do ")))))))

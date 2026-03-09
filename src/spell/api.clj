@@ -51,8 +51,8 @@
   (when-not agent
     (throw (ex-info "Must specify :agent (path to .agent.edn file)" {})))
   (let [;; Load agent config
-        agent-config (cond-> (agent/load-agent-config agent)
-                       ;; Inject provider into agent config (flows to make-llm closure)
+        agent-spec (cond-> (agent/load-agent-spec agent)
+                       ;; Inject provider into the plain spec before compilation
                        provider (assoc :provider provider)
                        (some? prefill?) (assoc :prefill? prefill?)
                        thinking (assoc :thinking thinking)
@@ -62,14 +62,14 @@
                        grammar-max-chars (assoc :grammar-max-chars grammar-max-chars)
                        format (assoc :format format))
         ;; Validate: provider must come from somewhere
-        _ (when-not (:provider agent-config)
+        _ (when-not (:provider agent-spec)
             (throw (ex-info "Must specify :provider (via argument or agent .edn)" {})))
-        ;; Build agent object
-        agent-obj (agent/make-agent-llm agent-config)
+        ;; Compile runnable spawn-agent function
+        agent-fn (agent/compile-agent-spec agent-spec)
         run-input (or init prompt)
         ;; Budget: explicit > agent config > dynamic var default
         effective-budget (cond
-                           (nil? budget) (or (:budget agent-config) provider/*budget*)
+                           (nil? budget) (or (:budget agent-spec) provider/*budget*)
                            (zero? budget) nil
                            :else budget)
         effective-verbose (or verbose (some? log-writer))
@@ -110,10 +110,10 @@
                 eval/*max-llm-depth* depth
                 provider/*usage* usage-atom
                 provider/*budget* effective-budget
-                provider/*retries* (or retries (:retries agent-config) provider/*retries*)
+                provider/*retries* (or retries (:retries agent-spec) provider/*retries*)
                 trace/*trace* trace-atom]
         (let [result (try
-                       {:result ((:spawn agent-obj) run-input :main)
+                       {:result (agent-fn run-input :main)
                         :usage usage-atom}
                        (catch Exception e
                          {:error (.getMessage e)

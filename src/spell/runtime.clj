@@ -56,7 +56,7 @@
   nil)
 
 (def ^:dynamic *default-spawn-agent*
-  "Default agent object used by prompt-only spawn/spawn-ask forms.
+  "Default compiled agent function used by prompt-only spawn/spawn-ask forms.
    Bound by eval to the current agent."
   nil)
 
@@ -73,9 +73,11 @@
       (throw (ex-info (str caller ": no default agent available")
                       {:caller caller}))))
 
-(defn- agent-object?
+(defn compiled-agent?
+  "Return true when value is a compiled spawn-agent function."
   [value]
-  (true? (:spell/agent value)))
+  (and (fn? value)
+       (true? (:spell/compiled-agent (meta value)))))
 
 (defn- resolve-completion-source
   "Resolve completion source (promise/future/raw) to a raw value.
@@ -491,8 +493,8 @@
   (when (:spell/leaf (meta agent))
     (throw (ex-info "leaf-llm cannot be used with agents/spawn (no agent lifecycle) — use !llm-self instead"
                     {:handle handle-name})))
-  (when-not (agent-object? agent)
-    (throw (ex-info "agents/spawn requires an agent object"
+  (when-not (compiled-agent? agent)
+    (throw (ex-info "agents/spawn requires a compiled agent"
                     {:value agent
                      :handle handle-name})))
   (let [handle (or handle-name (keyword (gensym "spawn-")))
@@ -503,7 +505,7 @@
       (future
         ((bound-fn []
            (try
-             (let [result ((:spawn agent) prompt handle)]
+             (let [result (agent prompt handle)]
                ;; Defensive fallback: run-root-box should have delivered :completed.
                (when (identical? @(:completed (get @registry handle)) initial-completed)
                  (when-not (realized? initial-completed)
@@ -520,15 +522,15 @@
   "Start an agent in a background future. Returns its handle immediately.
    The handle is addressable. The child must explicitly send
    its result if needed; use ask-based patterns to collect spawn results.
-   1-arity and prompt-first forms default the agent object to the current agent.
-   agent must be an agent object; leaf-llm is not compatible.
+   1-arity and prompt-first forms default the compiled agent to the current agent.
+   agent must be a compiled spawn-agent function; leaf-llm is not compatible.
    Stores parent handle in registry so the child can find its spawner.
    Registers synchronously so the handle is live before spawn returns.
    Optional handle-name (keyword) sets a fixed handle instead of auto-generating."
   ([prompt]
    (spawn (default-spawn-agent "spawn") prompt nil))
   ([a b]
-   (if (agent-object? a)
+   (if (compiled-agent? a)
      (spawn a b nil)
      (spawn (default-spawn-agent "spawn") a b)))
   ([agent prompt handle-name]
@@ -546,21 +548,21 @@
   (if (vector? spec)
     (case (count spec)
       2 (let [[a b] spec]
-          (if (agent-object? a)
+          (if (compiled-agent? a)
             (spawn a b)
             (spawn (default-spawn-agent "spawn-ask") a b)))
       3 (let [[a b c] spec]
-          (if (agent-object? a)
+          (if (compiled-agent? a)
             (spawn a b c)
-            (throw (ex-info "spawn-ask: explicit 3-item entries must be [agent prompt handle-name]"
+            (throw (ex-info "spawn-ask: explicit 3-item entries must be [compiled-agent prompt handle-name]"
                             {:spec spec}))))
-      (throw (ex-info "spawn-ask: each vector entry must be [agent prompt], [agent prompt handle-name], or [prompt handle-name]"
+      (throw (ex-info "spawn-ask: each vector entry must be [compiled-agent prompt], [compiled-agent prompt handle-name], or [prompt handle-name]"
                       {:spec spec})))
     (spawn (default-spawn-agent "spawn-ask") spec)))
 
 (defn spawn-ask
   "Spawn child agent(s) and block until completion messages arrive.
-   Prompt-only forms default the agent object to the current agent.
+   Prompt-only forms default the compiled agent to the current agent.
    Vector form spawns multiple children, then waits for all completions
    without sending wakeup messages to those children.
    Combines spawn + block for safe use as a quoted trailing expression:
@@ -578,7 +580,7 @@
          (block-for-message)))
      (spawn-ask (default-spawn-agent "spawn-ask") arg nil)))
   ([a b]
-   (if (agent-object? a)
+   (if (compiled-agent? a)
      (spawn-ask a b nil)
      (spawn-ask (default-spawn-agent "spawn-ask") a b)))
   ([agent prompt handle-name]
@@ -626,8 +628,8 @@ Use from inside (future ...) orchestration code."
 
   (agents/spawn prompt)         — start background agent using the current agent
   (agents/spawn prompt :handle-name) — same, with explicit handle name
-  (agents/spawn agent prompt)   — start background agent with explicit agent object
-  (agents/spawn agent prompt :handle-name) — explicit agent object + explicit handle name
+  (agents/spawn agent prompt)   — start background agent with explicit compiled agent
+  (agents/spawn agent prompt :handle-name) — explicit compiled agent + explicit handle name
   (agents/send target message)     — send message (usually a string) to target
   (agents/reply msg-map message)   — reply to msg-map, which must contain :from
   (agents/!ask target message)     — send message to target, block for reply
@@ -636,7 +638,7 @@ Use from inside (future ...) orchestration code."
   (agents/!reply-ask msg-map message)   — reply to msg-map, block for next message
   (agents/!spawn-ask prompt) — spawn with the current agent, block until completion
   (agents/!spawn-ask prompt :handle-name) — same, with explicit handle name
-  (agents/!spawn-ask agent prompt) — spawn with explicit agent object, block until completion
+  (agents/!spawn-ask agent prompt) — spawn with explicit compiled agent, block until completion
   (agents/!spawn-ask [[agent prompt] [agent prompt :name] ...]) — spawn many, wait for all completions (no ask wakeup poke)
   (agents/!spawn-ask [prompt-a prompt-b ...]) — spawn many with the current agent, wait for all completions (no ask wakeup poke)
   (agents/current-handle)          — your handle
@@ -809,13 +811,13 @@ Example (from a spawned child):
 (agents/spawn prompt :name)
 (agents/spawn agent prompt)
 (agents/spawn agent prompt :name)
-  agent: explicit agent object (for example llms/helper)
+  agent: explicit compiled agent (for example llms/helper)
   prompt: string prompt for the child agent
   :name: optional keyword handle (e.g. :seller). Default: auto-generated :spawn-N.
 Include instructions to the child LLM in its prompt, usually not by sending a message.
 Natural-language prompts are wrapped into an init program automatically.
 Strings that already start with '(' are treated as init programs directly.
-If you have an explicit agent object, pass it as the first argument:
+If you have an explicit compiled agent, pass it as the first argument:
   '(agents/spawn llms/helper \"Do X.\")
   '(agents/spawn \"Do X.\")                  ; uses current agent
 
@@ -833,7 +835,7 @@ Combines spawn + block. One-shot delegation pattern.
 (agents/!spawn-ask prompt :name)
 (agents/!spawn-ask agent prompt)
 (agents/!spawn-ask agent prompt :name)
-  agent: explicit agent object (for example llms/helper)
+  agent: explicit compiled agent (for example llms/helper)
   prompt: string or wrap-cat
   :name: optional keyword handle (like agents/spawn)
 
