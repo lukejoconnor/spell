@@ -371,7 +371,7 @@
                     {:value value}))))
 
 (defn- build-llm-from-spec
-  "Build a callable LLM function from a resolved agent spec.
+  "Build an agent object from a resolved agent spec.
    make-llm-fn: factory for evaluated agents
    model: parent model (inherited when spec omits :model)
    parent-provider: provider instance inherited from parent (used when spec omits :provider)
@@ -388,34 +388,36 @@
                           (resolve-namespaces (:namespaces spec) base-dir make-llm-fn))
         ;; Merge extra namespaces (e.g. llms/) with spec's own
         all-namespaces (merge extra-namespaces spec-namespaces)
-        ;; Build the LLM function
-        base-llm (:llm (make-llm-fn (cond-> {}
-                                (seq all-namespaces) (assoc :namespaces all-namespaces)
-                                spec-model (assoc :model spec-model)
-                                system (assoc :system system)
-                                spec-provider (assoc :provider spec-provider)
-                                (some? (:recover spec)) (assoc :recover (:recover spec))
-                                (:format spec) (assoc :format (:format spec))
-                                (some? (:thinking spec)) (assoc :thinking (:thinking spec))
-                                (:reasoning-effort spec) (assoc :reasoning-effort (:reasoning-effort spec))
-                                (:verbosity spec) (assoc :verbosity (:verbosity spec))
-                                (some? (:suffix-grammar? spec)) (assoc :suffix-grammar? (:suffix-grammar? spec))
-                                (:grammar-max-chars spec) (assoc :grammar-max-chars (:grammar-max-chars spec)))))]
-    ;; Wrap with format validation if specified
+        base-agent (make-llm-fn (cond-> {}
+                           (seq all-namespaces) (assoc :namespaces all-namespaces)
+                           spec-model (assoc :model spec-model)
+                           system (assoc :system system)
+                           spec-provider (assoc :provider spec-provider)
+                           (some? (:recover spec)) (assoc :recover (:recover spec))
+                           (:format spec) (assoc :format (:format spec))
+                           (some? (:thinking spec)) (assoc :thinking (:thinking spec))
+                           (:reasoning-effort spec) (assoc :reasoning-effort (:reasoning-effort spec))
+                           (:verbosity spec) (assoc :verbosity (:verbosity spec))
+                           (some? (:suffix-grammar? spec)) (assoc :suffix-grammar? (:suffix-grammar? spec))
+                           (:grammar-max-chars spec) (assoc :grammar-max-chars (:grammar-max-chars spec))))]
     (if (:format spec)
-      (format/wrap-with-format base-llm {:format (:format spec)
-                                       :eval? true
-                                       :max-retries (or (:max-retries spec) 3)})
-      base-llm)))
+      (-> base-agent
+          (update :llm format/wrap-with-format {:format (:format spec)
+                                                :eval? true
+                                                :max-retries (or (:max-retries spec) 3)})
+          (update :spawn format/wrap-with-format {:format (:format spec)
+                                                  :eval? true
+                                                  :max-retries (or (:max-retries spec) 3)}))
+      base-agent)))
 
 (defn resolve-llms
   "Resolve :llms map into an effect namespace.
-   Uses atom-based lazy init for circular references (A can call B, B can call A).
-   Returns namespace map with :docs and callable functions, or nil if no llms."
+   Uses atom-based lazy init for circular references (A can refer to B, B can refer to A).
+   Returns namespace map with :docs and agent objects, or nil if no llms."
   [llms-map make-llm-fn model parent-provider base-dir]
   (when (seq llms-map)
     ;; Phase 1: create atoms and proxy namespace
-    (let [fn-atoms (into {} (map (fn [[k _]] [k (atom nil)]) llms-map))
+    (let [agent-atoms (into {} (map (fn [[k _]] [k (atom nil)]) llms-map))
           docs (into {} (map (fn [[k v]]
                                (let [spec (resolve-llm-spec v base-dir)
                                      doc (or (:doc spec) (str "Sub-agent: " (name k)))]
@@ -424,13 +426,16 @@
           llms-ns (merge {:docs docs}
                          (into {} (map (fn [[k _]]
                                          [(keyword k)
-                                          (fn [& args] (apply @(get fn-atoms k) args))])
+                                          {:spell/agent true
+                                           :llm (fn [prompt] ((:llm @(get agent-atoms k)) prompt))
+                                           :spawn (fn [prompt handle]
+                                                    ((:spawn @(get agent-atoms k)) prompt handle))}])
                                        llms-map)))]
       ;; Phase 2: resolve each spec and fill atoms
       (doseq [[k v] llms-map]
         (let [spec (resolve-llm-spec v base-dir)
-              llm-fn (build-llm-from-spec spec make-llm-fn model parent-provider {'llms llms-ns} base-dir)]
-          (reset! (get fn-atoms k) llm-fn)))
+              agent-obj (build-llm-from-spec spec make-llm-fn model parent-provider {'llms llms-ns} base-dir)]
+          (reset! (get agent-atoms k) agent-obj)))
       llms-ns)))
 
 ;; =============================================================================
@@ -439,7 +444,7 @@
 
 (defn load-agent
   "Load an agent definition from a .agent.edn file.
-   Returns an llm function created via make-llm.
+   Returns an agent object created via make-llm.
 
    Supports inheritance via :base - child agents can extend parent agents.
    The make-llm-fn parameter allows injection of the actual make-llm
@@ -489,9 +494,9 @@
                   grammar-max-chars (assoc :grammar-max-chars grammar-max-chars)
                   (some? api) (assoc :api api))]
 
-     ;; Create the llm function
+     ;; Create the agent object
      (if make-llm-fn
-       (:llm (make-llm-fn config))
+       (make-llm-fn config)
        ;; Return config if no make-llm-fn provided (for testing)
        {:agent-def agent-def
         :config config
@@ -588,7 +593,7 @@
                          :available (sort available)}))))))
 
 (defn make-agent-llm
-  "Create an llm+run map from an agent config.
+  "Create an agent object from an agent config.
    Agents are always evaluated with Spell. Use the leaf-llm builtin from within
    programs when plain text I/O is needed.
 
@@ -605,21 +610,25 @@
         all-namespaces (cond-> (or namespaces {})
                          llms-ns (assoc 'llms llms-ns))
         result (let [config (cond-> {}
-                               (seq all-namespaces) (assoc :namespaces all-namespaces)
-                               model (assoc :model model)
-                               system (assoc :system system)
-                               provider (assoc :provider provider)
-                               (some? recover) (assoc :recover recover)
-                               format (assoc :format format)
-                               (some? prefill?) (assoc :prefill? prefill?)
-                               thinking (assoc :thinking thinking)
-                               reasoning-effort (assoc :reasoning-effort reasoning-effort)
-                               verbosity (assoc :verbosity verbosity)
-                               (some? suffix-grammar?) (assoc :suffix-grammar? suffix-grammar?)
-                               grammar-max-chars (assoc :grammar-max-chars grammar-max-chars))]
+                              (seq all-namespaces) (assoc :namespaces all-namespaces)
+                              model (assoc :model model)
+                              system (assoc :system system)
+                              provider (assoc :provider provider)
+                              (some? recover) (assoc :recover recover)
+                              format (assoc :format format)
+                              (some? prefill?) (assoc :prefill? prefill?)
+                              thinking (assoc :thinking thinking)
+                              reasoning-effort (assoc :reasoning-effort reasoning-effort)
+                              verbosity (assoc :verbosity verbosity)
+                              (some? suffix-grammar?) (assoc :suffix-grammar? suffix-grammar?)
+                              grammar-max-chars (assoc :grammar-max-chars grammar-max-chars))]
                  (llm/make-llm config))]
     (if format
-      (update result :llm format/wrap-with-format {:format format
-                                                 :eval? true
-                                                 :max-retries (or max-retries 3)})
+      (-> result
+          (update :llm format/wrap-with-format {:format format
+                                                :eval? true
+                                                :max-retries (or max-retries 3)})
+          (update :spawn format/wrap-with-format {:format format
+                                                  :eval? true
+                                                  :max-retries (or max-retries 3)}))
       result)))

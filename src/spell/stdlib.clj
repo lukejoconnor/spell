@@ -659,7 +659,6 @@ The double evaluation pattern:
 (same logical agent, serial execution).
 
 (!llm-self prompt)
-(!llm-self prompt handle)
 
 prompt: string or open prefix. If a bare string, automatically wrapped in
 the completion wrapper. If already an open prefix (from reopen or wrap-cat),

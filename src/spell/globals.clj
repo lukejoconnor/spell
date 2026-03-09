@@ -122,8 +122,8 @@ Multi-part example — worker pool with a shared task queue:
 1. Main: populate the queue and spawn workers.
   ...▌'(do (globals/set :results [])
        (globals/set :tasks [{:id 1 :desc \"summarize A\"} {:id 2 :desc \"summarize B\"}])
-       (agents/spawn !llm-self \"You are a worker. Pop tasks from globals :tasks and process them.\" :w1)
-       (agents/spawn !llm-self \"You are a worker. Pop tasks from globals :tasks and process them.\" :w2)
+       (agents/spawn \"You are a worker. Pop tasks from globals :tasks and process them.\" :w1)
+       (agents/spawn \"You are a worker. Pop tasks from globals :tasks and process them.\" :w2)
        (globals/wait-until (fn [s] (= 2 (count (:results s))))))
 
 2. Worker w1: claim a task atomically.

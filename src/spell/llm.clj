@@ -13,7 +13,7 @@
             [spell.stdlib :as stdlib]
             [spell.trace :as trace]))
 
-(declare make-leaf-llm)
+(declare make-leaf-llm build-init)
 
 ;; ---------------------------------------------------------------------------
 ;; Core namespaces — always available, never need to be configured
@@ -288,13 +288,16 @@
    The eval builtin binds itself in eval/*builtins* to support recursive eval calls.
    Optional future-only namespaces are injected via eval/*future-env*."
   ([variant-builtins effect-builtins]
-   (make-eval variant-builtins effect-builtins {}))
+   (make-eval variant-builtins effect-builtins {} nil))
   ([variant-builtins effect-builtins future-only-builtins]
+   (make-eval variant-builtins effect-builtins future-only-builtins nil))
+  ([variant-builtins effect-builtins future-only-builtins current-agent-fn]
    (letfn [(eval-builtin [expr]
              (let [caller-env eval/*spell-env*]
                (binding [eval/*builtins* (merge variant-builtins effect-builtins {'eval eval-builtin})
                          eval/*future-env* future-only-builtins
-                         runtime/*default-spawn-llm* (get effect-builtins '!llm-self)]
+                         runtime/*default-spawn-agent* (when current-agent-fn
+                                                         (current-agent-fn))]
                  (let [result (eval/spell-eval expr caller-env)]
                    (if (eval/ok? result)
                      (:ok result)
@@ -313,7 +316,7 @@
            "(quine prompt \"" (parse/escape-string s) "\") "))))
 
 (defn make-llm
-  "Factory: create an llm function with namespaces.
+  "Factory: create an agent object with same-handle llm and root-start spawn paths.
 
    Options:
    - :namespaces       - map of {symbol -> namespace-map}. Each namespace has :docs and items.
@@ -336,15 +339,15 @@
                          :grammar-max-chars, grammar constraints are skipped for that call.
    - :grammar-max-chars - Max grammar size before skipping constraints (default: 2000).
 
-   Returns a map {:llm fn, :run fn}.
+   Returns {:spell/agent true, :llm fn, :spawn fn}.
 
-   The returned function is automatically available as '!llm-self in Spell code,
-   providing self-recursion without needing to wire up var refs."
+   :llm is one-arity only and preserves same-handle prefix-completion semantics.
+   :spawn starts a root/new-handle lifecycle from either an init program string
+   or a natural-language prompt."
   [{:keys [namespaces provider model system llm-var recover format prefill? thinking reasoning-effort verbosity
            suffix-grammar? grammar-max-chars]
     :or {namespaces {} model nil recover true prefill? true suffix-grammar? false grammar-max-chars 2000}}]
-  (let [;; Core namespaces are always available; everything in :namespaces is effect
-        core-ns-names (set (keys core-namespaces))
+  (let [core-ns-names (set (keys core-namespaces))
         ns-builtins (into {} (map (fn [[sym ns-map]] [sym ns-map]) namespaces))
         effect-ns-builtins (into {} (remove #(core-ns-names (key %)) ns-builtins))
         variant-builtins (merge eval/core-builtins
@@ -356,77 +359,66 @@
                       :core-namespaces core-namespaces
                       :format format})
         prev-prompt-atom (atom nil)
-        call-fn  (fn [prompt-str]
-                   (let [prev-prompt @prev-prompt-atom
-                         grammar-format (when suffix-grammar?
-                                          (let [{:keys [definition over-limit?]}
-                                                (grammar/suffix-lark-grammar-stats prompt-str
-                                                                                   {:max-chars grammar-max-chars})]
-                                            (when-not over-limit?
-                                              {:type "grammar" :syntax "lark" :definition definition})))
-                         opts (cond-> {:system sys-prompt}
-                                prefill? (assoc :prefix prompt-str)
-                                model (assoc :model model)
-                                thinking (assoc :thinking thinking)
-                                reasoning-effort (assoc :reasoning-effort reasoning-effort)
-                                verbosity (assoc :verbosity verbosity)
-                                grammar-format (assoc :grammar-format grammar-format)
-                                prev-prompt (assoc :cache-prefix prev-prompt))
-                         ;; In prefill mode, the prefix is the assistant turn only.
-                         ;; Send a minimal user message to avoid duplicating the prefix.
-                         base-user-msg (if prefill?
-                                         "Continue this Spell program."
-                                         prompt-str)
-                         max-tok (:max-tokens provider)
-                         response (provider/call-with-retries
-                                    (fn [err]
-                                      (let [user-msg (if (and err (= :missing-tool-call (:type (ex-data err))))
-                                                       (str base-user-msg
-                                                            "\n;; system: retrying — previous response was truncated or empty"
-                                                            (when max-tok (str ", max output tokens " max-tok)))
-                                                       base-user-msg)]
-                                        (provider/strip-code-fences
-                                          (provider/call-llm provider user-msg opts))))
-                                    provider/*retries*)]
-                     (reset! prev-prompt-atom prompt-str)
-                     (if prefill?
-                       response
-                       (strip-prefix-echo prompt-str response))))
-        ;; Resolve recovery: namespace recovery fn (quine-extension is separate)
+        call-fn (fn [prompt-str]
+                  (let [prev-prompt @prev-prompt-atom
+                        grammar-format (when suffix-grammar?
+                                         (let [{:keys [definition over-limit?]}
+                                               (grammar/suffix-lark-grammar-stats prompt-str
+                                                                                  {:max-chars grammar-max-chars})]
+                                           (when-not over-limit?
+                                             {:type "grammar" :syntax "lark" :definition definition})))
+                        opts (cond-> {:system sys-prompt}
+                               prefill? (assoc :prefix prompt-str)
+                               model (assoc :model model)
+                               thinking (assoc :thinking thinking)
+                               reasoning-effort (assoc :reasoning-effort reasoning-effort)
+                               verbosity (assoc :verbosity verbosity)
+                               grammar-format (assoc :grammar-format grammar-format)
+                               prev-prompt (assoc :cache-prefix prev-prompt))
+                        base-user-msg (if prefill?
+                                        "Continue this Spell program."
+                                        prompt-str)
+                        max-tok (:max-tokens provider)
+                        response (provider/call-with-retries
+                                   (fn [err]
+                                     (let [user-msg (if (and err (= :missing-tool-call (:type (ex-data err))))
+                                                      (str base-user-msg
+                                                           "\n;; system: retrying — previous response was truncated or empty"
+                                                           (when max-tok (str ", max output tokens " max-tok)))
+                                                      base-user-msg)]
+                                       (provider/strip-code-fences
+                                         (provider/call-llm provider user-msg opts))))
+                                   provider/*retries*)]
+                    (reset! prev-prompt-atom prompt-str)
+                    (if prefill?
+                      response
+                      (strip-prefix-echo prompt-str response))))
         ns-recover (recovery/make-namespace-recover-fn (merge core-namespaces ns-builtins))
         recover-fn (cond
                      (false? recover) nil
                      (fn? recover) recover
                      :else ns-recover)
-        ;; Create a promise for the final config (to break circular dependency)
         final-config (promise)
-        ;; Create !llm-self that closes over api-config, gets eval dynamically
+        current-agent-ref (atom nil)
         self-ref (atom nil)
-        self-fn (fn !llm-self
-                  ([prompt] (@self-ref prompt))
-                  ([prompt handle]
-                   ;; 2-arity only valid from spawn context (handle pre-registered)
-                   (when-not (runtime/handle? handle)
-                     (throw (ex-info "Explicit handle requires spawn context" {:handle handle})))
-                   (@self-ref prompt handle)))
-        ;; Create effect-builtins (closes over !llm-self)
+        self-fn (fn !llm-self [prompt]
+                  (@self-ref prompt))
         effect-builtins (merge {'!llm-self self-fn
-                               '!ask-await stdlib/ask-await-builtin
-                               'leaf-llm (make-leaf-llm (cond-> {}
-                                                          provider (assoc :provider provider)
-                                                          model (assoc :model model)))}
-                         effect-ns-builtins
-                         (when llm-var {'llm llm-var}))
+                                '!ask-await stdlib/ask-await-builtin
+                                'leaf-llm (make-leaf-llm (cond-> {}
+                                                           provider (assoc :provider provider)
+                                                           model (assoc :model model)))}
+                               effect-ns-builtins
+                               (when llm-var {'llm llm-var}))
         future-only-builtins {'blocking runtime/blocking-namespace}
-        ;; Add register-agent to agents namespace (if present)
         register-agent-fn (fn [handle-name completion] (register-agent @final-config handle-name completion))
         effect-builtins' (if (contains? effect-ns-builtins 'agents)
                            (assoc effect-builtins 'agents
                                   (assoc (get effect-ns-builtins 'agents)
                                          :register register-agent-fn))
                            effect-builtins)
-        ;; Create eval builtin using make-eval
-        eval-builtin (make-eval variant-builtins effect-builtins' future-only-builtins)
+        eval-builtin (make-eval variant-builtins effect-builtins' future-only-builtins
+                                #(deref current-agent-ref))
         gated-ns-hints (merge
                          (into {}
                                (for [ns-sym (keys effect-ns-builtins)]
@@ -436,40 +428,45 @@
                                (for [ns-sym (keys future-only-builtins)]
                                  [ns-sym (str (name ns-sym)
                                               "/ is only available inside (future ...) blocks")])))
-        ;; Config with variant-builtins and eval-builtin
-        config'  {:call-fn call-fn
-                  :variant-builtins variant-builtins
-                  :eval-builtin eval-builtin
-                  :gated-ns-hints gated-ns-hints
-                  :recover-fn recover-fn}
-        _        (deliver final-config config')
-        the-llm  (fn the-llm
-                   ([prompt] (the-llm prompt nil))
-                   ([prompt handle]
-                    (let [handle     (or handle runtime/*current-handle* :main)
-                          parent     (or runtime/*current-handle*  ;; !llm-self (inherited)
-                                       (:parent-handle (get @runtime/registry handle))  ;; spawn child
-                                       )
-                          root?      (not= parent handle)
-                          prompt'    (if (or (seq? prompt) (list? prompt))
-                                       (eval/expand-expr prompt (or eval/*spell-env* {}))
-                                       prompt)
-                          prompt-str (wrap-nl prompt')
-                          trace-data (atom nil)
-                          inbox-fn   (make-inbox-fn config' trace-data)
-                          awake-fn   (runtime/make-awake-fn handle inbox-fn)]
-                      (when-not (runtime/handle? handle)
-                        (runtime/register! handle))
-                      (-llm config' handle awake-fn (when root? inbox-fn) prompt-str trace-data))))]
+        config' {:call-fn call-fn
+                 :variant-builtins variant-builtins
+                 :eval-builtin eval-builtin
+                 :gated-ns-hints gated-ns-hints
+                 :recover-fn recover-fn}
+        _ (deliver final-config config')
+        start-root (fn start-root [prompt handle]
+                     (let [prompt' (if (or (seq? prompt) (list? prompt))
+                                     (eval/expand-expr prompt (or eval/*spell-env* {}))
+                                     prompt)
+                           prompt-str (if (string? prompt') prompt' (str prompt'))
+                           init-program (if (.startsWith (.trim ^String prompt-str) "(")
+                                          prompt-str
+                                          (build-init prompt-str))
+                           trace-data (atom nil)
+                           inbox-fn (make-inbox-fn config' trace-data)
+                           awake-fn (runtime/make-awake-fn handle inbox-fn)]
+                       (when-not (runtime/handle? handle)
+                         (runtime/register! handle))
+                       (runtime/run-root-box handle init-program awake-fn inbox-fn)))
+        the-llm (fn the-llm [prompt]
+                  (let [handle (or runtime/*current-handle* :main)
+                        root? (nil? runtime/*current-handle*)
+                        prompt' (if (or (seq? prompt) (list? prompt))
+                                  (eval/expand-expr prompt (or eval/*spell-env* {}))
+                                  prompt)
+                        prompt-str (wrap-nl prompt')
+                        trace-data (atom nil)
+                        inbox-fn (make-inbox-fn config' trace-data)
+                        awake-fn (runtime/make-awake-fn handle inbox-fn)]
+                    (when-not (runtime/handle? handle)
+                      (runtime/register! handle))
+                    (-llm config' handle awake-fn (when root? inbox-fn) prompt-str trace-data)))
+        agent-obj {:spell/agent true
+                   :llm the-llm
+                   :spawn start-root}]
     (reset! self-ref the-llm)
-    {:llm the-llm
-     :run (fn run-init [init-string]
-            (let [handle   :main
-                  inbox-fn (make-inbox-fn config' (atom nil))
-                  awake-fn (runtime/make-awake-fn handle inbox-fn)]
-              (when-not (runtime/handle? handle)
-                (runtime/register! handle))
-              (runtime/run-root-box handle init-string awake-fn inbox-fn)))}))
+    (reset! current-agent-ref agent-obj)
+    agent-obj))
 
 (defn build-init
   "Build a balanced init program from a prompt.

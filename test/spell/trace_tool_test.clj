@@ -137,14 +137,14 @@
                         :response "(fn [y] (strings/replace y \"a\" \"b\")) (!compact) (future (io/slurp \"foo\"))"}
                        {:id 2
                         :depth 0
-                        :program '(do
+                       :program '(do
                                     (!ask-await worker)
                                     (agents/!ask worker "hi")
                                     (patterns/team {:goal "x"})
                                     (leaf-llm prompt)
                                     (!llm-self "continue")
-                                    (llms/coder "prompt"))
-                        :response "(!ask-await worker) (agents/!ask worker \"hi\") (patterns/team {:goal \"x\"}) (leaf-llm prompt) (!llm-self \"continue\") (llms/coder \"prompt\")"}
+                                    (agents/spawn llms/coder "prompt"))
+                        :response "(!ask-await worker) (agents/!ask worker \"hi\") (patterns/team {:goal \"x\"}) (leaf-llm prompt) (!llm-self \"continue\") (agents/spawn llms/coder \"prompt\")"}
                        {:id 3
                         :depth 0
                         :error "fatal"
@@ -170,7 +170,8 @@
            (get-in summary [:namespace-usage "io"])))
     (is (= {"set" 1}
            (get-in summary [:namespace-usage "globals"])))
-    (is (= {"!ask" 1}
+    (is (= {"spawn" 1
+            "!ask" 1}
            (get-in summary [:namespace-usage "agents"])))
     (is (= {"team" 1}
            (get-in summary [:namespace-usage "patterns"])))

@@ -17,7 +17,7 @@ Resolution order: exact match in `:responses`, then `:response-fn`, then `:respo
 Two factory functions eliminate boilerplate:
 
 ```clojure
-;; Full LLM+eval pipeline (returns {:llm fn, :run fn})
+;; Full LLM+eval pipeline (returns {:spell/agent true, :llm fn, :spawn fn})
 (th/make-test-llm {:response "42)"})
 (th/make-test-llm {:response-fn (fn [p] ...)} :namespaces ns-map :prefill? false)
 

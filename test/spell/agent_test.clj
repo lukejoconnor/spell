@@ -22,7 +22,7 @@
     (is (nil? (agent/resolve-llms {} llm/make-llm nil nil nil)))))
 
 (deftest resolve-llms-inline-spec-test
-  (testing "inline spec resolves to callable function returning evaluated value"
+  (testing "inline spec resolves to an agent object returning evaluated value"
     (let [prov (provider/test-provider {:response "\"leaf response\")"})
           llms-map {'summarizer {:doc "Summarizes text"
                                  :system "Summarize concisely."}}
@@ -31,24 +31,23 @@
       (is (map? llms-ns))
       (is (contains? llms-ns :docs))
       (is (= "Summarizes text" (get-in llms-ns [:docs :summarizer])))
-      ;; Callable
-      (is (fn? (:summarizer llms-ns)))
-      (is (= "leaf response" ((:summarizer llms-ns) "(do "))))))
+      (is (:spell/agent (:summarizer llms-ns)))
+      (is (= "leaf response" ((:llm (:summarizer llms-ns)) "(do "))))))
 
 (deftest resolve-llms-inline-eval-test
-  (testing "inline eval spec resolves to callable function returning evaluated result"
+  (testing "inline eval spec resolves to an agent object returning evaluated result"
     (let [prov (provider/test-provider {:response "42)"})
           llms-map {'coder {:doc "Writes Spell code"}}
           llms-ns (agent/resolve-llms llms-map llm/make-llm nil prov nil)]
-      (is (fn? (:coder llms-ns)))
-      (is (= 42 ((:coder llms-ns) "(do "))))))
+      (is (:spell/agent (:coder llms-ns)))
+      (is (= 42 ((:llm (:coder llms-ns)) "(do "))))))
 
 (deftest resolve-llms-default-eval-true-test
   (testing "eval defaults to true when omitted"
     (let [prov (provider/test-provider {:response "42)"})
           llms-map {'worker {:doc "Default eval worker"}}
           llms-ns (agent/resolve-llms llms-map llm/make-llm nil prov nil)]
-      (is (= 42 ((:worker llms-ns) "(do "))))))
+      (is (= 42 ((:llm (:worker llms-ns)) "(do "))))))
 
 (deftest resolve-llms-format-wrapping-test
   (testing "format spec wraps with validation"
@@ -56,7 +55,7 @@
           llms-map {'classifier {:doc "Classifies text"
                                  :format {:required [:category :confidence]}}}
           llms-ns (agent/resolve-llms llms-map llm/make-llm nil prov nil)]
-      (let [result ((:classifier llms-ns) "(do ")]
+      (let [result ((:llm (:classifier llms-ns)) "(do ")]
         (is (map? result))
         (is (= :animal (:category result)))
         (is (= 0.95 (:confidence result)))))))
@@ -69,8 +68,8 @@
     (let [prov (provider/test-provider {:response "\"inherited\")"})
           llms-map {'helper {:doc "Helper"}}
           llms-ns (agent/resolve-llms llms-map llm/make-llm "claude-sonnet-4-5-20250929" prov nil)]
-      (is (fn? (:helper llms-ns)))
-      (is (= "inherited" ((:helper llms-ns) "(do "))))))
+      (is (:spell/agent (:helper llms-ns)))
+      (is (= "inherited" ((:llm (:helper llms-ns)) "(do "))))))
 
 (deftest resolve-llms-docs-populated-test
   (testing ":docs populated from :doc fields"
@@ -95,9 +94,8 @@
           llms-map {'a {:doc "Agent A"}
                     'b {:doc "Agent B"}}
           llms-ns (agent/resolve-llms llms-map llm/make-llm nil prov nil)]
-      ;; Both are callable
-      (is (= "result" ((:a llms-ns) "(do ")))
-      (is (= "result" ((:b llms-ns) "(do ")))
+      (is (= "result" ((:llm (:a llms-ns)) "(do ")))
+      (is (= "result" ((:llm (:b llms-ns)) "(do ")))
       ;; Both got called
       (is (= 2 (count @call-log))))))
 
@@ -107,12 +105,12 @@
           llms-map {'leaf1 {:doc "Leaf 1" :system "System 1"}
                     'leaf2 {:doc "Leaf 2" :system "System 2"}}
           llms-ns (agent/resolve-llms llms-map llm/make-llm nil prov nil)]
-      (is (fn? (:leaf1 llms-ns)))
-      (is (fn? (:leaf2 llms-ns)))
+      (is (:spell/agent (:leaf1 llms-ns)))
+      (is (:spell/agent (:leaf2 llms-ns)))
       (is (= "Leaf 1" (get-in llms-ns [:docs :leaf1])))
       (is (= "Leaf 2" (get-in llms-ns [:docs :leaf2])))
-      (is (= "response" ((:leaf1 llms-ns) "(do ")))
-      (is (= "response" ((:leaf2 llms-ns) "(do "))))))
+      (is (= "response" ((:llm (:leaf1 llms-ns)) "(do ")))
+      (is (= "response" ((:llm (:leaf2 llms-ns)) "(do "))))))
 
 ;; =============================================================================
 ;; merge-agent-defs llms merging
@@ -216,14 +214,14 @@
         (let [prov (provider/test-provider {:response "\"file-result\")"})
               llms-map {'child (symbol "child-test.agent.edn")}
               llms-ns (agent/resolve-llms llms-map llm/make-llm nil prov dir)]
-          (is (fn? (:child llms-ns)))
+          (is (:spell/agent (:child llms-ns)))
           (is (string? (get-in llms-ns [:docs :child])))
-          (is (= "file-result" ((:child llms-ns) "(do "))))
+          (is (= "file-result" ((:llm (:child llms-ns)) "(do "))))
         (finally
           (.delete child-file))))))
 
 (deftest resolve-namespace-value-agent-file-test
-  (testing ".agent.edn namespace value loads as evaluated llm function"
+  (testing ".agent.edn namespace value loads as an evaluated agent object"
     (let [dir (System/getProperty "java.io.tmpdir")
           child-file (java.io.File. dir "ns-child-test.agent.edn")]
       (try
@@ -232,8 +230,8 @@
                                   :provider {:type :ollama :model "mistral"}}))
         (let [v (#'agent/resolve-namespace-value (symbol "ns-child-test.agent.edn")
                                                  dir (atom {}) llm/make-llm)]
-          (is (fn? v))
-          (is (not (:spell/leaf (meta v)))))
+          (is (:spell/agent v))
+          (is (fn? (:llm v))))
         (finally
           (.delete child-file))))))
 
@@ -269,16 +267,16 @@
 
 (deftest llms-is-effect-namespace-test
   (testing "llms/ namespace is treated as effect namespace in make-llm"
-    ;; Verify by creating a make-llm with llms in namespaces and checking
-    ;; that the llm function works (the namespace is available via effects).
     (let [llms-ns {:docs {:helper "test helper"}
-                   :helper (fn [prompt] (str "helped: " prompt))}
-          prov (provider/test-provider {:response "(llms/helper :test)))"})
-          test-llm (:llm (llm/make-llm {:namespaces {'llms llms-ns} :provider prov}))]
-      ;; llms/ is an effect namespace, so it needs to go through eval's second pass
-      ;; prefix: (eval (do '  response: (llms/helper :test)))
-      ;; full: (eval (do '(llms/helper :test)))
-      (is (= "helped: :test" (test-llm "(eval (do '"))))))
+                   :helper {:spell/agent true
+                            :spawn (fn [_prompt _handle] :helped)
+                            :llm (fn [prompt] (str "helped: " prompt))}}
+          prov (provider/test-provider {:response "(agents/spawn llms/helper \"(do \")))"})
+          test-llm (:llm (llm/make-llm {:namespaces {'llms llms-ns
+                                                    'agents runtime/agents-namespace}
+                                        :provider prov}))]
+      ;; llms/ is an effect namespace, so it is available in the trailing expression.
+      (is (keyword? (test-llm "(eval (do '"))))))
 
 ;; =============================================================================
 ;; Auto-discovery tests
@@ -391,7 +389,7 @@
               llms-ns ((:resolve-llms-fn config) llm/make-llm nil prov)]
           (is (some? (:resolve-llms-fn config)))
           ;; Only 'a should be present (not 'b)
-          (is (fn? (:a llms-ns)))
+          (is (:spell/agent (:a llms-ns)))
           (is (nil? (:b llms-ns))))
         (finally
           (.delete main-file) (.delete a-file) (.delete b-file)
@@ -428,7 +426,7 @@
                       'agents {}
                       'io {}})})]
       (is (fn? (:llm result)))
-      (is (fn? (:run result)))))
+      (is (fn? (:spawn result)))))
 
   (testing "missing effect namespaces fail fast with actionable ex-data"
     (try
@@ -452,4 +450,4 @@
                   "config/agents/io-tc.agent.edn"]]
       (let [result (agent/make-agent-llm (agent/load-agent-config path))]
         (is (fn? (:llm result)) path)
-        (is (fn? (:run result)) path)))))
+        (is (fn? (:spawn result)) path)))))

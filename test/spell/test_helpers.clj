@@ -5,9 +5,9 @@
             [spell.provider :as provider]))
 
 (defn make-test-llm
-  "Create test LLM+run map with test provider.
+  "Create test agent object with test provider.
    response-or-opts: string (static response) or map (test-provider opts).
-   Returns {:llm fn, :run fn}.
+   Returns {:spell/agent true, :llm fn, :spawn fn}.
 
    Keyword opts:
    - :namespaces — effect namespace map (default: all-namespaces)

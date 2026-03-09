@@ -388,9 +388,9 @@
 
 (deftest spawn-returns-handle-test
   (testing "spawn returns a keyword handle (handle persists after completion)"
-    (let [{:keys [llm]} (th/make-test-llm
-                          {:response-fn (fn [_] "42)")})]
-      (let [handle (runtime/spawn llm "(do ")]
+    (let [agent (th/make-test-llm
+                  {:response-fn (fn [_] "42)")})]
+      (let [handle (runtime/spawn agent "(do ")]
         (is (keyword? handle))
         ;; Wait for spawn future to finish — handle persists (no unregister)
         (deref @(:completed (get @runtime/registry handle)) 5000 :timeout)
@@ -431,43 +431,42 @@
 (deftest spawn-ask-test
   (testing "spawn-ask spawns child and blocks until child sends back"
     (let [parent-h :sr-parent
-          ;; Mock child llm-fn: send 42 to parent
-          child-llm-fn (fn [_prompt handle]
-                          ;; Simulate the-llm behavior: register is done by spawn,
-                          ;; just need to use box to run
-                          (let [parent (:parent-handle (get @runtime/registry handle))
-                                inside-fn (fn [_raw]
-                                          (runtime/send parent 42)
-                                          :done)
-                                p (promise)]
-                            (deliver p "(quine completion (eval (do )))")
-                            (runtime/run-root-box handle p inside-fn inside-fn)))]
+          child-agent {:spell/agent true
+                       :spawn (fn [_prompt handle]
+                                (let [parent (:parent-handle (get @runtime/registry handle))
+                                      inside-fn (fn [_raw]
+                                                  (runtime/send parent 42)
+                                                  :done)
+                                      p (promise)]
+                                  (deliver p "(quine completion (eval (do )))")
+                                  (runtime/run-root-box handle p inside-fn inside-fn)))}]
       (runtime/register! parent-h)
       (let [parent-result
             (future
               (binding [runtime/*current-handle* parent-h
                         runtime/*current-raw* "(quine completion (eval (do )))"
                         runtime/*current-eval-fn* identity]
-                (runtime/spawn-ask child-llm-fn "test")))]
+                (runtime/spawn-ask child-agent "test")))]
         ;; spawn-ask blocks until child sends; child runs in a future
         (let [result (deref parent-result 5000 :timeout)]
           (is (string? result))
           (is (.contains ^String result ":body 42")))))))
 
-(deftest spawn-default-llm-arity-test
-  (testing "spawn(prompt) uses bound default !llm-self"
+(deftest spawn-default-agent-arity-test
+  (testing "spawn(prompt) uses bound default agent"
     (let [parent-h :spawn-default-parent
-          default-llm (fn [prompt _handle] (str "done:" prompt))]
+          default-agent {:spell/agent true
+                         :spawn (fn [prompt _handle] (str "done:" prompt))}]
       (runtime/register! parent-h)
       (binding [runtime/*current-handle* parent-h
-                runtime/*default-spawn-llm* default-llm]
+                runtime/*default-spawn-agent* default-agent]
         (let [child-h (runtime/spawn "prompt-default")]
           (is (keyword? child-h))
           (is (= "done:prompt-default"
                  (deref @(:completed (get @runtime/registry child-h)) 5000 :timeout)))))))
 
-  (testing "spawn(prompt) throws when default !llm-self is unavailable"
-    (is (thrown-with-msg? Exception #"no default !llm-self available"
+  (testing "spawn(prompt) throws when default agent is unavailable"
+    (is (thrown-with-msg? Exception #"no default agent available"
           (runtime/spawn "no-default")))))
 
 (deftest spawn-ask-multi-specs-waits-for-all-children-test
@@ -479,14 +478,16 @@
           child-a-may-finish (promise)
           child-b-may-finish (promise)
           parent-wake-count (atom 0)
-          child-a-fn (fn [_prompt _handle]
-                       (deliver child-a-started true)
-                       (deref child-a-may-finish 5000 :timeout)
-                       :child-a-result)
-          child-b-fn (fn [_prompt _handle]
-                       (deliver child-b-started true)
-                       (deref child-b-may-finish 5000 :timeout)
-                       :child-b-result)
+          child-a-agent {:spell/agent true
+                         :spawn (fn [_prompt _handle]
+                                  (deliver child-a-started true)
+                                  (deref child-a-may-finish 5000 :timeout)
+                                  :child-a-result)}
+          child-b-agent {:spell/agent true
+                         :spawn (fn [_prompt _handle]
+                                  (deliver child-b-started true)
+                                  (deref child-b-may-finish 5000 :timeout)
+                                  :child-b-result)}
           _ (runtime/register! parent-h)
           parent-result
           (future
@@ -495,8 +496,8 @@
                       runtime/*current-eval-fn* (fn [raw]
                                                   (swap! parent-wake-count inc)
                                                   raw)]
-              (runtime/spawn-ask [[child-a-fn "prompt-a" :sa-multi-child-a]
-                                  [child-b-fn "prompt-b" :sa-multi-child-b]])))]
+              (runtime/spawn-ask [[child-a-agent "prompt-a" :sa-multi-child-a]
+                                  [child-b-agent "prompt-b" :sa-multi-child-b]])))]
       (is (= true (deref child-a-started 5000 :timeout)))
       (is (= true (deref child-b-started 5000 :timeout)))
       ;; Only child A is allowed to complete here; parent must stay blocked for child B.
@@ -525,20 +526,22 @@
           child-c-may-finish (promise)
           parent-wake-count (atom 0)
           first-result-ready (promise)
-          child-a-fn (fn [_prompt handle]
-                       ;; Child A sends an explicit message before either original child completes.
-                       (binding [runtime/*current-handle* handle]
-                         (runtime/send parent-h :early-from-a))
-                       (deliver child-a-sent-early true)
-                       (deref child-a-may-finish 5000 :timeout)
-                       :child-a-final)
-          child-b-fn (fn [_prompt _handle]
-                       (deref child-b-may-finish 5000 :timeout)
-                       :child-b-final)
-          child-c-fn (fn [_prompt _handle]
-                       (deliver child-c-started true)
-                       (deref child-c-may-finish 5000 :timeout)
-                       :child-c-final)
+          child-a-agent {:spell/agent true
+                         :spawn (fn [_prompt handle]
+                                  (binding [runtime/*current-handle* handle]
+                                    (runtime/send parent-h :early-from-a))
+                                  (deliver child-a-sent-early true)
+                                  (deref child-a-may-finish 5000 :timeout)
+                                  :child-a-final)}
+          child-b-agent {:spell/agent true
+                         :spawn (fn [_prompt _handle]
+                                  (deref child-b-may-finish 5000 :timeout)
+                                  :child-b-final)}
+          child-c-agent {:spell/agent true
+                         :spawn (fn [_prompt _handle]
+                                  (deliver child-c-started true)
+                                  (deref child-c-may-finish 5000 :timeout)
+                                  :child-c-final)}
           _ (runtime/register! parent-h)
           parent-future
           (future
@@ -548,11 +551,11 @@
                                                   (swap! parent-wake-count inc)
                                                   raw)]
               (let [first-result
-                    (runtime/spawn-ask [[child-a-fn "prompt-a" :sa-stale-child-a]
-                                        [child-b-fn "prompt-b" :sa-stale-child-b]])
+                    (runtime/spawn-ask [[child-a-agent "prompt-a" :sa-stale-child-a]
+                                        [child-b-agent "prompt-b" :sa-stale-child-b]])
                     _ (deliver first-result-ready first-result)
                     second-result
-                    (runtime/spawn-ask [[child-c-fn "prompt-c" :sa-stale-child-c]])]
+                    (runtime/spawn-ask [[child-c-agent "prompt-c" :sa-stale-child-c]])]
                 {:first first-result
                  :second second-result})))]
       (is (= true (deref child-a-sent-early 5000 :timeout)))
@@ -581,18 +584,19 @@
         (is (= 2 @parent-wake-count)
             "second wake should come from child C completion only")))))
 
-(deftest spawn-ask-multi-prompts-default-llm-test
-  (testing "spawn-ask([prompt ...]) uses bound default !llm-self for all entries"
+(deftest spawn-ask-multi-prompts-default-agent-test
+  (testing "spawn-ask([prompt ...]) uses bound default agent for all entries"
     (let [parent-h :sa-prompt-parent
           parent-raw "(quine completion (eval (do )))"
-          default-llm (fn [prompt _handle] (str "result:" prompt))]
+          default-agent {:spell/agent true
+                         :spawn (fn [prompt _handle] (str "result:" prompt))}]
       (runtime/register! parent-h)
       (let [parent-future
             (future
               (binding [runtime/*current-handle* parent-h
                         runtime/*current-raw* parent-raw
                         runtime/*current-eval-fn* identity
-                        runtime/*default-spawn-llm* default-llm]
+                        runtime/*default-spawn-agent* default-agent]
                 (runtime/spawn-ask ["alpha" "beta" "gamma"])))]
         (let [result (deref parent-future 5000 :timeout)]
           (is (string? result))
@@ -602,10 +606,10 @@
 
 (deftest spawn-addressable-test
   (testing "spawned agent can be sent to (handle is registered)"
-    ;; spawn and !llm-self are effect-builtins: accessed via eval double-evaluation.
+    ;; spawn is an effect-builtin: accessed via eval double-evaluation.
     (let [call-count (atom 0)
-          responses [;; Outer: use eval to access spawn+!llm-self via double-eval
-                     "(eval (do '(let [w (agents/spawn !llm-self \"(do \")] (not (nil? w)))))"
+          responses [;; Outer: use eval to access spawn via double-eval
+                     "(eval (do '(let [w (agents/spawn \"(do \")] (not (nil? w)))))"
                      ;; Worker: just return 77
                      "77)"]]
       (let [{:keys [llm]} (th/make-test-llm
@@ -616,7 +620,7 @@
         (is (= true (llm "(do ")))))))
 
 (deftest spawn-default-arity-via-eval-test
-  (testing "agents/spawn prompt defaults to !llm-self in eval context"
+  (testing "agents/spawn prompt defaults to the current agent in eval context"
     (let [call-count (atom 0)
           responses ["(eval (do '(let [w (agents/spawn \"(do \")] (keyword? w))))"
                      "321)"]]
@@ -1155,26 +1159,23 @@
 
 (deftest spawn-future-exception-delivers-completed-test
   (testing "spawn future exception delivers :completed (prevents deadlock)"
-    (let [bad-fn (fn [prompt handle] (throw (ex-info "boom" {})))]
+    (let [bad-agent {:spell/agent true
+                     :spawn (fn [_prompt _handle] (throw (ex-info "boom" {})))}]
       (runtime/register! :boom-parent)
       (binding [runtime/*current-handle* :boom-parent]
-        (let [child-h (runtime/spawn bad-fn "test")]
+        (let [child-h (runtime/spawn bad-agent "test")]
           ;; Give the future time to run and fail
           (Thread/sleep 200)
           ;; :completed should have been delivered (with nil)
           (is (realized? @(:completed (get @runtime/registry child-h)))))))))
 
-(deftest spawn-non-agent-fn-delivers-completed-test
-  (testing "spawn with non-agent fn that returns normally delivers :completed"
+(deftest spawn-rejects-non-agent-test
+  (testing "spawn rejects non-agent values"
     (let [simple-fn (fn [prompt handle] (str "done:" prompt))]
       (runtime/register! :simple-parent)
       (binding [runtime/*current-handle* :simple-parent]
-        (let [child-h (runtime/spawn simple-fn "test")]
-          ;; Give the future time to complete
-          (Thread/sleep 200)
-          ;; :completed should have been delivered with the return value
-          (let [completed-val (deref @(:completed (get @runtime/registry child-h)) 100 :timeout)]
-            (is (= "done:test" completed-val))))))))
+        (is (thrown-with-msg? Exception #"agents/spawn requires an agent object"
+              (runtime/spawn simple-fn "test" :simple-child)))))))
 
 ;; =============================================================================
 ;; Spawn-ask + child extension test
@@ -1208,7 +1209,7 @@
                 ;; Turn 3: final — send result to parent
                 :else
                 "'(agents/send (agents/parent-handle) :child-done)))")))]
-      (let [{child-llm :llm} (th/make-test-llm {:response-fn child-responses})
+      (let [child-agent (th/make-test-llm {:response-fn child-responses})
             parent-h :sa-ext-parent
             parent-raw "(quine completion (eval (do )))"
             parent-woke (atom nil)]
@@ -1220,7 +1221,7 @@
                           runtime/*current-eval-fn* (fn [raw]
                                                       (reset! parent-woke raw)
                                                       raw)]
-                  (runtime/spawn-ask child-llm "(eval (do ")))]
+                  (runtime/spawn-ask child-agent "extend once, then send done")))]
           ;; Wait for child to reach extension (turn 2 blocks on gate)
           (is (= true (deref child-extended 5000 :timeout))
               "child should have reached extension")

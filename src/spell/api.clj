@@ -64,10 +64,9 @@
         ;; Validate: provider must come from somewhere
         _ (when-not (:provider agent-config)
             (throw (ex-info "Must specify :provider (via argument or agent .edn)" {})))
-        ;; Build llm+run from agent config
-        llm-map (agent/make-agent-llm agent-config)
-        ;; Build init program
-        init-program (or init (llm/build-init prompt))
+        ;; Build agent object
+        agent-obj (agent/make-agent-llm agent-config)
+        run-input (or init prompt)
         ;; Budget: explicit > agent config > dynamic var default
         effective-budget (cond
                            (nil? budget) (or (:budget agent-config) provider/*budget*)
@@ -106,7 +105,7 @@
     (try
       (when shutdown-hook
         (.addShutdownHook (Runtime/getRuntime) shutdown-hook))
-      (binding [eval/*verbose* effective-verbose
+        (binding [eval/*verbose* effective-verbose
                 eval/*log-writer* log-writer
                 eval/*max-llm-depth* depth
                 provider/*usage* usage-atom
@@ -114,7 +113,7 @@
                 provider/*retries* (or retries (:retries agent-config) provider/*retries*)
                 trace/*trace* trace-atom]
         (let [result (try
-                       {:result ((:run llm-map) init-program)
+                       {:result ((:spawn agent-obj) run-input :main)
                         :usage usage-atom}
                        (catch Exception e
                          {:error (.getMessage e)
