@@ -12,7 +12,10 @@
 (def ^:private cache-check-prompt
   "Call spell_suffix with input.suffix exactly \"42\" and no other content.")
 (def ^:private heuristic-agent-paths
-  ["config/agents/base-tc.agent.edn"
+  ["config/agents/base-pf.agent.edn"
+   "config/agents/io-pf.agent.edn"
+   "config/agents/math-pf.agent.edn"
+   "config/agents/base-tc.agent.edn"
    "config/agents/io-tc.agent.edn"
    "config/agents/cli.agent.edn"])
 
@@ -83,7 +86,7 @@
                                    :format (:format config)})))
 
 (deftest system-prompts-clear-haiku-cache-char-heuristic-test
-  (testing "default tool-call agent prompts stay above the cache-min-chars heuristic"
+  (testing "shipped prefill and tool-call agent prompts stay above the cache-min-chars heuristic"
     (doseq [agent-path heuristic-agent-paths]
       (let [system-prompt (compose-agent-system-prompt agent-path)]
         (is (>= (count system-prompt) (#'provider/cache-min-chars anthropic-cache-model))

@@ -154,6 +154,16 @@
       ;; Should not throw
       (provider/track-usage! "model" {:input_tokens 100 :output_tokens 50}))))
 
+(deftest current-cost-prices-cache-reads-separately-test
+  (testing "current-cost does not bill cached input twice"
+    (let [usage-atom (atom {:by-model {"test-model"
+                                       {:input_tokens 89
+                                        :output_tokens 0
+                                        :cache_creation_input_tokens 0
+                                        :cache_read_input_tokens 11}}
+                            :cost-table {"test-model" [1000000 0]}})]
+      (is (= 90.1 (provider/current-cost usage-atom))))))
+
 ;; =============================================================================
 ;; make-llm factory tests
 ;; =============================================================================
@@ -459,7 +469,7 @@
                                                  :input_tokens_details {:cached_tokens 11}}})
           result (#'provider/parse-openai-responses-response response-body)]
       (is (= "(def return 42))" (:text result)))
-      (is (= 100 (get-in result [:usage :input_tokens])))
+      (is (= 89 (get-in result [:usage :input_tokens])))
       (is (= 30 (get-in result [:usage :output_tokens])))
       (is (= 11 (get-in result [:usage :cache_read_input_tokens])))))
 
@@ -681,7 +691,7 @@
                    "\n\n")
           result (#'provider/parse-codex-tc-stream sse)]
       (is (= "(def x 1)" (:text result)))
-      (is (= 9 (get-in result [:usage :input_tokens])))
+      (is (= 4 (get-in result [:usage :input_tokens])))
       (is (= 3 (get-in result [:usage :output_tokens])))
       (is (= 5 (get-in result [:usage :cache_read_input_tokens])))))
 
