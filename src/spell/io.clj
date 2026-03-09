@@ -8,6 +8,7 @@
    - File operations: slurp, spit, read-file, read-lines, write-file, str-replace, replace-lines
    - Directory operations: exists?, directory?, ls, mkdir, mkdirs, cwd
    - File manipulation: delete, copy, move, stat, temp-file
+   - Read-only exploration: grep, glob, git
    - Process execution: sh, exec, env"
   (:require [clojure.string :as str]
             [spell.runtime :as runtime])
@@ -487,6 +488,34 @@
                          extra-msg)
                     {:args (vec args)}))))
 
+(defn- normalize-natural-number-opt
+  "Normalize a natural-number CLI option to a string, or throw ex-info."
+  [label value]
+  (cond
+    (integer? value)
+    (do (when (neg? value)
+          (throw (ex-info (str label " must be a non-negative integer, got "
+                               (pr-str value))
+                          {:value value})))
+        (str value))
+
+    (string? value)
+    (if (re-matches #"\d+" value)
+      value
+      (throw (ex-info (str label " must be a non-negative integer, got "
+                           (pr-str value))
+                      {:value value})))
+
+    :else
+    (throw (ex-info (str label " must be a non-negative integer, got "
+                         (pr-str value))
+                    {:value value}))))
+
+(defn- shell-quote
+  "POSIX-safe single-quote escaping for shell arguments."
+  [s]
+  (str "'" (str/replace s "'" "'\\''") "'"))
+
 (defn sh
   "Execute shell command. Returns {:exit N :out \"...\" :err \"...\"}.
    Optional last arg may be an opts map with :timeout seconds.
@@ -550,6 +579,63 @@
        :out (str/trim @out-future)
        :err (str/trim @err-future)})))
 
+(defn grep
+  "Search file contents for a pattern. Returns {:exit N :out \"...\" :err \"...\"}."
+  ([pattern path] (grep pattern path {}))
+  ([pattern path opts]
+   (ensure-string-args "io/grep: pattern and path" [pattern path] "")
+   (when-let [include (:include opts)]
+     (ensure-string-args "io/grep: :include" [include] ""))
+   (let [context (when (contains? opts :context)
+                   (normalize-natural-number-opt "io/grep: :context" (:context opts)))
+         max-count (when (contains? opts :max-count)
+                     (normalize-natural-number-opt "io/grep: :max-count" (:max-count opts)))
+         flags (cond-> ["-rnH"]
+                 (:ignore-case opts) (conj "-i")
+                 context (conj (str "-C" context))
+                 max-count (conj (str "-m" max-count)))
+         grep-cmd (str "grep " (str/join " " flags)
+                       " -e " (shell-quote pattern))
+         cmd (if-let [include (:include opts)]
+               (str "find " (shell-quote path)
+                    " -type f -name " (shell-quote include)
+                    " -exec " grep-cmd " {} +")
+               (str grep-cmd " -- " (shell-quote path)))]
+     (sh cmd))))
+
+(defn glob
+  "Find files by name pattern. Returns {:exit N :out \"...\" :err \"...\"}."
+  ([pattern] (glob pattern "."))
+  ([pattern path] (glob pattern path {}))
+  ([pattern path opts]
+   (ensure-string-args "io/glob: pattern and path" [pattern path] "")
+   (let [max-depth (when (contains? opts :max-depth)
+                     (normalize-natural-number-opt "io/glob: :max-depth" (:max-depth opts)))
+         parts (cond-> ["find" (shell-quote path)]
+                 max-depth (conj "-maxdepth" max-depth)
+                 (:type opts) (conj "-type" (shell-quote (str (:type opts))))
+                 true (conj "-name" (shell-quote pattern) "-print"))
+         cmd (str (str/join " " parts) " | sort")]
+     (sh cmd))))
+
+(def ^:private git-read-commands
+  #{"blame" "diff" "log" "rev-parse" "show" "status"})
+
+(defn git
+  "Run an allowlisted read-only git subcommand.
+   Returns {:exit N :out \"...\" :err \"...\"} or {:error msg}."
+  [subcmd & args]
+  (let [subcmd (str subcmd)
+        args (mapv str args)]
+    (ensure-string-args "io/git: all git arguments" (cons subcmd args) "")
+    (if (contains? git-read-commands subcmd)
+      (let [cmd (str "git " subcmd
+                     (when (seq args)
+                       (str " " (str/join " " (map shell-quote args)))))]
+        (sh cmd))
+      {:error (str "git subcommand not allowed: " (pr-str subcmd)
+                   ". Allowed: " (str/join ", " (sort git-read-commands)))})))
+
 (defn env
   "Get environment variable(s). No args returns all as map.
    With key, returns value or nil."
@@ -574,13 +660,18 @@
 
 (def io-namespace
   "The io/ namespace map for Spell agents."
-  {:short-docs "File operations, shell commands, process execution, and shell-backed test thunks."
-   :docs {:guide "IO — File operations, shell commands, process execution and file watching.
+  {:short-docs "File operations, read-only exploration helpers, shell commands, process execution, and shell-backed test thunks."
+   :docs {:guide "IO — File operations, read-only exploration, shell commands, process execution and file watching.
 
   (io/read-lines path)                      — read file as vector of line strings with line-offset metadata
   (io/read-lines path start end)             — line range [start, end) Python-style half-open
   (io/read-file path)                        — read file as numbered-lines string
   (io/read-file path start end)              — [start, end) half-open
+  (io/grep pattern path)                     — recursive grep with line numbers
+  (io/grep pattern path {:ignore-case true :include \"*.clj\"}) — grep a filtered file set
+  (io/glob pattern)                          — find files by name pattern
+  (io/glob pattern path {:type \"f\" :max-depth 5}) — constrain glob results
+  (io/git \"status\")                         — run an allowlisted read-only git subcommand
   (io/str-replace path old new)              — replace string in file (must appear exactly once)
   (io/str-replace path old new {:all true})  — replace all occurrences
   (io/replace-lines path start end content)  — deletes lines in half-open range [start, end)
@@ -598,6 +689,7 @@ Use (!describe io :fn-name) for detailed docs on any function.
 All io/ calls are effect functions — quote them in the trailing expression.
 
 Reading: read-file returns numbered lines (good for context); read-lines returns a raw vector (good for programmatic use); slurp returns the full file as a plain string.
+Exploration: grep searches file contents, glob finds files, and git exposes a small allowlisted set of read-only repo inspection commands.
 Editing: str-replace for single-string edits; replace-lines for line-range edits.
 
 Common mistakes:
@@ -693,6 +785,34 @@ but the binding evaluates to the raw vector.
 
 For one-turn file peeks, use:
   '(!peek-now code (io/read-lines \"main.py\"))"
+
+    :grep
+    "Search file contents recursively with line numbers.
+
+(io/grep pattern path)
+(io/grep pattern path {:ignore-case true :include \"*.clj\" :context 2 :max-count 20})
+
+Returns {:exit N :out \"...\" :err \"...\"}.
+Use :include to restrict matches to files whose names match a glob."
+
+    :glob
+    "Find files by name pattern.
+
+(io/glob pattern)
+(io/glob pattern path)
+(io/glob pattern path {:type \"f\" :max-depth 5})
+
+Returns {:exit N :out \"...\" :err \"...\"}.
+Output is newline-delimited and sorted for stable downstream use."
+
+    :git
+    "Run an allowlisted read-only git subcommand.
+
+(io/git \"status\")
+(io/git \"log\" \"--oneline\" \"-20\")
+(io/git \"show\" \"HEAD~1\")
+
+Allowed subcommands: blame, branch, diff, log, rev-parse, show, status."
 
     :replace-lines
     "Replace lines in a file (1-indexed, half-open [start, end)). Two forms:
@@ -805,6 +925,9 @@ The content is the raw file contents. For numbered lines, use io/read-file."}
    :slurp-bytes slurp-bytes
    :read-file read-file
    :read-lines read-lines
+   :grep grep
+   :glob glob
+   :git git
    :write-file write-file
    ;; String replacement
    :str-replace str-replace
@@ -840,8 +963,8 @@ The content is the raw file contents. For numbered lines, use io/read-file."}
 (def io-read-namespace
   "Read-only io subset for codebase inspection."
   (subset-namespace
-   "Read-only filesystem inspection and environment lookup."
-   "IO-READ — Read-only filesystem inspection and environment lookup.
+   "Read-only filesystem inspection, codebase exploration, and environment lookup."
+   "IO-READ — Read-only filesystem inspection, codebase exploration, and environment lookup.
 
   (io/slurp path)                  — read entire file as raw string
   (io/slurp-bytes path)            — read file as bytes
@@ -849,6 +972,9 @@ The content is the raw file contents. For numbered lines, use io/read-file."}
   (io/read-file path start end)    — read numbered line range [start, end)
   (io/read-lines path)             — read file as vector of raw lines
   (io/read-lines path start end)   — read raw line range [start, end)
+  (io/grep pattern path)           — recursive grep with line numbers
+  (io/glob pattern)                — find files by name pattern
+  (io/git \"status\")               — run an allowlisted read-only git subcommand
   (io/exists? path)                — check whether a path exists
   (io/directory? path)             — check whether a path is a directory
   (io/ls path)                     — list directory contents
@@ -857,18 +983,22 @@ The content is the raw file contents. For numbered lines, use io/read-file."}
   (io/env) / (io/env \"NAME\")      — read env vars
 
 Use io-read when a child should inspect the workspace without editing files or
-running commands. For process execution, add io-exec separately."
+running arbitrary commands. For process execution, add io-exec separately."
    {:slurp "Read entire file as a raw string."
     :slurp-bytes "Read entire file as raw bytes."
     :read-file "Read a file with numbered lines."
     :read-lines "Read a file as a vector of raw line strings."
+    :grep "Search file contents recursively with line numbers."
+    :glob "Find files by name pattern."
+    :git "Run an allowlisted read-only git subcommand."
     :exists? "Check whether a path exists."
     :directory? "Check whether a path is a directory."
     :ls "List directory contents."
     :cwd "Get the current working directory."
     :stat "Inspect file metadata."
     :env "Read one env var or all env vars."}
-   [:slurp :slurp-bytes :read-file :read-lines :exists? :directory? :ls :cwd :stat :env]))
+   [:slurp :slurp-bytes :read-file :read-lines :grep :glob :git
+    :exists? :directory? :ls :cwd :stat :env]))
 
 (def io-write-namespace
   "Write-capable io subset for filesystem edits."
