@@ -11,7 +11,7 @@
   "config/spl-lib/patterns.spl")
 
 (def ^:private patterns-docs
-  {:short-docs "Reusable orchestration patterns: check-result, clean-prompt, ralph, team, fix-loop."
+  {:short-docs "Reusable orchestration patterns: check-result, clean-prompt, ralph, team, fix-loop, relay."
    :docs {:guide "PATTERNS - Reusable orchestration patterns (effect namespace).
 
   (patterns/check-result prompt answer)  - verify answer with leaf-llm
@@ -19,6 +19,7 @@
   (patterns/ralph opts)                  - future-based retry orchestrator
   (patterns/team goal-or-opts)           - planner + parallel worktree team orchestrator
   (patterns/fix-loop issue)              - test-driven code fixing loop (reflector + worker agents)
+  (patterns/relay opts)                  - fresh-worker reasoning rounds with fresh verification
 
 Use (!describe patterns :fn-name) for detailed docs on any function.
 
@@ -51,6 +52,12 @@ reflector proposes diagnosis + test spec,
 worker applies edits, and the loop retries until tests pass or retries are exhausted.
   '(!call-now result (patterns/fix-loop issue))
   Returns {:pass true} or {:fail \"reason\"}
+
+relay: Reasoning relay with fresh context each round. Each round registers a new
+worker, passes forward compressed prior reports, and if a worker claims :solved,
+the pattern registers a fresh verifier to check the answer independently.
+  '(!call-now result (patterns/relay problem))
+  Returns {:solved true|false :answer any? :rounds [...]}
 
 All patterns/ calls are effect functions - quote them in the trailing expression.
 
@@ -130,7 +137,25 @@ Uses core strings/ plus future-only blocking/ helpers internally.
 
 Example:
   '(!call-now result (patterns/fix-loop
-    issue-description))"}})
+    issue-description))"
+    :relay "(patterns/relay opts) - fresh-worker reasoning rounds with fresh verification.
+opts:
+  string                   - problem statement
+  :problem                 - problem statement (required if opts map)
+  :max-rounds              - max worker rounds before giving up (default: 5)
+
+Execution model:
+1. Register a fresh dormant worker for each round
+2. Send {:kind :solve ... :previous-reports [...]} via blocking/send-await
+3. Normalize worker output into report entries tagged with :worker-handle
+4. When a worker reports :solved, register a fresh verifier for that attempt
+5. Verifier independently confirms or rejects the claimed answer
+6. Returns {:solved true :answer ... :rounds [...]} or {:solved false :rounds [...]}
+
+Workers and verifiers may optionally message prior workers named in accumulated
+reports. Requires agent profile with agents/ support and future-only blocking/
+helpers."
+    }})
 
 (def ^:private pattern-requires
   "Machine-readable namespace requirements for public patterns.
@@ -141,7 +166,8 @@ Example:
    :clean-prompt []
    :ralph ['agents 'blocking]
    :team ['strings 'io 'agents 'blocking]
-   :fix-loop ['strings 'io 'agents 'blocking]})
+   :fix-loop ['strings 'io 'agents 'blocking]
+   :relay ['agents 'blocking]})
 
 (defn- defn-form?
   [form]
