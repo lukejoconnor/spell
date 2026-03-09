@@ -1024,7 +1024,12 @@
       (is (= :verify (get-in (second @send-await-calls) [:msg :kind])))
       (is (= report (get-in (second @send-await-calls) [:msg :candidate-report])))
       (is (str/includes? (-> @register-calls first :completion) "may message previous workers"))
-      (is (str/includes? (-> @register-calls second :completion) "may message previous workers")))))
+      (is (str/includes? (-> @register-calls first :completion) "{:kind :clarify :question str}"))
+      (is (str/includes? (-> @register-calls first :completion) "{:status :clarified :report"))
+      (is (str/includes? (-> @register-calls first :completion) "Do not continue your completion after that reply"))
+      (is (str/includes? (-> @register-calls second :completion) "may message previous workers"))
+      (is (str/includes? (-> @register-calls second :completion) "{:kind :clarify :question"))
+      (is (str/includes? (-> @register-calls second :completion) "{:status :clarified :report")))))
 
 (deftest relay-progress-then-solved-test
   (testing "relay accumulates prior reports and uses a fresh worker each round"
