@@ -129,3 +129,11 @@ When the user asks for a plan, always enter plan mode (using the EnterPlanMode t
 `benchmarking/` is a separate nested git repository (`benchmarking/.git`).
 See `benchmarking/AGENTS.md` for benchmark commands, datasets, and reporting expectations.
 Use `uv run` for Python benchmark tooling.
+
+## Paid Real-Provider Tests
+
+`clojure -M:test` excludes `^:real-provider` tests by default. Use `clojure -M:test-real-provider` when you intentionally want to hit real paid model APIs for cache/transport verification. These tests cost money, so don't run them routinely, but creating or debugging them is a good reason to run them as often as needed.
+
+## Paid Real-Provider Tests
+
+`clojure -M:test` excludes `^:real-provider` tests by default. Use `clojure -M:test-real-provider` when you intentionally want to hit real paid model APIs for cache/transport verification. These tests cost money, so don't run them routinely, but creating or debugging them is a good reason to run them as often as needed.

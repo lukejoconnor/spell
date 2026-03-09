@@ -455,11 +455,13 @@
   (testing "parses standard output_text response"
     (let [response-body (json/write-str {:output_text "(def return 42))"
                                          :usage {:input_tokens 100
-                                                 :output_tokens 30}})
+                                                 :output_tokens 30
+                                                 :input_tokens_details {:cached_tokens 11}}})
           result (#'provider/parse-openai-responses-response response-body)]
       (is (= "(def return 42))" (:text result)))
       (is (= 100 (get-in result [:usage :input_tokens])))
-      (is (= 30 (get-in result [:usage :output_tokens])))))
+      (is (= 30 (get-in result [:usage :output_tokens])))
+      (is (= 11 (get-in result [:usage :cache_read_input_tokens])))))
 
   (testing "falls back to custom_tool_call input when output_text is blank"
     (let [response-body (json/write-str {:output_text ""
@@ -674,12 +676,14 @@
                                                          :name "spell_suffix"
                                                          :input "(def x 1)"}]
                                                :usage {:input_tokens 9
-                                                       :output_tokens 3}}})
+                                                       :output_tokens 3
+                                                       :input_tokens_details {:cached_tokens 5}}}})
                    "\n\n")
           result (#'provider/parse-codex-tc-stream sse)]
       (is (= "(def x 1)" (:text result)))
       (is (= 9 (get-in result [:usage :input_tokens])))
-      (is (= 3 (get-in result [:usage :output_tokens])))))
+      (is (= 3 (get-in result [:usage :output_tokens])))
+      (is (= 5 (get-in result [:usage :cache_read_input_tokens])))))
 
   (testing "throws when no custom_tool_call is present"
     (let [sse (str "event: response.completed\n"

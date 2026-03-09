@@ -308,3 +308,5 @@ Check-my-work pattern (pass task + candidate answer explicitly to the child):
 Ending with prose:
     '(!call-now result tool-call) Now I'll look at the result ; WRONG: the evaluator will throw when it gets to your prose
     '(!call-now result tool-call) ; correct: just pass
+
+Before ending a turn, do a quick syntax sanity check: valid Spell only, and only the trailing quoted expression you actually want to fire.

@@ -616,13 +616,16 @@
                                (when (= "custom_tool_call" (:type item))
                                  (:input item)))
                              (:output parsed))
-            reasoning-tokens (get-in usage [:output_tokens_details :reasoning_tokens])]
+            reasoning-tokens (get-in usage [:output_tokens_details :reasoning_tokens])
+            cached-tokens (get-in usage [:input_tokens_details :cached_tokens])]
         {:text (or (not-empty output-text)
                    (not-empty message-text)
                    (not-empty tool-input)
                    "")
          :usage (cond-> {:input_tokens (get-in parsed [:usage :input_tokens] 0)
                          :output_tokens (get-in parsed [:usage :output_tokens] 0)}
+                  (and cached-tokens (pos? cached-tokens))
+                  (assoc :cache_read_input_tokens cached-tokens)
                   reasoning-tokens (assoc :reasoning_tokens reasoning-tokens))}))))
 
 (defn- openai-request [api-key base-url model prompt system-prompt _prefix max-tokens reasoning-effort verbosity]
@@ -854,7 +857,8 @@
                            (when (= "custom_tool_call" (:type item))
                              (:input item)))
                          (:output completed))
-        reasoning-tokens (get-in usage [:output_tokens_details :reasoning_tokens])]
+        reasoning-tokens (get-in usage [:output_tokens_details :reasoning_tokens])
+        cached-tokens (get-in usage [:input_tokens_details :cached_tokens])]
     (when-not tool-input
       (throw (ex-info "Codex toolcall response missing custom_tool_call"
                       {:type :missing-tool-call
@@ -863,6 +867,8 @@
     {:text tool-input
      :usage (cond-> {:input_tokens (get-in usage [:input_tokens] 0)
                      :output_tokens (get-in usage [:output_tokens] 0)}
+              (and cached-tokens (pos? cached-tokens))
+              (assoc :cache_read_input_tokens cached-tokens)
               reasoning-tokens (assoc :reasoning_tokens reasoning-tokens))}))
 
 
