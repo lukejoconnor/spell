@@ -1,5 +1,6 @@
 (ns spell.trace-tool-test
   (:require [clojure.java.io :as io]
+            [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [spell.trace-tool :as tt]))
 
@@ -211,6 +212,46 @@
              :function-definitions}
            (:flags summary)))))
 
+(deftest trace-summary-skips-unparseable-responses-test
+  (let [trace {:nodes [{:id 0
+                        :depth 0
+                        :program '(do (persist state))
+                        :response "(persist state)"}
+                       {:id 1
+                        :depth 0
+                        :program '(do (!print :bad))
+                        :response "(foo] (bar)"}]}
+        summary (tt/trace-summary "traces/example" trace)]
+    (is (= {'persist 1}
+           (:tracked-counts summary)))
+    (is (= []
+           (:errors summary)))
+    (is (= [{:node-id 1
+             :error "Unmatched delimiter: ]"}]
+           (:response-parse-errors summary)))
+    (is (contains? (:flags summary) :response-parse-errors))))
+
+(deftest trace-summary-consecutive-errors-stay-fatal-test
+  (let [trace {:nodes [{:id 0
+                        :depth 0
+                        :error "first failure"}
+                       {:id 1
+                        :depth 0
+                        :error "second failure"}]}
+        summary (tt/trace-summary "traces/example" trace)
+        row (tt/summary-tsv-row summary)]
+    (is (= [{:node-id 0
+             :error "first failure"
+             :recovered? false
+             :recovered-by nil}
+            {:node-id 1
+             :error "second failure"
+             :recovered? false
+             :recovered-by nil}]
+           (:errors summary)))
+    (is (= [2 0 ""]
+           (take-last 3 row)))))
+
 (deftest summary-tsv-row-test
   (let [summary {:trace-dir "traces/example"
                  :node-count 2
@@ -282,6 +323,34 @@
                              "")))
       (is (= {:exit 0 :message nil}
              @result)))))
+
+(deftest run-tool-summary-tsv-trace-root-tolerates-unparseable-responses-test
+  (let [tmp-root (-> (java.nio.file.Files/createTempDirectory "trace-tool-summary-root-tsv"
+                                                              (make-array java.nio.file.attribute.FileAttribute 0))
+                     (.toFile))
+        bad-trace-dir (io/file tmp-root "trace-a")
+        good-trace-dir (io/file tmp-root "trace-b")
+        bad-trace-file (io/file bad-trace-dir "trace.edn")
+        good-trace-file (io/file good-trace-dir "trace.edn")]
+    (.mkdirs bad-trace-dir)
+    (.mkdirs good-trace-dir)
+    (spit bad-trace-file
+          "{:nodes [{:id 0 :depth 0 :program (do (persist state)) :response \"(foo] (bar)\"}]}")
+    (spit good-trace-file
+          "{:nodes [{:id 0 :depth 0 :program (do (!print :ok)) :response \"(!print :ok)\"}]}")
+    (let [result (atom nil)
+          output (with-out-str
+                   (reset! result
+                           (tt/run-tool {:trace-root (.getPath tmp-root)
+                                         :summary true
+                                         :tsv true}
+                                        "")))
+          lines (str/split-lines output)]
+      (is (= {:exit 0 :message nil}
+             @result))
+      (is (= 3 (count lines)))
+      (is (str/includes? (second lines) ":response-parse-errors"))
+      (is (str/includes? (nth lines 2) "\t1\t0\t")))))
 
 (deftest select-node-default-prefers-latest-default-program-test
   (let [trace {:nodes [{:id 0 :variant :default :program '(do 1)}

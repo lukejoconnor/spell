@@ -300,6 +300,32 @@
     {:counts (reduce (fn [m inst] (update m (:fn inst) (fnil inc 0))) {} instances)
      :instances instances}))
 
+(defn- parse-program-node-responses
+  "Parse response suffixes for all program nodes.
+   Summary mode uses this best-effort view so one malformed response does not
+   abort the whole trace/root report."
+  [trace]
+  (->> (:nodes trace)
+       (filter :program)
+       (mapv (fn [node]
+               (try
+                 {:node-id (:id node)
+                  :forms (response-forms (:response node))}
+                 (catch RuntimeException e
+                   {:node-id (:id node)
+                    :parse-error (.getMessage e)}))))))
+
+(defn- count-function-calls-in-parsed-nodes [parsed-nodes {:keys [fns]}]
+  (reduce (fn [{:keys [counts instances]} {:keys [node-id forms]}]
+            (let [{node-counts :counts
+                   node-instances :instances}
+                  (count-function-calls-in-forms forms {:fns fns :node-id node-id})]
+              {:counts (merge-with + counts node-counts)
+               :instances (into instances node-instances)}))
+          {:counts {}
+           :instances []}
+          (filter :forms parsed-nodes)))
+
 (defn- rethink-form? [form]
   (and (seq? form)
        (= 'rethink (first form))))
@@ -340,6 +366,13 @@
   [forms]
   (when (seq forms)
     (collect-rethinks (list* 'do forms))))
+
+(defn- collect-trace-rethinks-in-parsed-nodes [parsed-nodes]
+  (->> parsed-nodes
+       (filter :forms)
+       (mapcat (fn [{:keys [node-id forms]}]
+                 (map #(assoc % :node-id node-id)
+                      (collect-rethinks-in-forms forms))))))
 
 (defn collect-trace-rethinks
   "Collect rethinks from all program nodes in one trace.
@@ -471,8 +504,9 @@
                   (filter #(or (nil? (:depth %))
                                (<= (:depth %) depth))
                           later-nodes)
-                  later-nodes)]
-    (some-> bounded first :id)))
+                  later-nodes)
+        recovered-by (remove :error bounded)]
+    (some-> recovered-by first :id)))
 
 (defn- summarize-errors [trace]
   (let [sorted-nodes (sort-by :id (:nodes trace))]
@@ -516,8 +550,15 @@
 (defn trace-summary
   "Compute a single trace summary for batch triage and reporting."
   [trace-dir trace]
-  (let [{:keys [counts]} (count-function-calls trace {:fns nil})
-        rethink-details (->> (collect-trace-rethinks trace)
+  (let [parsed-nodes (parse-program-node-responses trace)
+        parse-errors (->> parsed-nodes
+                          (keep (fn [{:keys [node-id parse-error]}]
+                                  (when parse-error
+                                    {:node-id node-id
+                                     :error parse-error})))
+                          vec)
+        {:keys [counts]} (count-function-calls-in-parsed-nodes parsed-nodes {:fns nil})
+        rethink-details (->> (collect-trace-rethinks-in-parsed-nodes parsed-nodes)
                              (map rethink-detail)
                              vec)
         summary {:trace-dir trace-dir
@@ -526,8 +567,11 @@
                  :rethink-stats (rethink-stats rethink-details)
                  :rethink-details rethink-details
                  :namespace-usage (namespace-usage-for-summary counts)
+                 :response-parse-errors parse-errors
                  :errors (summarize-errors trace)}]
-    (assoc summary :flags (trace-summary-flags summary))))
+    (assoc summary
+           :flags (cond-> (trace-summary-flags summary)
+                    (seq parse-errors) (conj :response-parse-errors)))))
 
 (defn- format-count [n]
   (format "%,dc" (long n)))
