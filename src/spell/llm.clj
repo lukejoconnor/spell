@@ -13,7 +13,7 @@
             [spell.stdlib :as stdlib]
             [spell.trace :as trace]))
 
-(declare make-leaf-llm)
+(declare build-init make-leaf-llm)
 
 ;; ---------------------------------------------------------------------------
 ;; Core namespaces — always available, never need to be configured
@@ -443,8 +443,33 @@
                   :gated-ns-hints gated-ns-hints
                   :recover-fn recover-fn}
         _        (deliver final-config config')
+        run-llm-path
+        (fn [handle prompt']
+          (let [trace-data (atom nil)
+                inbox-fn   (make-inbox-fn config' trace-data)
+                awake-fn   (runtime/make-awake-fn handle inbox-fn)
+                prompt-str (wrap-nl prompt')]
+            (when-not (runtime/handle? handle)
+              (runtime/register! handle))
+            (-llm config' handle awake-fn (when-not runtime/*current-handle* inbox-fn) prompt-str trace-data)))
+        run-init-path
+        (fn [handle prompt']
+          (let [program-str (str prompt')
+                program     (if (str/starts-with? (str/trim program-str) "(")
+                              program-str
+                              (build-init program-str))
+                inbox-fn    (make-inbox-fn config' (atom nil))
+                awake-fn    (runtime/make-awake-fn handle inbox-fn)]
+            (when-not (runtime/handle? handle)
+              (runtime/register! handle))
+            (runtime/run-root-box handle program awake-fn inbox-fn)))
         the-llm  (fn the-llm
-                   ([prompt] (the-llm prompt nil))
+                   ([prompt]
+                    (let [handle  (or runtime/*current-handle* :main)
+                          prompt' (if (or (seq? prompt) (list? prompt))
+                                    (eval/expand-expr prompt (or eval/*spell-env* {}))
+                                    prompt)]
+                      (run-llm-path handle prompt')))
                    ([prompt handle]
                     (let [handle     (or handle runtime/*current-handle* :main)
                           parent     (or runtime/*current-handle*  ;; !llm-self (inherited)
@@ -453,23 +478,14 @@
                           root?      (not= parent handle)
                           prompt'    (if (or (seq? prompt) (list? prompt))
                                        (eval/expand-expr prompt (or eval/*spell-env* {}))
-                                       prompt)
-                          prompt-str (wrap-nl prompt')
-                          trace-data (atom nil)
-                          inbox-fn   (make-inbox-fn config' trace-data)
-                          awake-fn   (runtime/make-awake-fn handle inbox-fn)]
-                      (when-not (runtime/handle? handle)
-                        (runtime/register! handle))
-                      (-llm config' handle awake-fn (when root? inbox-fn) prompt-str trace-data))))]
+                                       prompt)]
+                      (if root?
+                        (run-init-path handle prompt')
+                        (run-llm-path handle prompt')))))]
     (reset! self-ref the-llm)
     {:llm the-llm
      :run (fn run-init [init-string]
-            (let [handle   :main
-                  inbox-fn (make-inbox-fn config' (atom nil))
-                  awake-fn (runtime/make-awake-fn handle inbox-fn)]
-              (when-not (runtime/handle? handle)
-                (runtime/register! handle))
-              (runtime/run-root-box handle init-string awake-fn inbox-fn)))}))
+            (run-init-path :main init-string))}))
 
 (defn build-init
   "Build a balanced init program from a prompt.

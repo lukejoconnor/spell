@@ -387,14 +387,34 @@
 ;; =============================================================================
 
 (deftest spawn-returns-handle-test
-  (testing "spawn returns a keyword handle (handle persists after completion)"
-    (let [{:keys [llm]} (th/make-test-llm
-                          {:response-fn (fn [_] "42)")})]
-      (let [handle (runtime/spawn llm "(do ")]
+  (testing "spawn returns a keyword handle for direct init programs without an initial LLM call"
+    (let [call-count (atom 0)
+          executed? (atom false)
+          {:keys [llm]} (th/make-test-llm
+                          {:response-fn (fn [_]
+                                          (swap! call-count inc)
+                                          "unused")}
+                          :namespaces {'tools {:docs {:mark "mark execution"}
+                                               :mark (fn []
+                                                       (reset! executed? true)
+                                                       42)}})]
+      (let [handle (runtime/spawn llm "(quine completion (eval (do '(tools/mark))))")]
         (is (keyword? handle))
-        ;; Wait for spawn future to finish — handle persists (no unregister)
-        (deref @(:completed (get @runtime/registry handle)) 5000 :timeout)
+        (Thread/sleep 100)
+        (is @executed?)
+        (is (= 0 @call-count))
         (is (runtime/handle? handle))))))
+
+(deftest spawn-nl-prompt-still-calls-llm-test
+  (testing "spawn wraps NL prompts into an init program and reaches the LLM via !extend"
+    (let [call-count (atom 0)
+          {:keys [llm]} (th/make-test-llm
+                          {:response-fn (fn [_]
+                                          (swap! call-count inc)
+                                          "(def answer 42))")})]
+      (let [handle (runtime/spawn llm "Return 42")]
+        (is (= 42 (deref @(:completed (get @runtime/registry handle)) 5000 :timeout)))
+        (is (= 1 @call-count))))))
 
 
 
@@ -1220,7 +1240,7 @@
                           runtime/*current-eval-fn* (fn [raw]
                                                       (reset! parent-woke raw)
                                                       raw)]
-                  (runtime/spawn-ask child-llm "(eval (do ")))]
+                  (runtime/spawn-ask child-llm "extend before replying")))]
           ;; Wait for child to reach extension (turn 2 blocks on gate)
           (is (= true (deref child-extended 5000 :timeout))
               "child should have reached extension")
