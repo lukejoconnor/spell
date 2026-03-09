@@ -488,6 +488,29 @@
                          extra-msg)
                     {:args (vec args)}))))
 
+(defn- normalize-natural-number-opt
+  "Normalize a natural-number CLI option to a string, or throw ex-info."
+  [label value]
+  (cond
+    (integer? value)
+    (do (when (neg? value)
+          (throw (ex-info (str label " must be a non-negative integer, got "
+                               (pr-str value))
+                          {:value value})))
+        (str value))
+
+    (string? value)
+    (if (re-matches #"\d+" value)
+      value
+      (throw (ex-info (str label " must be a non-negative integer, got "
+                           (pr-str value))
+                      {:value value})))
+
+    :else
+    (throw (ex-info (str label " must be a non-negative integer, got "
+                         (pr-str value))
+                    {:value value}))))
+
 (defn- shell-quote
   "POSIX-safe single-quote escaping for shell arguments."
   [s]
@@ -563,10 +586,14 @@
    (ensure-string-args "io/grep: pattern and path" [pattern path] "")
    (when-let [include (:include opts)]
      (ensure-string-args "io/grep: :include" [include] ""))
-   (let [flags (cond-> ["-rnH"]
+   (let [context (when (contains? opts :context)
+                   (normalize-natural-number-opt "io/grep: :context" (:context opts)))
+         max-count (when (contains? opts :max-count)
+                     (normalize-natural-number-opt "io/grep: :max-count" (:max-count opts)))
+         flags (cond-> ["-rnH"]
                  (:ignore-case opts) (conj "-i")
-                 (:context opts) (conj (str "-C" (:context opts)))
-                 (:max-count opts) (conj (str "-m" (:max-count opts))))
+                 context (conj (str "-C" context))
+                 max-count (conj (str "-m" max-count)))
          grep-cmd (str "grep " (str/join " " flags)
                        " -e " (shell-quote pattern))
          cmd (if-let [include (:include opts)]
@@ -582,15 +609,17 @@
   ([pattern path] (glob pattern path {}))
   ([pattern path opts]
    (ensure-string-args "io/glob: pattern and path" [pattern path] "")
-   (let [parts (cond-> ["find" (shell-quote path)]
-                 (:max-depth opts) (conj "-maxdepth" (str (:max-depth opts)))
+   (let [max-depth (when (contains? opts :max-depth)
+                     (normalize-natural-number-opt "io/glob: :max-depth" (:max-depth opts)))
+         parts (cond-> ["find" (shell-quote path)]
+                 max-depth (conj "-maxdepth" max-depth)
                  (:type opts) (conj "-type" (shell-quote (str (:type opts))))
                  true (conj "-name" (shell-quote pattern) "-print"))
          cmd (str (str/join " " parts) " | sort")]
      (sh cmd))))
 
 (def ^:private git-read-commands
-  #{"blame" "branch" "diff" "log" "rev-parse" "show" "status"})
+  #{"blame" "diff" "log" "rev-parse" "show" "status"})
 
 (defn git
   "Run an allowlisted read-only git subcommand.

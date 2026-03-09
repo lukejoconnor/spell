@@ -694,6 +694,16 @@
       (is (re-find (re-pattern (java.util.regex.Pattern/quote clj-path)) (:out result)))
       (is (not (re-find (re-pattern (java.util.regex.Pattern/quote txt-path)) (:out result)))))))
 
+(deftest grep-rejects-non-numeric-options-test
+  (is (thrown-with-msg?
+       clojure.lang.ExceptionInfo
+       #"io/grep: :context must be a non-negative integer"
+       (io/grep "needle" test-dir {:context "1; touch /tmp/pwned >&2"})))
+  (is (thrown-with-msg?
+       clojure.lang.ExceptionInfo
+       #"io/grep: :max-count must be a non-negative integer"
+       (io/grep "needle" test-dir {:max-count "1; touch /tmp/pwned >&2"}))))
+
 (deftest glob-test
   (let [clj-path (str test-dir "/alpha.clj")
         md-path (str test-dir "/nested/bravo.md")
@@ -710,14 +720,24 @@
       (is (= 0 (:exit result)))
       (is (= [md-path] (str/split-lines (:out result)))))))
 
+(deftest glob-rejects-non-numeric-max-depth-test
+  (is (thrown-with-msg?
+       clojure.lang.ExceptionInfo
+       #"io/glob: :max-depth must be a non-negative integer"
+       (io/glob "*.clj" test-dir {:type "f" :max-depth "1; echo hacked >&2"}))))
+
 (deftest git-helper-test
   (let [result (io/git "rev-parse" "--show-toplevel")
         repo-root (.getCanonicalPath (jio/file "."))]
     (is (= 0 (:exit result)))
     (is (= repo-root (:out result))))
   (let [result (io/git "checkout" "main")]
-    (is (= {:error "git subcommand not allowed: \"checkout\". Allowed: blame, branch, diff, log, rev-parse, show, status"}
+    (is (= {:error "git subcommand not allowed: \"checkout\". Allowed: blame, diff, log, rev-parse, show, status"}
            result))))
+
+(deftest git-helper-rejects-branch-test
+  (is (= {:error "git subcommand not allowed: \"branch\". Allowed: blame, diff, log, rev-parse, show, status"}
+         (io/git "branch" "-D" "topic"))))
 
 ;; =============================================================================
 ;; Event-send tests
