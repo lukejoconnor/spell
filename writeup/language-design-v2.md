@@ -133,11 +133,12 @@ Spell defines a special form, `quine`, which solves this directly:
 Completions---programs generated and evaluated by `llm`---always have the *completion wrapper* as their prefix. The completion wrapper uses `quine` to bind the program's own source to the symbol `completion`:
 
 ```clojure
-(quine completion
-  (eval
-    (do
+(quine completion ; binds symbol completion to source code
+  (eval ; double-evaluates the do block
+    (do ; returns value of its last expression
       ...
-      ; trailing expression — the last expression in the do block
+      ; trailing expression is quoted: inert unless last
+      (quote (expression-with-effects))
     )
   )
 )
@@ -165,11 +166,27 @@ This line calls a tool, formats its result into Spell code (for example, `(def t
 '(!call-now result-name (tool-call))
 ```
 
-## Context management: rethink and compact
+## Context management
 
-As a completion grows through successive extensions, it accumulates reasoning steps, intermediate bindings, and abandoned approaches. Spell provides two mechanisms for the LLM to manage its own context: `rethink` for pruning unproductive reasoning, and `!compact` for compressing an entire completion.
+As a completion grows through successive extensions, it accumulates reasoning steps, intermediate bindings, and abandoned approaches. Consider the following example. On the first turn, the agent receives a prompt, reasons about it, and calls a tool. On the second turn, it reasons again, formulates a plan, and delegates to a child LLM:
 
-### Rethink
+```clojure
+(quine completion (eval (do
+  (def prompt "Find Python files in src/ and summarize their purpose")
+  (think "I need to list the directory to see what's there.")
+  '(!call-now py-files (tools/bash "find src/ -name '*.py'"))
+  (def py-files "src/main.py\nsrc/utils.py\nsrc/config.py")
+  (think "Found 3 files. I'll delegate reading and summarizing them.")
+  (def plan (str "Read each file and write a one-line summary:\n" py-files))
+  '(!llm-self plan)
+)))
+```
+
+Having produced the plan, prior history can be discarded. 
+
+Spell uses two mechanisms to make context management convenient: `rethink` for pruning unproductive reasoning, and `!compact` for compressing an entire completion.
+
+### Rethink / !peek
 
 `think` and `rethink` are macros that mark reasoning steps in the completion. `think` records a labeled reasoning step:
 
@@ -178,18 +195,20 @@ As a completion grows through successive extensions, it accumulates reasoning st
   (def edge-result (test-edge-cases)))
 ```
 
-At evaluation time, `think` behaves like `do` — it evaluates its body forms and returns `nil`. Its purpose is structural: `think` forms are preserved as source markers in the `completion` binding, making the LLM's chain of thought visible and manipulable.
-
-`rethink` replaces a previous reasoning step. When the LLM decides that its previous approach was wrong, it writes `rethink` instead of `think`, which marks the previous sibling expression for pruning:
+At evaluation time, `think` behaves like `do` — it evaluates its body forms and returns `nil`. Its purpose is structural: `think` forms are preserved as source markers in the `completion` binding, making the LLM's chain of thought visible and manipulable. `rethink` is used to backtrack: 
 
 ```clojure
-(think "try approach A" (def result-a (approach-a)))
-(rethink "approach A was wrong, try B" (def result-b (approach-b)))
+'(!call-now dir-contents (io/sh "ls -l big-dir"))
+(def dir-contents "[1000 files]")
+(rethink "big-dir contains 1000 files. The one I need is my-file.txt.")
+'(!call-now my-file (io/read-lines "big-dir/my-file.txt"))
 ```
 
-At evaluation time, `rethink` behaves identically to `think`. The pruning happens later, when the completion is extended via `!extend`: the `prune-substitute` function walks the quine's source, removes the sibling expressions marked by each `rethink`, converts each `rethink` to a `think`, and rebuilds the prefix string. The child LLM sees only the surviving reasoning chain.
+On the following turn, the 1000-line tool call result is removed from the agent's context window.
 
-An optional count argument controls how many previous siblings to prune: `(rethink 2 "reason" ...)` prunes the two preceding siblings. The default is 1.
+At evaluation time, `rethink` behaves identically to `think`, but when the completion is extended via `!extend` or `!call-now`, the `prune-substitute` function walks the source and removes sibling expressions marked by each `rethink`, converting each `rethink` to a `think` so that it becomes inert on the following turn. An optional count argument controls how many previous siblings to prune: `(rethink 2 "reason" ...)` prunes the two preceding siblings.
+
+
 
 ### Persist
 

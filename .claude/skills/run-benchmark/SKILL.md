@@ -5,8 +5,6 @@ description: "Run and analyze Spell benchmarks. Use when the user asks to: run a
 
 # Run Benchmark
 
-**Announce that you are using this skill when it triggers.**
-
 Run Spell benchmarks, compare against baselines, and investigate results. See [references/harness-inventory.md](references/harness-inventory.md) for exact CLI flags and dataset options.
 
 ## CRITICAL: Never Fabricate Results
@@ -67,9 +65,7 @@ cd benchmarking && uv run run_swebench.py --dataset mini --condition spell --tra
 
 ### 5. Investigate traces
 
-After the run completes (or as results stream in), investigate traces by dispatching **Sonnet subagents** — one per item or small group. **Always** dispatch subagents for trace investigation, even for a single item. Use the prompt template in [references/trace-checker-prompt.md](references/trace-checker-prompt.md) verbatim, filling in the placeholders.
-
-**Summary-first triage:** Before dispatching trace investigation subagents, run `spell.trace-tool --summary` on the trace root for a quick overview of orchestration, tracked functions, errors, and investigation flags.
+**Summary-first triage:** Before dispatching trace investigation subagents, run `spell.trace-tool --summary` on the trace root for a quick overview of tracked forms, namespace usage, errors, and investigation flags:
 
 ```bash
 # Human-readable batch summary
@@ -79,7 +75,24 @@ clj -M -m spell.trace-tool --trace-root traces/2026-03-08T10-00-00 --summary
 clj -M -m spell.trace-tool --trace-root traces/2026-03-08T10-00-00 --summary --tsv
 ```
 
-Use investigation flags as a prioritization aid when deciding which traces to examine first, especially within the same priority bucket.
+Use investigation flags and the priority table below to decide which traces to examine first.
+
+**Dispatch `trace-checker` subagents** — one per item or small group. **Always** dispatch subagents for trace investigation, even for a single item. Pass the task parameters in free text:
+
+```
+Agent tool call:
+  subagent_type: "trace-checker"
+  prompt: |
+    Task: django__django-16379
+    Condition: spell
+    Trace root: traces/2026-03-08T10-04-01
+    Spell trace: traces/2026-03-08T10-04-01/spell/django__django-16379
+    Harness result: fail (is_resolved: false)
+    Comparison: claude_code (same model: opus)
+    Focus: Spell wrong, baseline right (P2) — why did Spell fail?
+```
+
+The `trace-checker` agent (defined in `.claude/agents/trace-checker.md`) has the full investigation methodology, error classification, output format, and `spell.trace-tool` documentation baked into its system prompt.
 
 Investigation priority:
 
@@ -91,45 +104,11 @@ Investigation priority:
 | **P4** | Both wrong | Understanding the difficulty frontier |
 | **P5** | Both right | Cost/latency comparison |
 
+**When to investigate comparison traces:** For P2 (Spell loss) and P3 (Spell win), include the trace root in the subagent prompt so it can locate the comparison method's trace. The subagent knows the trace directory layout and will read both traces to diagnose what differed. For P1, P4, and P5, comparison traces are not needed unless specifically requested.
+
 Every item in your results must have been individually examined by a subagent that returned real findings to you. If you catch yourself writing investigation results without having dispatched subagents, STOP and go do the actual work.
 
-### Trace Tooling (`spell.trace-tool`)
-
-**Prefer `spell.trace-tool` over grep/rg for trace investigation.** The tool understands Spell's trace structure (extension nodes, parsed programs, rethink chains) and produces clean, structured output. Grepping raw trace JSON is fragile and misses context. Use the tool first; fall back to grep only for searches the tool doesn't support.
-
-Common investigation patterns:
-
-```bash
-# Summary-first triage for one run directory
-clj -M -m spell.trace-tool --trace-root traces/2026-03-08T10-00-00 --summary
-
-# Batch comparison table for many traces
-clj -M -m spell.trace-tool --trace-root traces/2026-03-08T10-00-00 --summary --tsv
-
-# Skeletonize latest extension node in one trace
-clj -M -m spell.trace-tool --trace-dir traces/2026-03-02T07-04-01
-
-# Count specific function calls on selected node (zsh: quote ! symbols)
-clj -M -m spell.trace-tool --trace-dir traces/2026-03-02T07-04-01 --fn think --fn '!print'
-
-# Aggregate call counts across all nodes (deduped by default)
-clj -M -m spell.trace-tool --trace-dir traces/2026-03-02T07-04-01 --count-all-nodes --fn think
-
-# Rethink report: each rethink + preceding expression
-clj -M -m spell.trace-tool --trace-dir traces/2026-03-02T07-04-01 --rethinks
-
-# Rethink report across a directory of traces
-clj -M -m spell.trace-tool --trace-root traces --rethinks
-
-# Resolve latest errored benchmark row to trace_dir, then inspect
-clj -M -m spell.trace-tool --results-jsonl benchmarking/results/unified/full_omni_spell_opus.jsonl
-```
-
-Notes:
-- Default node selection prefers the latest `:default` node with a parsed program (usually the last extension node).
-- `--string-truncate N` controls displayed string truncation (default `32`, `-1` disables truncation).
-- `--count-all-nodes` is useful for whole-trace stats; selected-node mode is better for extension-chain end state.
-- Investigation flags from `--summary` help you spot traces that likely merit deeper review, but they do not replace reading the actual trace files.
+**Note:** `spell.trace-tool` has additional modes beyond `--summary` (skeletonize nodes, count function calls, rethink reports). The `trace-checker` subagent has full documentation. If you need the tool directly in the main conversation, refer to `.claude/agents/trace-checker.md` for usage.
 
 ### 6. Scoring and reporting
 
@@ -139,7 +118,19 @@ Notes:
 
 **Cross-validation:** After scoring a comparison run, programmatically extract `is_resolved` from both conditions' `results.json` and compute spell_wins, spell_losses, both_pass, both_fail. Do not report wins/losses based on manual inspection.
 
-**Format issues:** If scoring fails due to output format (correct answer, wrong format), score manually with sub-agents. Don't count format issues as wrong; fix the scorer or override. Note any manual overrides.
+**Manual scoring.** Some benchmarks have flaky or extremely stringent automatic scoring. For these, results should be scored manually for partial credit. Present both harness-graded and manually-graded results, and explain any discrepancies.
+
+| Benchmark | Auto-scoring | Manual scoring needed? |
+|-----------|-------------|----------------------|
+| **Omni-MATH** | <50% recall — format sensitivity (Unicode vs LaTeX, set ordering, equivalent expressions, text answers) | **Always.** Auto-scorer misses most correct answers. |
+| **MATH (hard)** | Fragile LaTeX parsing, symbolic equivalence sometimes missed by sympy | **Yes** for non-trivial expressions. Spot-check at minimum. |
+| **BABILong / LongBench** | Freeform answer extraction heuristic; ~15% affected by context truncation | **Recommended.** Last-line heuristic unreliable for multi-word answers. |
+| **GSM8K** | Numeric extraction with decimal normalization | **No.** Reliable. |
+| **AIME** | Integer answers 0-999, exact match | **No.** Reliable. |
+| **SWE-bench** | Official harness, test execution | **No.** Reliable (note: 1 known flaky item, `django-14382`). |
+| **Exercism** | pytest pass/fail | **No.** Reliable. |
+
+When manual scoring applies, dispatch `trace-checker` subagents to verify each disputed item. Format issues (correct answer, wrong format) should not count as wrong — fix the scorer or override, and note any manual overrides.
 
 **Results format.** Denominator is always total items — errors count as wrong:
 

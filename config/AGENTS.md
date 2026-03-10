@@ -21,10 +21,12 @@ Loaded by `src/spell/agent.clj`.
 - `base-tc.agent.edn` — tool-call providers, uses `minimal-no-prefill-toolcall.txt`
 
 **Specialized agents** inherit from a base and add namespaces:
-- `cli.agent.edn` — CLI default (base-tc + io, patterns, agents, globals)
+- `cli.agent.edn` — CLI default (base-tc + io, web, patterns, agents, globals)
 - `io-pf.agent.edn` — benchmark/runtime I/O profile for prefill providers
 - `io-msg.agent.edn` — benchmark/runtime I/O profile for message providers
 - `io-tc.agent.edn` — benchmark/runtime I/O profile for mandatory toolcall providers
+- `explore.agent.edn` — read-only codebase exploration (io-read namespace only)
+- `math-tc.agent.edn`, `math-pf.agent.edn`, `math-msg.agent.edn` — math benchmark agents (no web namespace)
 
 Key semantics:
 - `:base` supports file-based inheritance; paths resolved relative to the current agent file.

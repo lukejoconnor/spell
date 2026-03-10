@@ -1,92 +1,34 @@
-# spell
+# Spell
 
-A domain-specific language for LLM self-orchestration, implemented as a Lisp dialect in Clojure.
+Self programmed execution language for LMs: a domain-specific language for agentic self-orchestration and own-context management, implemented as a Lisp dialect in Clojure.
 
-## Core Idea
+## Self-programmed execution
 
-Instead of an external harness controlling an agent loop, the LLM writes and extends its own execution graph.
+Instead of an external harness controlling an agent loop, the LLM programs its own execution graph. Its entire completion is a program, the language of which is Spell. The harness is purely an execution layer: it evaluates the program. The program can re-invoke the LLM, and it controls exactly what context is passed in.
 
-## Key Semantic Concepts
+## Language Overview
 
-### Environment Threading
-`spell-eval` takes env in and returns env out. Environment state is explicit in program structure.
+See `writeup/language-design-v2.md` for full semantics. Key concepts:
 
-### Dynamic Scoping
-`fn` and `defn` return source-form function data, not closures. Function bodies evaluate in caller env merged with parameter bindings.
+- **Self-calls**: `(!llm-self prefix)` makes an LLM call. `!call-now`, `!print`, and `extend` wrap or expand to `!llm-self`.
+- **Quine**: `(quine name body)` binds `name` to its own source form as data, enabling self-referential LLM calls.
+- **Environment threading**: `spell-eval` takes env in, returns env out. State is explicit in program structure.
+- **Dynamic scoping**: `fn`/`defn` return source forms, not closures; bodies evaluate in caller env.
+- **Prompt-as-prefix**: prompt text is both user message and assistant prefix; response is appended and eval'd.
+- **Completion wrapper**: NL prompts wrapped as `(quine completion (eval (do ...)))` with double evaluation of trailing expression.
+- **Think/rethink/extend**: context management. `rethink` prunes sibling expressions; `extend` continues with pruned context.
+- **Namespaces**: core (`strings`, `math`, `builtins`) always available. Effect (`io`, `web`, `globals`, `agents`, `patterns`) available via trailing-expression `eval`. Future threads also get `blocking/` (`await`, `await-all`, `pmap`, `completion-promise`, `send-await`).
+- **Concurrency**: `!llm-self` for serial self-calls; `agents/spawn` for async agents; `future`/`blocking/await` for deterministic compute. These are intentionally separate.
+- **Communication**: `agents/!ask` (request/reply, poke-only, multi-target), `agents/send` (fire-and-forget), keyword handles. `!ask-await` bridges main-thread agent waits with future waits.
+- **Special forms**: `quote`, `def`, `persist`, `do`, `if`, `let`, `fn`, `fn*`, `quine`, `loop`, `recur`, `for`, `try` (13 total). 29 spell macros including user-defined via `defmacro`.
 
-### Expansion
-`llm` auto-expands thunk prompts so free variables are replaced with quoted values from the current env. `expand` is available for explicit use.
+## Providers and Agents
 
-### Quine (Self-Referential Code)
-`(quine name body)` binds `name` to the full quine form as data, then evaluates `body`.
+Primary providers: Anthropic prefill/tool-call, Codex messages/tool-call. See `config/providers/` for all `.provider.edn` files and `config/CLAUDE.md` for loading semantics.
 
-### Prompt-as-Prefix Semantics
-Prompt text is used as both user message and assistant prefix. The model response is appended and the full text is parsed/evaluated as code.
+Three base agents (prefill, message, tool-call) in `config/agents/base-*.agent.edn`. Specialized agents inherit and add namespaces. See `config/agents/` for full listing and `config/CLAUDE.md` for inheritance rules.
 
-### Completion Wrapper and Trailing Expression
-Natural-language prompting is wrapped as `(quine completion (eval (do ...)))`. The last expression in the `do` block is evaluated again by outer `eval`, so quoted trailing forms like `'(!extend)` or `'(agents/!ask ...)` execute.
-
-### Think / Rethink / Extend
-`think` records a reasoning step, `rethink` marks previous sibling expressions for pruning, and `extend` continues with pruned context via `prune-and-reopen`.
-
-### Namespaces
-Spell has two namespace categories:
-- Core namespaces (`strings`, `math`, `builtins`) are always available.
-- Effect namespaces (`io`, `globals`, `agents`, `futures`, `patterns`) are available in trailing-expression evaluation via `eval`.
-
-Namespace maps use `:short-docs`, `:docs`, and optional `:detail`; `describe` surfaces this metadata in extensions.
-Future threads also get an env-gated `blocking/` namespace (`blocking/await`, `blocking/completion-promise`, `blocking/send-await`).
-
-## LLM Calls and Concurrency
-
-### LLM Call Modes
-- `!llm-self`: serial self-calls on the same handle and execution tree.
-- `agents/spawn`: asynchronous agent creation with a new handle.
-
-### Concurrency Models
-- Deterministic computation concurrency: `future` (launch), `blocking/await` (join), `blocking/plet`, `blocking/pmap` (future-only).
-- Agent concurrency: `agents/spawn` plus coordination via `agents/!ask` and `globals/*`.
-- Main-thread non-blocking future wait bridge: `futures/!ask-await`.
-
-These are intentionally separate: use futures for deterministic compute, and spawned agents for LLM-driven parallelism.
-
-### Communication
-`agents/!ask` supports request/reply (`target msg`, poke-only `target`, and multi-target `[a b c]`). `agents/send` is fire-and-forget. Communication works by composing an inbox function that transforms the recipient's completion before box evaluation.
-
-## Language Features
-
-- 13 special forms and 27 spell macros (`defspellmacro`), including user-defined macros via `defmacro`.
-- Vector destructuring (`&` rest, `:as`), `loop/recur` (including fn-level), `try/catch/throw`, `quine`, `!compact`.
-- Prompt-aware orchestration forms including `think`, `rethink`, `!extend`, `!call-now`, and `!describe`.
-- Inter-agent messaging (`spawn`, `!ask`, `send`, reply variants), keyword handles, and message preemption semantics.
-
-## Providers
-
-Primary providers in day-to-day use:
-- Anthropic prefill (`anthropic-pf-provider`)
-- Anthropic tool-call (`anthropic-tc-provider`)
-- Codex messages (`codex-msg-provider`)
-- Codex tool-call (`codex-tc-provider`)
-
-Other implemented providers:
-- OpenAI, OpenAI Responses, OpenClaw, Ollama, Kimi, Test (plus provider-file loading via `.provider.edn`)
-
-Each `.provider.edn` file includes a `:default-agent` key pointing to the transport-appropriate base agent.
-
-## Agents
-
-Three base agents (one per transport mode, no effect namespaces):
-- `config/agents/base-pf.agent.edn` — Anthropic (prefill mode)
-- `config/agents/base-msg.agent.edn` — message providers (no prefill)
-- `config/agents/base-tc.agent.edn` — tool-call providers
-
-Agents with `:llms` in their `.agent.edn` also get an `llms/` namespace with named sub-LLM variants (dynamically generated, not a standard stdlib namespace).
-
-Specialized agents inherit from a base and add namespaces:
-- `config/agents/cli.agent.edn` — CLI default (base-tc + io, futures, patterns, agents, globals)
-- `config/agents/io-pf.agent.edn` — prefill transport + io profile
-- `config/agents/io-msg.agent.edn` — message transport + io profile
-- `config/agents/io-tc.agent.edn` — toolcall transport + io profile
+Agents with `:llms` in their `.agent.edn` get a dynamically generated `llms/` namespace with named sub-LLM variants.
 
 ## CLI and API
 
@@ -97,7 +39,7 @@ Specialized agents inherit from a base and add namespaces:
 
 | Path | Description |
 |------|-------------|
-| `writeup/language-design.md` | Main language design writeup. |
+| `writeup/language-design-v2.md` | Main language design writeup. |
 | `writeup/paper.md` | Current paper draft. |
 | `src/spell/eval.clj` | Core evaluator and special forms. |
 | `src/spell/macros.clj` | Spell macro registry and macro implementations. |
@@ -110,19 +52,12 @@ Specialized agents inherit from a base and add namespaces:
 | `src/spell/cli.clj` | CLI implementation. |
 | `src/spell/benchmark_api.clj` | JSON benchmark API bridge. |
 | `config/prompts/minimal.txt`, `config/prompts/minimal-no-prefill.txt`, `config/prompts/minimal-no-prefill-toolcall.txt` | Base prompt variants; provider-agnostic behavior changes should be applied consistently to all three unless intentionally variant-specific. |
-| `config/agents/*.agent.edn` | Agent specs. |
-| `config/providers/*.provider.edn` | Declarative provider specs. |
-| `test/spell/*_test.clj` | Interpreter/runtime/provider tests. |
-| `benchmarking/AGENTS.md` | Benchmark workflow and reporting guidance (in nested benchmarking repo). |
-| `notebook/TODO.md`, `notebook/DONE.md`, `notebook/INDEX.md` | Active tasks, completed tasks, and notebook index. |
-
-## Architecture
-
-See `writeup/language-design.md` § "Under the hood" for implementation architecture (spell-eval, eval, box, -llm, make-llm). Note: this section is partially stale and needs updating to match current code (box signature, root lifecycle, bang-prefix API).
 
 ## Planning
 
-When the user asks for a plan, always enter plan mode (using the EnterPlanMode tool). After the plan is created, tell the user the filesystem path where the plan file is located.
+Rules:
+- Always enter plan mode (using the EnterPlanMode tool).
+- After the plan is created, tell the user the filesystem path where the plan file is located.
 
 ## Benchmarking
 
