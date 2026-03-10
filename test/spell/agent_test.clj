@@ -447,3 +447,21 @@
                         :provider (provider/test-provider {:response "ok"}))
             result (agent/compile-agent-spec spec)]
         (is (runtime/compiled-agent? result) path)))))
+
+(deftest compile-agent-spec-format-reaches-system-prompt-test
+  (testing "top-level compile path forwards :format into llm/compile-agent"
+    (let [seen-opts (atom nil)
+          prov (reify provider/LLMProvider
+                 (call-llm [_ prompt]
+                   (provider/call-llm _ prompt {}))
+                 (call-llm [_ _prompt opts]
+                   (reset! seen-opts opts)
+                   "{:result 42})")
+                 (supports-prefill [_] true))
+          compiled (agent/compile-agent-spec
+                    {:name 'formatter
+                     :provider prov
+                     :format {:required [:result]}})]
+      (is (= {:result 42} (th/run-agent-prefix compiled "(do ")))
+      (is (re-find #"RETURN VALUE" (:system @seen-opts)))
+      (is (re-find #":result" (:system @seen-opts))))))

@@ -372,26 +372,16 @@
     (throw (ex-info (str "Invalid llm spec: " value ". Expected .agent.edn symbol or inline map.")
                     {:value value}))))
 
-(defn- build-compiled-agent-from-spec
-  "Build a compiled spawn-agent function from a resolved agent spec.
-   Used for llms/ entries, which inherit parent model/provider and share a
-   common llms namespace for circular references."
-  [spec compile-runtime-agent-fn compile-agent-fn model parent-provider extra-namespaces base-dir]
-  (let [spec-base-dir (or (:base-dir spec) base-dir)
-        spec-model (or (:model spec) model)
-        spec-provider (if (contains? spec :provider)
-                        (provider/resolve-provider (:provider spec) spec-base-dir)
-                        parent-provider)
-        system (resolve-system-prompt (:system spec) spec-base-dir)
-        spec-namespaces (when (:namespaces spec)
-                          (resolve-namespaces (:namespaces spec) spec-base-dir compile-agent-fn))
-        all-namespaces (merge extra-namespaces spec-namespaces)
-        base-agent (compile-runtime-agent-fn
+(defn- compile-runtime-agent-from-resolved-spec
+  "Compile a resolved agent spec after model/provider/system/namespaces
+   have already been determined."
+  [spec compile-runtime-agent-fn {:keys [model provider system namespaces]}]
+  (let [base-agent (compile-runtime-agent-fn
                     (cond-> {}
-                      (seq all-namespaces) (assoc :namespaces all-namespaces)
-                      spec-model (assoc :model spec-model)
+                      (seq namespaces) (assoc :namespaces namespaces)
+                      model (assoc :model model)
                       system (assoc :system system)
-                      spec-provider (assoc :provider spec-provider)
+                      provider (assoc :provider provider)
                       (some? (:recover spec)) (assoc :recover (:recover spec))
                       (:format spec) (assoc :format (:format spec))
                       (some? (:prefill? spec)) (assoc :prefill? (:prefill? spec))
@@ -405,6 +395,26 @@
                                            :eval? true
                                            :max-retries (or (:max-retries spec) 3)})
       base-agent)))
+
+(defn- build-compiled-agent-from-spec
+  "Build a compiled spawn-agent function from a resolved agent spec.
+   Used for llms/ entries, which inherit parent model/provider and share a
+   common llms namespace for circular references."
+  [spec compile-runtime-agent-fn compile-agent-fn model parent-provider extra-namespaces base-dir]
+  (let [spec-base-dir (or (:base-dir spec) base-dir)
+        spec-model (or (:model spec) model)
+        spec-provider (if (contains? spec :provider)
+                        (provider/resolve-provider (:provider spec) spec-base-dir)
+                        parent-provider)
+        system (resolve-system-prompt (:system spec) spec-base-dir)
+        spec-namespaces (when (:namespaces spec)
+                          (resolve-namespaces (:namespaces spec) spec-base-dir compile-agent-fn))
+        all-namespaces (merge extra-namespaces spec-namespaces)]
+    (compile-runtime-agent-from-resolved-spec spec compile-runtime-agent-fn
+                                              {:model spec-model
+                                               :provider spec-provider
+                                               :system system
+                                               :namespaces all-namespaces})))
 
 (defn resolve-llms
   "Resolve :llms map into an effect namespace of compiled spawn-agent functions.
@@ -500,22 +510,9 @@
         llms-ns (when (seq llms)
                   (resolve-llms llms llm/compile-agent compile-agent-fn model resolved-provider base-dir))
         all-namespaces (cond-> (or resolved-namespaces {})
-                         llms-ns (assoc 'llms llms-ns))
-        compiled (llm/compile-agent
-                  (cond-> {}
-                    (seq all-namespaces) (assoc :namespaces all-namespaces)
-                    model (assoc :model model)
-                    resolved-system (assoc :system resolved-system)
-                    resolved-provider (assoc :provider resolved-provider)
-                    (some? recover) (assoc :recover recover)
-                    (some? prefill?) (assoc :prefill? prefill?)
-                    (some? thinking) (assoc :thinking thinking)
-                    reasoning-effort (assoc :reasoning-effort reasoning-effort)
-                    verbosity (assoc :verbosity verbosity)
-                    (some? suffix-grammar?) (assoc :suffix-grammar? suffix-grammar?)
-                    grammar-max-chars (assoc :grammar-max-chars grammar-max-chars)))]
-    (if format
-      (format/wrap-with-format compiled {:format format
-                                         :eval? true
-                                         :max-retries (or max-retries 3)})
-      compiled)))
+                         llms-ns (assoc 'llms llms-ns))]
+    (compile-runtime-agent-from-resolved-spec agent-spec llm/compile-agent
+                                              {:model model
+                                               :provider resolved-provider
+                                               :system resolved-system
+                                               :namespaces all-namespaces})))
