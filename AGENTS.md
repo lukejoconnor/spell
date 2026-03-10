@@ -10,21 +10,21 @@ Instead of an external harness controlling an agent loop, the LLM programs its o
 
 See `writeup/language-design-v2.md` for full semantics. Key concepts:
 
-- **Self-calls**: `(!llm-self prefix)` makes an LLM call. `!call-now`, `!print`, and `extend` wrap or expand to `!llm-self`.
+- **Self-calls**: `(!llm-self prefix)` makes an LLM call. `!call-now`, `!print`, and `!extend` wrap or expand to `!llm-self`.
 - **Quine**: `(quine name body)` binds `name` to its own source form as data, enabling self-referential LLM calls.
 - **Environment threading**: `spell-eval` takes env in, returns env out. State is explicit in program structure.
 - **Dynamic scoping**: `fn`/`defn` return source forms, not closures; bodies evaluate in caller env.
 - **Prompt-as-prefix**: prompt text is both user message and assistant prefix; response is appended and eval'd.
+- **Double evaluation**: the outer `eval` in the completion wrapper makes effect namespaces available to the trailing expression. Without it, only core namespaces are in scope.
 - **Completion wrapper**: NL prompts wrapped as `(quine completion (eval (do ...)))` with double evaluation of trailing expression.
-- **Think/rethink/extend**: context management. `rethink` prunes sibling expressions; `extend` continues with pruned context.
+- **Think/rethink/extend**: context management. `rethink` prunes sibling expressions; `!extend` continues with pruned context.
 - **Namespaces**: core (`strings`, `math`, `builtins`) always available. Effect (`io`, `web`, `globals`, `agents`, `patterns`) available via trailing-expression `eval`. Future threads also get `blocking/` (`await`, `await-all`, `pmap`, `completion-promise`, `send-await`).
 - **Concurrency**: `!llm-self` for serial self-calls; `agents/spawn` for async agents; `future`/`blocking/await` for deterministic compute. These are intentionally separate.
 - **Communication**: `agents/!ask` (request/reply, poke-only, multi-target), `agents/send` (fire-and-forget), keyword handles. `!ask-await` bridges main-thread agent waits with future waits.
-- **Special forms**: `quote`, `def`, `persist`, `do`, `if`, `let`, `fn`, `fn*`, `quine`, `loop`, `recur`, `for`, `try` (13 total). 29 spell macros including user-defined via `defmacro`.
 
 ## Providers and Agents
 
-Primary providers: Anthropic prefill/tool-call, Codex messages/tool-call. See `config/providers/` for all `.provider.edn` files and `config/CLAUDE.md` for loading semantics.
+Primary providers: Anthropic tool-call (`anthropic-tc`) and Codex tool-call (`codex-tc`). Test provider for unit tests. See `config/providers/` for all `.provider.edn` files and `config/CLAUDE.md` for loading semantics.
 
 Three base agents (prefill, message, tool-call) in `config/agents/base-*.agent.edn`. Specialized agents inherit and add namespaces. See `config/agents/` for full listing and `config/CLAUDE.md` for inheritance rules.
 
@@ -53,11 +53,13 @@ Agents with `:llms` in their `.agent.edn` get a dynamically generated `llms/` na
 | `src/spell/benchmark_api.clj` | JSON benchmark API bridge. |
 | `config/prompts/minimal.txt`, `config/prompts/minimal-no-prefill.txt`, `config/prompts/minimal-no-prefill-toolcall.txt` | Base prompt variants; provider-agnostic behavior changes should be applied consistently to all three unless intentionally variant-specific. |
 
-## Planning
+## Rules
 
-Rules:
-- Always enter plan mode (using the EnterPlanMode tool).
-- After the plan is created, tell the user the filesystem path where the plan file is located.
+- When the user asks for a plan, always enter plan mode (using the EnterPlanMode tool). After the plan is created, tell the user the filesystem path where the plan file is located.
+- When planning any change, consider whether this doc (CLAUDE.md) should be updated; if so, add that to the plan.
+- When planning, consider whether a notebook entry is warranted; if so, add entry creation to the plan (almost always yes).
+- For benchmarking analyses, always use the run-benchmark skill.
+- Whenever possible, delegate to subagents or use task lists, preserving the main context window for iteration and discussion.
 
 ## Benchmarking
 
