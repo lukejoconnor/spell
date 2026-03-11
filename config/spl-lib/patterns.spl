@@ -1313,7 +1313,8 @@
              "Return ONLY a Spell map literal with:\n"
              "{:status :progress|:solved|:stuck\n"
              " :report \"concise reasoning summary\"\n"
-             " :answer any}  ; include :answer only when :status is :solved\n")
+             " :answer any}  ; include :answer only when :status is :solved\n"
+             "Do NOT wrap your response in {:result ...} or {result ...}. Return the map directly.\n")
         worker-init-completion
         (str "(quine completion (eval (do "
              "(quine prompt " (pr-str worker-init-prompt) ") "
@@ -1332,7 +1333,8 @@
              "You are freshly registered on each verification attempt, so do not rely on prior state.\n\n"
              "Return ONLY a Spell map literal with:\n"
              "{:confirmed true|false\n"
-             " :feedback \"what you checked or why you rejected\"}\n")
+             " :feedback \"what you checked or why you rejected\"}\n"
+             "Do NOT wrap your response in {:result ...} or {result ...}. Return the map directly.\n")
         verifier-init-completion
         (str "(quine completion (eval (do "
              "(quine prompt " (pr-str verifier-init-prompt) ") "
