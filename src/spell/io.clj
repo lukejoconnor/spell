@@ -666,19 +666,19 @@
   (io/read-lines path)                      — read file as vector of line strings with line-offset metadata
   (io/read-lines path start end)             — line range [start, end) Python-style half-open
   (io/read-file path)                        — read file as numbered-lines string
-  (io/read-file path start end)              — [start, end) half-open
-  (io/grep pattern path)                     — recursive grep with line numbers
-  (io/grep pattern path {:ignore-case true :include \"*.clj\"}) — grep a filtered file set
-  (io/glob pattern)                          — find files by name pattern
-  (io/glob pattern path {:type \"f\" :max-depth 5}) — constrain glob results
+  (io/read-file path start end)
+  (io/grep pattern path)
+  (io/grep pattern path {:ignore-case true :include \"*.clj\"})
+  (io/glob pattern)
+  (io/glob pattern path {:type \"f\" :max-depth 5})
   (io/git \"status\")                         — run an allowlisted read-only git subcommand
   (io/str-replace path old new)              — replace string in file (must appear exactly once)
-  (io/str-replace path old new {:all true})  — replace all occurrences
+  (io/str-replace path old new {:all true})
   (io/replace-lines path start end content)  — deletes lines in half-open range [start, end)
   (io/replace-lines path start start content) — inserts content before line start
   (io/replace-lines path [[s e c] ...])      — multi-edit (line numbers refer to original file)
   (io/sh command)                            — execute shell command, returns {:exit :out :err}
-  (io/sh command {:timeout 10})              — timeout in seconds (0 disables)
+  (io/sh command {:timeout 10})
   (io/sh-test command)                       — build a zero-arg shell-backed fix-loop test thunk
   (io/exec [cmd arg1 ...])                   — execute command directly (no shell)
   (io/watch-send path handle)                — watch directory, send events as message to handle
@@ -687,49 +687,54 @@ Functions identical to Clojure: slurp, spit, write-file, ls, exists?, directory?
 
 Use (!describe io :fn-name) for detailed docs on any function.
 All io/ calls are effect functions — quote them in the trailing expression.
-
-Reading: read-file returns numbered lines (good for context); read-lines returns a raw vector (good for programmatic use); slurp returns the full file as a plain string.
-Exploration: grep searches file contents, glob finds files, and git exposes a small allowlisted set of read-only repo inspection commands.
-Editing: str-replace for single-string edits; replace-lines for line-range edits.
+Recommended functions: read-lines, grep, glob, replace-lines.
 
 Common mistakes:
 
-1. calling io/* outside the quoted trailing expression: (io/read-file \"x\") does nothing; must be '(io/read-file \"x\") or '(do ... (io/read-file \"x\") ...)
-2. forgetting !call-now when you need the result: '(io/read-file \"x\") evaluates but the result is lost; use '(!call-now contents (io/read-file \"x\")) (or '(!peek-now ...) for one-turn ephemeral bindings)
-3. using io/sh for everything: prefer io/read-file over (io/sh \"cat file\"), (io/ls \"dir\") over (io/sh \"ls dir\"), etc
-4. using str-replace for large edits: token inefficient, prefer replace-lines
+1. calling io/* outside the quoted trailing expression
+2. forgetting !call-now when you need the result: '(io/read-file \"x\") evaluates but the result is lost
+3. using io/sh for everything
 
-In examples, ▌ marks cursor position in a completion. It is doc-only; do not type it into code.
+In examples, ▌ marks cursor position in a completion.
 
-Multi-part example — read a file, edit it, verify the edit:
+Recommended usage pattern: Read and replace by line number.
 
 1. Read the file to see current contents.
-  ...▌'(!call-now code (io/read-file \"main.py\"))
+  ...▌'(!call-now code (io/read-lines \"main.py\"))
 
 2. Next turn: code is bound. Identify the line range, replace it.
-  ...(def code \"1: def greet():\\n2:     print('hello')\\n...\")
+  ...(def code [\"def greet():\" \"    print('hello')\" ...])
   ▌(think \"Line 2 needs updating.\")
-  '(do (io/replace-lines \"main.py\" 2 3 \"    print('goodbye')\")
-       (!call-now updated (io/read-file \"main.py\" 1 6)))
+  '(io/replace-lines \"main.py\" 2 3 \"    print('goodbye')\")
 
-3. Next turn: verify the edit landed.
-  ...(def updated \"1: def greet():\\n2:     print('goodbye')\\n...\")
-  ▌...
+Recommended usage pattern: Explore multiple files and persist relevant snippets.
 
-Multi-part example — peek a full file for one turn, then persist only a slice:
 1. Peek full file with one-turn lifetime.
   ...▌'(!peek-now file-lines (io/read-lines \"main.py\"))
 
-2. Next turn: file-lines is available. Persist only the slice you need.
+2. Next turn: file-lines is available. Persist relevant snippets and peek another file.
   ...(def file-lines [\"... many lines ...\"])
-  ▌(def fn-defn (subvec file-lines 99 111))
-  '(!extend completion)
+  (rethink \"!peek-now binding disappears unless persisted.\")
+  ▌(persist fn-defn (subvec file-lines 99 111))
+  '(!peek-now test-lines (io/read-lines \"test_main.py\"))
 
-3. Next turn: fn-defn stays in context while full file-lines disappears.
+3. Next turn: fn-defn stays in context while file-lines disappears. test-lines is now available.
   ...
-  (think \"!peek-now binding disappears unless persisted.\")
-  (def fn-defn [\"def target_fn(...):\" \"    ...\"])
+  (persist fn-defn [\"def target_fn(...):\" \"    ...\"])
+  '(!peek-now test-lines (io/read-lines \"test_main.py\"))
+  (def test-lines [\"... many lines ...\"])
+  (rethink \"!peek-now binding disappears unless persisted.\")
   ▌...
+
+Recommended usage pattern: Grep through large files.
+
+1. Read the file.
+  ...▌'(!call-now code (io/read-file \"big-module.py\"))
+
+2. Next turn: file was too large and got truncated. Rethink to discard it, then grep for what you need.
+  ...(def code \"1: import os\\n2: import sys\\n...\\n... [truncated, 58302 chars total]\")
+  ▌(rethink \"File too large to scan inline. Grep for the target instead.\")
+  '(!call-now matches (io/grep \"def handle_request\" \"big-module.py\"))
 "
           }
    :detail
