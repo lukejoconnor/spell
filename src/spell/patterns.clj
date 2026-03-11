@@ -127,8 +127,10 @@ Execution model:
    updated diagnosis + git diff context until pass or retries exhausted
 
 Reflector output contract:
-  {:diagnosis string
-   :test string|fn|[string|fn ...]
+  {:resolved boolean
+   :diagnosis string
+   :test-passed boolean
+   :test-output string
    :panic boolean
    :reset-worker boolean}
 
