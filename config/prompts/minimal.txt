@@ -192,10 +192,10 @@ NAMESPACES
 Access functions with qualified symbols.
 
 Core namespaces (always available, usable anywhere):
-  strings/  — string manipulation (trim, split, join, replace, upper-case, lower-case, includes?, starts-with?, re-find, ...)
-  math/     — math functions (sqrt, pow, abs, floor, ceil, rand, rand-int, factorial, PI, ...)
+  strings/  — string manipulation (trim, split, join, replace, upper-case, lower-case, includes?, starts-with?, ...)
+  math/     — math functions (sqrt, pow, abs, floor, ceil, rand, factorial, PI, ...)
   patterns/ — orchestration patterns (check-result, clean-prompt, ralph, team, fix-loop)
-  builtins/ — reference for core builtins by category (docs only)
+  builtins/ — reference for core builtins by category (docs only; includes subs, re-find, re-matches, re-seq, rand-int, ...)
 
 Effect namespaces (configurable, only usable in the quoted trailing expression):
   These are listed below if available to you. They include things like io and inter-agent communication.
