@@ -178,7 +178,12 @@ Example:
   Type coercion: float, double, long, bigdec, rationalize
   Constants:     PI, E, INF, NEG-INF, NaN
 
-All functions take and return numbers. Use (!describe math :fn-name) for any function."}
+All functions take and return numbers. Use (!describe math :fn-name) for any function.
+
+Recommended usage pattern: Write a function, evaluate, inspect the result.
+
+  ...▌(defn fib [n] (if (<= n 1) n (+ (fib (- n 1)) (fib (- n 2)))))
+  '(!call-now result (fib 10))"}
 
    ;; Basic
    :sqrt (fn [x] (Math/sqrt x))
