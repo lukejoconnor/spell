@@ -187,6 +187,24 @@ See [references/harness-inventory.md](references/harness-inventory.md) for full 
 
 **Note:** Exercism has a separate Clojure harness (`clj -M:dev -m exercism-bench run`) that is not yet unified with the Python harness and lacks `--trace` support. Prefer other benchmarks unless specifically requested.
 
+## Plotting Results
+
+Use `benchmarking/src/plot_results.py` for all result visualizations. It provides canonical colors, method labels, and horizontal bar charts with optional Wilson CIs and harness-vs-manual grouped bars.
+
+```python
+import sys
+sys.path.insert(0, "benchmarking/src")
+from plot_results import plot_benchmark, MethodResult
+
+results = [
+    MethodResult("spell_opus", 28, 50),
+    MethodResult("cc_opus", 22, 50),
+]
+plot_benchmark(results, title="Terminal-Bench", save_path="/tmp/tb.png")
+```
+
+Method keys: `spell_opus`, `cc_opus`, `oneshot_opus`, `spell_codex`, `codex_cli`, `oneshot_codex`. Pass `manual_results=` for harness-vs-manual grouped bars, `error_bars=True` for Wilson CIs. Run via `uv run` from the benchmarking directory.
+
 ## Best Practices
 
 - **Use `--trace` on every run.** Traces go to `traces/YYYY-MM-DD'T'HH-mm-ss/` by default. Without traces, post-hoc investigation is impossible.

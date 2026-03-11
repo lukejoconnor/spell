@@ -535,7 +535,7 @@
             (is (str/includes? (get-in (last @send-await-calls) [:msg :last-test-output]) "EXIT: 0"))
             (is (some #(str/includes? (:completion %) "reflector agent in patterns/fix-loop")
                       @register-calls))
-            (is (some #(str/includes? (:completion %) "code repair worker used by patterns/fix-loop")
+            (is (some #(str/includes? (:completion %) "You are a code repair worker.")
                       @register-calls))
             (is (every? #(str/includes? (:completion %) "shell commands, process execution and file watching.")
                         @register-calls))))
