@@ -5,7 +5,7 @@ description: "Run and analyze Spell benchmarks. Use when the user asks to: run a
 
 # Run Benchmark
 
-Run Spell benchmarks, compare against baselines, and investigate results. See [references/harness-inventory.md](references/harness-inventory.md) for exact CLI flags and dataset options.
+Run Spell benchmarks, compare against baselines, and investigate results. See `benchmarking/AGENTS.md` for full CLI flags, dataset options, and known gotchas.
 
 ## CRITICAL: Never Fabricate Results
 
@@ -56,11 +56,11 @@ Guidelines:
 **Default trace location:** `traces/YYYY-MM-DD'T'HH-mm-ss/` relative to the project root.
 
 ```bash
-# Example: math run with tracing
-cd benchmarking && uv run run_benchmark.py --dataset gsm8k --condition spell --n 30 --trace
+# Example: math run (tracing is on by default)
+cd benchmarking && uv run python bench.py general --dataset gsm8k --condition spell --n 30
 
-# Example: SWE-bench run with tracing
-cd benchmarking && uv run run_swebench.py --dataset mini --condition spell --trace
+# Example: SWE-bench run (evaluates by default after generation)
+cd benchmarking && uv run python bench.py swebench --dataset mini --condition spell
 ```
 
 ### 5. Investigate traces
@@ -176,16 +176,19 @@ For example, if the notebook entry is `2026-03-02-swebench-regression`, store tr
 
 ## Harness Quick Reference
 
-| Benchmark | Invoke | Datasets |
-|-----------|--------|----------|
-| GSM8K, MATH, AIME, Omni-MATH | `cd benchmarking && uv run run_benchmark.py` | `gsm8k`, `math_easy`, `math_hard`, `aime_2025`, `omni_math` |
-| BABILong | `cd benchmarking && uv run run_benchmark.py` | `babilong` (auto-selects io agent) |
-| SWE-bench | `cd benchmarking && uv run run_swebench.py` | `mini` (50), `lite` (300), `verified` (500) |
-| Orchestration | `clj -M:dev -m benchmark run` | 9 orchestration prompts |
+All Python harness commands use `cd benchmarking && uv run python bench.py <subcommand>`. Tracing is on by default for `general` and `swebench`.
 
-See [references/harness-inventory.md](references/harness-inventory.md) for full flag reference and example invocations.
+| Benchmark | Subcommand | Datasets |
+|-----------|------------|----------|
+| Math/Reasoning | `general` | `gsm8k`, `math_hard`, `math_easy`, `aime_2025`, `aime_2026`, `hmmt_feb_2025`, `hmmt_nov_2025`, `omni_math`, `omni_math_hard` |
+| Long-Context | `general` | `longbench_short`, `babilong_32k_qa2`, `babilong_32k`, `babilong_16k`, `babilong_8k` |
+| SWE-bench | `swebench` | `mini` (50), `lite` (300), `verified` (500), `pro` (731) |
+| Exercism | `exercism` | (use `--difficulty`, `--slugs`, `--n` to filter) |
+| FeatureBench | `featurebench` | (all tasks by default) |
+| ScienceAgentBench | `scienceagentbench` | (use `--n` to limit) |
+| Orchestration | `clj -M:dev -m benchmark run` | 4 orchestration prompts |
 
-**Note:** Exercism has a separate Clojure harness (`clj -M:dev -m exercism-bench run`) that is not yet unified with the Python harness and lacks `--trace` support. Prefer other benchmarks unless specifically requested.
+Exercism also has a legacy Clojure harness (`clj -M:dev -m exercism-bench run`) and a unified Python path (`bench.py exercism --unified`) that runs on the shared container infrastructure.
 
 ## Plotting Results
 
@@ -207,7 +210,8 @@ Method keys: `spell_opus`, `cc_opus`, `oneshot_opus`, `spell_codex`, `codex_cli`
 
 ## Best Practices
 
-- **Use `--trace` on every run.** Traces go to `traces/YYYY-MM-DD'T'HH-mm-ss/` by default. Without traces, post-hoc investigation is impossible.
+- **Always evaluate.** Never use `--no-evaluate`. The user wants to see evaluation results as soon as possible. SWE-bench evaluates by default after generation; do not disable this.
+- **Use `--trace` on every run.** Tracing is on by default for `general` and `swebench`. Without traces, post-hoc investigation is impossible.
 - **Use `--dry-run`** (Python harness) to verify config before committing to a run.
 - **Compare apples to apples.** Same model, same items, same retry policy. Use `--items` to re-run exact subsets.
 - **Errors are wrong answers.** The denominator is always total items attempted, never "items that ran without errors."
