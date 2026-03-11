@@ -1734,17 +1734,6 @@
   (testing "long from int"
     (is (= 5 (run-spell '(long 5))))))
 
-(deftest floor-builtin
-  (testing "floor positive"
-    (is (= 3 (run-spell '(floor 3.7)))))
-  (testing "floor negative"
-    (is (= -4 (run-spell '(floor -3.2))))))
-
-(deftest ceil-builtin
-  (testing "ceil positive"
-    (is (= 4 (run-spell '(ceil 3.2)))))
-  (testing "ceil negative"
-    (is (= -3 (run-spell '(ceil -3.7))))))
 
 (deftest compare-builtin
   (testing "compare equal"

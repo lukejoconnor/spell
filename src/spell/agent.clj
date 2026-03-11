@@ -47,6 +47,7 @@
    'globals globals/globals-namespace
    'agents runtime/agents-namespace
    'builtins stdlib/builtins-namespace
+   'reminders stdlib/reminders-namespace
    'strings stdlib/strings
    'math stdlib/math
    'patterns stdlib/patterns})

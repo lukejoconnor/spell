@@ -384,12 +384,6 @@
   (testing "replace all occurrences"
     (is (= "b-b-b" (run-spell-full '(strings/replace "a-a-a" "a" "b"))))))
 
-(deftest strings-subs-test
-  (testing "subs from start"
-    (is (= "llo" (run-spell-full '(strings/subs "hello" 2)))))
-  (testing "subs with start and end"
-    (is (= "ell" (run-spell-full '(strings/subs "hello" 1 4))))))
-
 (deftest strings-index-of-test
   (testing "index-of found"
     (is (= 6 (run-spell-full '(strings/index-of "hello world" "world")))))
@@ -435,24 +429,6 @@
     (is (= 6 (run-spell-full '(strings/last-index-of "hello hello" "hello")))))
   (testing "last-index-of not found"
     (is (nil? (run-spell-full '(strings/last-index-of "hello" "xyz"))))))
-
-(deftest strings-re-find-test
-  (testing "re-find match"
-    (is (= "123" (run-spell-full '(strings/re-find "\\d+" "abc123def")))))
-  (testing "re-find no match"
-    (is (nil? (run-spell-full '(strings/re-find "\\d+" "abcdef"))))))
-
-(deftest strings-re-matches-test
-  (testing "re-matches full match"
-    (is (= "123" (run-spell-full '(strings/re-matches "\\d+" "123")))))
-  (testing "re-matches partial does not match"
-    (is (nil? (run-spell-full '(strings/re-matches "\\d+" "abc123"))))))
-
-(deftest strings-re-seq-test
-  (testing "re-seq finds all matches"
-    (is (= ["1" "2" "3"] (run-spell-full '(strings/re-seq "\\d" "a1b2c3")))))
-  (testing "re-seq returns vector"
-    (is (vector? (run-spell-full '(strings/re-seq "\\d" "123"))))))
 
 (deftest strings-lower-case-test
   (testing "lower-case"
@@ -549,22 +525,6 @@
     (is (true? (run-spell-full '(math/infinite? math/NEG-INF)))))
   (testing "infinite? on number"
     (is (false? (run-spell-full '(math/infinite? 42))))))
-
-(deftest math-auto-promoting-test
-  (testing "+' with large numbers"
-    (is (= 20000000000N (run-spell-full '(math/+' 10000000000 10000000000)))))
-  (testing "*' with large numbers"
-    (is (number? (run-spell-full '(math/*' 1000000000 1000000000))))))
-
-(deftest math-coercion-test
-  (testing "float coercion"
-    (is (float? (run-spell-full '(math/float 42)))))
-  (testing "double coercion"
-    (is (= 42.0 (run-spell-full '(math/double 42)))))
-  (testing "long coercion"
-    (is (= 42 (run-spell-full '(math/long 42.9)))))
-  (testing "bigdec"
-    (is (= 42.5M (run-spell-full '(math/bigdec 42.5))))))
 
 ;; =============================================================================
 ;; Patterns namespace structural checks (Spell-specific)

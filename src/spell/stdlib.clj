@@ -20,11 +20,9 @@
   {:short-docs "String manipulation and regex (mirrors clojure.string)."
    :docs {:guide "STRINGS — Mirrors clojure.string. Regex functions take string patterns (not compiled regex).
 
-  subs          — substring: (strings/subs s start) or (strings/subs s start end)
-  re-find       — first regex match: (strings/re-find \"pattern\" s)
-  re-matches    — full-string regex match (returns nil if pattern doesn't match entire string)
+Same as Clojure: index-of, last-index-of, starts-with?, ends-with?, includes?, blank?, trim, replace, split, split-lines, join, lower-case, upper-case, capitalize.
 
-Same as Clojure: index-of, last-index-of, starts-with?, ends-with?, includes?, blank?, trim, replace, split, split-lines, join, lower-case, upper-case, capitalize, re-seq.
+Related builtins: subs, re-find, re-matches, re-seq.
 
 Use (!describe strings :fn-name) for any function."}
    :detail
@@ -41,44 +39,6 @@ Example:
   (strings/split \"a,b,c\" \",\")       ;; => [\"a\" \"b\" \"c\"]
   (strings/split \"hello world\" \"\\\\s+\") ;; => [\"hello\" \"world\"]"
 
-    :re-find
-    "Find first regex match in string. Pattern is a string (not a compiled regex).
-
-(strings/re-find pattern s)
-  pattern: regex pattern as a string
-  s: string to search
-
-Returns the first match as a string, or a vector [full-match group1 group2 ...] if the pattern has capture groups, or nil if no match.
-
-Example:
-  (strings/re-find \"\\\\d+\" \"abc 123 def\")          ;; => \"123\"
-  (strings/re-find \"(\\\\w+)@(\\\\w+)\" \"user@host\")  ;; => [\"user@host\" \"user\" \"host\"]"
-
-    :re-matches
-    "Match entire string against regex pattern. Pattern is a string (not a compiled regex).
-
-(strings/re-matches pattern s)
-  pattern: regex pattern as a string
-  s: string to match
-
-Returns the match (string or vector with groups) if the ENTIRE string matches, nil otherwise.
-
-Example:
-  (strings/re-matches \"\\\\d+\" \"123\")    ;; => \"123\"
-  (strings/re-matches \"\\\\d+\" \"abc123\") ;; => nil (not a full match)"
-
-    :re-seq
-    "Find all non-overlapping regex matches. Pattern is a string (not a compiled regex).
-
-(strings/re-seq pattern s)
-  pattern: regex pattern as a string
-  s: string to search
-
-Returns a vector of all matches (unlike Clojure which returns a lazy seq).
-
-Example:
-  (strings/re-seq \"\\\\d+\" \"a1 b22 c333\") ;; => [\"1\" \"22\" \"333\"]"
-
     :replace
     "Replace all occurrences of a literal string (not regex).
 
@@ -91,9 +51,6 @@ Returns the new string with all occurrences replaced.
 
 Example:
   (strings/replace \"hello world\" \"o\" \"0\") ;; => \"hell0 w0rld\""}
-   :subs (fn
-           ([s start] (subs s start))
-           ([s start end] (subs s start end)))
    :index-of (fn [s substr]
                (let [idx (.indexOf ^String (str s) ^String (str substr))]
                  (when (>= idx 0) idx)))
@@ -115,9 +72,7 @@ Example:
    :lower-case (fn [s] (str/lower-case (str s)))
    :upper-case (fn [s] (str/upper-case (str s)))
    :capitalize (fn [s] (str/capitalize (str s)))
-   :re-find (fn [pattern s] (re-find (re-pattern pattern) s))
-   :re-matches (fn [pattern s] (re-matches (re-pattern pattern) s))
-   :re-seq (fn [pattern s] (vec (re-seq (re-pattern pattern) s)))})
+   })
 
 ;; =============================================================================
 ;; math namespace (matches Java's Math/)
@@ -159,11 +114,11 @@ Example:
   Hyperbolic:    sinh, cosh, tanh
   Angles:        degrees (rad->deg), radians (deg->rad)
   Number theory: factorial, gcd, lcm
-  Misc:          hypot, rand, rand-int
+  Misc:          hypot, rand
   Type checks:   NaN?, infinite?
-  Auto-promoting: +', -', *', inc', dec'
-  Type coercion: float, double, long, bigdec, rationalize
   Constants:     PI, E, INF, NEG-INF, NaN
+
+Related builtins: rand-int, +', -', *', inc', dec', float, double, long, bigdec, rationalize.
 
 All functions take and return numbers. Use (!describe math :fn-name) for any function.
 
@@ -212,22 +167,9 @@ Recommended usage pattern: Write a function, evaluate, inspect the result.
    ;; Misc
    :hypot (fn [x y] (Math/hypot x y))
    :rand rand
-   :rand-int (fn [n] (rand-int n))
    ;; Type predicates
    :NaN? (fn [x] (Double/isNaN (double x)))
    :infinite? (fn [x] (Double/isInfinite (double x)))
-   ;; Auto-promoting arithmetic
-   :+' +'
-   :-' -'
-   :*' *'
-   :inc' inc'
-   :dec' dec'
-   ;; Type coercion
-   :float float
-   :double double
-   :long long
-   :bigdec bigdec
-   :rationalize rationalize
    ;; Constants
    :PI Math/PI
    :E Math/E
@@ -244,6 +186,15 @@ Recommended usage pattern: Write a function, evaluate, inspect the result.
   patterns-lib/patterns)
 
 ;; =============================================================================
+;; reminders namespace (docs-only, context reminder for LLM)
+;; =============================================================================
+
+(def reminders-namespace
+  "Docs-only namespace that reminds the LLM of the Spell execution context."
+  {:short-docs "Context reminders for Spell program completion."
+   :docs {:guide "REMINDER: This text belongs to the prefix of a Spell program that you are tasked with completing. Your entire response is code; embed all natural language within string literals. Follow the instructions on how to write correct Spell code in your system prompt."}})
+
+;; =============================================================================
 ;; builtins namespace (docs-only, for progressive disclosure)
 ;; =============================================================================
 
@@ -257,7 +208,7 @@ Categories (use (!describe builtins :category) for full listing):
   special-forms — quote, def, persist, do, if, let, fn, quine, loop, recur, for, try
   macros        — when, defn, cond, case, ->, ->>, !call-now, !peek/!peek-now, !print, !describe, think/rethink/!extend/!compact, ...
   effect        — eval, !llm-self, !ask-await, leaf-llm, describe-fn, llm (trailing expression only)
-  math          — +, -, *, /, inc, dec, mod, abs, max, min, floor, ceil, rand, ...
+  math          — +, -, *, /, inc, dec, mod, abs, max, min, rand, ...
   comparison    — <, >, =, not, nil?, empty?, identity, ...
   types         — string?, number?, vector?, map?, fn?, keyword?, name, type, int, double, ...
   strings       — str, pr-str, subs, cat, format, read-string, re-find, ...
@@ -353,8 +304,6 @@ Common mistakes:
   min — return the smallest of the given numeric arguments
   max-key — return the argument for which (f arg) is greatest
   min-key — return the argument for which (f arg) is smallest
-  floor — round down to nearest integer: (floor 2.7) => 2
-  ceil — round up to nearest integer: (ceil 2.1) => 3
   rand — return a random float between 0 (inclusive) and 1 (exclusive)
   rand-int — return a random integer from 0 to n-1 inclusive
   rand-nth — return a random element from a collection
