@@ -388,12 +388,16 @@
   (web/fetch url)           — fetch URL and return markdown/text
   (web/config)              — inspect active web config
 
-Default behavior:
-- Search backend: :serper when SERPER_API_KEY is available, else :duckduckgo
-- Fetch backend: Jina Reader (r.jina.ai) with raw HTML fallback
-- Truncation: 40,000 chars by default
+Recommended usage pattern: Search, then fetch the most relevant result.
 
-Configuration is loaded from config/web.edn if present."
+1. Search and peek the results.
+  ...▌'(!peek-now results (web/search \"clojure transducers\"))
+
+2. Next turn: results is available. Pick the best URL and fetch it.
+  ...(def results {:ok [{:title \"Transducers - Clojure\" :url \"https://clojure.org/reference/transducers\" :snippet \"...\"} ...]})
+  (rethink \"!peek-now binding disappears unless persisted.\")
+  ▌(persist best-url (get (first (:ok results)) :url))
+  '(!peek-now page (web/fetch best-url))"
     :search "Search the web. Returns {:ok [{:title :url :snippet} ...]} or {:error msg}."
     :fetch "Fetch a URL and return markdown/text. Returns {:ok text} or {:error msg}."
     :config "Return effective web config map with defaults applied."}
