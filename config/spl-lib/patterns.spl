@@ -36,7 +36,7 @@
       {:ok answer}
       {:wrong (strings/trim
                (if (strings/starts-with? trimmed "WRONG:")
-                 (strings/subs trimmed 6)
+                 (subs trimmed 6)
                  trimmed))})))
 
 ;; ---------------------------------------------------------------------------

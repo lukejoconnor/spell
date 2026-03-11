@@ -23,7 +23,8 @@
   "Namespaces always merged into variant-builtins (available everywhere)."
   {'strings stdlib/strings
    'math stdlib/math
-   'builtins stdlib/builtins-namespace})
+   'builtins stdlib/builtins-namespace
+   'reminders stdlib/reminders-namespace})
 
 (def ^:private max-recovery-attempts
   "Maximum number of recovery retries before failing."

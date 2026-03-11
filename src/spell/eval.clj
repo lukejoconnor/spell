@@ -360,7 +360,7 @@
    '+ +, '- -, '* *, '/ /, 'inc inc, 'dec dec,
    'int int, 'long long, 'float float, 'double double, 'bigdec bigdec, 'rationalize rationalize,
    'quot quot, 'mod mod, 'max max, 'min min, 'max-key max-key, 'min-key min-key, 'rem rem,
-   'abs abs, 'floor (fn [x] (long (Math/floor x))), 'ceil (fn [x] (long (Math/ceil x))),
+   'abs abs,
    'rand rand, 'rand-int (fn [n] (rand-int n)),
    '+' +', '-' -', '*' *', 'inc' inc', 'dec' dec',
    'parse-number (fn [s]
