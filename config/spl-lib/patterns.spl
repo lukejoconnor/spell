@@ -839,7 +839,7 @@
                 (if (not (map? parsed))
                   {:ok false
                    :feedback (str "Invalid reflector response. Return a Spell map literal with keys "
-                                  ":resolved, :diagnosis, :test-passed, :test-output, :panic, :reset-worker.\n"
+                                  ":resolved, :diagnosis, :test-passed, :test-output, optional :failed-output, :panic, :reset-worker.\n"
                                   "Raw response:\n"
                                   (pr-str raw))}
                   (let [panic? (= true (:panic parsed))
@@ -852,6 +852,8 @@
                         test-output (if (string? test-output-raw)
                                       test-output-raw
                                       (if (nil? test-output-raw) "" (pr-str test-output-raw)))
+                        failed-output-present (contains? parsed :failed-output)
+                        failed-output-raw (:failed-output parsed)
                         resolved (:resolved parsed)
                         reset-worker (= true (:reset-worker parsed))]
                     (if panic?
@@ -873,21 +875,35 @@
                             errors-4 (if (strings/blank? test-output)
                                        (conj errors-3 ":test-output must be a non-empty string")
                                        errors-3)
-                            has-errors (not (empty? errors-4))
-                            error-text (apply str (map (fn [x] (str "- " x "\n")) errors-4))]
+                            errors-5 (if (or (not failed-output-present)
+                                             (and (string? failed-output-raw)
+                                                  (not (strings/blank? failed-output-raw))))
+                                       errors-4
+                                       (conj errors-4 ":failed-output must be a non-empty string when provided"))
+                            has-errors (not (empty? errors-5))
+                            error-text (apply str (map (fn [x] (str "- " x "\n")) errors-5))]
                         (if has-errors
                           {:ok false
                            :feedback (str "Invalid reflector schema.\n"
                                           error-text
                                           "Raw response:\n"
                                           (pr-str raw))}
-                          {:ok true
-                           :panic false
-                           :resolved resolved
-                           :diagnosis diagnosis
-                           :test-passed test-passed
-                           :test-output test-output
-                           :reset-worker reset-worker})))))))
+                          (if failed-output-present
+                            {:ok true
+                             :panic false
+                             :resolved resolved
+                             :diagnosis diagnosis
+                             :test-passed test-passed
+                             :test-output test-output
+                             :failed-output failed-output-raw
+                             :reset-worker reset-worker}
+                            {:ok true
+                             :panic false
+                             :resolved resolved
+                             :diagnosis diagnosis
+                             :test-passed test-passed
+                             :test-output test-output
+                             :reset-worker reset-worker}))))))))
             collect-diff
             (fn []
               (str "GIT STATUS:\n"
@@ -897,11 +913,10 @@
                    "\n\nGIT DIFF (staged):\n"
                    (:out (io/sh "git diff --cached"))))
             reflector-msg
-            (fn [attempt last-test-output last-diff last-diagnosis last-worker-summary feedback]
+            (fn [attempt last-diff last-diagnosis last-worker-summary feedback]
               {:kind :reflect
                :attempt attempt
                :issue issue
-               :last-test-output last-test-output
                :last-diff last-diff
                :last-diagnosis last-diagnosis
                :last-worker-summary last-worker-summary
@@ -938,14 +953,15 @@
                  "4) Use io/read-lines and other read-only inspection tools to figure out the cause of the problem by reading the relevant source code.\n"
                  "5) Run the relevant tests yourself using io/sh and report the results via :test-passed and :test-output. Return :resolved false together with your :diagnosis, :test-passed false, and the full failing :test-output.\n\n"
                  "Subsequent turn instructions:\n"
-                 "1) Read the prior test output, diff, and worker summary.\n"
+                 "1) Read the prior diagnosis, diff, and worker summary.\n"
                  "2) Review the worker's changes before assessing whether they fully fix the issue, including edge cases, without breaking other behavior in the codebase.\n"
                  "3) Rerun the relevant tests yourself using io/sh. If the worker's changes fully fix the issue, also consider whether there are existing repo tests that should be run for this area, and include those results in :test-output.\n"
                  "4) Return a new :diagnosis plus fresh :test-passed and :test-output based on the tests you actually ran. The worker starts fresh each round without knowledge of its previous work.\n\n"
                  "Notes:\n"
                  "1) Harness commits reflector artifacts before worker edits. If worker edits are bad, you can roll back with git reset --hard HEAD.\n"
                  "2) You have the option to panic, which means that you cannot accomplish the task.\n"
-                 "3) The harness will trust the test results you report, so run the tests you describe and include enough output for the next round to understand what happened.\n\n"
+                 "3) The harness will trust the test results you report, so run the tests you describe and include enough output for the next round to understand what happened.\n"
+                 "4) If :test-output is summarized and the worker needs the exact failing command/output, optionally include :failed-output with that worker-facing context.\n\n"
                  io-guide-context
                  "Output format:\n"
                  "Return ONLY a Spell map literal with exactly:\n"
@@ -954,7 +970,8 @@
                  " :test-passed true|false\n"
                  " :test-output \"verbatim or summarized output from the tests you ran\"\n"
                  " :panic false\n"
-                 " :reset-worker false}\n\n"
+                 " :reset-worker false}\n"
+                 "Optionally include :failed-output \"exact failing command/output for the worker\".\n\n"
                  "Set :reset-worker true to get a fresh worker with cleared context.\n"
                  "Set :panic true only if fundamentally unsolvable; include diagnosis.")
             reflector-init-completion
@@ -963,7 +980,8 @@
                  "'(!extend))))")
             worker-init-prompt
             (str "You are a code repair worker.\n\n"
-                 "Use :issue + :diagnosis to make targeted implementation edits.\n\n"
+                 "Use :issue + :diagnosis to make targeted implementation edits.\n"
+                 "If the reflector provides :failed-output, use it as the authoritative failing test context.\n\n"
                  "Steps:\n"
                  "1) Read any files or file snippets needed to understand the diagnosis, preferably using io/read-lines.\n"
                  "2) Plan your changes. Think about whether the planned changes fully address the problem and avoid breaking any existing behavior.\n"
@@ -985,14 +1003,12 @@
             (loop [attempt 0
                    worker-generation 0
                    active-worker-handle worker-handle
-                   last-test-output ""
                    last-diff ""
                    last-diagnosis ""
                    last-worker-summary nil
                    feedback ""]
               (let [reflector-raw (blocking/send-await reflector-handle
                                                        (reflector-msg attempt
-                                                                      last-test-output
                                                                       last-diff
                                                                       last-diagnosis
                                                                       last-worker-summary
@@ -1003,7 +1019,6 @@
                   (recur attempt
                          worker-generation
                          active-worker-handle
-                         last-test-output
                          last-diff
                          last-diagnosis
                          last-worker-summary
@@ -1034,7 +1049,6 @@
                         (recur attempt
                                worker-generation
                                active-worker-handle
-                               test-output
                                (collect-diff)
                                diagnosis
                                last-worker-summary
@@ -1063,7 +1077,7 @@
                          :worker-handle active-worker-handle})
 
                       :else
-                      (let [pre-output test-output]
+                      (do
                         ;; Checkpoint reflector-authored tests/diagnosis artifacts so
                         ;; reflector can roll back worker edits with git reset --hard HEAD.
                         (maybe-commit (str "fix-loop: reflector checkpoint (attempt " (inc attempt) ")"))
@@ -1075,19 +1089,24 @@
                                                    active-worker-handle)
                               _ (when (:reset-worker reflector)
                                   (agents/register next-worker-handle worker-init-completion))
+                              worker-msg (if (contains? reflector :failed-output)
+                                           {:kind :repair
+                                            :attempt (inc attempt)
+                                            :issue issue
+                                            :diagnosis diagnosis
+                                            :failed-output (:failed-output reflector)}
+                                           {:kind :repair
+                                            :attempt (inc attempt)
+                                            :issue issue
+                                            :diagnosis diagnosis})
                               worker-result (blocking/send-await
                                              next-worker-handle
-                                             {:kind :repair
-                                              :attempt (inc attempt)
-                                              :issue issue
-                                              :diagnosis diagnosis
-                                              :failed-output pre-output})
+                                             worker-msg)
                               worker-summary (extract-worker-summary worker-result)
                               attempt-diff (collect-diff)]
                           (recur (inc attempt)
                                  next-worker-generation
                                  next-worker-handle
-                                 pre-output
                                  attempt-diff
                                  diagnosis
                                  worker-summary

@@ -534,8 +534,10 @@
             (is (= (-> @register-calls second :handle) (:worker-handle result)))
             (is (= "created fixed.txt"
                    (get-in (last @send-await-calls) [:msg :last-worker-summary])))
-            (is (= "FAIL: fixed.txt is missing"
-                   (get-in (last @send-await-calls) [:msg :last-test-output])))
+            (is (not (contains? (get-in (last @send-await-calls) [:msg])
+                                :last-test-output)))
+            (is (not (contains? (get-in (second @send-await-calls) [:msg])
+                                :failed-output)))
             (is (some #(str/includes? (:completion %) "reflector agent in patterns/fix-loop")
                       @register-calls))
             (is (some #(str/includes? (:completion %) "You are a code repair worker.")
@@ -607,8 +609,7 @@
             (is (= [0 1 2] (mapv :attempt @reflector-msgs)))
             (is (= "Create file-a.txt and file-b.txt."
                    (:last-diagnosis (second @reflector-msgs))))
-            (is (= "FAIL: file-a.txt and file-b.txt are missing"
-                   (:last-test-output (second @reflector-msgs))))
+            (is (not (contains? (second @reflector-msgs) :last-test-output)))
             (is (= "added file-a only"
                    (:last-worker-summary (second @reflector-msgs))))))
         (finally
@@ -653,7 +654,7 @@
           (cleanup-dir dir))))))
 
 (deftest fix-loop-reflector-string-map-test
-  (testing "parses string-map reflector responses and forwards reflector test output"
+  (testing "parses string-map reflector responses and forwards optional reflector failed-output"
     (let [dir (create-temp-git-repo
                {"focused.sh" "#!/bin/bash\ntest -f target.txt && test -f secondary.txt"
                 "broad.sh" "#!/bin/bash\nexit 1"})
@@ -665,7 +666,7 @@
                             :reflect (do
                                        (swap! reflect-count inc)
                                        (if (= 1 @reflect-count)
-                                         "{:resolved false :diagnosis \"Create target.txt and secondary.txt\" :test-passed false :test-output \"FAIL: focused test missing files\" :panic false}"
+                                         "{:resolved false :diagnosis \"Create target.txt and secondary.txt\" :test-passed false :test-output \"Focused test failed; see failed-output for the exact command\" :failed-output \"COMMAND: ./focused.sh\\nEXIT: 1\\nSTDERR:\\n\" :panic false}"
                                          "{:resolved true :diagnosis \"Issue is resolved\" :test-passed true :test-output \"PASS: focused test succeeded\" :panic false}"))
                             :repair (do
                                       (swap! repair-msgs conj msg)
@@ -683,7 +684,7 @@
             (is (= true (:pass result)))
             (is (= "PASS: focused test succeeded" (:test-output result)))
             (is (= 1 (count @repair-msgs)))
-            (is (= "FAIL: focused test missing files"
+            (is (= "COMMAND: ./focused.sh\nEXIT: 1\nSTDERR:\n"
                    (:failed-output (first @repair-msgs))))))
         (finally
           (cleanup-dir dir))))))
