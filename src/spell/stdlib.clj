@@ -21,23 +21,10 @@
    :docs {:guide "STRINGS — Mirrors clojure.string. Regex functions take string patterns (not compiled regex).
 
   subs          — substring: (strings/subs s start) or (strings/subs s start end)
-  index-of      — first index of substring, or nil
-  last-index-of — last index of substring, or nil
-  starts-with?  — test prefix
-  ends-with?    — test suffix
-  includes?     — test containment
-  blank?        — nil, empty, or whitespace only
-  trim          — strip leading/trailing whitespace
-  replace       — replace all occurrences: (strings/replace s match replacement)
-  split         — split by regex string: (strings/split s \"pattern\")
-  split-lines   — split by newlines
-  join          — join: (strings/join coll) or (strings/join sep coll)
-  lower-case    — to lowercase
-  upper-case    — to uppercase
-  capitalize    — capitalize first char
   re-find       — first regex match: (strings/re-find \"pattern\" s)
-  re-matches    — full-string regex match
-  re-seq        — all regex matches as vector
+  re-matches    — full-string regex match (returns nil if pattern doesn't match entire string)
+
+Same as Clojure: index-of, last-index-of, starts-with?, ends-with?, includes?, blank?, trim, replace, split, split-lines, join, lower-case, upper-case, capitalize, re-seq.
 
 Use (!describe strings :fn-name) for any function."}
    :detail
