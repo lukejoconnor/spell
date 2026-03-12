@@ -63,7 +63,11 @@ cd benchmarking && uv run python bench.py general --dataset gsm8k --condition sp
 cd benchmarking && uv run python bench.py swebench --dataset mini --condition spell
 ```
 
-### 5. Investigate traces
+### 5. Investigate traces — 100% coverage, comprehensive detail
+
+**The user CONSTANTLY requests more detail from trace analysis. Do not give terse summaries. Every trace must be analyzed, and every analysis must be comprehensive.**
+
+**100% trace coverage is MANDATORY.** Dispatch a `trace-checker` subagent for EVERY item in the run — not just errors, not just interesting ones, ALL of them. P5 (both right) traces are just as important as P1 (errors) because they reveal technique differences, cost patterns, and Spell feature usage. Skipping "boring" traces means missing the full picture.
 
 **Summary-first triage:** Before dispatching trace investigation subagents, run `spell.trace-tool --summary` on the trace root for a quick overview of tracked forms, namespace usage, errors, and investigation flags:
 
@@ -75,7 +79,7 @@ clj -M -m spell.trace-tool --trace-root traces/2026-03-08T10-00-00 --summary
 clj -M -m spell.trace-tool --trace-root traces/2026-03-08T10-00-00 --summary --tsv
 ```
 
-Use investigation flags and the priority table below to decide which traces to examine first.
+Use investigation flags and the priority table below to decide investigation order (NOT which to skip — you skip NONE).
 
 **Dispatch `trace-checker` subagents** — one per item or small group. **Always** dispatch subagents for trace investigation, even for a single item. Pass the task parameters in free text:
 
@@ -94,7 +98,7 @@ Agent tool call:
 
 The `trace-checker` agent (defined in `.claude/agents/trace-checker.md`) has the full investigation methodology, error classification, output format, and `spell.trace-tool` documentation baked into its system prompt.
 
-Investigation priority:
+Investigation priority (determines ORDER, not coverage):
 
 | Priority | Condition | Why |
 |----------|-----------|-----|
@@ -102,7 +106,7 @@ Investigation priority:
 | **P2** | Spell wrong, baseline right | Reveals capability gaps |
 | **P3** | Spell right, baseline wrong | Evidence of Spell's value |
 | **P4** | Both wrong | Understanding the difficulty frontier |
-| **P5** | Both right | Cost/latency comparison |
+| **P5** | Both right | Cost/latency comparison, feature usage patterns |
 
 **When to investigate comparison traces:** For P2 (Spell loss) and P3 (Spell win), include the trace root in the subagent prompt so it can locate the comparison method's trace. The subagent knows the trace directory layout and will read both traces to diagnose what differed. For P1, P4, and P5, comparison traces are not needed unless specifically requested.
 
@@ -156,13 +160,41 @@ Include error categorization when there are failures:
 - 1 unbound symbol (effect guard scoping)
 ```
 
+**Comprehensive trace analysis report.** After all trace-checker subagents return, present a detailed analysis section. This is NOT optional — the user ALWAYS wants this level of detail:
+
+```markdown
+### Trace Analysis
+
+#### Feature Usage Overview
+Summary of Spell feature usage across ALL traces in the run:
+- Which features were commonly used vs rarely used vs never used
+- Patterns in how features were employed (e.g., "rethink used in 8/10 traces, always to prune tool output")
+- Any surprising usage patterns or absences
+
+#### Per-Item Analysis
+For EVERY item (not just errors/failures), include the trace-checker's findings:
+- Narrative of what happened
+- Feature inventory
+- Key findings with evidence
+- Error analysis where applicable (including recovery rounds, causes, outcomes)
+
+#### Interesting Traces
+Highlight 2-5 traces that are particularly interesting and explain WHY:
+- Traces where Spell features demonstrably helped or hurt
+- Traces with unusual error recovery patterns
+- Traces that reveal capability gaps or strengths
+- Explain HOW the feature was used, WHY the agent chose it, and TO WHAT EFFECT
+```
+
+Do NOT collapse trace analysis into a terse table. The table (§6 results format) provides the quantitative summary; the trace analysis section provides the qualitative depth. Both are required.
+
 ### 7. Fix, re-run, and finalize
 
 **Harness/scoring issues:** If the root cause is clear and the fix is obvious, fix it and re-run the affected items.
 
 **Model performance issues:** Present the diagnosis and let the user decide. Don't speculatively modify prompts or agents.
 
-**Update the notebook entry** with final results: accuracy table, error categorization with specific error messages from traces, comparison table (if applicable), and which run directories were used for scoring.
+**Update the notebook entry** with final results: accuracy table, error categorization with specific error messages from traces, comparison table (if applicable), per-item trace analysis summaries, and which run directories were used for scoring.
 
 ## Trace storage
 
