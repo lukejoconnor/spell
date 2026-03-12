@@ -793,7 +793,7 @@
 ;;    :max-retries 5}
 ;;
 ;; Reflector must return a map-like value with:
-;;   {:resolved true|false :diagnosis "..." :test-passed true|false :test-output "..." :panic false :reset-worker false}
+;;   {:resolved true|false :diagnosis "..." :test-output "..." :panic false :reset-worker false}
 ;;
 ;; Notes:
 ;; - The reflector writes/updates tests and decides when issue is resolved.
@@ -839,7 +839,7 @@
                 (if (not (map? parsed))
                   {:ok false
                    :feedback (str "Invalid reflector response. Return a Spell map literal with keys "
-                                  ":resolved, :diagnosis, :test-passed, :test-output, optional :failed-output, :panic, :reset-worker.\n"
+                                  ":resolved, :diagnosis, :test-output, optional :failed-output, :panic, :reset-worker.\n"
                                   "Raw response:\n"
                                   (pr-str raw))}
                   (let [panic? (= true (:panic parsed))
@@ -847,7 +847,6 @@
                         diagnosis (if (string? diagnosis-raw)
                                     diagnosis-raw
                                     (if (nil? diagnosis-raw) "" (pr-str diagnosis-raw)))
-                        test-passed (:test-passed parsed)
                         test-output-raw (:test-output parsed)
                         test-output (if (string? test-output-raw)
                                       test-output-raw
@@ -869,17 +868,14 @@
                             errors-2 (if (strings/blank? diagnosis)
                                        (conj errors-1 ":diagnosis must be a non-empty string")
                                        errors-1)
-                            errors-3 (if (or (= true test-passed) (= false test-passed))
-                                       errors-2
-                                       (conj errors-2 ":test-passed must be true or false"))
-                            errors-4 (if (strings/blank? test-output)
-                                       (conj errors-3 ":test-output must be a non-empty string")
-                                       errors-3)
+                            errors-3 (if (strings/blank? test-output)
+                                       (conj errors-2 ":test-output must be a non-empty string")
+                                       errors-2)
                             errors-5 (if (or (not failed-output-present)
                                              (and (string? failed-output-raw)
                                                   (not (strings/blank? failed-output-raw))))
-                                       errors-4
-                                       (conj errors-4 ":failed-output must be a non-empty string when provided"))
+                                       errors-3
+                                       (conj errors-3 ":failed-output must be a non-empty string when provided"))
                             has-errors (not (empty? errors-5))
                             error-text (apply str (map (fn [x] (str "- " x "\n")) errors-5))]
                         (if has-errors
@@ -893,7 +889,7 @@
                              :panic false
                              :resolved resolved
                              :diagnosis diagnosis
-                             :test-passed test-passed
+
                              :test-output test-output
                              :failed-output failed-output-raw
                              :reset-worker reset-worker}
@@ -901,7 +897,7 @@
                              :panic false
                              :resolved resolved
                              :diagnosis diagnosis
-                             :test-passed test-passed
+
                              :test-output test-output
                              :reset-worker reset-worker}))))))))
             collect-diff
@@ -947,16 +943,17 @@
                  "You own diagnosis and testing. The worker owns the solution.\n"
                  "The purpose of this pattern is for you to focus on testing rather than fixing.\n\n"
                  "Turn one instructions:\n"
-                 "1) Write a detailed :diagnosis. Describe the problem clearly, explain the suspected root cause, identify the responsible file(s) and exact line(s) of code when possible, and quote the exact code lines by slicing the vectors you read.\n"
-                 "2) Use io/read-lines and other read-only inspection tools to figure out the cause of the problem by reading the relevant source code.\n"
-                 "3) Discover the repository's existing test suite for the affected area. Find the test framework (pytest, go test, npm test, etc.), locate relevant test files, and install any dependencies needed to run them.\n"
-                 "4) Create a test that passes if and only if the issue is resolved. Prefer running the repo's own tests for the affected module. If the existing tests don't cover the bug, write a minimal reproducer IN ADDITION to the repo tests. Your test MUST invoke actual test execution — grep, build, or other static checks are necessary but NOT sufficient on their own.\n"
-                 "5) Run the tests yourself using io/sh. Return :resolved false together with your :diagnosis, :test-passed false, and the full failing :test-output.\n\n"
+                 "1) Use io/read-lines, io/grep, (io/sh \"ls ...\"), and other tools to explore the repository, read relevant source code, and discover the existing test suite. Install any test dependencies needed.\n"
+                 "2) Run the existing test suite. Determine whether any current failures are related to the reported issue.\n"
+                 "3) Iteratively read and think to understand the root cause of the problem.\n"
+                 "4) Write a detailed :diagnosis. Describe the problem clearly, explain the root cause, identify the responsible file(s) and exact line(s) of code, and quote the exact code lines by slicing the vectors you read.\n"
+                 "5) Write one or more tests that pass if and only if the issue is resolved. Your tests MUST invoke actual test execution — grep, build, or other static checks are NOT sufficient.\n"
+                 "6) Run the tests and confirm that they fail. If they do not fail, revise the tests or your diagnosis.\n"
+                 "7) Return :resolved false with your :diagnosis and :test-output.\n\n"
                  "Subsequent turn instructions:\n"
-                 "1) Read the prior diagnosis, diff, and worker summary.\n"
-                 "2) Review the worker's changes before assessing whether they fully fix the issue, including edge cases, without breaking other behavior in the codebase.\n"
-                 "3) Before returning :resolved true, you MUST run the repo's existing tests for the affected area. A fix is not resolved until repo tests pass. If you cannot find relevant repo tests, state this explicitly in :diagnosis.\n"
-                 "4) Return a new :diagnosis plus fresh :test-passed and :test-output based on the tests you actually ran. The worker starts fresh each round without knowledge of its previous work.\n\n"
+                 "1) Run your test from the previous round.\n"
+                 "2) If the test passes: inspect the diff to confirm the fix covers all edge cases and does not break other behavior. Run the repo's broader test suite. If everything passes, return :resolved true.\n"
+                 "3) If the test fails: inspect the diff to identify whether the worker's approach was on the right track. If so, update your :diagnosis to explain why it is still partially wrong. If not, revert the worker's changes using (io/sh \"git checkout -- .\"). Note that the worker starts fresh each round without knowledge of its previous work. Return :resolved false with updated :diagnosis and :test-output.\n\n"
                  "Notes:\n"
                  "1) Harness commits reflector artifacts before worker edits. If worker edits are bad, you can roll back with git reset --hard HEAD.\n"
                  "2) You have the option to panic, which means that you cannot accomplish the task.\n"
@@ -967,7 +964,6 @@
                  "Return ONLY a Spell map literal with exactly:\n"
                  "{:resolved true|false\n"
                  " :diagnosis \"why issue is or is not resolved\"\n"
-                 " :test-passed true|false\n"
                  " :test-output \"verbatim or summarized output from the tests you ran\"\n"
                  " :panic false\n"
                  " :reset-worker false}\n"
@@ -1035,25 +1031,8 @@
                   :else
                   (let [diagnosis (:diagnosis reflector)
                         resolved (:resolved reflector)
-                        test-passed (:test-passed reflector)
                         test-output (:test-output reflector)]
                     (cond
-                      (not (= test-passed resolved))
-                      (let [mismatch-feedback
-                            (str "Expected :test-passed to match :resolved.\n"
-                                 "Reflector said :resolved " resolved
-                                 " but :test-passed was " test-passed ".\n"
-                                 "If :resolved is false, :test-passed must be false.\n"
-                                 "If :resolved is true, :test-passed must be true.\n\n"
-                                 test-output)]
-                        (recur attempt
-                               worker-generation
-                               active-worker-handle
-                               (collect-diff)
-                               diagnosis
-                               last-worker-summary
-                               mismatch-feedback))
-
                       resolved
                       (do
                         (maybe-commit (str "fix-loop: resolved (worker attempts " attempt ")"))

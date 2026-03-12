@@ -502,12 +502,12 @@
                                        (if (= 1 @reflect-count)
                                          {:resolved false
                                           :diagnosis "Create fixed.txt."
-                                          :test-passed false
+
                                           :test-output "FAIL: fixed.txt is missing"
                                           :panic false}
                                          {:resolved true
                                           :diagnosis "Issue resolved."
-                                          :test-passed true
+
                                           :test-output "PASS: fixed.txt exists"
                                           :panic false}))
                             :repair (do
@@ -565,17 +565,17 @@
                                        (case @reflect-count
                                          1 {:resolved false
                                             :diagnosis "Create file-a.txt and file-b.txt."
-                                            :test-passed false
+  
                                             :test-output "FAIL: file-a.txt and file-b.txt are missing"
                                             :panic false}
                                          2 {:resolved false
                                             :diagnosis "file-a.txt exists. Create file-b.txt next."
-                                            :test-passed false
+  
                                             :test-output "FAIL: file-b.txt is still missing"
                                             :panic false}
                                          {:resolved true
                                           :diagnosis "Both files exist and issue is resolved."
-                                          :test-passed true
+
                                           :test-output "PASS: both files exist"
                                           :panic false}))
                             :repair (do
@@ -666,8 +666,8 @@
                             :reflect (do
                                        (swap! reflect-count inc)
                                        (if (= 1 @reflect-count)
-                                         "{:resolved false :diagnosis \"Create target.txt and secondary.txt\" :test-passed false :test-output \"Focused test failed; see failed-output for the exact command\" :failed-output \"COMMAND: ./focused.sh\\nEXIT: 1\\nSTDERR:\\n\" :panic false}"
-                                         "{:resolved true :diagnosis \"Issue is resolved\" :test-passed true :test-output \"PASS: focused test succeeded\" :panic false}"))
+                                         "{:resolved false :diagnosis \"Create target.txt and secondary.txt\" :test-output \"Focused test failed; see failed-output for the exact command\" :failed-output \"COMMAND: ./focused.sh\\nEXIT: 1\\nSTDERR:\\n\" :panic false}"
+                                         "{:resolved true :diagnosis \"Issue is resolved\" :test-output \"PASS: focused test succeeded\" :panic false}"))
                             :repair (do
                                       (swap! repair-msgs conj msg)
                                       (spit (str dir "/target.txt") "t")
@@ -726,8 +726,6 @@
             (is (str/includes? (:feedback (second @reflector-msgs))
                                "Invalid reflector schema"))
             (is (str/includes? (:feedback (second @reflector-msgs))
-                               ":test-passed must be true or false"))
-            (is (str/includes? (:feedback (second @reflector-msgs))
                                ":test-output must be a non-empty string"))))
         (finally
           (cleanup-dir dir))))))
@@ -740,7 +738,6 @@
                           (case (:kind msg)
                             :reflect {:resolved false
                                       :diagnosis "Create target.txt"
-                                      :test-passed false
                                       :test-output "FAIL: target.txt missing"
                                       :panic false}
                             :repair (do
@@ -768,70 +765,6 @@
         (finally
           (cleanup-dir dir))))))
 
-(deftest fix-loop-reflector-result-mismatch-reprompts-without-consuming-worker-retries
-  (testing "resolved/test-result mismatch reprompts reflector and does not increment worker attempt"
-    (let [dir (create-temp-git-repo
-               {"run_tests.sh" "#!/bin/bash\ntest -f target.txt"
-                "always_pass.sh" "#!/bin/bash\nexit 0"
-                "always_fail.sh" "#!/bin/bash\nexit 1"})
-          reflect-count (atom 0)
-          repair-count (atom 0)
-          reflector-msgs (atom [])
-          register-fn (fn [handle completion] handle)
-          send-await-fn
-          (fn [_handle msg]
-            (case (:kind msg)
-              :reflect (do
-                         (swap! reflect-count inc)
-                         (swap! reflector-msgs conj msg)
-                         (case @reflect-count
-                           1 {:resolved false
-                              :diagnosis "Need target file."
-                              :test-passed true
-                              :test-output "PASS: contradictory unresolved result"
-                              :panic false}
-                           2 {:resolved false
-                              :diagnosis "Need target file."
-                              :test-passed false
-                              :test-output "FAIL: target.txt is missing"
-                              :panic false}
-                           3 {:resolved true
-                              :diagnosis "Looks resolved."
-                              :test-passed false
-                              :test-output "FAIL: contradictory resolved result"
-                              :panic false}
-                           {:resolved true
-                            :diagnosis "Issue is resolved."
-                            :test-passed true
-                            :test-output "PASS: target.txt exists"
-                            :panic false}))
-              :repair (do
-                        (swap! repair-count inc)
-                        (spit (str dir "/target.txt") "ok")
-                        {:summary "created target.txt"})
-              {:panic true :diagnosis "unexpected message"}))]
-      (try
-        (with-redefs [sio/sh (sh-in-dir dir)]
-          (let [result (run-fix-loop
-                        {:issue "Need target file"
-                         :max-retries 1}
-                        {'agents {:register register-fn}
-                         'blocking {:send-await send-await-fn}})]
-            (is (= true (:pass result)))
-            (is (= "Issue is resolved." (:diagnosis result)))
-            (is (= "PASS: target.txt exists" (:test-output result)))
-            (is (= "created target.txt" (:last-worker-summary result)))
-            (is (keyword? (:reflector-handle result)))
-            (is (keyword? (:worker-handle result)))
-            (is (= 4 @reflect-count))
-            (is (= 1 @repair-count))
-            (is (= [0 0 1 1] (mapv :attempt @reflector-msgs)))
-            (is (str/includes? (:feedback (second @reflector-msgs))
-                               "Expected :test-passed to match :resolved"))
-            (is (str/includes? (:feedback (nth @reflector-msgs 3))
-                               "Expected :test-passed to match :resolved"))))
-        (finally
-          (cleanup-dir dir))))))
 
 (deftest fix-loop-reset-worker-fresh-handle-test
   (testing "reset-worker registers and uses a fresh worker handle"
@@ -849,13 +782,13 @@
                                        (if (= 1 @reflect-count)
                                          {:resolved false
                                           :diagnosis "Create target.txt with a fresh worker."
-                                          :test-passed false
+
                                           :test-output "FAIL: target.txt missing"
                                           :panic false
                                           :reset-worker true}
                                          {:resolved true
                                           :diagnosis "Issue resolved."
-                                          :test-passed true
+
                                           :test-output "PASS: target.txt exists"
                                           :panic false}))
                             :repair (do
