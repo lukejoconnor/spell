@@ -20,3 +20,12 @@
     (let [start (System/nanoTime)
           out ((var benchmark-api/response-ok) "spell" start {:result {'result "abc"}})]
       (is (= "abc" (:result out))))))
+
+(deftest fireworks-model-spec-and-default-agent-test
+  (testing "parse-model-spec accepts fireworks prefix"
+    (is (= {:provider "fireworks" :model "glm-5"}
+           ((var benchmark-api/parse-model-spec) "fireworks:glm-5"))))
+
+  (testing "default-agent resolution uses the fireworks provider config"
+    (is (= "config/providers/fireworks.provider.edn"
+           (get benchmark-api/provider-edn-by-prefix "fireworks")))))

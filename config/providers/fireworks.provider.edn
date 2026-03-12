@@ -1,0 +1,15 @@
+{:type :fireworks
+ :api-key-env "FIREWORKS_API_KEY"
+ :base-url "https://api.fireworks.ai/inference/v1"
+ :model "accounts/fireworks/models/glm-5"
+ :max-tokens 16384
+ :convert-think? true
+ :default-agent "../agents/base-pf.agent.edn"
+ :costs {"accounts/fireworks/models/glm-5"
+         {:input 1.00 :cache-read-input 0.20 :output 3.20}
+         "accounts/fireworks/models/kimi-k2"
+         {:input 0.60 :cache-read-input 0.30 :output 2.50}
+         "accounts/fireworks/models/deepseek-v3p1"
+         {:input 0.56 :cache-read-input 0.28 :output 1.68}
+         "accounts/fireworks/models/qwen3-235b"
+         {:input 0.20 :cache-read-input 0.10 :output 0.60}}}
