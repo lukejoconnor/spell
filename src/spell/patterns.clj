@@ -129,7 +129,6 @@ Execution model:
 Reflector output contract:
   {:resolved boolean
    :diagnosis string
-   :test-passed boolean
    :test-output string
    :panic boolean
    :reset-worker boolean}

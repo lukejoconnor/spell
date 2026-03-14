@@ -154,6 +154,20 @@
       ;; Should not throw
       (provider/track-usage! "model" {:input_tokens 100 :output_tokens 50}))))
 
+(deftest current-cost-supports-explicit-cache-read-price-test
+  (testing "current-cost uses model-specific cache read pricing when provided"
+    (let [usage-atom (atom {:by-model {"accounts/fireworks/models/glm-5"
+                                       {:input_tokens 1000000
+                                        :output_tokens 500000
+                                        :cache_read_input_tokens 200000
+                                        :calls 1
+                                        :cache_creation_input_tokens 0}}
+                            :cost-table {"accounts/fireworks/models/glm-5"
+                                         {:input 1.00
+                                          :cache-read-input 0.20
+                                          :output 3.20}}})]
+      (is (= 2.64 (double (provider/current-cost usage-atom)))))))
+
 ;; =============================================================================
 ;; make-llm factory tests
 ;; =============================================================================
@@ -379,6 +393,22 @@
             (is (= :anthropic-tc (:provider p)))
             (is (= "claude-sonnet-4-5-20250929" (get-in p [:opts :model])))))
         (finally
+          (.delete provider-file)))))
+
+  (testing "load-provider supports fireworks type"
+    (let [provider-file (java.io.File/createTempFile "provider-fireworks-" ".provider.edn")]
+      (try
+        (spit provider-file (pr-str {:type :fireworks
+                                     :model "glm-5"
+                                     :convert-think? false}))
+        (with-redefs [provider/fireworks-provider (fn [opts]
+                                                    {:provider :fireworks
+                                                     :opts opts})]
+          (let [p (provider/load-provider (.getAbsolutePath provider-file))]
+            (is (= :fireworks (:provider p)))
+            (is (= "glm-5" (get-in p [:opts :model])))
+            (is (false? (get-in p [:opts :convert-think?])))))
+        (finally
           (.delete provider-file))))))
 
 (deftest ollama-parse-response-test
@@ -489,6 +519,46 @@
                                                   :type "invalid_request_error"}})]
       (is (thrown-with-msg? Exception #"OpenAI Responses API error"
             (#'provider/parse-openai-responses-response response-body))))))
+
+(deftest fireworks-provider-construction-and-helpers-test
+  (testing "fireworks-provider defaults and expands short model ids"
+    (let [p (provider/fireworks-provider {:api-key "fw-test"})]
+      (is (instance? spell.provider.FireworksProvider p))
+      (is (= "https://api.fireworks.ai/inference/v1" (:base-url p)))
+      (is (= "accounts/fireworks/models/glm-5" (:model p)))
+      (is (:convert-think? p))))
+
+  (testing "fireworks-provider strips trailing slash and preserves full account model ids"
+    (let [p (provider/fireworks-provider {:api-key "fw-test"
+                                          :base-url "https://api.fireworks.ai/inference/v1/"
+                                          :model "accounts/fireworks/models/deepseek-v3p1"})]
+      (is (= "https://api.fireworks.ai/inference/v1" (:base-url p)))
+      (is (= "accounts/fireworks/models/deepseek-v3p1" (:model p)))))
+
+  (testing "format-completions-prompt leaves assistant prefix open"
+    (is (= "<|im_start|>system\nsys<|im_end|>\n<|im_start|>user\nuser<|im_end|>\n<|im_start|>assistant\n(prefill"
+           (#'provider/format-completions-prompt
+            (:chatml provider/fireworks-chat-templates)
+            "sys"
+            "user"
+            "(prefill"))))
+
+  (testing "convert-think-tags rewrites a leading think block into Spell"
+    (is (= "(think \"reasoning\\nnext\") (def x 1)"
+           (#'provider/convert-think-tags "<think>reasoning\nnext</think>\n(def x 1)")))
+    (is (= "(def x 1)"
+           (#'provider/convert-think-tags "(def x 1)"))))
+
+  (testing "parse-fireworks-completions-response separates cached prompt tokens"
+    (let [response-body (json/write-str {:choices [{:text "<think>plan</think>\n(def x 1)"}]
+                                         :usage {:prompt_tokens 120
+                                                 :completion_tokens 25
+                                                 :prompt_tokens_details {:cached_tokens 20}}})
+          result (#'provider/parse-fireworks-completions-response response-body)]
+      (is (= "<think>plan</think>\n(def x 1)" (:text result)))
+      (is (= 100 (get-in result [:usage :input_tokens])))
+      (is (= 25 (get-in result [:usage :output_tokens])))
+      (is (= 20 (get-in result [:usage :cache_read_input_tokens]))))))
 
 (deftest anthropic-tc-provider-constructor-test
   (testing "constructs with explicit api-key and model"
@@ -731,6 +801,10 @@
   (testing "openai provider prefix"
     (is (= {:provider "openai" :model "gpt-4o"}
            (cli/parse-model-spec "openai:gpt-4o"))))
+
+  (testing "fireworks provider prefix"
+    (is (= {:provider "fireworks" :model "glm-5"}
+           (cli/parse-model-spec "fireworks:glm-5"))))
 
   (testing "anthropic-tc provider prefix"
     (is (= {:provider "anthropic-tc" :model "claude-sonnet-4-5-20250929"}
@@ -1162,6 +1236,28 @@
 )
 
 ;; =============================================================================
+;; Fireworks provider
+;; =============================================================================
+
+(deftest fireworks-provider-construction
+  (testing "fireworks-provider requires API key"
+    (is (thrown-with-msg? Exception #"FIREWORKS_API_KEY"
+                          (provider/fireworks-provider {:api-key nil}))))
+
+  (testing "fireworks-provider custom opts"
+    (let [p (provider/fireworks-provider {:api-key "fw"
+                                          :base-url "https://api.fireworks.ai/inference/v1/"
+                                          :model "deepseek-v3p1"
+                                          :max-tokens 8192
+                                          :chat-template :deepseek-v3
+                                          :convert-think? false})]
+      (is (= "accounts/fireworks/models/deepseek-v3p1" (:model p)))
+      (is (= "https://api.fireworks.ai/inference/v1" (:base-url p)))
+      (is (= 8192 (:max-tokens p)))
+      (is (= :deepseek-v3 (:chat-template p)))
+      (is (false? (:convert-think? p))))))
+
+;; =============================================================================
 ;; supports-prefill protocol tests
 ;; =============================================================================
 
@@ -1188,6 +1284,10 @@
 
   (testing "Kimi provider supports prefill"
     (let [p (provider/kimi-provider {:api-key "test"})]
+      (is (true? (provider/supports-prefill p)))))
+
+  (testing "Fireworks provider supports prefill"
+    (let [p (provider/fireworks-provider {:api-key "test"})]
       (is (true? (provider/supports-prefill p))))))
 
 ;; =============================================================================

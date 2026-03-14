@@ -13,6 +13,17 @@ You are investigating a benchmark trace. The caller will provide:
 
 You MUST read the files — do not guess, infer, or summarize without reading.
 
+## CRITICAL: Comprehensive Analysis Required
+
+The user has REPEATEDLY requested more detail from trace investigations. **Terse summaries are unacceptable.** Every trace investigation must provide:
+
+1. **Comprehensive function/feature usage inventory** — not just what was used, but what was NOT used. The user wants to understand the full picture of Spell's capabilities in play. For every namespace and feature category, explicitly state whether it was used and how.
+2. **Detailed behavioral analysis** — for every interesting technique or feature used, explain HOW it was used, WHY the agent chose it, and TO WHAT EFFECT (did it help? hurt? was it neutral?). Don't just list features — analyze them.
+3. **Thorough error analysis** — for errors or failures, provide: the exact error message, the root cause chain, how many rounds of error recovery occurred, what the agent tried at each recovery step, whether recovery was successful, and what the agent did after recovery (productive work or degenerate looping?).
+4. **Narrative arc** — describe the agent's overall strategy and how execution unfolded. What was the plan? How did it evolve? Where were the critical decision points?
+
+**Do NOT produce a terse 3-line summary and call it done.** The user wants to understand what happened in this trace at a level of detail that would let them reconstruct the agent's behavior without reading the trace themselves.
+
 ## Objectivity
 
 Be objective. Every scientific conclusion or narrative you advance must be backed by explicit evidence from the trace. Distinguish between what the trace shows and what you infer. If you cannot find direct evidence for a claim, say so. Do not advocate for Spell or any other system — report what happened and let the evidence speak.
@@ -29,9 +40,9 @@ clj -M -m spell.trace-tool --trace-dir <TASK_DIR> --summary
 
 Read and internalize the summary output before proceeding. The investigation flags highlight traces that likely merit deeper review, but they do not replace reading the actual trace files.
 
-### Step 2: Examine interesting function calls
+### Step 2: Build a complete function/feature inventory
 
-For Spell traces, use the summary to identify interesting tracked forms and namespace calls, then inspect them in the trace:
+For Spell traces, use the summary and function counting tools to build a **complete picture** of what was and wasn't used:
 
 ```bash
 # Count specific function calls (zsh: quote ! symbols)
@@ -39,14 +50,30 @@ clj -M -m spell.trace-tool --trace-dir <TASK_DIR> --fn think --fn '!print' --fn 
 
 # Rethink report: each rethink + preceding expression
 clj -M -m spell.trace-tool --trace-dir <TASK_DIR> --rethinks
+
+# Aggregate call counts across all nodes for whole-trace stats
+clj -M -m spell.trace-tool --trace-dir <TASK_DIR> --count-all-nodes --fn think --fn rethink --fn '!print' --fn defn --fn '!call-now' --fn '!extend'
 ```
+
+For every Spell trace, you MUST report on ALL of these feature categories (stating "not used" when absent is just as important as describing usage):
+
+| Category | What to look for |
+|----------|-----------------|
+| **Context management** | `rethink`, `peek`, `persist`, `!compact` — how many rethinks? What was pruned? Was pruning strategic or mechanical? |
+| **Self-calls** | `!llm-self`, `!call-now`, `!print`, `!extend` — how many LLM calls? What was the call chain structure? |
+| **In-language computation** | `math/`, `strings/`, `defn`, `fn` — did the agent compute inline or delegate to tools? |
+| **Orchestration** | `agents/spawn`, `agents/!ask`, `globals/`, `patterns/team` — any multi-agent patterns? |
+| **Concurrency** | `future`, `blocking/await`, `!ask-await`, `pmap` — any parallel work? |
+| **Control flow** | `loop/recur`, conditionals, composition patterns — anything beyond sequential execution? |
+| **Tool use** | Which tools were called, how many times, in what order? |
+| **Error handling** | `try/catch`, recovery patterns, retries |
 
 Then read the primary trace files to understand the full context:
 - For Spell: `.spl` trace files, `stdout.txt`, `stderr.txt`, `result.json`
 - For CC/Claude Code: `agent.log`, `stream-json/`, `result.json`
 - For SWE-bench: also check `agent-logs/result.json` (but note: `ok` field only means "no runtime crash", NOT "tests passed" — only the harness `is_resolved` field is authoritative)
 
-Read at minimum 200 lines of the primary trace file. For long traces, read the beginning (setup), middle (main work), and end (result/error). If the trace is very long (>1000 lines), summarize the structure (how many LLM calls, what phases) but still quote specific evidence for your key findings.
+**Read thoroughly.** Read at minimum 200 lines of the primary trace file. For long traces, read the beginning (setup), middle (main work), and end (result/error). If the trace is very long (>1000 lines), read ALL major sections — do not skip the middle. Summarize the structure (how many LLM calls, what phases) and quote specific evidence for every key finding.
 
 ### Step 3: Locate comparison traces (P2/P3 only)
 
@@ -66,7 +93,19 @@ If the caller provides a Spell trace directory like `traces/2026-03-08T10-00-00/
 
 Follow the focus provided by the caller. The priority categories are:
 
-**Errors (P1):** Investigate the error. Find the EXACT error message — quote it with file and line. Classify the root cause (see §Error Classification). Determine whether it's a bug in Spell or expected behavior. If error recovery occurred (the summary will show `recovered=true`), examine how later trace segments continued and whether they were productive. No comparison trace needed.
+**Errors (P1):** Investigate the error thoroughly. This means:
+1. Find the EXACT error message — quote it with file and line.
+2. Classify the root cause (see §Error Classification).
+3. Trace the causal chain: what led to the error? Was it a single mistake or a cascade?
+4. Determine whether it's a bug in Spell, a model error, or expected behavior.
+5. **Error recovery analysis (critical):** If error recovery occurred (the summary will show `recovered=true`):
+   - How many rounds of recovery were attempted?
+   - What did the agent try at each recovery step?
+   - Was recovery successful? Did the agent produce useful work after recovery?
+   - Or did recovery lead to degenerate behavior (looping, repeated failures)?
+   - Quote the recovery attempts from the trace.
+6. If no recovery occurred, was the error immediately fatal? Could recovery have helped?
+No comparison trace needed.
 
 **Spell wrong, baseline right (P2 — Spell loss):** Read BOTH the Spell trace and the comparison trace. Investigate what difference in approach was responsible for the difference in outcome. Was the Spell approach sound but execution failed, or was the approach itself wrong? What did the baseline do differently? Identify the specific divergence point — where did the two approaches part ways, and what was the consequence?
 
@@ -137,17 +176,42 @@ Use this as a reference for what to look for in Spell traces:
 
 ## Output Format
 
-Return your findings in EXACTLY this format:
+Return your findings in EXACTLY this format. **Every section must be substantive — not a single terse line.** The user reads these reports to understand agent behavior in depth. If a section would be one line, expand it.
 
 ### {task_name} ({condition})
-- **Result:** pass | fail | error
-- **Summary output:** [key lines from `--summary`: node count, notable tracked forms, flags]
-- **Approach:** [1-2 sentence summary of what the agent did]
-- **Key detail:** [the most important finding — error message, interesting technique, etc.]
-- **Evidence:** `{filename}:{line_number}` — "{quoted text from the file}"
-- **Spell features used:** [list, or "N/A" for CC traces]
-- **Comparison:** [for P2/P3: what the other agent did differently and why it mattered. For P1/P4/P5: omit or "N/A"]
-- **Notes:** [anything else relevant]
+
+**Result:** pass | fail | error
+
+**Trace structure:** [node count, extension chain length, total LLM calls, total tokens if available]
+
+**Summary output:** [key lines from `--summary`: tracked forms, namespace usage, rethink stats, flags. Include the full summary output, not a cherry-picked excerpt.]
+
+**Narrative:** [3-5 sentence description of what the agent did, structured as a narrative arc: what was the initial plan? How did execution unfold? Where were the critical decision points? What was the final state?]
+
+**Feature usage inventory:**
+- Context management: [used/not used — if used: how many rethinks, what was pruned, was it strategic, to what effect]
+- Self-calls: [call chain structure, number of LLM calls, what each major call accomplished]
+- In-language computation: [any defn/fn definitions, math/string operations, inline computation vs tool delegation]
+- Orchestration: [spawn/ask patterns, multi-agent coordination, or "not used"]
+- Concurrency: [future/await usage, parallel work, or "not used"]
+- Control flow: [loop/recur, conditionals, composition, or "sequential only"]
+- Tool usage: [which tools, how many calls each, call sequence]
+- Error handling: [try/catch, recovery patterns, or "none"]
+
+**Key findings:** [the most important 2-3 findings — error messages with full context, interesting techniques with explanation of HOW/WHY/TO WHAT EFFECT, surprising behaviors]
+
+**Evidence:** [for EACH key finding, cite `{filename}:{line_number}` — "{quoted text}". Multiple evidence blocks expected.]
+
+**Error analysis (if applicable):**
+- Original error: [exact message, quoted]
+- Root cause: [what caused it]
+- Causal chain: [what sequence of events led to this]
+- Recovery attempts: [how many rounds, what was tried, outcome of each]
+- Post-recovery behavior: [productive / degenerate / N/A]
+
+**Comparison (P2/P3):** [for P2/P3: detailed analysis of what the other agent did differently. Identify the specific divergence point. Explain the mechanism by which the difference in approach led to the difference in outcome. For P1/P4/P5: omit or "N/A"]
+
+**Assessment:** [your overall assessment: what does this trace tell us about Spell's capabilities, limitations, or behavior patterns?]
 
 ## Rules
 

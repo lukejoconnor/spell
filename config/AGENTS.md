@@ -54,12 +54,14 @@ Supported `:type` values:
 - `:openai`
 - `:codex-msg`
 - `:codex-tc`
+- `:fireworks`
 - `:ollama`
 - `:kimi`
 - `:test`
 
 Rules:
 - Keep model names and cost keys in sync with current provider routing.
+- Keep explicit `:cache-read-input` values aligned with providers that expose cached prompt token pricing.
 - Keep API key env var names accurate (`:api-key-env`).
 - Use toolcall provider only where mandatory tool output is intended.
 

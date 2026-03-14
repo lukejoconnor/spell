@@ -293,7 +293,7 @@ so that it passes through to the outer eval:
   ...(!call-now files (io/ls "."))    ; WRONG: unquoted
   ...'(!call-now files (io/ls "."))  ; correct: quoted
   (defn delegate-subtask [subtask] (!llm-self (wrap-cat prompt context subtask))) ; WRONG: unquoted
-  (defn delegate-subtask [subtask] `(!llm-self ~(wrap-cat prompt context subtask))); correct: quoted
+  (defn delegate-subtask [subtask] (list '!llm-self (wrap-cat prompt context subtask))) ; correct: build the quoted form explicitly
 
   After receiving a !call-now result, the NEXT !call-now still needs quoting:
   '(!call-now previous-result previous-call)(def previous-result {:exit 1 ...})
