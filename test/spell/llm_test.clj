@@ -549,12 +549,14 @@
     (is (= "(def x 1)"
            (#'provider/convert-think-tags "(def x 1)"))))
 
-  (testing "parse-fireworks-completions-response separates cached prompt tokens"
-    (let [response-body (json/write-str {:choices [{:text "<think>plan</think>\n(def x 1)"}]
-                                         :usage {:prompt_tokens 120
-                                                 :completion_tokens 25
-                                                 :prompt_tokens_details {:cached_tokens 20}}})
-          result (#'provider/parse-fireworks-completions-response response-body)]
+  (testing "parse-fireworks-sse-stream accumulates chunks and extracts usage"
+    (let [response-body (str "data: " (json/write-str {:choices [{:text "<think>plan"}]}) "\n\n"
+                             "data: " (json/write-str {:choices [{:text "</think>\n(def x 1)"}]
+                                                       :usage {:prompt_tokens 120
+                                                               :completion_tokens 25
+                                                               :prompt_tokens_details {:cached_tokens 20}}}) "\n\n"
+                             "data: [DONE]\n\n")
+          result (#'provider/parse-fireworks-sse-stream response-body)]
       (is (= "<think>plan</think>\n(def x 1)" (:text result)))
       (is (= 100 (get-in result [:usage :input_tokens])))
       (is (= 25 (get-in result [:usage :output_tokens])))

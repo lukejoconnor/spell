@@ -91,6 +91,10 @@
    {:input 0.56 :cache-read-input 0.28 :output 1.68}
    "accounts/fireworks/models/qwen3-235b"
    {:input 0.20 :cache-read-input 0.10 :output 0.60}
+   "accounts/fireworks/models/qwen3-coder-480b-a35b-instruct"
+   {:input 0.45 :cache-read-input 0.22 :output 1.80}
+   "accounts/fireworks/models/kimi-k2p5"
+   {:input 0.60 :cache-read-input 0.10 :output 3.00}
    ;; Moonshot Kimi models
    "kimi-k2.5"         [0.60 3.00]
    "kimi-k2-thinking-turbo" [1.15 8.00]
@@ -1165,6 +1169,8 @@
         body (cond-> {:model model
                       :prompt (format-completions-prompt template system-prompt prompt prefix)
                       :max_tokens (or max-tokens 16384)
+                      :stream true
+                      :stream_options {:include_usage true}
                       :echo false}
                (seq (:stop-sequences template)) (assoc :stop (:stop-sequences template))
                thinking (assoc :thinking thinking))
@@ -1176,19 +1182,32 @@
                     (.build))]
     request))
 
-(defn- parse-fireworks-completions-response [response-body]
-  (let [parsed (json/read-str response-body :key-fn keyword)]
-    (if-let [error (:error parsed)]
-      (throw (ex-info "Fireworks API error" {:error error}))
-      (let [usage (:usage parsed)
-            cached-tokens (or (get-in usage [:prompt_tokens_details :cached_tokens])
-                              (:cached_tokens usage)
-                              0)
-            prompt-tokens (:prompt_tokens usage 0)]
-        {:text (get-in parsed [:choices 0 :text] "")
-         :usage {:input_tokens (max 0 (- prompt-tokens cached-tokens))
-                 :output_tokens (:completion_tokens usage 0)
-                 :cache_read_input_tokens cached-tokens}}))))
+(defn- parse-fireworks-sse-stream
+  "Parse an SSE stream response, accumulating text chunks and extracting final usage."
+  [response-body]
+  (let [lines (str/split-lines response-body)
+        text-sb (StringBuilder.)
+        usage (atom nil)]
+    (doseq [line lines]
+      (when (str/starts-with? line "data: ")
+        (let [data (subs line 6)]
+          (when-not (= data "[DONE]")
+            (let [parsed (json/read-str data :key-fn keyword)]
+              (when-let [error (:error parsed)]
+                (throw (ex-info "Fireworks API error" {:error error})))
+              (when-let [text (get-in parsed [:choices 0 :text])]
+                (.append text-sb text))
+              (when-let [u (:usage parsed)]
+                (reset! usage u)))))))
+    (let [u @usage
+          cached-tokens (or (get-in u [:prompt_tokens_details :cached_tokens])
+                            (:cached_tokens u)
+                            0)
+          prompt-tokens (:prompt_tokens u 0)]
+      {:text (str text-sb)
+       :usage {:input_tokens (max 0 (- prompt-tokens cached-tokens))
+               :output_tokens (:completion_tokens u 0)
+               :cache_read_input_tokens cached-tokens}})))
 
 (defrecord FireworksProvider [api-key base-url model max-tokens http-client costs chat-template convert-think?]
   LLMProvider
@@ -1207,7 +1226,7 @@
           response (.send http-client request (HttpResponse$BodyHandlers/ofString))
           status (.statusCode response)]
       (if (<= 200 status 299)
-        (let [{:keys [text usage]} (parse-fireworks-completions-response (.body response))
+        (let [{:keys [text usage]} (parse-fireworks-sse-stream (.body response))
               text (cond-> text convert-think? convert-think-tags)]
           (track-usage! effective-model usage costs)
           text)
