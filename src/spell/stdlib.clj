@@ -305,7 +305,7 @@ Common mistakes:
   !print — evaluate exprs, extend completion with their serialized values as visible literals
   define — Scheme-style alias for def; binds a symbol to a value
   defmacro — define a user-level macro; expander receives unevaluated argument forms
-  !describe — extend completion with namespace documentation; accepts ns or ns :key
+  !describe — extend completion with namespace documentation; accepts ns, ns :key, or mixed (ns1 ns2 :key)
   think — label a reasoning step; evaluates body for side effects, returns nil
   rethink — like think but prunes N previous sibling expressions from source on !extend
   !extend — prune rethink forms from the completion and continue execution via !llm-self

@@ -245,7 +245,7 @@ Core namespaces (always available, usable anywhere):
 Effect namespaces (configurable, only usable in the quoted trailing expression):
   These are listed below if available to you. They include things like io and inter-agent communication.
 
-On first use of an unfamiliar effect namespace, consider using '(!describe ns) to check available functions. '(!describe ns1 ns2) also works. '(!describe ns :function-name) describes one function within a namespace. Skip !describe when the prompt or context already provides the calls you need.
+On first use of an unfamiliar effect namespace, consider using '(!describe ns) to check available functions. '(!describe ns1 ns2) also works. '(!describe ns :function-name) describes one function within a namespace. These can be mixed: '(!describe ns1 ns2 :key) describes ns1 in full and one item from ns2. Skip !describe when the prompt or context already provides the calls you need.
 
 RECOMMENDED PATTERNS
 

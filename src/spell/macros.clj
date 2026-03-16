@@ -329,6 +329,7 @@
 ;;   (!describe ns)           — guide (or docs if no guide)
 ;;   (!describe ns :key)      — doc for specific item
 ;;   (!describe ns1 ns2 ...)  — multiple namespaces in one turn
+;;   (!describe ns1 ns2 :key) — mixed: full ns1 guide + ns2 :key lookup
 ;; Expands to (!print ...) so the child LLM sees the docs as a literal.
 (defspellmacro '!describe
   (fn [& args]
@@ -341,13 +342,25 @@
       (and (= 2 (count args)) (keyword? (second args)))
       (list '!print (list 'describe-fn (first args) (second args)))
 
-      ;; (!describe ns1 ns2 ...) — multi-namespace
+      ;; (!describe ns1 ns2 ... ) — multi-namespace, with optional ns :key pairs
       :else
-      (let [parts (mapcat (fn [ns-sym]
-                            [(str "## " ns-sym "\n")
-                             (list 'describe-fn ns-sym)
-                             "\n\n"])
-                          args)]
+      (let [groups (loop [remaining (seq args), acc []]
+                     (if-not remaining
+                       acc
+                       (let [sym (first remaining)
+                             rst (next remaining)]
+                         (if (and rst (keyword? (first rst)))
+                           (recur (next rst) (conj acc [sym (first rst)]))
+                           (recur rst (conj acc [sym]))))))
+            parts (mapcat (fn [group]
+                            (if (= 2 (count group))
+                              [(str "## " (first group) " " (second group) "\n")
+                               (list 'describe-fn (first group) (second group))
+                               "\n\n"]
+                              [(str "## " (first group) "\n")
+                               (list 'describe-fn (first group))
+                               "\n\n"]))
+                          groups)]
         (list '!print (list* 'cat parts))))))
 
 ;; ->: (-> x (f a) (g b)) -> (g (f x a) b)
