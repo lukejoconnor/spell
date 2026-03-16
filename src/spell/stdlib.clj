@@ -192,7 +192,39 @@ Recommended usage pattern: Write a function, evaluate, inspect the result.
 (def reminders-namespace
   "Docs-only namespace that reminds the LLM of the Spell execution context."
   {:short-docs "Context reminders for Spell program completion."
-   :docs {:guide "REMINDER: This text belongs to the prefix of a Spell program that you are tasked with completing. Your entire response is code; embed all natural language within string literals. Follow the instructions on how to write correct Spell code in your system prompt."}})
+   :docs {:guide "REMINDER: This text belongs to the prefix of a Spell program that you are tasked with completing. Your entire response is code; embed all natural language within string literals. Follow the instructions on how to write correct Spell code in your system prompt."
+          :context-efficiency "CONTEXT EFFICIENCY — Minimize total context window usage.
+
+Context tokens are your scarcest resource. Prune aggressively to stay effective over long tasks.
+
+Prefer !peek-now over !call-now for tool calls (auto-appends rethink):
+    '(!peek-now data (io/bash \"find . -name '*.py'\"))
+
+On the subsequent turn, persist what you need before extending:
+    (def data \"... 200 lines ...\")
+    (rethink)
+    ;; turn begins here — data still in scope
+    (persist targets (take 5 (strings/split-lines data)))
+    '(!extend)
+    ;; next turn: data is pruned, targets survives as a literal value
+
+After extended reasoning, rethink to compress:
+    (think \"Long analysis of the bug... examining stack traces, testing hypotheses... the root cause is in parse_args line 42.\")
+    (rethink \"The bug is in parse_args, line 42: off-by-one in the loop bound.\")
+    '(!extend)
+
+When context grows large, compact:
+    '(!compact)
+
+Plan-clear pattern — reason and explore, then start fresh with a self-contained plan:
+    (think \"analyzing the problem...\" ...)
+    '(!peek-now files (io/ls \".\"))
+    (def files [...])
+    (def plan \"Task: fix the calculator bug in calc.py\\n1. Edit line 12: fix off-by-one\\n2. Run tests\")
+    '(!llm-self plan)
+    ;; next turn has only the plan as prefix — maximum working space
+
+Each extension should carry forward only what the next step needs."}})
 
 ;; =============================================================================
 ;; builtins namespace (docs-only, for progressive disclosure)
