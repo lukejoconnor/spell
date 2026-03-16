@@ -182,9 +182,21 @@
 ;; Multi-binding evaluates all exprs, then extends with all bindings in one turn.
 (defn- call-now-expander
   "Shared expander for !call-now and !peek-now.
-   extra-str-parts are appended to the generated continuation string."
-  [macro-name args extra-str-parts]
-  (let [extra-str-parts (or extra-str-parts [])]
+   extra-form-exprs are appended to the reopened quine."
+  [macro-name args extra-form-exprs]
+  (let [extra-form-exprs (or extra-form-exprs [])
+        serialized-form (fn
+                          ([temp]
+                           (list 'read-string (list 'serialize temp)))
+                          ([temp limit]
+                           (list 'read-string (list 'serialize temp limit))))
+        def-form-expr (fn
+                        ([name-sym temp]
+                         (list 'list (list 'quote 'def) (list 'quote name-sym)
+                               (serialized-form temp)))
+                        ([name-sym temp limit]
+                         (list 'list (list 'quote 'def) (list 'quote name-sym)
+                               (serialized-form temp limit))))]
     (cond
       ;; Single binding: (!call-now name expr)
       (= (count args) 2)
@@ -192,12 +204,9 @@
             temp (gensym "call-now__")]
         (list 'let [temp val-expr]
               (list '!llm-self
-                    (list* 'str
-                           (list 'prune-and-reopen 'completion)
-                           (concat [(str "(def " name-sym " ")
-                                    (list 'serialize temp)
-                                    ") "]
-                                   extra-str-parts)))))
+                    (list* 'reopen (list 'prune-and-reopen 'completion)
+                           (concat [(def-form-expr name-sym temp)]
+                                   extra-form-exprs)))))
 
       ;; Single binding with limit: (!call-now name expr limit)
       (= (count args) 3)
@@ -205,28 +214,22 @@
             temp (gensym "call-now__")]
         (list 'let [temp val-expr]
               (list '!llm-self
-                    (list* 'str
-                           (list 'prune-and-reopen 'completion)
-                           (concat [(str "(def " name-sym " ")
-                                    (list 'serialize temp limit)
-                                    ") "]
-                                   extra-str-parts)))))
+                    (list* 'reopen (list 'prune-and-reopen 'completion)
+                           (concat [(def-form-expr name-sym temp limit)]
+                                   extra-form-exprs)))))
 
       ;; Multi-binding: (!call-now name1 expr1 name2 expr2 ...)
       (and (even? (count args)) (>= (count args) 4))
       (let [pairs (partition 2 args)
             temps (map (fn [[name-sym _]] (gensym (str "call-now-" name-sym "__"))) pairs)
             let-bindings (vec (mapcat (fn [temp [_ val-expr]] [temp val-expr]) temps pairs))
-            str-parts (mapcat (fn [temp [name-sym _]]
-                                [(str "(def " name-sym " ")
-                                 (list 'serialize temp)
-                                 ") "])
-                              temps pairs)]
+            def-forms (map (fn [temp [name-sym _]]
+                             (def-form-expr name-sym temp))
+                           temps pairs)]
         (list 'let let-bindings
               (list '!llm-self
-                    (list* 'str
-                           (list 'prune-and-reopen 'completion)
-                           (concat str-parts extra-str-parts)))))
+                    (list* 'reopen (list 'prune-and-reopen 'completion)
+                           (concat def-forms extra-form-exprs)))))
 
       :else
       (throw (ex-info (str macro-name ": expected 2 args (name expr), 3 args (name expr limit), or even >= 4 args (name1 expr1 name2 expr2 ...)")
@@ -245,13 +248,13 @@
 (defspellmacro '!peek-now
   (fn [& args]
     (call-now-expander "!peek-now" args
-                       [(str "(rethink " (pr-str peek-rethink-message) ") ")])))
+                       [(list 'list (list 'quote 'rethink) peek-rethink-message)])))
 
 ;; Short alias for !peek-now.
 (defspellmacro '!peek
   (fn [& args]
     (call-now-expander "!peek" args
-                       [(str "(rethink " (pr-str peek-rethink-message) ") ")])))
+                       [(list 'list (list 'quote 'rethink) peek-rethink-message)])))
 
 ;; =============================================================================
 ;; Threading helpers (used by -> and ->> macros)
@@ -302,12 +305,10 @@
   [& val-exprs]
   (let [temps (mapv (fn [_] (gensym "print__")) val-exprs)
         bindings (vec (mapcat vector temps val-exprs))
-        serialized (map (fn [t] (list 'serialize t)) temps)]
+        forms (map (fn [t] (list 'read-string (list 'serialize t))) temps)]
     (list 'let bindings
           (list '!llm-self
-                (list* 'str
-                       (list 'prune-and-reopen 'completion)
-                       (concat (interpose " " serialized) [" "]))))))
+                (list* 'reopen (list 'prune-and-reopen 'completion) forms)))))
 
 (defspellmacro '!print print-expander)
 ;; Backward-compatible alias.
@@ -455,4 +456,6 @@
     ([] (list '!compact 'completion))
     ([comp-sym]
      (list '!llm-self
-       (list 'str (list 'prune-and-reopen comp-sym) compact-suffix)))))
+       (list 'str
+             (list 'serialize-prefix (list 'prune-and-reopen comp-sym))
+             compact-suffix)))))

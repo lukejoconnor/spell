@@ -377,9 +377,12 @@
                                 {'describe-fn stdlib/describe}
                                 llm/core-namespaces)
         ;; user-self-fn reads eval-fn dynamically via *current-eval-fn*
-        user-self-fn (fn [prompt-str]
-                       (user-self runtime/*current-eval-fn*
-                                  runtime/*current-handle* runtime/*current-handle* prompt-str))
+        user-self-fn (fn [prompt]
+                       (let [prompt-str (if (and (seq? prompt) (= 'quine (first prompt)))
+                                          (eval/serialize-quine-prefix prompt)
+                                          (str prompt))]
+                         (user-self runtime/*current-eval-fn*
+                                    runtime/*current-handle* runtime/*current-handle* prompt-str)))
         ;; Effect builtins: !llm-self (user-self) + agents namespace
         effect-builtins {'!llm-self user-self-fn
                          'agents runtime/agents-namespace}

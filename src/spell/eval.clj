@@ -231,7 +231,7 @@
 ;; Builtins
 ;; =============================================================================
 
-(declare spell-eval expand-expr prune-substitute reopen)
+(declare spell-eval prune-substitute reopen serialize-quine-prefix)
 
 (defn spell-fn?
   "Returns true if v is a Spell function (dynamic-scoping function map)."
@@ -317,8 +317,7 @@
   (mapcat destructure-bind params args))
 
 (defn param-symbols
-  "Extract all binding symbols from a destructuring param pattern.
-   Used by expand-expr to track locally-bound names."
+  "Extract all binding symbols from a destructuring param pattern."
   [param]
   (cond
     (symbol? param) [param]
@@ -447,28 +446,23 @@
             ([start end step] (vec (range start end step)))),
    ;; Strip / Reopen
    'strip-parens (fn [n s] (parse/strip-trailing-parens n (if (string? s) s (pr-str s)))),
-   'reopen (fn [s]
-              (parse/strip-trailing-parens 3
-                (cond (string? s) s
-                      *raw-text*  *raw-text*
-                      :else       (pr-str s)))),
-   ;; wrap-cat: combine quine-bound forms into an open preamble prefix
+   'serialize-prefix (fn [quine-form] (serialize-quine-prefix quine-form)),
+   'reopen (fn [quine-form & extra-forms] (apply reopen quine-form extra-forms)),
+   ;; wrap-cat: build a quine completion form from the provided forms
    'wrap-cat (fn [& forms]
-               (str "(quine completion (eval (do "
-                    (str/join " " (map pr-str forms))
-                    " ")),
-   ;; Prune rethinks and reopen as prefix string
+               (apply reopen (list 'quine 'completion '(eval (do))) forms)),
+   ;; Prune rethinks and keep the cleaned quine as data
    'prune-and-reopen (fn [quine-form]
-                       (reopen (prune-substitute quine-form (or *spell-env* {})))),
+                       (prune-substitute quine-form (or *spell-env* {}))),
    ;; Value store (for !call-now out-of-band large values)
    'stored stored,
    'serialize (fn
                ([value] (serialize-for-continuation value))
                ([value limit] (serialize-for-continuation value limit))),
    'deep-truncate (fn [value limit] (deep-truncate value (int limit))),
-   ;; Eval — close over caller bindings, then evaluate in a fresh env
+   ;; Eval directly in the caller env.
    'spell-eval (fn [expr]
-                 (let [r (spell-eval (expand-expr expr *spell-env*) {})]
+                 (let [r (spell-eval expr (or *spell-env* {}))]
                    (if (ok? r) (:ok r) (throw (ex-info (:err r) {:result r}))))),
    ;; Extended sequence operations (from seqs/)
    'every? (fn [pred coll] (every? #(invoke-fn pred [%]) coll)),
@@ -696,217 +690,46 @@
 
     :else form))
 
-(defn reopen
-  "Serialize a quine form as an open prefix string (no trailing close-parens)."
+(defn- destructure-quine-form
+  "Validate quine-form and return its quine name, inert args, and do-body forms."
   [quine-form]
   (when-not (and (seq? quine-form)
                  (= 'quine (first quine-form))
                  (<= 3 (count quine-form)))
     (throw (ex-info "reopen expects a quine form" {:form quine-form})))
   (let [elements (vec (seq quine-form))
+        name-sym (second elements)
         inert-args (subvec elements 2 (max 2 (dec (count elements))))
         last-arg (last elements)
-        [eval-sym do-form & extra] (seq last-arg)]
+        tail (when (seq? last-arg) (seq last-arg))
+        [eval-sym do-form & extra] tail]
     (when-not (and (= 'eval eval-sym)
                    (empty? extra)
                    (seq? do-form)
                    (= 'do (first do-form)))
       (throw (ex-info "reopen expects quine tail of the form (eval (do ...))"
                       {:form quine-form :tail last-arg})))
-    (let [body-forms (rest do-form)]
-      (str "(quine completion "
-           (when (seq inert-args)
-             (str (str/join " " (map pr-str inert-args)) " "))
-           "(eval (do "
-           (str/join " " (map pr-str body-forms))
-           " "))))
+    {:name-sym name-sym
+     :inert-args inert-args
+     :body-forms (rest do-form)}))
 
-(defn- -expand-expr
-  "Walk expr substituting outer-env values for free symbols not in inner (locally defined).
-   Returns [expanded-expr updated-inner]. Mirrors spell-eval's structure but returns
-   transformed data instead of evaluating."
-  [expr outer-env inner]
-  (cond
-    ;; Self-evaluating
-    (or (nil? expr) (string? expr) (number? expr) (boolean? expr) (keyword? expr)
-        (instance? java.util.regex.Pattern expr))
-    [expr inner]
+(defn serialize-quine-prefix
+  "Serialize a quine form as an open prefix string (no trailing close-parens)."
+  [quine-form]
+  (let [{:keys [name-sym inert-args body-forms]} (destructure-quine-form quine-form)]
+    (str "(quine " name-sym " "
+         (when (seq inert-args)
+           (str (str/join " " (map pr-str inert-args)) " "))
+         "(eval (do "
+         (str/join " " (map pr-str body-forms))
+         " ")))
 
-    ;; Symbol: qualified (a/b) -> leave as-is (global ref);
-    ;; inner (locally defined) -> leave; outer-env -> substitute; else -> leave
-    (symbol? expr)
-    (let [;; Use str to get full symbol including namespace
-          sym-str (str expr)
-          ;; Check if this is a qualified symbol (has / with content on both sides)
-          qualified? (when (str/includes? sym-str "/")
-                       (let [p (str/split sym-str #"/")]
-                         (and (> (count p) 1)
-                              (seq (first p))
-                              (seq (second p)))))]
-      (if qualified?
-        ;; Qualified symbols are self-contained namespace references - leave intact
-        [expr inner]
-        [(cond
-           (contains? inner expr) expr
-           (contains? (or *builtins* core-builtins) expr) expr
-           (contains? special-forms expr) expr
-           (contains? outer-env expr) (quote-value (get outer-env expr))
-           :else expr)
-         inner]))
-
-    ;; Vector
-    (vector? expr)
-    [(mapv #(first (-expand-expr % outer-env inner)) expr) inner]
-
-    ;; Map
-    (map? expr)
-    [(into {} (map (fn [[k v]] [k (first (-expand-expr v outer-env inner))]) expr)) inner]
-
-    ;; List
-    (seq? expr)
-    (if (and (symbol? (first expr)) (get @macros/spell-macros (first expr)))
-      ;; Clojure-side macro: expand first, then continue expanding the result
-      (-expand-expr (macros/spell-macroexpand-1 expr) outer-env inner)
-      ;; Check for user-defined macros in outer-env
-      (let [head (first expr)
-            head-val (when (and (symbol? head)
-                                (not (contains? inner head))
-                                (not (special-forms head)))
-                       (get outer-env head))]
-        (if (spell-macro? head-val)
-          ;; User macro: invoke expander, then continue expanding result
-          (let [expander (:expander head-val)
-                macro-env (into outer-env (destructure-bind (:params expander) (vec (rest expr))))
-                r (spell-eval (cons 'do (:body expander)) macro-env)]
-            (if (ok? r)
-              (-expand-expr (:ok r) outer-env inner)
-              (throw (ex-info (str "Macro expansion failed during expand: " (:err r))
-                              {:form expr}))))
-      (let [expand1 #(first (-expand-expr % outer-env inner))]
-      (case (first expr)
-        nil   [expr inner]
-        quote [expr inner]
-
-        def (let [sym (second expr)
-                  [val-expanded _] (-expand-expr (nth expr 2) outer-env inner)]
-              [(list 'def sym val-expanded) (conj inner sym)])
-
-        persist (let [sym (second expr)
-                      [val-expanded _] (-expand-expr (nth expr 2) outer-env inner)]
-                  [(list 'persist sym val-expanded) (conj inner sym)])
-
-        do (let [[forms final-inner]
-                 (reduce (fn [[acc i] sub-expr]
-                           (let [[expanded new-i] (-expand-expr sub-expr outer-env i)]
-                             [(conj acc expanded) new-i]))
-                         [[] inner]
-                         (rest expr))]
-             [(list* 'do forms) final-inner])
-
-        if [(list* 'if (map expand1 (rest expr))) inner]
-
-
-        let (let [pairs (partition 2 (second expr))
-                  [expanded-bindings final-inner]
-                  (reduce (fn [[acc i] [pattern val-expr]]
-                            [(conj acc pattern (first (-expand-expr val-expr outer-env i)))
-                             (into i (param-symbols pattern))])
-                          [[] inner] pairs)
-                  expanded-body (map #(first (-expand-expr % outer-env final-inner)) (drop 2 expr))]
-              [(list* 'let (vec expanded-bindings) expanded-body) inner])
-
-        (fn fn*) (let [all-syms (set (mapcat param-symbols (second expr)))
-                       body-inner (into inner all-syms)]
-                   [(list* 'fn (second expr) (map #(first (-expand-expr % outer-env body-inner)) (drop 2 expr))) inner])
-
-
-
-        quine (let [name-sym (second expr)
-                    inner' (conj inner name-sym)
-                    args (drop 2 expr)
-                    expanded-args (map #(first (-expand-expr % outer-env inner')) args)]
-                [(apply list 'quine name-sym expanded-args) inner'])
-
-        loop (let [pairs (partition 2 (second expr))
-                   [expanded-bindings final-inner]
-                   (reduce (fn [[acc i] [pattern val-expr]]
-                             [(conj acc pattern (first (-expand-expr val-expr outer-env i)))
-                              (into i (param-symbols pattern))])
-                           [[] inner] pairs)
-                   expanded-body (map #(first (-expand-expr % outer-env final-inner)) (drop 2 expr))]
-               [(list* 'loop (vec expanded-bindings) expanded-body) inner])
-
-        recur [(list* 'recur (map expand1 (rest expr))) inner]
-
-        ;; for: (for [x coll :when pred :let [y expr]] body)
-        for (let [bindings (second expr)
-                  body (nth expr 2)
-                  ;; Parse bindings into segments, tracking bound symbols
-                  [expanded-bindings final-inner]
-                  (loop [remaining (seq bindings)
-                         acc []
-                         bound inner]
-                    (if (empty? remaining)
-                      [acc bound]
-                      (let [item (first remaining)]
-                        (cond
-                          ;; :when pred
-                          (= item :when)
-                          (let [[pred-expanded _] (-expand-expr (second remaining) outer-env bound)]
-                            (recur (drop 2 remaining)
-                                   (conj acc :when pred-expanded)
-                                   bound))
-                          ;; :let [bindings...]
-                          (= item :let)
-                          (let [let-pairs (partition 2 (second remaining))
-                                [let-expanded let-bound]
-                                (reduce (fn [[lacc lbound] [pattern val-expr]]
-                                          [(conj lacc pattern (first (-expand-expr val-expr outer-env lbound)))
-                                           (into lbound (param-symbols pattern))])
-                                        [[] bound] let-pairs)]
-                            (recur (drop 2 remaining)
-                                   (conj acc :let (vec let-expanded))
-                                   let-bound))
-                          ;; Normal binding: pattern coll
-                          :else
-                          (let [pattern item
-                                coll-expr (second remaining)
-                                [coll-expanded _] (-expand-expr coll-expr outer-env bound)]
-                            (recur (drop 2 remaining)
-                                   (conj acc pattern coll-expanded)
-                                   (into bound (param-symbols pattern))))))))]
-              [(list 'for (vec expanded-bindings) (first (-expand-expr body outer-env final-inner))) inner])
-
-        try (let [forms (rest expr)
-                  catch-form (when (and (seq forms) (seq? (last forms))
-                                        (= 'catch (first (last forms))))
-                               (last forms))
-                  body-forms (if catch-form (butlast forms) forms)
-                  [expanded-body final-inner]
-                  (reduce (fn [[acc i] sub-expr]
-                            (let [[expanded new-i] (-expand-expr sub-expr outer-env i)]
-                              [(conj acc expanded) new-i]))
-                          [[] inner] body-forms)
-                  expanded-catch (when catch-form
-                                   (let [catch-sym (second catch-form)
-                                         catch-inner (conj final-inner catch-sym)
-                                         expanded-catch-body (map #(first (-expand-expr % outer-env catch-inner))
-                                                                  (drop 2 catch-form))]
-                                     (list* 'catch catch-sym expanded-catch-body)))]
-              [(if expanded-catch
-                 (list* 'try (concat expanded-body [expanded-catch]))
-                 (list* 'try expanded-body))
-               inner])
-
-        ;; Default: recurse into all sub-expressions
-        [(apply list (map expand1 expr)) inner])))))
-
-    :else [expr inner]))
-
-(defn expand-expr
-  "Expand expr, substituting free variables from outer-env. Returns expanded expression."
-  [expr outer-env]
-  (first (-expand-expr expr outer-env #{})))
+(defn reopen
+  "Splice extra forms into a quine's do block. Returns the modified quine form."
+  [quine-form & extra-forms]
+  (let [{:keys [name-sym inert-args body-forms]} (destructure-quine-form quine-form)
+        reopened-tail (list 'eval (list* 'do (concat body-forms extra-forms)))]
+    (apply list 'quine name-sym (concat inert-args [reopened-tail]))))
 
 ;; =============================================================================
 ;; Evaluator

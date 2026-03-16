@@ -2353,20 +2353,24 @@
 ;; =============================================================================
 
 (deftest print-macro-expansion
-  (testing "!print macro expands to let + !llm-self with serialize"
+  (testing "!print macro expands to let + !llm-self with reopen"
     (let [expanded (macros/spell-macroexpand-1 '(!print (+ 1 2)))]
-      ;; Should be (let [temp (+ 1 2)] (!llm-self (str (reopen completion) (serialize temp) " ")))
       (is (= 'let (first expanded)))
-      (let [body (nth expanded 2)]
-        (is (= '!llm-self (first body))))))
+      (let [llm-call (nth expanded 2)
+            reopen-form (second llm-call)]
+        (is (= '!llm-self (first llm-call)))
+        (is (= 'reopen (first reopen-form)))
+        (is (= '(prune-and-reopen completion) (second reopen-form)))
+        (is (= 'read-string (first (nth reopen-form 2))))
+        (is (= 'serialize (first (second (nth reopen-form 2))))))))
 
   (testing "!print macro multi-arity"
     (let [expanded (macros/spell-macroexpand-1 '(!print a b c))]
       (is (= 'let (first expanded)))
       ;; bindings should have 6 elements (3 pairs)
       (is (= 6 (count (second expanded))))
-      (let [body (nth expanded 2)]
-        (is (= '!llm-self (first body))))))
+      (let [llm-call (nth expanded 2)]
+        (is (= '!llm-self (first llm-call))))))
 
   (testing "print remains a backward-compatible alias"
     (let [expanded (macros/spell-macroexpand-1 '(print a))]
@@ -2376,13 +2380,16 @@
   (testing "!peek-now expands like !call-now with an injected rethink marker"
     (let [expanded (macros/spell-macroexpand-1 '(!peek-now code (io/read-lines "main.py")))
           llm-call (nth expanded 2)
-          str-form (second llm-call)]
+          reopen-form (second llm-call)]
       (is (= 'let (first expanded)))
       (is (= '!llm-self (first llm-call)))
-      (is (= 'str (first str-form)))
-      (is (= '(prune-and-reopen completion) (second str-form)))
-      (is (some #(= "(rethink \"!peek-now binding disappears unless persisted.\") " %)
-                (rest str-form)))))
+      (is (= 'reopen (first reopen-form)))
+      (is (= '(prune-and-reopen completion) (second reopen-form)))
+      (is (= 'list (first (nth reopen-form 2))))
+      (is (= '(quote def) (second (nth reopen-form 2))))
+      (is (= '(quote code) (nth (nth reopen-form 2) 2)))
+      (is (= '(list (quote rethink) "!peek-now binding disappears unless persisted.")
+             (last reopen-form)))))
 
   (testing "peeked full binding is pruned on extension while persisted slice remains"
     (let [quine-form '(quine completion (eval (do
@@ -2390,12 +2397,13 @@
                           (rethink "!peek-now binding disappears unless persisted.")
                           (def fn-defn ["L2" "L3"])
                           (quote (!extend completion)))))
-          result (run-spell (list 'prune-and-reopen (list 'quote quine-form)))]
-      (is (string? result))
-      (is (.contains ^String result "(def fn-defn [\"L2\" \"L3\"])"))
-      (is (false? (.contains ^String result "(def file-lines")))
-      (is (.contains ^String result "(think \"!peek-now binding disappears unless persisted.\")"))
-      (is (false? (.contains ^String result
+          result (run-spell (list 'prune-and-reopen (list 'quote quine-form)))
+          prefix (eval/serialize-quine-prefix result)]
+      (is (seq? result))
+      (is (.contains ^String prefix "(def fn-defn [\"L2\" \"L3\"])"))
+      (is (false? (.contains ^String prefix "(def file-lines)")))
+      (is (.contains ^String prefix "(think \"!peek-now binding disappears unless persisted.\")"))
+      (is (false? (.contains ^String prefix
                              "(rethink \"!peek-now binding disappears unless persisted.\")"))))))
 
 ;; =============================================================================
@@ -2513,43 +2521,42 @@
               'y 2})))))
 
 (deftest prune-and-reopen-test
-  (testing "prune-and-reopen produces open prefix string"
+  (testing "prune-and-reopen returns a pruned quine form"
     (let [quine-form '(quine completion (eval (do
                          (think "A" (def x 1))
                          (rethink "B" (def x 2))
                          (quote (!extend completion)))))
-          result (run-spell (list 'prune-and-reopen (list 'quote quine-form)))]
-      ;; Should contain the pruned body as an open prefix
-      (is (string? result))
-      (is (.startsWith ^String result "(quine completion (eval (do "))
-      ;; rethink markers should remain as source-level think markers after pruning.
-      (is (.contains ^String result "(think \"B\" (def x 2))"))
-      (is (not (.contains ^String result "(def x 1)")))))
+          result (run-spell (list 'prune-and-reopen (list 'quote quine-form)))
+          prefix (eval/serialize-quine-prefix result)]
+      (is (seq? result))
+      (is (.startsWith ^String prefix "(quine completion (eval (do "))
+      (is (.contains ^String prefix "(think \"B\" (def x 2))"))
+      (is (not (.contains ^String prefix "(def x 1)")))))
 
   (testing "prune-and-reopen with no rethinks passes through"
     (let [quine-form '(quine completion (eval (do (def x 1) (def y 2))))
-          result (run-spell (list 'prune-and-reopen (list 'quote quine-form)))]
-      (is (.startsWith ^String result "(quine completion (eval (do "))
-      (is (.contains ^String result "(def x 1)"))))
+          result (run-spell (list 'prune-and-reopen (list 'quote quine-form)))
+          prefix (eval/serialize-quine-prefix result)]
+      (is (.startsWith ^String prefix "(quine completion (eval (do "))
+      (is (.contains ^String prefix "(def x 1)"))))
 
   (testing "prune-and-reopen with multi-arg quine preserves inert args"
     (let [quine-form '(quine completion
                         (eval (do (def x 1) (quote (!extend completion))))
                         (eval (do (rethink "fix" (def y 2)) (quote (!extend completion)))))
-          result (run-spell (list 'prune-and-reopen (list 'quote quine-form)))]
-      ;; Should start with quine completion
-      (is (string? result))
-      (is (.startsWith ^String result "(quine completion "))
-      ;; Should contain the first (inert) arg serialized
-      (is (.contains ^String result "(eval (do (def x 1)"))
-      ;; Should contain the pruned last arg
-      (is (.contains ^String result "(def y 2)"))))
+          result (run-spell (list 'prune-and-reopen (list 'quote quine-form)))
+          prefix (eval/serialize-quine-prefix result)]
+      (is (seq? result))
+      (is (.startsWith ^String prefix "(quine completion "))
+      (is (.contains ^String prefix "(eval (do (def x 1)"))
+      (is (.contains ^String prefix "(def y 2)"))))
 
   (testing "prune-and-reopen with standard (2-arg) quine unchanged behavior"
     (let [quine-form '(quine completion (eval (do (def a 10))))
-          result (run-spell (list 'prune-and-reopen (list 'quote quine-form)))]
-      (is (.startsWith ^String result "(quine completion (eval (do "))
-      (is (.contains ^String result "(def a 10)"))))
+          result (run-spell (list 'prune-and-reopen (list 'quote quine-form)))
+          prefix (eval/serialize-quine-prefix result)]
+      (is (.startsWith ^String prefix "(quine completion (eval (do "))
+      (is (.contains ^String prefix "(def a 10)"))))
 
   (testing "prune-and-reopen keeps persist with baked value after rethink pruning"
     (let [quine-form '(quine completion
@@ -2561,8 +2568,9 @@
                                   (list 'def 'big [1 2 3])
                                   (list 'persist 'y (list 'get 'big 1))
                                   (list 'prune-and-reopen (list 'quote quine-form))))]
-      (is (.contains ^String result "(persist y 2)"))
-      (is (not (.contains ^String result "(def big [1 2 3])")))))
+      (let [prefix (eval/serialize-quine-prefix result)]
+        (is (.contains ^String prefix "(persist y 2)"))
+        (is (not (.contains ^String prefix "(def big [1 2 3])"))))))
 
   (testing "prune-and-reopen leaves non-persist forms untouched"
     (let [quine-form '(quine completion
@@ -2571,14 +2579,17 @@
           result (run-spell (list 'do
                                   (list 'def 'x 41)
                                   (list 'prune-and-reopen (list 'quote quine-form))))]
-      (is (.contains ^String result "(def y (+ x 1))"))
-      (is (not (.contains ^String result "(def y (+ 41 1))")))))
+      (let [prefix (eval/serialize-quine-prefix result)]
+        (is (.contains ^String prefix "(def y (+ x 1))"))
+        (is (not (.contains ^String prefix "(def y (+ 41 1))"))))))
 
   (testing "prune-and-reopen leaves unbound persist forms untouched"
     (let [quine-form '(quine completion
                         (eval (do (persist y (+ x 1))
                                   (quote (!extend completion)))))]
-      (is (= "(quine completion (eval (do (persist y (+ x 1)) (quote (!extend completion)) "
+      (is (= '(quine completion
+                (eval (do (persist y (+ x 1))
+                          (quote (!extend completion)))))
              (run-spell (list 'prune-and-reopen (list 'quote quine-form)))))))
 
   (testing "prune-and-reopen does not materialize persist inside nested fn/fn*"
@@ -2586,9 +2597,10 @@
                         (eval (do (fn [x] (persist y x))
                                   (fn* [x] (persist z x))
                                   (quote (!extend completion)))))
-          result (run-spell (list 'prune-and-reopen (list 'quote quine-form)))]
-      (is (.contains ^String result "(fn [x] (persist y x))"))
-      (is (.contains ^String result "(fn* [x] (persist z x))")))))
+          result (run-spell (list 'prune-and-reopen (list 'quote quine-form)))
+          prefix (eval/serialize-quine-prefix result)]
+      (is (.contains ^String prefix "(fn [x] (persist y x))"))
+      (is (.contains ^String prefix "(fn* [x] (persist z x))")))))
 
 (deftest extend-macro-expansion-test
   (testing "extend expands to !llm-self with prune-and-reopen"
@@ -2605,12 +2617,11 @@
     ;; Create a custom eval with a 'boom effect function
     (let [boom-effects {'boom (fn [] (throw (Exception. "boom!")))}
           custom-eval (fn [expr]
-                        (let [expanded (eval/expand-expr expr eval/*spell-env*)]
-                          (binding [eval/*builtins* (merge eval/core-builtins boom-effects)]
-                            (let [result (spell-eval expanded {})]
-                              (if (eval/ok? result)
-                                (:ok result)
-                                (throw (ex-info (:err result) {:result result})))))))
+                        (binding [eval/*builtins* (merge eval/core-builtins boom-effects)]
+                          (let [result (spell-eval expr (or eval/*spell-env* {}))]
+                            (if (eval/ok? result)
+                              (:ok result)
+                              (throw (ex-info (:err result) {:result result}))))))
           custom-builtins (assoc eval/core-builtins 'eval custom-eval)
           result (binding [eval/*builtins* custom-builtins]
                    (spell-eval '(eval '(boom)) {}))]
@@ -2669,12 +2680,13 @@
 ;; =============================================================================
 
 (deftest compact-macro-expansion-test
-  (testing "compact expands to !llm-self with prune-and-reopen + compact instructions"
+  (testing "compact expands to !llm-self with serialize-prefix + compact instructions"
     (let [expanded (macros/spell-macroexpand-1 '(!compact completion))]
       (is (= '!llm-self (first expanded)))
       (is (seq? (second expanded)))
       (is (= 'str (first (second expanded))))
-      (is (= '(prune-and-reopen completion) (second (second expanded))))))
+      (is (= '(serialize-prefix (prune-and-reopen completion))
+             (second (second expanded))))))
 
   (testing "compact suffix has !llm-self/wrap-cat trailing expression"
     (let [expanded (macros/spell-macroexpand-1 '(!compact completion))
@@ -2761,29 +2773,18 @@
                              (cons 'vector items))
                            (make-vec 1 2 3)))))))
 
-(deftest defmacro-expand-test
-  (testing "expand-expr expands user macros from outer-env"
-    (let [;; First, create a proper macro value by evaluating defmacro
-          r (spell-eval '(defmacro unless [test body]
-                           (list 'if test nil body))
-                        {})
-          macro-val (get (:env r) 'unless)
-          ;; Now test expand with this macro in outer-env
-          outer-env {'unless macro-val 'x 5}
-          expanded (eval/expand-expr '(unless (= x 0) "nonzero") outer-env)]
-      (is (= 'if (first expanded)))
-      (is (= '(= 5 0) (second expanded)))))
+(deftest spell-eval-user-macro-test
+  (testing "spell-eval can use user macros from the caller env"
+    (is (= 42
+           (run-spell '(do (defmacro unless [test body]
+                             (list 'if test nil body))
+                           (spell-eval '(unless false 42)))))))
 
-  (testing "expand-expr does not expand user macro if locally shadowed"
-    (let [r (spell-eval '(defmacro unless [test body]
-                           (list 'if test nil body))
-                        {})
-          macro-val (get (:env r) 'unless)
-          outer-env {'unless macro-val}
-          ;; (let [unless ...] (unless ...)) — unless is locally bound
-          expanded (eval/expand-expr '(let [unless 1] (unless false 42)) outer-env)]
-      ;; The inner (unless ...) should NOT be expanded because unless is locally bound
-      (is (= 'let (first expanded))))))
+  (testing "spell-eval still respects local shadowing inside its own expression"
+    (is (= 1
+           (run-spell '(do (defmacro unless [test body]
+                             (list 'if test nil body))
+                           (spell-eval '(let [unless 1] unless))))))))
 
 (deftest defmacro-self-eval-test
   (testing "macro map re-evaluates idempotently"

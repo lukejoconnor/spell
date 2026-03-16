@@ -250,7 +250,7 @@
             processed (eval/prune-substitute form nil)]
         (str (when (seq prior-forms)
                (str (str/join " " (map pr-str prior-forms)) " "))
-             (eval/reopen processed)))
+             (eval/serialize-quine-prefix processed)))
       (parse/strip-trailing-parens 3 s))))
 
 (defn- create-msg

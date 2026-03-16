@@ -249,7 +249,7 @@ Categories (use (!describe builtins :category) for full listing):
   sequences     — map, filter, reduce, sort, group-by, take, drop, partition, range, ...
   combinators   — comp, partial, juxt, complement, constantly, ...
   bitwise       — bit-and, bit-or, bit-xor, bit-shift-left, ...
-  spell         — spell-eval, reopen, wrap-cat, prune-and-reopen, serialize, stored
+  spell         — spell-eval, reopen, wrap-cat, serialize-prefix, prune-and-reopen, serialize, stored
   concurrency   — future*
   error         — throw, gensym
 
@@ -517,43 +517,41 @@ Use quine only when a child LLM needs to see source code.
 For regular value bindings, use def."
 
     :spell-eval
-    "Evaluate expression in a fresh environment after closing over caller bindings.
+    "Evaluate expression in the caller's environment.
 
 (spell-eval expr)
 
-This is the function that evaluates your completion. It:
-1. Takes the expression and the caller's environment
-2. Closes over free variables in expr using the caller's environment
-3. Evaluates the expanded expression in a fresh environment {}
+Evaluates expr using the current bindings and current builtins.
+This is lower-level than !llm-self: it does not create a new LLM turn.
 
-Because it starts fresh, the child cannot see or modify the parent's bindings.
-The expansion step ensures arguments are closed (no unresolved names)."
+Because spell-eval is a builtin call, any defs inside expr stay inside the
+spell-eval evaluation and do not update the caller's outer env."
 
     :reopen
-    "Strip exactly 3 trailing closing parens from a completion string.
-Used to reopen the standard completion wrapper so new expressions can be appended.
+    "Return a quine form with extra expressions spliced into its do block.
 
 (reopen completion)
+(reopen completion expr1 expr2 ...)
 
 The completion wrapper is (quine completion (eval (do ...))).
-Stripping the 3 trailing parens reopens the do block for continuation.
+reopen keeps that wrapper as data and appends any extra expressions inside
+the existing do block.
 
 Example:
-  '(!llm-self (reopen completion))  ;; child continues your do block"
+  '(!llm-self (reopen completion (def x 1)))"
 
     :wrap-cat
-    "Build an open completion wrapper prefix from arguments.
+    "Build a quine completion form from arguments.
 
 (wrap-cat arg1 arg2 ...)
 
-Each argument is pr-str'd and joined with spaces. The result is the string:
-  \"(quine completion (eval (do arg1-printed arg2-printed ... \"
-— an open prefix (no closing parens) that a child LLM continues.
+Returns:
+  (quine completion (eval (do arg1 arg2 ...)))
+as data.
 
 Use with !llm-self to pass context to a child in a proper Spell wrapper:
   '(!llm-self (wrap-cat \"Analyze this:\" data))
-  ;; child sees: (quine completion (eval (do \"Analyze this:\" {:key \"val\"} ...
-  ;; and continues writing code from there
+  ;; child sees those values inside a normal completion wrapper
 
 Compare with passing a bare string to !llm-self:
   '(!llm-self \"Analyze this\")
@@ -563,17 +561,29 @@ Compare with passing a bare string to !llm-self:
 wrap-cat is for when you want to embed multiple values (data, prior results)
 directly into the child's do block rather than as a single string prompt."
 
+    :serialize-prefix
+    "Serialize a quine form as an open prefix string.
+
+(serialize-prefix completion)
+
+Takes a quine form like:
+  (quine completion (eval (do ...)))
+and returns the open prefix string:
+  \"(quine completion (eval (do ... \"
+
+Used internally by !llm-self and !compact when a quine form needs to cross the
+LLM boundary as text."
+
     :prune-and-reopen
-    "Destructure a quine form, prune rethink-marked expressions, rebuild as open prefix.
+    "Prune rethink-marked expressions and materialize explicit persist forms in a quine.
 
 (prune-and-reopen completion)
 
-Unlike reopen (which just strips 3 trailing parens), prune-and-reopen:
-1. Parses the quine form
+Returns a cleaned quine form, not a string. It:
+1. Walks the quine form
 2. Removes expressions marked for pruning by rethink
 3. Rewrites explicit source-level (persist sym expr) forms to
    (persist sym <literal-runtime-value-of-sym>)
-4. Rebuilds the prefix from the cleaned AST
 
 No other forms are auto-materialized. Do not write Spell macros that emit
 persist; macro-generated persist may not materialize during reopen.
@@ -611,7 +621,7 @@ with a \"...\" suffix. Non-string leaves are unchanged."
 
 (strip-parens n s)
 
-Lower-level than reopen. Use reopen for the standard 3-paren case."
+Lower-level than serialize-prefix. Use reopen / wrap-cat for quine forms."
 
     :eval
     "Per-agent effect builtin. Transparent evaluator; inverse of quote.
@@ -634,9 +644,9 @@ The double evaluation pattern:
 (!llm-self prompt)
 (!llm-self prompt handle)
 
-prompt: string or open prefix. If a bare string, automatically wrapped in
-the completion wrapper. If already an open prefix (from reopen or wrap-cat),
-used as-is.
+prompt: string or quine form. If a bare string, automatically wrapped in
+the completion wrapper. If given a quine form (from reopen, wrap-cat, or
+prune-and-reopen), that quine is serialized as the child's open prefix.
 
 The child writes Spell code that is parsed and evaluated. Use for:
 - Extending context (!extend, !compact)
@@ -773,7 +783,8 @@ Example:
 
 '(!extend completion)
 
-Calls prune-and-reopen on the completion, then !llm-self with the cleaned prefix.
+Calls !llm-self on the completion quine. The child call path prunes rethink
+markers and materializes explicit persist forms before serializing the prefix.
 Use after a rethink to continue with a shorter, corrected context."
 
     :!compact
