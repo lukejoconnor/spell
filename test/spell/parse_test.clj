@@ -73,10 +73,10 @@
     (is (= "(+ 1 2)" (balance-parens "(+ 1 2)"))))
 
   (testing "needs one paren"
-    (is (= "(+ 1 2)" (balance-parens "(+ 1 2"))))
+    (is (= "(+ 1 2\n)" (balance-parens "(+ 1 2"))))
 
   (testing "needs multiple parens"
-    (is (= "((+ 1 2))" (balance-parens "((+ 1 2"))))
+    (is (= "((+ 1 2\n))" (balance-parens "((+ 1 2"))))
 
   (testing "negative balance - returns unchanged"
     (is (= "(+ 1))" (balance-parens "(+ 1))"))))
@@ -85,7 +85,14 @@
     (is (= "" (balance-parens ""))))
 
   (testing "string with no parens"
-    (is (= "hello" (balance-parens "hello")))))
+    (is (= "hello" (balance-parens "hello"))))
+
+  (testing "trailing comment does not swallow balanced parens"
+    (is (= 0 (paren-balance (balance-parens "(+ 1 2 ; comment"))))
+    (is (= 0 (paren-balance (balance-parens "(do (+ 1 2) ; trailing")))))
+
+  (testing "balanced result with trailing comment is readable"
+    (is (= ['(+ 1 2)] (read-all (balance-parens "(+ 1 2 ; comment"))))))
 
 ;; =============================================================================
 ;; strip-trailing-parens tests

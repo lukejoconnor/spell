@@ -38,7 +38,7 @@
   [s]
   (let [balance (paren-balance s)]
     (if (pos? balance)
-      (str s (apply str (repeat balance \))))
+      (str s "\n" (apply str (repeat balance \))))
       s)))
 
 (def ^:private valid-escape?
