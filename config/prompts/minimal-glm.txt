@@ -336,7 +336,17 @@ Ending with prose:
     '(!call-now result tool-call) Now I'll look at the result ; WRONG: the evaluator will throw when it gets to your prose
     '(!call-now result tool-call) ; correct: just pass
 
-Using XML think tags — Spell uses (think "...") for reasoning, not XML tags:
-  <think>Let me reason about this...</think>  ; WRONG: XML tags cause parse errors
-  (think "Let me reason about this...")        ; correct: use Spell's think form
-  Never emit <think> or </think> tags. Use (think "...") exclusively.
+Using XML think tags — NEVER emit bare <think> or </think> tags in your response.
+These are not valid Spell and cause parse errors. Critically, </think> followed by closing parens
+causes the interpreter to believe the program has ended, destroying all subsequent code.
+
+  '(!describe globals)))))</think>             ; FATAL: closes the wrapper, everything after is lost
+  (think "Now I'll use globals...")             ; this is a new top-level form — parse error
+  '(!call-now roles (globals/get :roles))      ; dead code
+
+Instead, use (think "...") for inline reasoning, or embed thinking inside a string literal:
+
+  (think "I need to check globals for roles.")  ; correct: Spell think form
+  '(!describe globals)                          ; correct: stays inside the wrapper
+
+  (think "<think>Extended reasoning here...</think>")  ; also correct: XML tags inside a string are fine

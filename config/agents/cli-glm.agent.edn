@@ -1,0 +1,13 @@
+;; CLI agent for GLM models: full capabilities with GLM-specific prompt.
+
+{:base base-glm.agent.edn
+ :name cli-glm
+ :doc "CLI default for GLM: full capabilities, GLM-specific prompt"
+ :llms {explore explore.agent.edn}
+
+ :namespaces
+ {io       stdlib/io
+  web      stdlib/web
+  patterns stdlib/patterns
+  agents   stdlib/agents
+  globals  stdlib/globals}}
