@@ -21,6 +21,21 @@
           out ((var benchmark-api/response-ok) "spell" start {:result {'result "abc"}})]
       (is (= "abc" (:result out))))))
 
+(deftest response-ok-usage-summary-test
+  (testing "serializes usage-summary with mean/max context fields"
+    (let [start (System/nanoTime)
+          usage-atom (atom {:by-model {"model-a" {:input_tokens 300
+                                                  :output_tokens 120
+                                                  :cache_creation_input_tokens 10
+                                                  :cache_read_input_tokens 20
+                                                  :calls 2
+                                                  :max_total_tokens 260}}})
+          out ((var benchmark-api/response-ok) "spell" start {:usage usage-atom})]
+      (is (== 225.0 (get-in out [:usage :by-model "model-a" :mean_total_tokens])))
+      (is (= 260 (get-in out [:usage :by-model "model-a" :max_total_tokens])))
+      (is (== 225.0 (get-in out [:usage :total :mean_total_tokens])))
+      (is (= 260 (get-in out [:usage :total :max_total_tokens]))))))
+
 (deftest fireworks-model-spec-and-default-agent-test
   (testing "parse-model-spec accepts fireworks prefix"
     (is (= {:provider "fireworks" :model "glm-5"}

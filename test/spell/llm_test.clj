@@ -120,7 +120,8 @@
                           {:input_tokens 100 :output_tokens 50})
         (is (= {:by-model {"claude-sonnet-4-20250514"
                            {:input_tokens 100 :output_tokens 50 :calls 1
-                            :cache_creation_input_tokens 0 :cache_read_input_tokens 0}}}
+                            :cache_creation_input_tokens 0 :cache_read_input_tokens 0
+                            :max_total_tokens 150}}}
                @usage-atom))))))
 
 (deftest track-usage-accumulates-test
@@ -130,11 +131,16 @@
         (provider/track-usage! "claude-sonnet-4-20250514"
                           {:input_tokens 100 :output_tokens 50})
         (provider/track-usage! "claude-sonnet-4-20250514"
-                          {:input_tokens 200 :output_tokens 75})
+                          {:input_tokens 200 :output_tokens 75
+                           :cache_creation_input_tokens 10
+                           :cache_read_input_tokens 5})
         (let [stats (get-in @usage-atom [:by-model "claude-sonnet-4-20250514"])]
           (is (= 300 (:input_tokens stats)))
           (is (= 125 (:output_tokens stats)))
-          (is (= 2 (:calls stats))))))))
+          (is (= 10 (:cache_creation_input_tokens stats)))
+          (is (= 5 (:cache_read_input_tokens stats)))
+          (is (= 2 (:calls stats)))
+          (is (= 290 (:max_total_tokens stats))))))))
 
 (deftest track-usage-multi-model-test
   (testing "track-usage! tracks per-model"
@@ -154,6 +160,50 @@
       ;; Should not throw
       (provider/track-usage! "model" {:input_tokens 100 :output_tokens 50}))))
 
+(deftest usage-summary-context-stats-test
+  (testing "usage-summary reports per-model and total context mean/max"
+    (let [usage-atom (atom {:by-model {}})]
+      (binding [provider/*usage* usage-atom]
+        (provider/track-usage! "claude-sonnet-4-20250514"
+                          {:input_tokens 100 :output_tokens 50})
+        (provider/track-usage! "claude-sonnet-4-20250514"
+                          {:input_tokens 200 :output_tokens 75
+                           :cache_creation_input_tokens 10
+                           :cache_read_input_tokens 5})
+        (provider/track-usage! "claude-3-5-haiku-20241022"
+                          {:input_tokens 80 :output_tokens 20
+                           :cache_read_input_tokens 30}))
+      (let [{:keys [by-model total]} (provider/usage-summary usage-atom)
+            sonnet (get by-model "claude-sonnet-4-20250514")
+            haiku (get by-model "claude-3-5-haiku-20241022")]
+        (is (== 220.0 (:mean_total_tokens sonnet)))
+        (is (= 290 (:max_total_tokens sonnet)))
+        (is (== 130.0 (:mean_total_tokens haiku)))
+        (is (= 130 (:max_total_tokens haiku)))
+        (is (== 190.0 (:mean_total_tokens total)))
+        (is (= 290 (:max_total_tokens total))))))
+
+  (testing "usage-summary defaults missing max_total_tokens to zero for prepopulated atoms"
+    (let [usage-atom (atom {:by-model {"legacy-model" {:input_tokens 150
+                                                       :output_tokens 50
+                                                       :calls 2}}})
+          {:keys [by-model total]} (provider/usage-summary usage-atom)]
+      (is (== 100.0 (get-in by-model ["legacy-model" :mean_total_tokens])))
+      (is (= 0 (get-in by-model ["legacy-model" :max_total_tokens])))
+      (is (== 100.0 (:mean_total_tokens total)))
+      (is (= 0 (:max_total_tokens total)))))
+
+  (testing "track-usage! preserves explicit prepopulated max_total_tokens"
+    (let [usage-atom (atom {:by-model {"legacy-model" {:input_tokens 2000
+                                                       :output_tokens 0
+                                                       :calls 2
+                                                       :max_total_tokens 1000}}})]
+      (binding [provider/*usage* usage-atom]
+        (provider/track-usage! "legacy-model" {:input_tokens 100 :output_tokens 0}))
+      (let [stats (get-in @usage-atom [:by-model "legacy-model"])]
+        (is (= 3 (:calls stats)))
+        (is (= 1000 (:max_total_tokens stats)))))))
+
 (deftest current-cost-supports-explicit-cache-read-price-test
   (testing "current-cost uses model-specific cache read pricing when provided"
     (let [usage-atom (atom {:by-model {"accounts/fireworks/models/glm-5"
@@ -161,7 +211,8 @@
                                         :output_tokens 500000
                                         :cache_read_input_tokens 200000
                                         :calls 1
-                                        :cache_creation_input_tokens 0}}
+                                        :cache_creation_input_tokens 0
+                                        :max_total_tokens 1700000}}
                             :cost-table {"accounts/fireworks/models/glm-5"
                                          {:input 1.00
                                           :cache-read-input 0.20
