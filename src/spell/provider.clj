@@ -214,8 +214,7 @@
                               (cond-> stats
                                 (pos? calls)
                                 (assoc :mean_total_tokens (double (/ total-tokens calls))
-                                       :max_total_tokens (or (:max_total_tokens stats)
-                                                             total-tokens)))))
+                                       :max_total_tokens (:max_total_tokens stats 0)))))
         with-costs (into {}
                      (map (fn [[model stats]]
                             (let [{:keys [input output cache-write-input cache-read-input]}
