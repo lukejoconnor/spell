@@ -163,20 +163,27 @@
   ([model usage] (track-usage! model usage nil))
   ([model usage cost-table]
    (when (and *usage* usage)
-     (swap! *usage* (fn [u]
-                      (cond-> (update-in u [:by-model model]
-                                (fn [existing]
-                                  (cond-> {:input_tokens (+ (:input_tokens existing 0) (:input_tokens usage 0))
-                                           :output_tokens (+ (:output_tokens existing 0) (:output_tokens usage 0))
-                                           :cache_creation_input_tokens (+ (:cache_creation_input_tokens existing 0)
-                                                                           (:cache_creation_input_tokens usage 0))
-                                           :cache_read_input_tokens (+ (:cache_read_input_tokens existing 0)
-                                                                       (:cache_read_input_tokens usage 0))
-                                           :calls (inc (:calls existing 0))}
-                                    (:reasoning_tokens usage)
-                                    (assoc :reasoning_tokens (+ (:reasoning_tokens existing 0)
-                                                                (:reasoning_tokens usage 0))))))
-                        cost-table (update :cost-table merge cost-table))))
+     (let [turn-total-tokens (+ (:input_tokens usage 0)
+                                (:output_tokens usage 0)
+                                (:cache_creation_input_tokens usage 0)
+                                (:cache_read_input_tokens usage 0))]
+       (swap! *usage*
+              (fn [u]
+                (cond-> (update-in u [:by-model model]
+                                   (fn [existing]
+                                     (cond-> {:input_tokens (+ (:input_tokens existing 0) (:input_tokens usage 0))
+                                              :output_tokens (+ (:output_tokens existing 0) (:output_tokens usage 0))
+                                              :cache_creation_input_tokens (+ (:cache_creation_input_tokens existing 0)
+                                                                              (:cache_creation_input_tokens usage 0))
+                                              :cache_read_input_tokens (+ (:cache_read_input_tokens existing 0)
+                                                                          (:cache_read_input_tokens usage 0))
+                                              :calls (inc (:calls existing 0))
+                                              :max_total_tokens (max (:max_total_tokens existing 0)
+                                                                     turn-total-tokens)}
+                                       (:reasoning_tokens usage)
+                                       (assoc :reasoning_tokens (+ (:reasoning_tokens existing 0)
+                                                                   (:reasoning_tokens usage 0))))))
+                  cost-table (update :cost-table merge cost-table)))))
      (when *budget*
        (when-let [cost (current-cost *usage*)]
          (when (> cost *budget*)
@@ -186,12 +193,29 @@
 (defn usage-summary
   "Compute a summary from accumulated usage data.
    Returns {:by-model {model {:input_tokens N :output_tokens N :calls N :cost F
+                              :mean_total_tokens F :max_total_tokens N
                               :cache_creation_input_tokens N :cache_read_input_tokens N}}
             :total {:input_tokens N :output_tokens N :calls N :cost F
+                    :mean_total_tokens F :max_total_tokens N
                     :cache_creation_input_tokens N :cache_read_input_tokens N}}"
   [usage-atom]
   (let [{:keys [by-model cost-table]} @usage-atom
         effective-costs (or cost-table default-costs)
+        summarize-context (fn [stats]
+                            (let [input-tokens (:input_tokens stats 0)
+                                  output-tokens (:output_tokens stats 0)
+                                  cache-write-tokens (:cache_creation_input_tokens stats 0)
+                                  cache-read-tokens (:cache_read_input_tokens stats 0)
+                                  calls (:calls stats 0)
+                                  total-tokens (+ input-tokens
+                                                  output-tokens
+                                                  cache-write-tokens
+                                                  cache-read-tokens)]
+                              (cond-> stats
+                                (pos? calls)
+                                (assoc :mean_total_tokens (double (/ total-tokens calls))
+                                       :max_total_tokens (or (:max_total_tokens stats)
+                                                             total-tokens)))))
         with-costs (into {}
                      (map (fn [[model stats]]
                             (let [{:keys [input output cache-write-input cache-read-input]}
@@ -204,16 +228,29 @@
                                                              (/ cache-read-input 1000000.0))
                                                output (* (:output_tokens stats 0) (/ output 1000000.0))]
                                            (+ base-input cache-write cache-read output)))]
-                              [model (cond-> stats cost (assoc :cost cost))]))
+                              [model (cond-> (summarize-context stats)
+                                       cost (assoc :cost cost))]))
                           by-model))
         reasoning-total (reduce + 0 (keep :reasoning_tokens (vals by-model)))
+        total-input (reduce + 0 (map #(:input_tokens % 0) (vals by-model)))
+        total-output (reduce + 0 (map #(:output_tokens % 0) (vals by-model)))
+        total-cache-write (reduce + 0 (map #(:cache_creation_input_tokens % 0) (vals by-model)))
+        total-cache-read (reduce + 0 (map #(:cache_read_input_tokens % 0) (vals by-model)))
+        total-calls (reduce + 0 (map #(:calls % 0) (vals by-model)))
         total (cond-> {:input_tokens (reduce + 0 (map #(:input_tokens % 0) (vals by-model)))
                        :output_tokens (reduce + 0 (map #(:output_tokens % 0) (vals by-model)))
-                       :cache_creation_input_tokens (reduce + 0 (map #(:cache_creation_input_tokens % 0) (vals by-model)))
-                       :cache_read_input_tokens (reduce + 0 (map #(:cache_read_input_tokens % 0) (vals by-model)))
-                       :calls (reduce + 0 (map #(:calls % 0) (vals by-model)))
+                       :cache_creation_input_tokens total-cache-write
+                       :cache_read_input_tokens total-cache-read
+                       :calls total-calls
                        :cost (let [costs (keep :cost (vals with-costs))]
                                (when (seq costs) (reduce + 0.0 costs)))}
+                (pos? total-calls) (assoc :mean_total_tokens (double (/ (+ total-input
+                                                                          total-output
+                                                                          total-cache-write
+                                                                          total-cache-read)
+                                                                       total-calls))
+                                          :max_total_tokens (reduce max 0 (map #(:max_total_tokens % 0)
+                                                                               (vals with-costs))))
                 (pos? reasoning-total) (assoc :reasoning_tokens reasoning-total))]
     {:by-model with-costs :total total}))
 
