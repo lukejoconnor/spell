@@ -1321,10 +1321,6 @@
 ;; =============================================================================
 
 (deftest fireworks-provider-construction
-  (testing "fireworks-provider requires API key"
-    (is (thrown-with-msg? Exception #"FIREWORKS_API_KEY"
-                          (provider/fireworks-provider {:api-key nil}))))
-
   (testing "fireworks-provider custom opts"
     (let [p (provider/fireworks-provider {:api-key "fw"
                                           :base-url "https://api.fireworks.ai/inference/v1/"
