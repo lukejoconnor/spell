@@ -176,8 +176,16 @@
   (fn [raw]
     (binding [eval/*gated-ns-hints* (or gated-ns-hints {})]
       (let [raw       (parse/balance-parens raw)
-            [forms parse-err] (try [(parse/read-all raw) nil]
-                                   (catch Exception e [nil e]))]
+            [program parse-err]
+            (if allow-multiple-top-level?
+              ;; REPL mode: read all forms, wrap in do
+              (try (let [forms (vec (parse/read-all raw))
+                         cnt   (count forms)]
+                     [(if (> cnt 1) (list* 'do forms) (first forms)) nil])
+                   (catch Exception e [nil e]))
+              ;; Normal mode: read first form only, ignore trailing garbage
+              (try [(parse/read-first raw) nil]
+                   (catch Exception e [nil e])))]
         (if parse-err
           ;; Reader error: embed raw text as string in recovery quine
           (if recover-fn
@@ -185,13 +193,7 @@
                                  eval/*gated-ns-hints*)
             (throw parse-err))
           ;; Normal path: eval and recovery
-          (let [forms-v   (vec forms)
-                form-count (count forms-v)
-                _         (when (and (> form-count 1) (not allow-multiple-top-level?))
-                            (throw (ex-info "Multiple top-level forms are not allowed"
-                                            {:type :multiple-top-level-forms
-                                             :count form-count})))
-                program   (if (> form-count 1) (list* 'do forms-v) (first forms-v))
+          (let [
                 indent    (apply str (repeat eval/*llm-depth* "  "))
                 result    (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
                                     eval/*raw-text*       raw

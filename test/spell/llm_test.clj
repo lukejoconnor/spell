@@ -74,18 +74,22 @@
                                 {'describe-fn stdlib/describe}
                                 llm/core-namespaces)
         eval-builtin (llm/make-eval variant-builtins {})]
-    (testing "multiple top-level forms are rejected by default"
+    (testing "default: reads first form only, ignores trailing forms"
       (let [inbox-fn (llm/make-inbox-fn {:variant-builtins variant-builtins
                                          :eval-builtin eval-builtin
                                          :recover-fn nil}
                                         (atom nil))]
-        (try
-          (inbox-fn "(def x 1) (+ x 1)")
-          (is false "Expected multiple top-level forms error")
-          (catch Exception e
-            (is (= :multiple-top-level-forms (:type (ex-data e))))))))
+        ;; First form (def x 1) evaluates to 1; second form is ignored
+        (is (= 1 (inbox-fn "(def x 1) (+ x 1)")))))
 
-    (testing "multiple top-level forms can be explicitly allowed"
+    (testing "default: first form valid, garbage after — no error"
+      (let [inbox-fn (llm/make-inbox-fn {:variant-builtins variant-builtins
+                                         :eval-builtin eval-builtin
+                                         :recover-fn nil}
+                                        (atom nil))]
+        (is (= 42 (inbox-fn "(+ 40 2) But wait carefully: I should reconsider...")))))
+
+    (testing "allow-multiple-top-level: reads all forms, wraps in do"
       (let [inbox-fn (llm/make-inbox-fn {:variant-builtins variant-builtins
                                          :eval-builtin eval-builtin
                                          :allow-multiple-top-level? true
