@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes Spell (Self-Prompting Execution Language for LLMs), a domain-specific language embedded in Clojure for LLM self-orchestration and own-context engineering. Unlike an agentic harness which calls the LLM according to a human-designed pattern, Spell lets the LLM call itself recursively. It can pass context to itself in a ReAct-like pattern, it can implement human-inspired patterns like worker-checker, it can embed self-calls within control flow patterns like loops and conditionals, and it can compose these patterns in arbitrary ways. The LLM controls the context of its child LLMs programmatically, allowing it prune, rerank, summarize, and augment its own context window. Spell also allows multiple agents to run asynchronously and communicate either directly or via global state. 
+This document describes Spell (Self-Programmed Execution Language for LLMs), a domain-specific language embedded in Clojure for LLM self-orchestration and own-context engineering. Unlike an agentic harness which calls the LLM according to a human-designed pattern, Spell lets the LLM call itself recursively. It can pass context to itself in a ReAct-like pattern, it can implement human-inspired patterns like worker-checker, it can embed self-calls within control flow patterns like loops and conditionals, and it can compose these patterns in arbitrary ways. The LLM controls the context of its child LLMs programmatically, allowing it prune, rerank, summarize, and augment its own context window. Spell also allows multiple agents to run asynchronously and communicate either directly or via global state. 
 
 Compared with Clojure, Spell adds a key primitive, `llm`. `llm` accepts a prompt, generates Spell code, and evaluates it. Spell also has its own rules related to scope and environments, motivated by the fact that the LLM cannot observe variables defined outside of its local context window. It also removes built-ins with side effects (particularly I/O), so the agent is sandboxed by default. 
 
@@ -109,7 +109,7 @@ The last expression in the completion wrapper's `do` block is the *trailing expr
 ```clojure
 '(llm (reopen (pr-str completion)))
 ```
-where `pr-str` serializes the data to a string and `reopen` strips the closing parentheses of the completion wrapper (the `do` block, `eval`, and `quine` forms) so that the `do` block can be continued by the child LLM. For quine-structured completions, `reopen` works at the AST level, parsing the quine and rebuilding an open prefix; it falls back to string-level stripping for non-quine forms. Because this quoted expression is the trailing expression, it is passed to the outer `eval` and evaluated. When a completion ends with a trailing `llm` call (or with a trailing tool call; see below), this is called an extension. 
+where `pr-str` serializes the data to a string and `reopen` strips the closing parentheses of the completion wrapper (the `do` block, `eval`, and `quine` forms) so that the `do` block can be continued by the child LLM. The builtin `reopen` operates at the string level; the related internal function `prune-and-reopen` (used by `!extend` and `!call-now`) works at the AST level, parsing the quine structure and rebuilding an open prefix after pruning `rethink` siblings and materializing `persist` forms. Because this quoted expression is the trailing expression, it is passed to the outer `eval` and evaluated. When a completion ends with a trailing `llm` call (or with a trailing tool call; see below), this is called an extension.
 
 The trailing expression pattern---quoting the trailing expression---is important because it makes the expression inert in extensions. When a new expression is appended, the previously-quoted expression is no longer trailing; the quote makes it return data (discarded as an intermediate value). Without quoting, the `!llm-self` call would be re-evaluated every time the completion is extended. In fact, Spell enforces that any function with effects outside the local runtime environment can only be called via double-evaluation. Such functions are unavailable in the built-in functions namespace of `spell-eval`, and they are inserted into the namespace of `eval`. 
 
@@ -133,11 +133,11 @@ On the subsequent turn, the LLM sees the following:
 
 ## Runtime environments and local state
 
-In Clojure, most functions have lexical scope: the environment when the function is evaluated is that when it was defined, not when it was called. However, the `eval` function is global: it both reads from and writes to the global environment. This behavior is undesired when `llm` evaluates a completion becuase the LLM has no way to read the global environment - it knows only the contents of its own completion. Without scoping, a binding defined by a parent LLM could be overwritten by a child LLM, or the environment could become cluttered with forgotten functions and variables. This challenge is mostly specific to the agentic setting, where the code-writing entity is only able to read its own subprogram.
+In Clojure, most functions have lexical scope: the environment when the function is evaluated is that when it was defined, not when it was called. However, the `eval` function is global: it both reads from and writes to the global environment. This behavior is undesired when `llm` evaluates a completion because the LLM has no way to read the global environment - it knows only the contents of its own completion. Without scoping, a binding defined by a parent LLM could be overwritten by a child LLM, or the environment could become cluttered with forgotten functions and variables. This challenge is mostly specific to the agentic setting, where the code-writing entity is only able to read its own subprogram.
 
 `spell-eval` solves this challenge by taking an environment as input, evaluating an expression in this environment, and returning the modified environment as its output. When it is applied to the completion of the LLM, its input environment is empty. Thus, the LLM has perfect knowledge of the environment in which its completion will be evaluated. This choice reflects an important principle in Spell: maximizing alignment between the model's context (what it can reason about), the program's environment (what determines its behavior), and the program itself (what it can manipulate).
 
-For the same reason, functions in Spell are dynamically scoped. There are no closures; functions are nothing more than their source code. This choice greatly simplifies the concept of "state". In Spell, there exists a clean distinction between local state, which is stored entirely inside of the source code of the program, and global state, with which a Spell program interacts only through the trailing expression. If Spell were to be lexographically scoped (like Clojure), then closures would represent a third, problematic kind of state: opaque local items defined outside of the LLM's context window. 
+For the same reason, functions in Spell are dynamically scoped. There are no closures; functions are nothing more than their source code. This choice greatly simplifies the concept of "state". In Spell, there exists a clean distinction between local state, which is stored entirely inside of the source code of the program, and global state, with which a Spell program interacts only through the trailing expression. If Spell were to be lexically scoped (like Clojure), then closures would represent a third, problematic kind of state: opaque local items defined outside of the LLM's context window. 
 
 
 ## Context management
@@ -189,25 +189,15 @@ How should the LLM persist just a subset of lines, without making a new tool cal
 
 At runtime, `persist` is identical to `def`. However, when `prune-substitute` is applied to the form `(persist name body)`, it looks up `name` in the runtime environment and replaces `body` with the value bound to `name`. In the example above, `!extend` passes the quine `completion` to `prune-substitute`. The latter looks up `lines`, finds it in the environment, and replaces the expression `(subvec big-file 32 42)` with its literal value; this way, the child LLM can still read `lines` even though `big-file` has disappeared from its context window. 
 
-The same mechanism works in a 1-arity form:
-
-```clojure
-...
-(def x 123)
-(quine expr (persist x))
-'(!llm-self (wrap-cat expr))
-```
-
-Here, `(persist x)` is equivalent to `(persist x x)`. When `expr` is traversed by prune-and-reopen, `(persist x)` is expanded to `(persist x 123)`.
-
-
 ### Compact
 
 For longer-running agents, even pruned context may grow too large. `!compact` provides self-referential context compaction: the agent compresses its own completion without an external summarizer. The macro expands to a self-call with instructions asking the LLM to rewrite its context as a sequence of quoted forms (definitions, key reasoning steps), dropping routine steps and truncating large values. Because the same agent performs the compaction, it can make informed decisions about what to keep. 
 
-## User-defined macros
+## Macros
 
-In addition to the built-in macros (`when`, `cond`, `defn`, `->`, `->>`, etc.), Spell supports user-defined macros via `defmacro`:
+In Lisp, a macro is a transformation which is applied to the source code of its input arguments, as opposed to their values. If `f` is an ordinary function, then `(f (expr))` is evaluated by first evaluating `expr`, then applying `f`; if it is a macro, then `f` is applied to the unevaluated expression `(expr)`, producing a new expression which is then evaluated.
+
+In addition to the built-in macros (`when`, `cond`, `defn`, `->`, `->>`, etc.), Spell supports LM-defined macros via `defmacro`:
 
 ```clojure
 (defmacro unless [test & body]
@@ -215,6 +205,8 @@ In addition to the built-in macros (`when`, `cond`, `defn`, `->`, `->>`, etc.), 
 ```
 
 `defmacro` creates a source-to-source transformer stored in the environment as a map with `{:spell/macro true, :expander (fn ...)}`. Like functions, macros are dynamically scoped (environment-based, not global), so they are portable across LLM boundaries — `expand` correctly resolves user macros in quoted expressions before passing them to child LLMs.
+
+Such macros could be used to apply arbitrary transformations to the prefix which is passed to an LM, particularly in cases that the prefix is structured poorly. For example, suppose that the prefix contains a long unbound string literal; this literal cannot be manipulated programmatically via the runtime environment because it is not available with a binding. However, assuming the standard wrapper has been applied, the LM could write a macro which extracts the string literal from the `completion` programmatically.
 
 ## Error recovery
 
@@ -233,7 +225,7 @@ This representation allows errors to propagate through the evaluation tree witho
 
 ### Deterministic recovery: namespace fixup
 
-One common class of LLM error is using a function without qualifying its namespace — writing `distinct` instead of `seqs/distinct`, or `trim` instead of `strings/trim`. These errors can be fixed deterministically: the recovery system searches all available namespaces for the unbound or misqualified symbol, and if exactly one match exists, substitutes it and re-evaluates.
+One common class of LLM error is using a function without qualifying its namespace — writing `distinct` instead of `seqs/distinct`, or `trim` instead of `strings/trim`. These errors are fixed deterministically: the recovery system searches all available namespaces for the unbound or misqualified symbol, and if exactly one match exists, substitutes it and re-evaluates.
 
 ### LLM-driven error recovery
 
@@ -254,41 +246,65 @@ The LLM sees the error map (including the `:trace` of Spell function names the e
 
 A separate recovery path handles parse errors — unbalanced parentheses, malformed literals, or other syntax that the reader cannot process. These errors are caught before evaluation begins. In this case, the raw (unparseable) completion text is embedded as a string, rather than as code, in a fresh recovery quine along with the parse error message and a recovery prompt. The LLM sees what it wrote (as a string, since it cannot be read as code) and the error, and gets a fresh `!extend` to try again. Like eval recovery, reader recovery is limited to two attempts.
 
+## Concurrent agents and inter-agent communication
 
-## Concurrent agents
+Spell supports two mechanisms by which an LM can call other LMs. `!llm-self` should be thought of as self-delegation: the "same" agent taking its next turn. The second mechanism is `spawn`, which should be thought of as creating a "different" agent (this distinction is artificial because the LM itself is stateless). Spawned agents run asynchronously. Each spawned agent has a unique *handle* which is used for inter-agent communication. To avoid potential deadlock, the main execution thread of a parent LM cannot block for a spawned agent to return a result. Instead, a "spawn-sleep-notify" pattern is used: the caller's execution thread finishes, the caller sleeps instead of taking a new turn immediately, and the spawned agent awakes the caller upon completion.
 
-`(agents/spawn prompt)` starts a background agent using `!llm-self` and returns its handle. An optional second argument specifies a fixed handle name: `(agents/spawn prompt :name)`. The explicit form `(agents/spawn llm-fn prompt)` accepts any LLM function as the first argument. Each spawned agent is independent and communicates via `agents/send` and `agents/!ask` (see *Inter-agent communication* below):
+### The inbox function
+
+Each registered handle has an *inbox* which contains a function, the *inbox function*. The inbox function is applied to the agent's completion before it is evaluated. By default, this function is the identity. Messaging works by modifying this function so that it appends a message to the completion:
 
 ```clojure
-(def a (agents/spawn "summarize document A, send result to (agents/parent-handle)"))
-(def b (agents/spawn "summarize document B, send result to (agents/parent-handle)"))
-'(agents/!ask a "send your summary")
-;; next turn: '(agents/!ask b "send your summary")
+... ; recipient's completion
+(def msg {:from ... :body ...})
+'(!extend) ; gives recipient a turn so that it sees the message
 ```
 
-For one-shot delegation, `agents/!spawn-ask` combines spawn and block: it starts a child agent and blocks until the child completes. The multi-target form `(agents/!spawn-ask [prompt-a prompt-b ...])` spawns all children concurrently and wakes the parent with a combined result when all have completed.
+When agent A sends a message to agent B, the message is composed into B's inbox function. Multiple messages are handled via function composition.
+
+### Sleeping
+
+Unlike most inter-agent communication systems, Spell supports synchronous communication between asynchronous agents: A asks a question to B and waits for a response before continuing. A pitfall in such systems is deadlock: what happens if A and B ask questions to each other simultaneously? Spell avoids this pitfall by ensuring that when A is awaiting a response for B, it does so in a preemptable state, able to be awoken by any incoming message. In particular, the execution thread of the program written by A cannot block for a response (or for any signal; it completely lacks the `await` primitive). This guarantee is important for Spell because agents have only local information about the state of the overall system, and they are unable to avoid deadlocks by inspecting the global dependency graph.
+
+Instead of blocking during execution, agents in Spell are able to "sleep". A sleeping agent has the following state:
+- A completion which has not yet been evaluated
+- An inbox function which is able to be modified by an incoming message
+- A signal promise which awakes the agent upon delivery
+
+Any incoming message wakes the agent by delivering its promise. This causes the completion to be processed by the inbox function and evaluated. The inbox function and signal are stored in a single atom so that they can be read and updated atomically, eliminating race conditions between message delivery and wake-up.
 
 
-## Inter-agent communication
+### Avoiding deadlock
 
-Inter-agent communication in Spell revolves around one core mechanism, the *inbox*. Each registered handle has a combined state atom holding two things: an *inbox function* (a raw-string-to-raw-string transform, initially the identity function) and a *signal* (a promise used to wake sleeping agents). The inbox function and signal are stored in a single atom so that they can be read and updated atomically, eliminating race conditions between message delivery and wake-up.
+The system is designed to make deadlock, where different agents await each others' messages, impossible. This is accomplished by coupling two events: whenever agent A queries agent B and sleeps for a response (using the `!ask` function), agent B receives a message which awakes it if it is asleep. When two agents query each other simultaneously, both are awoken. Moreover, if agent A queries agent B, and agent B finishes its work and returns, this event delivers the wakeup promise of A. 
 
-When agent A sends a message to agent B, the message is composed into B's inbox function. The typical pattern is composition: a message function `f` (which reopens B's completion and appends a `def` binding with the message) is composed with the current inbox function via `(comp f inbox-fn)`. The message also delivers the signal, waking B if it is sleeping. When B next enters evaluation, the inbox function is drained atomically (reset to identity) along with the signal (reset to a fresh promise), and the composed transforms are applied to the raw completion before evaluation.
+Spell does contain an `await` function which can potentially block an execution thread forever, but this function is only able to be called from inside of a future, outside of any agent's blocking execution thread. The usage pattern for this is as follows:
+1. Agent A creates a future and sleeps until the future is delivered
+2. This future spawns agent B and blocks for it to finish using `await`
+3. Because agent A is in a preemptible sleeping state, B could message A and receive a response all while the future thread blocks for B
+4. When B is finished, the future returns and awakens A
+
+
+### Restarting finished agents
+
+When the initial agent (called `:main`) returns, it means that the task is complete, and the program terminates. When any other agent finishes its work and returns, its completion is stored in a sleeping state. This agent can be awoken by another agent at any later time. The completion which is stored is the last-visited leaf node of the agent's stack trace (in a typical case, the stack trace is linear with only one leaf node). 
+
+### Communication API
 
 The Spell-level API provides several communication primitives:
 
+- `(agents/spawn prompt)` — starts an agent asynchronously and returns its handle (a keyword) immediately. The child runs independently with its own handle. Optional arguments allow specifying a custom LLM function and/or a fixed handle name: `(agents/spawn llm-fn prompt :handle-name)`.
 - `(agents/send target value)` — fire-and-forget: deposits a message into the target's inbox and wakes it.
-- `(agents/!ask target msg)` — sends a message and blocks until the target replies.
-- `(agents/!ask target)` — pokes the target (wakes it) and blocks.
-- `(agents/!ask [a b c])` — multi-target: pokes all targets, wakes when all have completed.
-- `(agents/!spawn-ask prompt)` — spawns a child and blocks until it completes (one-shot delegation).
-- `(agents/!spawn-ask [prompt-a prompt-b ...])` — spawns multiple children, blocks until all complete.
+- `(agents/!ask target msg)` — sends a message and sleeps until the target replies.
+- `(agents/!ask target)` — pokes the target (wakes it) and sleeps.
+- `(agents/!ask [a b c])` — multi-target: pokes all targets, sleeps until all have completed, and returns a combined result.
+- `(agents/!spawn-ask prompt)` — spawns a child and sleeps until it completes.
+- `(agents/!spawn-ask [prompt-a prompt-b ...])` — spawns multiple children, sleeps until all complete.
+- `(!ask-await fut)` — waits for a Spell future from a normal agent turn. Installs a background waiter that dereferences the future and sends the result back as a message, allowing the caller to sleep safely without blocking its execution thread.
 
 Every form of `agents/!ask` wakes the target, which prevents deadlocks: if agent A asks B while B asks A, both sends cross and both agents unblock.
 
-Because `!llm-self` calls inherit the parent's handle (see *`llm` and `spell-eval`*), each handle's call tree is serial — there is no concurrent access to the same inbox. Deadlock freedom follows from two properties: same-handle trees cannot deadlock with themselves (they are serial), and cross-handle dependencies use `agents/!ask` (which always wakes the target).
-
-Spawned agents persist after their root box completes. The completed return value is delivered to any agents waiting on it, and then an *orphan box* is started — a root box with a sleeping inside-fn that blocks on the signal promise. When a message arrives and delivers the signal, the orphan wakes, drains the inbox, and evaluates the transformed completion, giving the agent a new turn. This keeps the handle alive indefinitely, allowing other agents to send messages to it at any time. The same sleep mechanism is used internally by `!ask`.
+Because `!llm-self` calls inherit the parent's handle (see *`llm` and `spell-eval`*), each handle's call tree is serial — there is no concurrent access to the same inbox. 
 
 ## KV cache
 
@@ -396,7 +412,7 @@ User prompts are often messy — voice-to-text artifacts, typos, half-sentences,
 
 This works because `patterns/clean-prompt` is a Spell function (data, not a closure), so it is portable across LLM boundaries. When called from a trailing expression, the effect guard makes `leaf-llm` and `!llm-self` available. The pattern separates intent inference from execution: the leaf LLM rewrites the prompt without tools or code execution, and the resulting clean directive is passed to `!llm-self` for execution with full capabilities.
 
-## Under the hood
+## Spell runtime
 The implementation of Spell involves interaction between the following four parts:
 1. `spell-eval`. The core evaluator. It takes an expression and an environment, and returns a result map (`{:ok value :env env'}` or `{:err msg :env env :expr expr}`). `spell-eval` is the same across all agents; it cannot be called by Spell code. The behavior of an agent is customized not by modifying the evaluator but by modifying the builtins and the `eval` function available to it.
 2. `eval`. A per-agent builtin function that provides the "double evaluation" mechanism — the outer `eval` in the completion wrapper. Each agent's `eval` is created by `make-eval`, which merges *variant builtins* (always available: core builtins plus core namespaces like `strings`, `math`) with *effect builtins* (agent-specific: `!llm-self`, effect namespaces like `io`, `agents`, `globals`). `eval` binds itself recursively so that nested `eval` calls resolve. All agents share the same `spell-eval` but differ in their `eval`, which determines which effects they can access.
