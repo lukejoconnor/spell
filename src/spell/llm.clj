@@ -185,7 +185,15 @@
                    (catch Exception e [nil e]))
               ;; Normal mode: read first form only, ignore trailing garbage
               (try [(parse/read-first raw) nil]
-                   (catch Exception e [nil e])))]
+                   (catch Exception e [nil e])))
+            continuation-raw
+            (if allow-multiple-top-level?
+              raw
+              (if (some? program)
+                ;; Persist only the form we actually evaluated so later reopen/send
+                ;; paths never reparse ignored suffix garbage.
+                (pr-str program)
+                raw))]
         (if parse-err
           ;; Reader error: embed raw text as string in recovery quine
           (if recover-fn
@@ -195,9 +203,13 @@
           ;; Normal path: eval and recovery
           (let [
                 indent    (apply str (repeat eval/*llm-depth* "  "))
+                _         (when-let [handle runtime/*current-handle*]
+                            (when-let [last-raw (:last-raw (get @runtime/registry handle))]
+                              (reset! last-raw continuation-raw)))
                 result    (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
-                                    eval/*raw-text*       raw
-                                    eval/*builtins*       variant-builtins]
+                                    eval/*raw-text*       continuation-raw
+                                    eval/*builtins*       variant-builtins
+                                    runtime/*current-raw* continuation-raw]
                             (eval/spell-eval program {'eval eval-builtin}))
                 final-result
                 (if (and (eval/err? result) recover-fn)

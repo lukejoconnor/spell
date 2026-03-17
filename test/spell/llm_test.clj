@@ -97,6 +97,30 @@
                                         (atom nil))]
         (is (= 2 (inbox-fn "(def x 1) (+ x 1)")))))))
 
+(deftest inbox-trims-persisted-raw-for-reopen-test
+  (let [variant-builtins (merge eval/core-builtins
+                                {'describe-fn stdlib/describe
+                                 'capture-raw (fn [] runtime/*current-raw*)}
+                                llm/core-namespaces)
+        eval-builtin (llm/make-eval variant-builtins {})
+        inbox-fn (llm/make-inbox-fn {:variant-builtins variant-builtins
+                                     :eval-builtin eval-builtin
+                                     :recover-fn nil}
+                                    (atom nil))
+        handle :trimmed-raw-agent
+        raw "(quine completion (eval (do (capture-raw)))) But wait carefully: I should reconsider..."
+        expected "(quine completion (eval (do (capture-raw))))"
+        p (promise)]
+    (runtime/register! handle)
+    (deliver p raw)
+    (is (= expected
+           (runtime/run-root-box handle p (runtime/make-awake-fn handle inbox-fn) inbox-fn))
+        "evaluation should see the reopenable completion, not the ignored suffix")
+    (is (= expected @(:last-raw (get @runtime/registry handle)))
+        "stored raw should drop ignored suffixes so later wakeups can reopen it")
+    (is (string? (#'runtime/reopen-completion @(:last-raw (get @runtime/registry handle))))
+        "stored raw should remain reopenable for message/preemption paths")))
+
 ;; =============================================================================
 ;; File I/O task tests
 ;; =============================================================================
