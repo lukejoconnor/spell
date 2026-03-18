@@ -19,9 +19,11 @@ Loaded by `src/spell/agent.clj`.
 - `base-pf.agent.edn` — Anthropic (prefill mode), uses `minimal.txt`
 - `base-msg.agent.edn` — message providers (no prefill), uses `minimal-no-prefill.txt`
 - `base-tc.agent.edn` — tool-call providers, uses `minimal-no-prefill-toolcall.txt`
+- `base-glm.agent.edn` — GLM-5 (prefill mode), uses `minimal-glm.txt` (experimental; currently unreliable)
 
 **Specialized agents** inherit from a base and add namespaces:
 - `cli.agent.edn` — CLI default (base-tc + io, web, patterns, agents, globals)
+- `cli-glm.agent.edn` — GLM-5 CLI (base-glm + io, web, patterns, agents, globals)
 - `io-pf.agent.edn` — benchmark/runtime I/O profile for prefill providers
 - `io-msg.agent.edn` — benchmark/runtime I/O profile for message providers
 - `io-tc.agent.edn` — benchmark/runtime I/O profile for mandatory toolcall providers
@@ -71,6 +73,7 @@ Current variants:
 - `minimal.txt`
 - `minimal-no-prefill.txt`
 - `minimal-no-prefill-toolcall.txt`
+- `minimal-glm.txt` — GLM-5 variant with targeted antipattern guidance
 
 Rules:
 - Provider-agnostic behavior changes should normally be reflected across all three.

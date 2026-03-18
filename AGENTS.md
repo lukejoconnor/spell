@@ -26,7 +26,7 @@ See `writeup/language-design-v2.md` for full semantics. Key concepts:
 
 Primary providers: Anthropic tool-call (`anthropic-tc`) and Codex tool-call (`codex-tc`). Test provider for unit tests. See `config/providers/` for all `.provider.edn` files and `config/CLAUDE.md` for loading semantics.
 
-Three base agents (prefill, message, tool-call) in `config/agents/base-*.agent.edn`. Specialized agents inherit and add namespaces. See `config/agents/` for full listing and `config/CLAUDE.md` for inheritance rules.
+Three base agents (prefill, message, tool-call) in `config/agents/base-*.agent.edn`, plus `base-glm` for GLM-5 (experimental; currently unreliable — see `glm5-failure-modes`). Specialized agents inherit and add namespaces. See `config/agents/` for full listing and `config/CLAUDE.md` for inheritance rules.
 
 Agents with `:llms` in their `.agent.edn` get a dynamically generated `llms/` namespace with named sub-LLM variants.
 
