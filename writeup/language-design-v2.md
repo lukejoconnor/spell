@@ -191,7 +191,9 @@ At runtime, `persist` is identical to `def`. However, when `prune-substitute` is
 
 ### Compact
 
-For longer-running agents, even pruned context may grow too large. `!compact` provides self-referential context compaction: the agent compresses its own completion without an external summarizer. The macro expands to a self-call with instructions asking the LLM to rewrite its context as a sequence of quoted forms (definitions, key reasoning steps), dropping routine steps and truncating large values. Because the same agent performs the compaction, it can make informed decisions about what to keep. 
+For longer-running agents, even pruned context may grow too large. `!compact` provides self-referential context compaction: the agent compresses its own completion without an external summarizer.
+
+`!compact` works as a two-hop self-call. The first hop prunes rethinks (like `!extend`), then appends instructions asking the LLM to rewrite its context as `wrap-cat` arguments — a sequence of quoted forms (`'(def x 1)`, `'(think "label" ...)`) representing key definitions and reasoning steps, dropping routine thinks and truncating large values. The second hop continues execution from the compressed prefix that `wrap-cat` produces. Because the same agent performs the compaction, it can make informed decisions about what to keep.
 
 ## Macros
 
