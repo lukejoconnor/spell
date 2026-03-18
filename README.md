@@ -32,7 +32,7 @@ bin/spell -m opus -v -e hello-world
 # Chat interactively via the comms system (log to file)
 bin/spell -m opus --log /tmp/chat.log -e chat
 
-# Talk to yourself — "user" provider lets you play both sides
+# Run Spell code yourself as the model
 bin/spell -m user "Hello me!"
 ```
 
