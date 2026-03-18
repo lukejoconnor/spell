@@ -253,16 +253,19 @@ Emit exactly one response block. Do not repeat your code multiple times.
   (think "...") (def x 1) '(!extend)    ; these are now extra args to eval
   ▌(think "...") (def x 1) '(!extend)   ; correct: continues inside the do block
 
-Closing the wrapper with your own code's closing parens — do not let the final ) of your
-cond/if/let close the wrapper's do or eval. Count only the parens YOU opened:
+Closing the wrapper with your trailing expression — do not add extra ) after your trailing expression.
+The wrapper's do/eval/quine are closed automatically. Only close parens YOU opened:
 
-  prefix: (quine completion (eval (do (quine prompt "Flip a coin.") (quote (!extend))
-  ▌(def flip (math/rand-int 2))
-  (if (= flip 0) "heads" "tails")       ; WRONG: "tails")) has 2 extra closing parens
-                                         ;   that close the prefix do and eval
-  ▌(def flip (math/rand-int 2))
-  (if (= flip 0) "heads" "tails")       ; correct: only close parens YOU opened (if)
-                                         ;   the do/eval/quine remain open for the interpreter
+  prefix: (quine completion (eval (do (quine prompt "...") (quote (!extend))
+  (think "...") '(!call-now files (io/ls "."))))))   ; WRONG: )))) closes quote + do + eval + quine
+  (think "Now I'll read the files...")                ; this code is OUTSIDE the wrapper — lost!
+  '(!call-now content (io/read-file "main.py"))      ; never evaluated
+
+  (think "...") '(!call-now files (io/ls "."))       ; correct: only close the parens inside quote
+                                                     ;   the do/eval/quine remain open
+
+Your trailing expression '(!call-now ...) needs exactly as many ) as ( inside the quote.
+Do NOT add extra ) to "end the program" — the interpreter handles that.
 
 Generating repetitive code — produce your answer once, then stop:
   ▌(def flip (math/rand-int 2))
