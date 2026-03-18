@@ -1034,8 +1034,8 @@
 
       persist (let [sym (second expr)
                     val-result (if (= 2 (count expr))
-                                 ;; (persist x) — 1-arity, look up sym in env
-                                 (ok (get env sym) env)
+                                 ;; (persist x) is sugar for (persist x x)
+                                 (spell-eval sym env)
                                  (spell-eval (nth expr 2) env))]
                 (if (err? val-result)
                   val-result

@@ -557,7 +557,15 @@
   (testing "persist behaves like def at eval-time"
     (let [[val env] (eval-ok '(persist x (+ 2 3)) {})]
       (is (= 5 val))
-      (is (= 5 (env 'x))))))
+      (is (= 5 (env 'x)))))
+
+  (testing "1-arg persist matches (persist sym sym)"
+    (let [env {'x 5}]
+      (is (= (eval-ok '(persist x) env)
+             (eval-ok '(persist x x) env)))))
+
+  (testing "1-arg persist errors when the binding is unbound"
+    (is (eval/err? (spell-eval '(persist x) {})))))
 
 ;; =============================================================================
 ;; Env input tests (passing bindings into spell-eval)
@@ -2681,7 +2689,8 @@
           suffix-str (nth (second expanded) 2)]
       (is (string? suffix-str))
       (is (clojure.string/includes? suffix-str "=compact="))
-      (is (clojure.string/includes? suffix-str "deep-truncate"))
+      (is (clojure.string/includes? suffix-str "fresh env"))
+      (is (clojure.string/includes? suffix-str "Do not use '(persist name)"))
       (is (clojure.string/includes? suffix-str "'(!llm-self (wrap-cat ")))))
 
 ;; =============================================================================

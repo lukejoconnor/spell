@@ -445,9 +445,11 @@
 (def ^:private compact-suffix
   (str "(think \"=compact= Compact your context into the wrap-cat below. "
        "Each argument is a QUOTED form: '(def x 1) '(think \\\"label\\\" ...) etc. "
-       "For bindings you need to keep, use '(persist name) — this materializes the "
-       "current runtime value and survives future pruning. "
-       "For large values that need truncation: '(persist name (deep-truncate name 500)). "
+       "For bindings you need to keep, emit an explicit literal rebinding like "
+       "'(def name 1) or '(persist name 1). "
+       "Do not use '(persist name) or expressions that refer to earlier bindings; "
+       "the compacted forms are evaluated in a fresh env on the next self-call. "
+       "For large values, keep a smaller literal summary instead of referring to the old binding. "
        "Preserve =compact:N= markers. Drop routine thinks; keep decisions/key defs. "
        "Just write the forms — closing parens and continuation are automatic.\" nil) "
        "'(!llm-self (wrap-cat "))

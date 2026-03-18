@@ -487,9 +487,12 @@ Note: map? returns false for spell functions ({:spell/fn true ...}) and futures 
     :persist
     "Special form. Bind like def, but mark the binding for explicit reopen-time retention.
 
+(persist sym)
 (persist sym expr)
 
-Eval-time semantics are identical to def: expr is evaluated, sym is bound, and
+(persist sym) is sugar for (persist sym sym).
+
+Eval-time semantics otherwise match def: expr is evaluated, sym is bound, and
 the resulting value is returned.
 
 During prune-and-reopen, explicit source-level persist forms are rewritten to:
