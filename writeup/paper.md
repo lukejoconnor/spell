@@ -13,15 +13,17 @@ We propose a self-programmed agentic system in which a language model (LM) emits
 
 ## Introduction
 
-The performance of agentic systems depends sensitively on their approach to orchestration and context management. Traditionally, these are the responsibility of the agentic harness, which is programmed by humans to curate what prompts and what context are sent to the model each turn. Recently, however, a trend has been to grant models greater autonomy over their own context and their own orchestration. This manuscript addresses the question: *what is the maximum degree to which an agentic system can be controlled by the language model, as opposed to the harness, autonomously?* 
+The performance of agentic systems depends sensitively on their approach to orchestration and context management. Traditionally, these are the responsibility of the agentic harness, which is programmed by humans to curate what prompts and what context are sent to the model each turn. Recently, however, a trend has been to grant models greater autonomy with respect to their own context and their own orchestration. 
+For a nontrivial task, it may not be apparent immediately what context is relevant, nor how to decompose it into steps; in such cases, it could be advantageous to let the model discover context progressively and decompose its work iteratively.
+This manuscript addresses the question: *what is the maximum degree to which an agentic system can be controlled by the language model, as opposed to the harness, autonomously?* 
 
-In the system which is proposed, the LLM produces a program, and the harness evaluates it. This system is maximally autonomous because all of the logic which is normally wired into the harness is programmed instead by the LLM itself. It is also simple, at least conceptually. We refer to this approach as *self-programmed execution* becuase from the perspective of the LLM, the system is entirely self-programmed, and the harness is merely an execution layer. Concretely, self-programmed execution refers to the following "algorithm":
-
+In the system which is proposed, the LLM produces a program, and the harness evaluates it. This system is maximally autonomous because all of the logic which is normally wired into the harness is programmed instead by the LLM itself. 
+It is also simple, at least conceptually. We refer to this approach as *self-programmed execution*: from the perspective of the LLM, the system is entirely self-programmed, and the harness is reduced to an execution layer. 
+Concretely, self-programmed execution refers to the following "algorithm":
 ```
 completion <- llm(prefix)
 eval(completion)
 ```
-
 where `llm` calls an LLM to complete the prefix to a program, and `eval` executes it. The language of this program should be flexible enough to reproduce the typical logic of an agentic harness ergonomically. 
 
 Self-programmed execution contrasts with the ReAct loop underlying most agentic systems. In ReAct: (1) the harness produces a prefix and passes it to the model; (2) the model generates a response, possibly encoding a tool call; (3) the harness executes the tool call and recurs to step (1). The generative step (2) controls the execution step (3), but not the orchestration step (1). More generally, existing agentic systems alternate between a step controlled by the LM and a step controlled by the harness, even when those steps differ in their specifics from those of the ReAct loop (see Related Work). What distinguishes self-programmed executon is that the LM-controlled step subsumes the harness-controlled step entirely (Figure 1a). 
