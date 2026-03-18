@@ -82,6 +82,7 @@
    "gpt-5.2"           [1.75 14.00]
    "gpt-5.3-codex"     [1.75 14.00]
    "gpt-5.3"           [1.75 14.00]
+   "gpt-5.4"           [2.50 15.00]
    ;; Fireworks hosted open models
    "accounts/fireworks/models/glm-5"
    {:input 1.00 :cache-read-input 0.20 :output 3.20}
