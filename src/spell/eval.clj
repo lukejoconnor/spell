@@ -665,7 +665,7 @@
   (cond
     (and (seq? form)
          (= 'persist (first form))
-         (= 3 (count form))
+         (#{2 3} (count form))
          (symbol? (second form))
          (some? env))
     (let [sym (second form)]
@@ -791,9 +791,11 @@
                   [val-expanded _] (-expand-expr (nth expr 2) outer-env inner)]
               [(list 'def sym val-expanded) (conj inner sym)])
 
-        persist (let [sym (second expr)
-                      [val-expanded _] (-expand-expr (nth expr 2) outer-env inner)]
-                  [(list 'persist sym val-expanded) (conj inner sym)])
+        persist (if (= 2 (count expr))
+                  [(list 'persist (second expr)) (conj inner (second expr))]
+                  (let [sym (second expr)
+                        [val-expanded _] (-expand-expr (nth expr 2) outer-env inner)]
+                    [(list 'persist sym val-expanded) (conj inner sym)]))
 
         do (let [[forms final-inner]
                  (reduce (fn [[acc i] sub-expr]
@@ -1031,7 +1033,10 @@
                     (assoc (:env val-result) sym (:ok val-result)))))
 
       persist (let [sym (second expr)
-                    val-result (spell-eval (nth expr 2) env)]
+                    val-result (if (= 2 (count expr))
+                                 ;; (persist x) — 1-arity, look up sym in env
+                                 (ok (get env sym) env)
+                                 (spell-eval (nth expr 2) env))]
                 (if (err? val-result)
                   val-result
                   (ok (:ok val-result)
