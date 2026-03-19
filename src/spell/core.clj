@@ -48,5 +48,4 @@
    'web web/web-namespace
    'globals globals/globals-namespace
    'agents runtime/agents-namespace
-   'futures stdlib/futures-namespace
    'patterns stdlib/patterns})

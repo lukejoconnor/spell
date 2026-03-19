@@ -25,10 +25,13 @@ results/
 
 # Claude Code worktrees
 .claude/worktrees/
+.claude/plan.md
+.claude/scheduled_tasks.lock
 
 # Scratch/temp files
 .__tmp_*
 temp.txt
+PLAN-team-pattern.md
 *.bak
 *.bak2
 spell_benchmark_client.py

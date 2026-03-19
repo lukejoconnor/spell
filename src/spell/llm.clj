@@ -23,15 +23,29 @@
   "Namespaces always merged into variant-builtins (available everywhere)."
   {'strings stdlib/strings
    'math stdlib/math
-   'builtins stdlib/builtins-namespace})
+   'builtins stdlib/builtins-namespace
+   'reminders stdlib/reminders-namespace})
 
 (def ^:private max-recovery-attempts
   "Maximum number of recovery retries before failing."
   2)
 
-(def ^:dynamic *reader-recovery-depth*
-  "Current depth of nested reader-error recovery retries."
+(def ^:dynamic *recovery-depth*
+  "Current depth of nested recovery retries across reader and eval recovery."
   0)
+
+(defn- throw-if-recovery-exhausted!
+  "Throw when the shared recovery budget is exhausted."
+  [phase error-msg]
+  (when (>= *recovery-depth* max-recovery-attempts)
+    (throw (ex-info (str "Recovery limit exceeded: " max-recovery-attempts
+                         " while handling " (name phase) " error")
+                    (cond-> {:type :recovery-exhausted
+                             :phase phase
+                             :attempts *recovery-depth*
+                             :limit max-recovery-attempts}
+                      error-msg
+                      (assoc (if (= phase :reader) :parse-error :error) error-msg))))))
 
 (defn- recovery-prompt-text
   "Instruction shown to the model during recovery attempts."
@@ -85,10 +99,10 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- try-quine-recovery
-  "Attempt quine-extension recovery: append error info + !extend to the quine.
-   Returns eval result (ok or err). Throws on non-quine or retry limit.
+  "Attempt quine-extension recovery: append error info to the quine and reopen it.
+   Returns eval result (ok or err). Throws on non-quine or shared recovery limit.
    If program doesn't start with (quine completion ...), wraps it first and recurses."
-  [program result variant-builtins eval-builtin]
+  [program result variant-builtins eval-builtin gated-ns-hints]
   (if-not (and (seq? program)
                (= 'quine (first program))
                (= 'completion (second program)))
@@ -96,53 +110,48 @@
     (let [indent (apply str (repeat eval/*llm-depth* "  "))
           wrapped (list 'quine 'completion program)]
       (eval/vlog (str indent "Wrapping in quine completion for recovery"))
-      (try-quine-recovery wrapped result variant-builtins eval-builtin))
+      (try-quine-recovery wrapped result variant-builtins eval-builtin gated-ns-hints))
     ;; Normal path: program is already (quine completion ...)
-    (let [quine-arg-count (- (count (seq program)) 2)]
-      (if (< quine-arg-count (+ 1 max-recovery-attempts))
-        ;; Construct recovery quine: append new eval block with error info
-        (let [error-map (cond-> {:error (recovery/clean-error-message (:err result))}
-                          (:containing-form result)
-                          (assoc :in (list 'quote (:containing-form result)))
-                          (:trace result)
-                          (assoc :trace (:trace result)))
-              previous-program-text (pr-str program)
-              recovery-prompt (recovery-prompt-text (:error error-map))
-              recovery-arg (list 'eval
-                             (list 'do
-                               (list 'def '_recovery_prompt recovery-prompt)
-                               (list 'def '_previous_program previous-program-text)
-                               (list 'def '_error error-map)
-                               (list 'quote (list '!extend 'completion))))
-              recovery-quine (apply list (concat (seq program) [recovery-arg]))
-              indent (apply str (repeat eval/*llm-depth* "  "))
-              _     (eval/vlog (str indent "Recovery quine: " (pr-str recovery-quine)))
-              retry (binding [eval/*llm-depth* (inc eval/*llm-depth*)
-                              eval/*raw-text*  nil
-                              eval/*builtins*  variant-builtins]
-                      (eval/spell-eval recovery-quine {'eval eval-builtin}))]
-          (if (eval/ok? retry)
-            retry
-            (throw (ex-info (:err result) {:result result}))))
-        ;; Retry limit reached — propagate error
+    (let [error-map (cond-> {:error (recovery/clean-error-message (:err result))}
+                      (:containing-form result)
+                      (assoc :in (list 'quote (:containing-form result)))
+                      (:trace result)
+                      (assoc :trace (:trace result)))
+          indent (apply str (repeat eval/*llm-depth* "  "))
+          _     (throw-if-recovery-exhausted! :eval (:error error-map))
+          _     (eval/vlog (str indent "Recovery attempt: "
+                                (inc *recovery-depth*) "/" max-recovery-attempts))
+          recovery-prompt (recovery-prompt-text (:error error-map))
+          rethink-arg '(rethink "Error recovery - see _error for details.")
+          recovery-arg (list 'eval
+                         (list 'do
+                           (list 'def '_recovery_prompt recovery-prompt)
+                           (list 'def '_error error-map)
+                           (list 'quote (list '!llm-self (list 'reopen 'completion)))))
+          recovery-quine (apply list (concat (seq program) [rethink-arg recovery-arg]))
+          _     (eval/vlog (str indent "Recovery quine: " (pr-str recovery-quine)))
+          retry (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
+                          eval/*raw-text*       nil
+                          eval/*builtins*       variant-builtins
+                          eval/*gated-ns-hints* gated-ns-hints
+                          *recovery-depth*      (inc *recovery-depth*)]
+                  (eval/spell-eval recovery-quine {'eval eval-builtin}))]
+      (if (eval/ok? retry)
+        retry
         (throw (ex-info (:err result) {:result result}))))))
 
 (defn- try-reader-recovery
   "Attempt recovery from a reader/parse error by embedding the raw text
    as a string in a fresh recovery quine. The LLM sees its broken output
-   and the error message, then gets a fresh chance via !extend."
-  [raw parse-error variant-builtins eval-builtin]
+   and the error message, then gets a fresh chance via !extend.
+   Shares the same retry budget as eval recovery."
+  [raw parse-error variant-builtins eval-builtin gated-ns-hints]
   (let [error-msg (or (.getMessage parse-error) "Unknown reader error")
         indent    (apply str (repeat eval/*llm-depth* "  "))
-        _         (when (>= *reader-recovery-depth* max-recovery-attempts)
-                    (throw (ex-info (str "Reader error recovery limit exceeded: " max-recovery-attempts)
-                                    {:type :reader-recovery-exhausted
-                                     :attempts *reader-recovery-depth*
-                                     :limit max-recovery-attempts
-                                     :parse-error error-msg})))
+        _         (throw-if-recovery-exhausted! :reader error-msg)
         _         (eval/vlog (str indent "=== Reader Error Recovery ==="))
         _         (eval/vlog (str indent "Recovery attempt: "
-                                  (inc *reader-recovery-depth*) "/" max-recovery-attempts))
+                                  (inc *recovery-depth*) "/" max-recovery-attempts))
         _         (eval/vlog (str indent "Parse error: " error-msg))
         recovery-prompt (recovery-prompt-text (str "Reader error: " error-msg))
         error-map {:error (str "Reader error: " error-msg) :raw raw}
@@ -156,7 +165,8 @@
         result    (binding [eval/*llm-depth*           (inc eval/*llm-depth*)
                             eval/*raw-text*            nil
                             eval/*builtins*            variant-builtins
-                            *reader-recovery-depth*    (inc *reader-recovery-depth*)]
+                            eval/*gated-ns-hints*      gated-ns-hints
+                            *recovery-depth*           (inc *recovery-depth*)]
                     (eval/spell-eval recovery-quine {'eval eval-builtin}))]
     (if (eval/ok? result)
       (:ok result)
@@ -167,55 +177,73 @@
 (defn make-inbox-fn
   "Create inbox function: [raw] -> value.
    Closes over eval-builtin from config. Calls balance-parens because
-   send transforms can produce unbalanced strings (reopen strips parens).
+   send transforms can produce unbalanced strings (serialized prefixes omit closers).
    trace-data-atom, when non-nil, receives {:program} for tracing."
-  [{:keys [variant-builtins eval-builtin recover-fn allow-multiple-top-level?]} trace-data-atom]
+  [{:keys [variant-builtins eval-builtin recover-fn allow-multiple-top-level? gated-ns-hints]} trace-data-atom]
   (fn [raw]
-    (let [raw       (parse/balance-parens raw)
-          [forms parse-err] (try [(parse/read-all raw) nil]
-                                 (catch Exception e [nil e]))]
-      (if parse-err
-        ;; Reader error: embed raw text as string in recovery quine
-        (if recover-fn
-          (try-reader-recovery raw parse-err variant-builtins eval-builtin)
-          (throw parse-err))
-        ;; Normal path: eval and recovery
-        (let [forms-v   (vec forms)
-              form-count (count forms-v)
-              _         (when (and (> form-count 1) (not allow-multiple-top-level?))
-                          (throw (ex-info "Multiple top-level forms are not allowed"
-                                          {:type :multiple-top-level-forms
-                                           :count form-count})))
-              program   (if (> form-count 1) (list* 'do forms-v) (first forms-v))
-              indent    (apply str (repeat eval/*llm-depth* "  "))
-              result    (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
-                                 eval/*raw-text*       raw
-                                 eval/*builtins*       variant-builtins]
-                          (eval/spell-eval program {'eval eval-builtin}))
-              final-result
-              (if (and (eval/err? result) recover-fn)
-                (let [_        (do (eval/vlog (str indent "=== Error Recovery ==="))
-                                 (eval/vlog (str indent "Error: " (:err result))))
-                      result-with-program (assoc result :program program)]
-                  ;; Try namespace recovery first (fast, deterministic)
-                  (if-let [fix-expr (recover-fn result-with-program)]
-                    (let [_     (eval/vlog (str indent "Namespace recovery: " (pr-str fix-expr)))
-                          retry (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
-                                          eval/*raw-text*       nil
-                                          eval/*builtins*       variant-builtins]
-                                  (eval/spell-eval fix-expr (merge (:env result) {'eval eval-builtin})))]
-                      (if (eval/ok? retry)
-                        retry
-                        ;; Namespace fix didn't work, try quine-extension
-                        (try-quine-recovery program result variant-builtins eval-builtin)))
-                    ;; No namespace fix, try quine-extension
-                    (try-quine-recovery program result variant-builtins eval-builtin)))
-                result)]
-          (when trace-data-atom
-            (reset! trace-data-atom {:program program}))
-          (if (eval/ok? final-result)
-            (:ok final-result)
-            (throw (ex-info (:err final-result) {:result final-result}))))))))
+    (binding [eval/*gated-ns-hints* (or gated-ns-hints {})]
+      (let [raw       (parse/balance-parens raw)
+            [program parse-err]
+            (if allow-multiple-top-level?
+              ;; REPL mode: read all forms, wrap in do
+              (try (let [forms (vec (parse/read-all raw))
+                         cnt   (count forms)]
+                     [(if (> cnt 1) (list* 'do forms) (first forms)) nil])
+                   (catch Exception e [nil e]))
+              ;; Normal mode: read first form only, ignore trailing garbage
+              (try [(parse/read-first raw) nil]
+                   (catch Exception e [nil e])))
+            continuation-raw
+            (if allow-multiple-top-level?
+              raw
+              (if (some? program)
+                ;; Persist only the form we actually evaluated so later reopen/send
+                ;; paths never reparse ignored suffix garbage.
+                (pr-str program)
+                raw))]
+        (if parse-err
+          ;; Reader error: embed raw text as string in recovery quine
+          (if recover-fn
+            (try-reader-recovery raw parse-err variant-builtins eval-builtin
+                                 eval/*gated-ns-hints*)
+            (throw parse-err))
+          ;; Normal path: eval and recovery
+          (let [
+                indent    (apply str (repeat eval/*llm-depth* "  "))
+                _         (when-let [handle runtime/*current-handle*]
+                            (when-let [last-raw (:last-raw (get @runtime/registry handle))]
+                              (reset! last-raw continuation-raw)))
+                result    (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
+                                    eval/*raw-text*       continuation-raw
+                                    eval/*builtins*       variant-builtins
+                                    runtime/*current-raw* continuation-raw]
+                            (eval/spell-eval program {'eval eval-builtin}))
+                final-result
+                (if (and (eval/err? result) recover-fn)
+                  (let [_        (do (eval/vlog (str indent "=== Error Recovery ==="))
+                                     (eval/vlog (str indent "Error: " (:err result))))
+                        result-with-program (assoc result :program program)]
+                    ;; Try namespace recovery first (fast, deterministic)
+                    (if-let [fix-expr (recover-fn result-with-program)]
+                      (let [_     (eval/vlog (str indent "Namespace recovery: " (pr-str fix-expr)))
+                            retry (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
+                                            eval/*raw-text*       nil
+                                            eval/*builtins*       variant-builtins]
+                                    (eval/spell-eval fix-expr (merge (:env result) {'eval eval-builtin})))]
+                        (if (eval/ok? retry)
+                          retry
+                          ;; Namespace fix didn't work, try quine-extension
+                          (try-quine-recovery program result variant-builtins eval-builtin
+                                              eval/*gated-ns-hints*)))
+                      ;; No namespace fix, try quine-extension
+                      (try-quine-recovery program result variant-builtins eval-builtin
+                                          eval/*gated-ns-hints*)))
+                  result)]
+            (when trace-data-atom
+              (reset! trace-data-atom {:program program}))
+            (if (eval/ok? final-result)
+              (:ok final-result)
+              (throw (ex-info (:err final-result) {:result final-result})))))))))
 
 (defn- register-agent
   "Register a dormant agent with stored completion as context.
@@ -300,9 +328,9 @@
    If it starts with '(' it's already code — pass through as string.
    Otherwise, wrap in the standard NL completion prefix."
   [p]
-  (let [s (if (or (seq? p) (list? p)) (pr-str p) (str p))]
+  (let [s (str p)]
     (if (.startsWith (.trim ^String s) "(")
-      (str p)
+      s
       (str "(quine completion (eval (do "
            "(quine prompt \"" (parse/escape-string s) "\") "))))
 
@@ -317,6 +345,7 @@
    - :llm-var          - optional var ref to bind as 'llm for self-recursion (e.g., #'llm)
    - :recover          - error recovery setting (default: true = enabled).
                          - true: namespace recovery + quine-extension recovery
+                           (recovery quine adds error info + rethink, then reopens)
                          - false: disable recovery (errors propagate immediately)
                          - fn: custom namespace recovery function (result-map) -> fixed-expr
    - :prefill?         - whether the provider supports assistant prefill (default: true).
@@ -405,6 +434,7 @@
                    (@self-ref prompt handle)))
         ;; Create effect-builtins (closes over !llm-self)
         effect-builtins (merge {'!llm-self self-fn
+                               '!ask-await stdlib/ask-await-builtin
                                'leaf-llm (make-leaf-llm (cond-> {}
                                                           provider (assoc :provider provider)
                                                           model (assoc :model model)))}
@@ -420,10 +450,20 @@
                            effect-builtins)
         ;; Create eval builtin using make-eval
         eval-builtin (make-eval variant-builtins effect-builtins' future-only-builtins)
+        gated-ns-hints (merge
+                         (into {}
+                               (for [ns-sym (keys effect-ns-builtins)]
+                                 [ns-sym (str (name ns-sym)
+                                              "/ is an effect namespace - use it in the trailing expression via eval")]))
+                         (into {}
+                               (for [ns-sym (keys future-only-builtins)]
+                                 [ns-sym (str (name ns-sym)
+                                              "/ is only available inside (future ...) blocks")])))
         ;; Config with variant-builtins and eval-builtin
         config'  {:call-fn call-fn
                   :variant-builtins variant-builtins
                   :eval-builtin eval-builtin
+                  :gated-ns-hints gated-ns-hints
                   :recover-fn recover-fn}
         _        (deliver final-config config')
         the-llm  (fn the-llm
@@ -434,10 +474,9 @@
                                        (:parent-handle (get @runtime/registry handle))  ;; spawn child
                                        )
                           root?      (not= parent handle)
-                          prompt'    (if (or (seq? prompt) (list? prompt))
-                                       (eval/expand-expr prompt (or eval/*spell-env* {}))
-                                       prompt)
-                          prompt-str (wrap-nl prompt')
+                          prompt-str (if (and (seq? prompt) (= 'quine (first prompt)))
+                                       (eval/serialize-quine-prefix prompt)
+                                       (wrap-nl prompt))
                           trace-data (atom nil)
                           inbox-fn   (make-inbox-fn config' trace-data)
                           awake-fn   (runtime/make-awake-fn handle inbox-fn)]

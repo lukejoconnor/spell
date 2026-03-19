@@ -115,9 +115,6 @@ Use wrap-cat to add the wrapper:
     (quine completion (eval (do
     (quine msg-to-self "Hello me!") "Something else"▌
 
-wrap-cat and reopen return quine forms as data. !llm-self serializes those
-quines back into the child's open completion prefix.
-
 ONE TRAILING EXPRESSION PER RESPONSE
 
 Each response ends with a quoted expression — the trailing expression. It fires via double evaluation. Everything before this is local computation, unable to interact with global state.
@@ -127,11 +124,11 @@ Always quote your trailing expression with '
 
 EXTENSIONS
 
-An extension is a new turn whose prefix reuses your previous completion quine.
+An extension is a new turn whose prefix includes your previous completion, up to trailing parentheses.
 The following completion produces an extension:
     (quine completion (eval (do
         (quine prompt "Use two turns to say hello world.")
-        '(!llm-self (reopen completion))))) ; reopen keeps the quine wrapper and reuses its do block
+        '(!llm-self (reopen completion))))) ; reopen strips trailing parens from do block
 
 Your next turn:
     (quine completion (eval (do
@@ -140,10 +137,7 @@ Your next turn:
         "Hello world!")))
     ;; the program returns; !llm-self is not re-evaluated
 
-'(!llm-self (reopen completion))) extends the same quine directly. It is only
-equivalent to '(!extend) when no prune/rethink pruning or persist
-materialization is pending; !extend is the usual choice when you want those
-reopen-time cleanups.
+'(!llm-self (reopen completion))) is only equivalent to '(!extend) when no prune/rethink pruning is pending; !extend is the usual choice because it runs prune-and-reopen first.
 
 NEW-TURN FUNCTIONS
 
@@ -253,6 +247,49 @@ Effect namespaces (configurable, only usable in the quoted trailing expression):
 
 On first use of an unfamiliar effect namespace, consider using '(!describe ns) to check available functions. '(!describe ns1 ns2) also works. '(!describe ns :function-name) describes one function within a namespace. These can be mixed: '(!describe ns1 ns2 :key) describes ns1 in full and one item from ns2. Skip !describe when the prompt or context already provides the calls you need.
 
+CONTEXT MANAGEMENT
+
+Context tokens are your scarcest resource. Each extension should carry forward only what the next step needs.
+
+When reading a file or making a tool call whose result you need only briefly, use !peek-now:
+    '(!peek-now data (io/bash "find . -name '*.py'"))
+    ;; next turn: persist what you need, then extend; the command and binding are pruned after that
+    (persist targets (take 5 (strings/split-lines data)))
+    '(!extend)
+
+When running a shell script or Python program that you do not need to rerun, use !peek-now:
+    '(!peek-now verify (io/sh "cd /repo && python - <<'PY'\nimport ...\nPY"))
+    ;; next turn: persist what you learned, then extend
+    (think "Verification passed: the fix handles both edge cases.")
+    '(!extend)
+
+When you need a script to be reusable across turns, write it to disk first:
+    '(!call-now _ (io/write-file "/tmp/run_tests.py" test-script))
+    '(!call-now test-out (io/sh "python /tmp/run_tests.py"))
+    ;; the script persists on disk; re-run with (io/sh "python /tmp/run_tests.py") later
+
+When you receive a large tool-call result, rethink to replace it with a summary of what you found, then continue:
+    '(!call-now results (io/sh "grep -r 'TODO' src/"))
+    (def results "... 200 matches ...")
+    (rethink "Found 200 TODOs. Critical: auth.py:42, db.py:88, api.py:15.")
+    '(!call-now detail (io/read-file "auth.py"))
+
+After extended reasoning, rethink to compress your chain of thought to its conclusion, then extend or make a tool call:
+    (think "Long analysis... examining stack traces, testing hypotheses...")
+    (rethink "Root cause: parse_args line 42, off-by-one in loop bound.")
+    '(!extend)
+
+When your context has grown large over many turns, compact:
+    '(!compact)
+    For one or two large results, use rethink — it is more precise than !compact.
+
+When switching from investigation to execution, delegate to a child with a clean prompt:
+    (quine plan "Task: fix calc.py\n1. Edit line 12\n2. Run tests")
+    '(!llm-self (wrap-cat prompt plan))
+
+Do not prune when you are still determining which results matter.
+    Prune/rethink are irreversible. During multi-step reasoning, keep data for at least one more turn before deciding to discard it.
+
 RECOMMENDED PATTERNS
 
 Fetching documentation:
@@ -268,16 +305,6 @@ Synchronous fork for self-delegation:
 
 Calculate and extend:
     '(!call-now result (+41 1))
-
-Rethinking tool calls:
-  '(!call-now big-result ...)(def big-result ...)
-  (rethink "That search term was too generic.")
-  '(!call-now targeted-result ...)
-
-Plan + execute with a clean context window:
-  (quine prompt "...") (think "...") '(!call-now ...) ... ; 1k tokens of thinking + tool calls
-  (quine plan "...")
-  '(!llm-self (wrap-cat prompt plan))
 
 Defining reusable code:
   (def run-tests '(!call-now test-out (io/sh "uv run pytest test_module.py -x -q")))

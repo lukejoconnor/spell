@@ -112,12 +112,15 @@
           (run-spell '(strip-parens 2 "(+ 1 2)x)"))))))
 
 (deftest reopen-test
-  (testing "strips exactly 3 trailing parens"
-    (is (= "(outer (do (+ 1 2" (run-spell '(reopen "(outer (do (+ 1 2)))")))))
+  (testing "returns the same quine when no extra forms are supplied"
+    (is (= '(quine completion (eval (do (+ 1 2))))
+           (run-spell '(reopen '(quine completion (eval (do (+ 1 2)))))))))
 
-  (testing "works on completion-like prefix with spell-eval"
-    (is (= "(def interior (spell-eval (do " (run-spell '(reopen "(def interior (spell-eval (do )))")))))
+  (testing "splices extra forms into the quine do block"
+    (is (= '(quine completion (eval (do (def x 1) (def y 2))))
+           (run-spell '(reopen '(quine completion (eval (do (def x 1))))
+                              '(def y 2))))))
 
-  (testing "works on quine-style prefix"
-    (is (= "(quine completion (spell-eval (do "
-           (run-spell '(reopen "(quine completion (spell-eval (do )))"))))))
+  (testing "serialize-prefix turns a quine into an open prefix string"
+    (is (= "(quine completion (eval (do (def x 1) "
+           (run-spell '(serialize-prefix '(quine completion (eval (do (def x 1))))))))))

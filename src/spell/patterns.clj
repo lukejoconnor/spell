@@ -11,14 +11,15 @@
   "config/spl-lib/patterns.spl")
 
 (def ^:private patterns-docs
-  {:short-docs "Reusable orchestration patterns: check-result, clean-prompt, explore, ralph, fix-loop."
+  {:short-docs "Reusable orchestration patterns: check-result, clean-prompt, ralph, team, fix-loop, relay."
    :docs {:guide "PATTERNS - Reusable orchestration patterns (effect namespace).
 
   (patterns/check-result prompt answer)  - verify answer with leaf-llm
   (patterns/clean-prompt raw-text)       - clean up messy text, then execute it
-  (patterns/explore question)            - one-shot codebase exploration agent
   (patterns/ralph opts)                  - future-based retry orchestrator
+  (patterns/team goal-or-opts)           - planner + parallel worktree team orchestrator
   (patterns/fix-loop issue)              - test-driven code fixing loop (reflector + worker agents)
+  (patterns/relay opts)                  - fresh-worker reasoning rounds with fresh verification
 
 Use (!describe patterns :fn-name) for detailed docs on any function.
 
@@ -31,10 +32,6 @@ clean-prompt: Cleans up a raw prompt (voice-to-text, quick notes) via leaf-llm, 
   leaf-llm infers intent and rewrites; !llm-self executes the cleaned prompt.
   Accepts a string or quine form (serializes non-strings automatically).
 
-explore: One-shot delegation to a child exploration agent. Spawns a child that greps, reads, and analyzes, then returns structured findings.
-  '(!call-now findings (patterns/explore \"Where is authentication handled?\"))
-  Returns {:answer \"...\" :files [\"src/auth.py\" ...]}
-
 ralph: Retry orchestrator that runs blocking completion waits inside a future, so
 the caller's agent trace stays responsive. Spawns a worker, sends task/retry
 messages, waits via blocking/send-await, and sends
@@ -42,21 +39,32 @@ final {:pass result} or {:fail last-result} to the caller.
   '(!call-now started (patterns/ralph \"fix failing tests\"))
   ;; later receives msg with {:pass ...} or {:fail ...}
 
+team: Multi-task implementation orchestrator. A planner decomposes the goal,
+the scheduler executes dependency waves in parallel git worktrees, and a
+verifier approves merges or resolves conflicts on the integration branch.
+  '(!call-now result (patterns/team \"Implement feature X\"))
+  Returns {:status :completed|:partial|:failed :tasks [...] :branch \"spell-team-...\"}
+
 fix-loop: Test-driven code fixing loop. Registers a persistent reflector agent and
 a persistent worker agent for the run. The root loop coordinates both via
-blocking/send-await inside a future, and the caller waits via futures/!ask-await:
-reflector proposes diagnosis + test command,
+blocking/send-await inside a future, and the caller waits via !ask-await:
+reflector proposes diagnosis + test spec,
 worker applies edits, and the loop retries until tests pass or retries are exhausted.
   '(!call-now result (patterns/fix-loop issue))
   Returns {:pass true} or {:fail \"reason\"}
+
+relay: Reasoning relay with fresh context each round. Each round registers a new
+worker, passes forward compressed prior reports, and if a worker claims :solved,
+the pattern registers a fresh verifier to check the answer independently.
+  '(!call-now result (patterns/relay problem))
+  Returns {:solved true|false :answer any? :rounds [...]}
 
 All patterns/ calls are effect functions - quote them in the trailing expression.
 
 Common mistakes:
 
 1. calling check-result outside the trailing expression: must be quoted like all effect calls
-2. forgetting !call-now with explore: '(patterns/explore \"...\") runs the agent but you lose the return value; use '(!call-now findings (patterns/explore \"...\"))
-3. using explore for simple tasks: explore spawns a child agent - overkill for a quick io/read-file or io/sh
+2. using team without an io-capable agent profile: workers and verifier need io/ and agents/; blocking/ is future-only and !ask-await is a builtin
 
 In examples, | marks cursor position in a completion. It is doc-only; do not type it into code.
 
@@ -74,7 +82,6 @@ Example - verify then correct:
    :detail
    {:check-result "(patterns/check-result prompt answer) - verify answer with leaf-llm, returns {:ok answer} or {:wrong msg}"
     :clean-prompt "(patterns/clean-prompt raw-prompt) - clean up raw prompt via leaf-llm and execute it"
-    :explore "(patterns/explore question) - one-shot exploration agent, returns {:answer \"...\" :files [...]}"
     :ralph "(patterns/ralph opts) - future-based retry orchestrator.
 opts:
   string                   - task text
@@ -82,7 +89,27 @@ opts:
   :test-fn                 - predicate over worker result (default: (:ok result))
   :max-retries             - retry limit (default: 3)
   :worker-prompt           - custom worker prompt
-Sends {:pass result} or {:fail last-result} to caller."
+Sends {:pass result} or {:fail last-result} to caller.
+Requires agent profile with agents/ support. Uses future-only blocking/ helpers internally."
+    :team "(patterns/team goal-or-opts) - planner + scheduler + worktree workers + verifier.
+primary argument:
+  goal-or-opts             - string goal or opts map
+
+opts map:
+  :goal                    - required goal text
+  :shared-context          - optional shared instructions for all tasks
+  :max-retries             - retries per task before failure (default: 2)
+
+Execution model:
+1. Commit dirty state (if any), create an integration branch
+2. Planner decomposes the goal into task maps with dependency edges
+3. Scheduler executes dependency waves in parallel git worktrees
+4. Scheduler attempts eager merges into the integration branch
+5. Verifier approves merged state or resolves conflicts/rejects for retry
+6. Returns {:status :completed|:partial|:failed :tasks [...] :branch ...}
+
+Requires agent profile with io/ and agents/ support.
+Uses core strings/ plus future-only blocking/ helpers internally."
     :fix-loop "(patterns/fix-loop issue) - test-driven code fixing loop.
 primary argument:
   issue                    - description of the problem to fix (required)
@@ -95,18 +122,53 @@ Execution model:
 1. Commit dirty state (if any), create a fix branch
 2. Register dormant reflector + worker agents for this run
 3. Run loop in a future; use blocking/send-await for reflector/worker turns
-4. Wait from caller turn with futures/!ask-await
+4. Wait from caller turn with !ask-await
 5. Loop runs tests, wakes worker to edit code, reruns tests, and retries with
    updated diagnosis + git diff context until pass or retries exhausted
 
 Reflector output contract:
-  {:diagnosis string :test string :panic boolean}
+  {:resolved boolean
+   :diagnosis string
+   :test-output string
+   :panic boolean
+   :reset-worker boolean}
 
-Requires agent profile with io/ and agents/ namespaces.
+Requires agent profile with io/ and agents/ support.
+Uses core strings/ plus future-only blocking/ helpers internally.
 
 Example:
   '(!call-now result (patterns/fix-loop
-    issue-description))"}})
+    issue-description))"
+    :relay "(patterns/relay opts) - fresh-worker reasoning rounds with fresh verification.
+opts:
+  string                   - problem statement
+  :problem                 - problem statement (required if opts map)
+  :max-rounds              - max worker rounds before giving up (default: 5)
+
+Execution model:
+1. Register a fresh dormant worker for each round
+2. Send {:kind :solve ... :previous-reports [...]} via blocking/send-await
+3. Normalize worker output into report entries tagged with :worker-handle
+4. When a worker reports :solved, register a fresh verifier for that attempt
+5. Verifier independently confirms or rejects the claimed answer
+6. Returns {:solved true :answer ... :rounds [...]} or {:solved false :rounds [...]}
+
+Workers and verifiers may optionally message prior workers named in accumulated
+reports. Requires agent profile with agents/ support and future-only blocking/
+helpers."
+    }})
+
+(def ^:private pattern-requires
+  "Machine-readable namespace requirements for public patterns.
+   Core namespaces like strings/ are always available. Future-only blocking/
+   is provided by the evaluator, so it is documented here but never needs to
+   appear in an agent's :namespaces map."
+  {:check-result ['strings]
+   :clean-prompt []
+   :ralph ['agents 'blocking]
+   :team ['strings 'io 'agents 'blocking]
+   :fix-loop ['strings 'io 'agents 'blocking]
+   :relay ['agents 'blocking]})
 
 (defn- defn-form?
   [form]
@@ -168,6 +230,14 @@ Example:
                          :names (map first entries)})))
       fns-map)))
 
+(defn- attach-pattern-requires
+  [fns-map]
+  (into {}
+        (map (fn [[k fn-map]]
+               [k (assoc fn-map :requires (get pattern-requires k []))]))
+        fns-map))
+
 (def patterns
   "Reusable orchestration patterns (Spell-specific)."
-  (merge patterns-docs (load-pattern-fns)))
+  (merge patterns-docs
+         (attach-pattern-requires (load-pattern-fns))))

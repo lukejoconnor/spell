@@ -1,5 +1,6 @@
 (ns spell.io-test
   (:require [clojure.test :refer :all]
+            [clojure.string :as str]
             [spell.io :as io]
             [spell.runtime :as runtime]
             [clojure.java.io :as jio]))
@@ -518,12 +519,27 @@
     (let [result (io/sh "sleep 1 && echo done" {:timeout 0})]
       (is (= 0 (:exit result)))
       (is (= "done" (:out result)))
-      (is (= "" (:err result))))))
+      (is (= "" (:err result)))))
+
+  (testing "keyword args instead of opts map throws informative error"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"all command segments must be strings"
+                          (io/sh "echo hello" :timeout 60))))
+
+  (testing "non-string first command segment throws informative error"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"all command segments must be strings"
+                          (io/sh :echo " hello")))))
 
 (deftest exec-test
   (let [result (io/exec ["echo" "hello"])]
     (is (= 0 (:exit result)))
-    (is (= "hello" (:out result)))))
+    (is (= "hello" (:out result))))
+
+  (testing "non-string argv entries throw informative error"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"all argv entries must be strings"
+                          (io/exec ["echo" :timeout 60])))))
 
 (deftest env-test
   (testing "get all env vars"
@@ -628,6 +644,100 @@
 ;; =============================================================================
 ;; io-namespace tests
 ;; =============================================================================
+
+(deftest io-read-namespace-subset-test
+  (let [ns-map io/io-read-namespace]
+    (is (contains? ns-map :read-file))
+    (is (contains? ns-map :slurp))
+    (is (contains? ns-map :grep))
+    (is (contains? ns-map :glob))
+    (is (contains? ns-map :git))
+    (is (contains? ns-map :env))
+    (is (not (contains? ns-map :write-file)))
+    (is (not (contains? ns-map :sh)))
+    (is (= "Read a file with numbered lines."
+           (get-in ns-map [:docs :read-file])))))
+
+(deftest io-write-namespace-subset-test
+  (let [ns-map io/io-write-namespace]
+    (is (contains? ns-map :write-file))
+    (is (contains? ns-map :replace-lines))
+    (is (contains? ns-map :temp-file))
+    (is (not (contains? ns-map :read-file)))
+    (is (not (contains? ns-map :sh)))
+    (is (= "Write file contents, creating parent directories as needed."
+           (get-in ns-map [:docs :write-file])))))
+
+(deftest io-exec-namespace-subset-test
+  (let [ns-map io/io-exec-namespace]
+    (is (contains? ns-map :sh))
+    (is (contains? ns-map :exec))
+    (is (contains? ns-map :watch-send))
+    (is (not (contains? ns-map :grep)))
+    (is (not (contains? ns-map :read-file)))
+    (is (not (contains? ns-map :write-file)))
+    (is (= "Execute a shell command."
+           (get-in ns-map [:docs :sh])))))
+
+(deftest grep-test
+  (let [clj-path (str test-dir "/grep-target.clj")
+        txt-path (str test-dir "/nested/grep-target.txt")]
+    (.mkdirs (jio/file (str test-dir "/nested")))
+    (spit clj-path "(def needle 1)\n")
+    (spit txt-path "needle in haystack\n")
+    (let [result (io/grep "needle" test-dir)]
+      (is (= 0 (:exit result)))
+      (is (re-find (re-pattern (java.util.regex.Pattern/quote clj-path)) (:out result)))
+      (is (re-find (re-pattern (java.util.regex.Pattern/quote txt-path)) (:out result))))
+    (let [result (io/grep "needle" test-dir {:include "*.clj"})]
+      (is (= 0 (:exit result)))
+      (is (re-find (re-pattern (java.util.regex.Pattern/quote clj-path)) (:out result)))
+      (is (not (re-find (re-pattern (java.util.regex.Pattern/quote txt-path)) (:out result)))))))
+
+(deftest grep-rejects-non-numeric-options-test
+  (is (thrown-with-msg?
+       clojure.lang.ExceptionInfo
+       #"io/grep: :context must be a non-negative integer"
+       (io/grep "needle" test-dir {:context "1; touch /tmp/pwned >&2"})))
+  (is (thrown-with-msg?
+       clojure.lang.ExceptionInfo
+       #"io/grep: :max-count must be a non-negative integer"
+       (io/grep "needle" test-dir {:max-count "1; touch /tmp/pwned >&2"}))))
+
+(deftest glob-test
+  (let [clj-path (str test-dir "/alpha.clj")
+        md-path (str test-dir "/nested/bravo.md")
+        nested-clj-path (str test-dir "/nested/charlie.clj")]
+    (.mkdirs (jio/file (str test-dir "/nested")))
+    (spit clj-path "alpha")
+    (spit md-path "bravo")
+    (spit nested-clj-path "charlie")
+    (let [result (io/glob "*.clj" test-dir {:type "f" :max-depth 3})]
+      (is (= 0 (:exit result)))
+      (is (= [clj-path nested-clj-path]
+             (str/split-lines (:out result)))))
+    (let [result (io/glob "*.md" test-dir {:type "f" :max-depth 3})]
+      (is (= 0 (:exit result)))
+      (is (= [md-path] (str/split-lines (:out result)))))))
+
+(deftest glob-rejects-non-numeric-max-depth-test
+  (is (thrown-with-msg?
+       clojure.lang.ExceptionInfo
+       #"io/glob: :max-depth must be a non-negative integer"
+       (io/glob "*.clj" test-dir {:type "f" :max-depth "1; echo hacked >&2"}))))
+
+(deftest git-helper-test
+  (let [result (io/git "rev-parse" "--show-toplevel")
+        repo-root (.getCanonicalPath (jio/file "."))]
+    (is (= 0 (:exit result)))
+    (is (= repo-root (:out result))))
+  (let [result (io/git "checkout" "main")]
+    (is (= {:error "git subcommand not allowed: \"checkout\". Allowed: blame, diff, log, rev-parse, show, status"}
+           result))))
+
+(deftest git-helper-rejects-branch-test
+  (is (= {:error "git subcommand not allowed: \"branch\". Allowed: blame, diff, log, rev-parse, show, status"}
+         (io/git "branch" "-D" "topic"))))
 
 ;; =============================================================================
 ;; Event-send tests

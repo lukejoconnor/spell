@@ -237,6 +237,32 @@
         (finally
           (.delete child-file))))))
 
+(deftest resolve-namespace-value-vector-merge-test
+  (testing "vector namespace values resolve and merge namespace maps"
+    (let [v (#'agent/resolve-namespace-value
+             [(symbol "stdlib/io-read") (symbol "stdlib/io-exec")]
+             "." (atom {}) llm/make-llm)]
+      (is (contains? v :read-file))
+      (is (contains? v :sh))
+      (is (not (contains? v :write-file)))
+      (is (= "Read a file with numbered lines." (get-in v [:docs :read-file])))
+      (is (re-find #"Read-only filesystem inspection, codebase exploration"
+                   (:short-docs v))))))
+
+(deftest explore-agent-config-test
+  (testing "explore.agent.edn resolves to read-only exploration helpers without shell execution"
+    (let [config (agent/load-agent-config "config/agents/explore.agent.edn")
+          namespaces ((:resolve-namespaces-fn config) llm/make-llm)
+          io-ns (get namespaces 'io)]
+      (is (= 'explore (:name config)))
+      (is (nil? (:resolve-llms-fn config)))
+      (is (contains? io-ns :read-file))
+      (is (contains? io-ns :grep))
+      (is (contains? io-ns :glob))
+      (is (contains? io-ns :git))
+      (is (not (contains? io-ns :sh)))
+      (is (not (contains? io-ns :write-file))))))
+
 ;; =============================================================================
 ;; effect-ns-names includes 'llms
 ;; =============================================================================
@@ -386,3 +412,44 @@
         (finally
           (.delete main-file) (.delete helper-file)
           (.delete dir))))))
+
+;; =============================================================================
+;; Pattern dependency validation
+;; =============================================================================
+
+(deftest make-agent-llm-pattern-dependency-validation-test
+  (testing "core and future-only namespaces satisfy pattern requirements without explicit config"
+    (let [result (agent/make-agent-llm
+                  {:resolve-namespaces-fn
+                   (fn [_]
+                     {'patterns {:check-result {:requires ['strings]}
+                                 :ralph {:requires ['agents 'blocking]}
+                                 :team {:requires ['strings 'io 'agents 'blocking]}}
+                      'agents {}
+                      'io {}})})]
+      (is (fn? (:llm result)))
+      (is (fn? (:run result)))))
+
+  (testing "missing effect namespaces fail fast with actionable ex-data"
+    (try
+      (agent/make-agent-llm
+       {:resolve-namespaces-fn
+        (fn [_]
+          {'patterns {:team {:requires ['strings 'io 'agents 'blocking]}}
+           'agents {}})})
+      (is false "expected pattern dependency validation failure")
+      (catch clojure.lang.ExceptionInfo e
+        (is (= :team (:pattern (ex-data e))))
+        (is (= '[agents blocking io strings] (:requires (ex-data e))))
+        (is (= '[io] (:missing (ex-data e))))
+        (is (re-find #"Pattern team requires namespaces"
+                     (.getMessage e))))))
+
+  (testing "shipped io agent profiles remain loadable without futures/ configured"
+    (doseq [path ["config/agents/cli.agent.edn"
+                  "config/agents/io-msg.agent.edn"
+                  "config/agents/io-pf.agent.edn"
+                  "config/agents/io-tc.agent.edn"]]
+      (let [result (agent/make-agent-llm (agent/load-agent-config path))]
+        (is (fn? (:llm result)) path)
+        (is (fn? (:run result)) path)))))

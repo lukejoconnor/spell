@@ -1,0 +1,12 @@
+;; I/O-capable profile for tool-call transport with ACM prompt variant.
+
+{:base base-acm-tc.agent.edn
+ :name io-acm-tc
+ :doc "Tool-call agent with ACM prompt + io/web/patterns/agents/globals namespaces"
+
+ :namespaces
+ {io       stdlib/io
+  web      stdlib/web
+  patterns stdlib/patterns
+  agents   stdlib/agents
+  globals  stdlib/globals}}

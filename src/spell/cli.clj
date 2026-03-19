@@ -19,7 +19,7 @@
 
 (def provider-prefixes
   #{"ollama" "codex-msg" "codex-tc" "openclaw" "openai"
-    "anthropic-pf" "anthropic-tc" "kimi" "moonshot" "test"})
+    "anthropic-pf" "anthropic-tc" "fireworks" "kimi" "moonshot" "test"})
 
 (defn parse-model-spec
   "Parse 'provider:model' into {:provider str :model str}.
@@ -82,7 +82,7 @@
   [["-t" "--test" "Use dummy LLM provider (returns 'hello world')"]
    ["-e" "--example NAME" "Run a named example from examples/"]
    ["-a" "--agent FILE" "Use agent definition from .agent.edn file"]
-   ["-m" "--model MODEL" "Model spec: haiku, sonnet, opus, opus45, ollama:<model>, codex-tc:<model>, codex-msg:<model>, anthropic-pf:<model>, anthropic-tc:<model>, openai:<model>, openclaw:<model>, user (default: codex-tc:gpt-5.3)"]
+   ["-m" "--model MODEL" "Model spec: haiku, sonnet, opus, opus45, ollama:<model>, codex-tc:<model>, codex-msg:<model>, anthropic-pf:<model>, anthropic-tc:<model>, fireworks:<model>, openai:<model>, openclaw:<model>, user (default: codex-tc:gpt-5.3)"]
    ["-d" "--depth DEPTH" "Max recursion depth (default: unlimited, 0 = unlimited)"
     :parse-fn #(Integer/parseInt %)
     :validate [#(>= % 0) "Must be non-negative"]]
@@ -132,6 +132,7 @@
           "  spell -m haiku 'Add 1 and 2'"
           "  spell -m ollama:llama3.2 'Return 42'"
           "  spell -m codex-msg:gpt-5.3-codex 'Return 42'"
+          "  spell -m fireworks:glm-5 'Return 42'"
           "  spell -m openai:gpt-4o 'Return 42'"
           "  spell examples/hello-world.spl"
           "  spell -e hello-world"
@@ -213,6 +214,9 @@
         (provider/openai-provider (cond-> base-opts
                                     responses-api (assoc :use-responses-api true)))
 
+        "fireworks"
+        (provider/fireworks-provider base-opts)
+
         ("kimi" "moonshot")
         (provider/kimi-provider base-opts)
 
@@ -273,6 +277,20 @@
     (when (pos? r)
       (format " [reasoning: %,d]" r))))
 
+(defn- format-token-stat [n]
+  (when (some? n)
+    (let [value (double n)]
+      (if (== value (Math/rint value))
+        (format "%,d" (long (Math/round value)))
+        (format "%,.1f" value)))))
+
+(defn- format-context-stats [stats]
+  (when (and (contains? stats :mean_total_tokens)
+             (contains? stats :max_total_tokens))
+    (format " [context: mean %s / max %s]"
+            (format-token-stat (:mean_total_tokens stats))
+            (format-token-stat (:max_total_tokens stats)))))
+
 (defn- print-usage [usage-atom]
   (let [{:keys [by-model total]} (provider/usage-summary usage-atom)]
     (when (pos? (:calls total 0))
@@ -280,19 +298,21 @@
       (println "=== Token Usage ===")
       (when (> (count by-model) 1)
         (doseq [[model stats] (sort-by key by-model)]
-          (println (format "  %s: %,d in / %,d out (%d calls)%s%s%s"
+          (println (format "  %s: %,d in / %,d out (%d calls)%s%s%s%s"
                      model
                      (:input_tokens stats 0)
                      (:output_tokens stats 0)
                      (:calls stats 0)
                      (if-let [c (:cost stats)] (format " $%.4f" c) "")
+                     (or (format-context-stats stats) "")
                      (or (format-cache-stats stats) "")
                      (or (format-reasoning-stats stats) "")))))
-      (println (format "  Total: %,d in / %,d out (%d calls)%s%s%s"
+      (println (format "  Total: %,d in / %,d out (%d calls)%s%s%s%s"
                  (:input_tokens total 0)
                  (:output_tokens total 0)
                  (:calls total 0)
                  (if-let [c (:cost total)] (format " $%.4f" c) "")
+                 (or (format-context-stats total) "")
                  (or (format-cache-stats total) "")
                  (or (format-reasoning-stats total) ""))))))
 

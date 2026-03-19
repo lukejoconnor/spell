@@ -20,6 +20,7 @@
    - {:file f :items m} → submap of vars from file
    - {:file f}          → slurp file as string"
   (:require [clojure.edn :as edn]
+            [clojure.set :as set]
             [clojure.string :as str]
             [spell.runtime :as runtime]
             [spell.format :as format]
@@ -39,11 +40,14 @@
    Note: io/ is effectful and can be omitted in custom agent profiles.
    Seqs, fns, and bit- ops are in core-builtins (matching Clojure)."
   {'io io/io-namespace
+   'io-read io/io-read-namespace
+   'io-write io/io-write-namespace
+   'io-exec io/io-exec-namespace
    'web web/web-namespace
    'globals globals/globals-namespace
    'agents runtime/agents-namespace
-   'futures stdlib/futures-namespace
    'builtins stdlib/builtins-namespace
+   'reminders stdlib/reminders-namespace
    'strings stdlib/strings
    'math stdlib/math
    'patterns stdlib/patterns})
@@ -120,11 +124,35 @@
 ;; Value resolution
 ;; =============================================================================
 
+(defn- join-doc-snippets
+  [left right]
+  (str/join "; " (remove str/blank? [left right])))
+
+(defn- join-guides
+  [left right]
+  (str/join "\n\n" (remove str/blank? [left right])))
+
+(defn- merge-namespace-maps
+  [& ns-maps]
+  (reduce (fn [merged ns-map]
+            (let [merged-docs (:docs merged)
+                  ns-docs (:docs ns-map)]
+              (-> (merge merged (dissoc ns-map :short-docs :docs :detail))
+                  (assoc :short-docs (join-doc-snippets (:short-docs merged) (:short-docs ns-map)))
+                  (assoc :docs (cond-> (merge (dissoc merged-docs :guide)
+                                              (dissoc ns-docs :guide))
+                                 (or (:guide merged-docs) (:guide ns-docs))
+                                 (assoc :guide (join-guides (:guide merged-docs) (:guide ns-docs)))))
+                  (assoc :detail (merge (:detail merged) (:detail ns-map))))))
+          {}
+          ns-maps))
+
 (defn- resolve-namespace-value
   "Resolve a single namespace value according to pattern rules.
 
    Patterns:
    - stdlib/X or stdlib/X/Y  → stdlib namespace/item
+   - [a b c]                 → resolve and merge namespace maps
    - file.clj/var            → var from Clojure file
    - file.agent.edn          → load agent → llm fn
    - {:file f :items {...}}  → submap of vars from file
@@ -148,6 +176,15 @@
                      (:items value))))
         ;; {:file f} → slurp as string
         (slurp-file file-path base-dir)))
+
+    ;; Vector - merge resolved namespace maps
+    (vector? value)
+    (let [resolved (mapv #(resolve-namespace-value % base-dir clj-cache make-llm-fn) value)]
+      (when-not (every? map? resolved)
+        (throw (ex-info "Vector namespace values must resolve to namespace maps"
+                        {:value value
+                         :resolved-types (mapv type resolved)})))
+      (apply merge-namespace-maps resolved))
 
     ;; Symbol - check pattern
     (symbol? value)
@@ -522,6 +559,35 @@
      :resolve-namespaces-fn resolve-fn
      :resolve-llms-fn resolve-llms-fn'}))
 
+(def ^:private future-only-namespaces
+  "Namespaces injected by the evaluator rather than agent :namespaces config."
+  #{'blocking})
+
+(defn- available-namespace-names
+  [namespaces]
+  (into future-only-namespaces
+        (concat (keys llm/core-namespaces)
+                (keys (or namespaces {})))))
+
+(defn- validate-pattern-dependencies!
+  "Fail fast when an agent exposes patterns whose declared namespace
+   dependencies are not available in that agent profile."
+  [namespaces]
+  (when-let [patterns-ns (get namespaces 'patterns)]
+    (let [available (available-namespace-names namespaces)]
+      (doseq [[pattern-name pattern-fn] patterns-ns
+              :let [required (set (:requires pattern-fn))
+                    missing (set/difference required available)]
+              :when (seq missing)]
+        (throw (ex-info (str "Pattern " (name pattern-name)
+                             " requires namespaces " (sort required)
+                             " but agent is missing " (sort missing)
+                             ". Add the missing namespace(s) to :namespaces in the agent's .agent.edn.")
+                        {:pattern pattern-name
+                         :requires (sort required)
+                         :missing (sort missing)
+                         :available (sort available)}))))))
+
 (defn make-agent-llm
   "Create an llm+run map from an agent config.
    Agents are always evaluated with Spell. Use the leaf-llm builtin from within
@@ -534,6 +600,7 @@
                 provider]} agent-config
         namespaces (when resolve-namespaces-fn
                      (resolve-namespaces-fn llm/make-llm))
+        _ (validate-pattern-dependencies! namespaces)
         llms-ns (when resolve-llms-fn
                   (resolve-llms-fn llm/make-llm model provider))
         all-namespaces (cond-> (or namespaces {})

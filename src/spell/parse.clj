@@ -38,7 +38,7 @@
   [s]
   (let [balance (paren-balance s)]
     (if (pos? balance)
-      (str s (apply str (repeat balance \))))
+      (str s "\n" (apply str (repeat balance \))))
       s)))
 
 (def ^:private valid-escape?
@@ -154,6 +154,25 @@
       (catch RuntimeException e
         (if-let [stripped (maybe-strip-trailing-unmatched-delimiter s (.getMessage e))]
           (read-all-internal stripped)
+          (throw e))))))
+
+(defn read-first
+  "Read the first form from a string, ignoring everything after it.
+   Applies the same sanitization as read-all (comment normalization, escape fixing).
+   Returns the parsed form, or nil for empty input. Throws on reader error."
+  [s]
+  (let [s (-> s
+              sanitize-nonspell-comment-markers
+              sanitize-string-escapes)]
+    (try
+      (let [rdr (java.io.PushbackReader. (java.io.StringReader. s))
+            form (read rdr false ::eof)]
+        (when-not (= form ::eof) form))
+      (catch RuntimeException e
+        (if-let [stripped (maybe-strip-trailing-unmatched-delimiter s (.getMessage e))]
+          (let [rdr (java.io.PushbackReader. (java.io.StringReader. stripped))
+                form (read rdr false ::eof)]
+            (when-not (= form ::eof) form))
           (throw e))))))
 
 (defn strip-trailing-parens

@@ -7,6 +7,7 @@
    - openai-provider: Calls OpenAI API
    - codex-msg-provider: Calls ChatGPT Codex Responses API (message transport)
    - codex-tc-provider: ChatGPT Codex Responses with mandatory custom tool output
+   - fireworks-provider: Calls Fireworks Completions API with raw prompt templates
    - ollama-provider: Calls local Ollama API
    - test-provider: Declarative test provider with flexible response matching"
   (:require [clojure.data.json :as json]
@@ -51,7 +52,12 @@
   [0 10])
 
 (def default-costs
-  "Cost per million tokens: {model-prefix [input-cost output-cost]}"
+  "Cost per million tokens.
+
+   Entries may be:
+   - [input-cost output-cost]
+   - {:input input-cost :output output-cost :cache-read-input cache-read-input-cost
+      :cache-write-input cache-write-input-cost}"
   {"claude-3-5-haiku"  [0.80 4.00]
    "claude-haiku-4-5"  [1.00 5.00]
    "claude-sonnet-5"   [3.00 15.00]
@@ -76,6 +82,20 @@
    "gpt-5.2"           [1.75 14.00]
    "gpt-5.3-codex"     [1.75 14.00]
    "gpt-5.3"           [1.75 14.00]
+   "gpt-5.4"           [2.50 15.00]
+   ;; Fireworks hosted open models
+   "accounts/fireworks/models/glm-5"
+   {:input 1.00 :cache-read-input 0.20 :output 3.20}
+   "accounts/fireworks/models/kimi-k2"
+   {:input 0.60 :cache-read-input 0.30 :output 2.50}
+   "accounts/fireworks/models/deepseek-v3p1"
+   {:input 0.56 :cache-read-input 0.28 :output 1.68}
+   "accounts/fireworks/models/qwen3-235b"
+   {:input 0.20 :cache-read-input 0.10 :output 0.60}
+   "accounts/fireworks/models/qwen3-coder-480b-a35b-instruct"
+   {:input 0.45 :cache-read-input 0.22 :output 1.80}
+   "accounts/fireworks/models/kimi-k2p5"
+   {:input 0.60 :cache-read-input 0.10 :output 3.00}
    ;; Moonshot Kimi models
    "kimi-k2.5"         [0.60 3.00]
    "kimi-k2-thinking-turbo" [1.15 8.00]
@@ -90,9 +110,31 @@
 (defn- lookup-cost
   "Find cost for a model ID by prefix matching in a cost table."
   [model-id cost-table]
-  (some (fn [[prefix costs]]
-          (when (.startsWith ^String model-id prefix) costs))
-        cost-table))
+  (letfn [(normalize-cost-spec [costs]
+            (cond
+              (and (vector? costs) (= 2 (count costs)))
+              (let [[input-cost output-cost] costs]
+                {:input input-cost
+                 :output output-cost
+                 :cache-write-input (* input-cost 1.25)
+                 :cache-read-input (* input-cost 0.10)})
+
+              (map? costs)
+              (let [input-cost (:input costs)
+                    output-cost (:output costs)]
+                (when (and input-cost output-cost)
+                  {:input input-cost
+                   :output output-cost
+                   :cache-write-input (or (:cache-write-input costs)
+                                          (* input-cost 1.25))
+                   :cache-read-input (or (:cache-read-input costs)
+                                         (* input-cost 0.10))}))
+
+              :else nil))]
+    (some (fn [[prefix costs]]
+            (when (.startsWith ^String model-id prefix)
+              (normalize-cost-spec costs)))
+          cost-table)))
 
 (defn current-cost
   "Compute total cost in dollars from accumulated usage data.
@@ -102,11 +144,14 @@
   (let [{:keys [by-model cost-table]} @usage-atom
         effective-costs (or cost-table default-costs)
         costs (keep (fn [[model stats]]
-                      (when-let [[in-cost out-cost] (lookup-cost model effective-costs)]
-                        (let [base-input (* (:input_tokens stats 0) (/ in-cost 1000000.0))
-                              cache-write (* (:cache_creation_input_tokens stats 0) (/ in-cost 1000000.0) 1.25)
-                              cache-read (* (:cache_read_input_tokens stats 0) (/ in-cost 1000000.0) 0.1)
-                              output (* (:output_tokens stats 0) (/ out-cost 1000000.0))]
+                      (when-let [{:keys [input output cache-write-input cache-read-input]}
+                                 (lookup-cost model effective-costs)]
+                        (let [base-input (* (:input_tokens stats 0) (/ input 1000000.0))
+                              cache-write (* (:cache_creation_input_tokens stats 0)
+                                             (/ cache-write-input 1000000.0))
+                              cache-read (* (:cache_read_input_tokens stats 0)
+                                            (/ cache-read-input 1000000.0))
+                              output (* (:output_tokens stats 0) (/ output 1000000.0))]
                           (+ base-input cache-write cache-read output))))
                     by-model)]
     (when (seq costs)
@@ -119,20 +164,27 @@
   ([model usage] (track-usage! model usage nil))
   ([model usage cost-table]
    (when (and *usage* usage)
-     (swap! *usage* (fn [u]
-                      (cond-> (update-in u [:by-model model]
-                                (fn [existing]
-                                  (cond-> {:input_tokens (+ (:input_tokens existing 0) (:input_tokens usage 0))
-                                           :output_tokens (+ (:output_tokens existing 0) (:output_tokens usage 0))
-                                           :cache_creation_input_tokens (+ (:cache_creation_input_tokens existing 0)
-                                                                           (:cache_creation_input_tokens usage 0))
-                                           :cache_read_input_tokens (+ (:cache_read_input_tokens existing 0)
-                                                                       (:cache_read_input_tokens usage 0))
-                                           :calls (inc (:calls existing 0))}
-                                    (:reasoning_tokens usage)
-                                    (assoc :reasoning_tokens (+ (:reasoning_tokens existing 0)
-                                                                (:reasoning_tokens usage 0))))))
-                        cost-table (update :cost-table merge cost-table))))
+     (let [turn-total-tokens (+ (:input_tokens usage 0)
+                                (:output_tokens usage 0)
+                                (:cache_creation_input_tokens usage 0)
+                                (:cache_read_input_tokens usage 0))]
+       (swap! *usage*
+              (fn [u]
+                (cond-> (update-in u [:by-model model]
+                                   (fn [existing]
+                                     (cond-> {:input_tokens (+ (:input_tokens existing 0) (:input_tokens usage 0))
+                                              :output_tokens (+ (:output_tokens existing 0) (:output_tokens usage 0))
+                                              :cache_creation_input_tokens (+ (:cache_creation_input_tokens existing 0)
+                                                                              (:cache_creation_input_tokens usage 0))
+                                              :cache_read_input_tokens (+ (:cache_read_input_tokens existing 0)
+                                                                          (:cache_read_input_tokens usage 0))
+                                              :calls (inc (:calls existing 0))
+                                              :max_total_tokens (max (:max_total_tokens existing 0)
+                                                                     turn-total-tokens)}
+                                       (:reasoning_tokens usage)
+                                       (assoc :reasoning_tokens (+ (:reasoning_tokens existing 0)
+                                                                   (:reasoning_tokens usage 0))))))
+                  cost-table (update :cost-table merge cost-table)))))
      (when *budget*
        (when-let [cost (current-cost *usage*)]
          (when (> cost *budget*)
@@ -142,31 +194,63 @@
 (defn usage-summary
   "Compute a summary from accumulated usage data.
    Returns {:by-model {model {:input_tokens N :output_tokens N :calls N :cost F
+                              :mean_total_tokens F :max_total_tokens N
                               :cache_creation_input_tokens N :cache_read_input_tokens N}}
             :total {:input_tokens N :output_tokens N :calls N :cost F
+                    :mean_total_tokens F :max_total_tokens N
                     :cache_creation_input_tokens N :cache_read_input_tokens N}}"
   [usage-atom]
   (let [{:keys [by-model cost-table]} @usage-atom
         effective-costs (or cost-table default-costs)
+        summarize-context (fn [stats]
+                            (let [input-tokens (:input_tokens stats 0)
+                                  output-tokens (:output_tokens stats 0)
+                                  cache-write-tokens (:cache_creation_input_tokens stats 0)
+                                  cache-read-tokens (:cache_read_input_tokens stats 0)
+                                  calls (:calls stats 0)
+                                  total-tokens (+ input-tokens
+                                                  output-tokens
+                                                  cache-write-tokens
+                                                  cache-read-tokens)]
+                              (cond-> stats
+                                (pos? calls)
+                                (assoc :mean_total_tokens (double (/ total-tokens calls))
+                                       :max_total_tokens (:max_total_tokens stats 0)))))
         with-costs (into {}
                      (map (fn [[model stats]]
-                            (let [[in-cost out-cost] (lookup-cost model effective-costs)
-                                  cost (when (and in-cost out-cost)
-                                         (let [base-input (* (:input_tokens stats 0) (/ in-cost 1000000.0))
-                                               cache-write (* (:cache_creation_input_tokens stats 0) (/ in-cost 1000000.0) 1.25)
-                                               cache-read (* (:cache_read_input_tokens stats 0) (/ in-cost 1000000.0) 0.1)
-                                               output (* (:output_tokens stats 0) (/ out-cost 1000000.0))]
+                            (let [{:keys [input output cache-write-input cache-read-input]}
+                                  (lookup-cost model effective-costs)
+                                  cost (when (and input output)
+                                         (let [base-input (* (:input_tokens stats 0) (/ input 1000000.0))
+                                               cache-write (* (:cache_creation_input_tokens stats 0)
+                                                              (/ cache-write-input 1000000.0))
+                                               cache-read (* (:cache_read_input_tokens stats 0)
+                                                             (/ cache-read-input 1000000.0))
+                                               output (* (:output_tokens stats 0) (/ output 1000000.0))]
                                            (+ base-input cache-write cache-read output)))]
-                              [model (cond-> stats cost (assoc :cost cost))]))
+                              [model (cond-> (summarize-context stats)
+                                       cost (assoc :cost cost))]))
                           by-model))
         reasoning-total (reduce + 0 (keep :reasoning_tokens (vals by-model)))
+        total-input (reduce + 0 (map #(:input_tokens % 0) (vals by-model)))
+        total-output (reduce + 0 (map #(:output_tokens % 0) (vals by-model)))
+        total-cache-write (reduce + 0 (map #(:cache_creation_input_tokens % 0) (vals by-model)))
+        total-cache-read (reduce + 0 (map #(:cache_read_input_tokens % 0) (vals by-model)))
+        total-calls (reduce + 0 (map #(:calls % 0) (vals by-model)))
         total (cond-> {:input_tokens (reduce + 0 (map #(:input_tokens % 0) (vals by-model)))
                        :output_tokens (reduce + 0 (map #(:output_tokens % 0) (vals by-model)))
-                       :cache_creation_input_tokens (reduce + 0 (map #(:cache_creation_input_tokens % 0) (vals by-model)))
-                       :cache_read_input_tokens (reduce + 0 (map #(:cache_read_input_tokens % 0) (vals by-model)))
-                       :calls (reduce + 0 (map #(:calls % 0) (vals by-model)))
+                       :cache_creation_input_tokens total-cache-write
+                       :cache_read_input_tokens total-cache-read
+                       :calls total-calls
                        :cost (let [costs (keep :cost (vals with-costs))]
                                (when (seq costs) (reduce + 0.0 costs)))}
+                (pos? total-calls) (assoc :mean_total_tokens (double (/ (+ total-input
+                                                                          total-output
+                                                                          total-cache-write
+                                                                          total-cache-read)
+                                                                       total-calls))
+                                          :max_total_tokens (reduce max 0 (map #(:max_total_tokens % 0)
+                                                                               (vals with-costs))))
                 (pos? reasoning-total) (assoc :reasoning_tokens reasoning-total))]
     {:by-model with-costs :total total}))
 
@@ -1042,9 +1126,177 @@
    (let [key (or api-key (System/getenv "MOONSHOT_API_KEY"))
          url (str/replace (or base-url "https://api.moonshot.ai/v1") #"/$" "")]
      (when-not key
-       (throw (ex-info "No API key provided. Set MOONSHOT_API_KEY or pass :api-key"
+     (throw (ex-info "No API key provided. Set MOONSHOT_API_KEY or pass :api-key"
                        {:env "MOONSHOT_API_KEY"})))
      (->KimiProvider key url model max-tokens (make-http-client) costs))))
+
+;; ---------------------------------------------------------------------------
+;; Fireworks Provider (Completions API with true prefill)
+;; ---------------------------------------------------------------------------
+
+(def fireworks-chat-templates
+  {:chatml
+   {:system-start "<|im_start|>system\n"
+    :system-end "<|im_end|>\n"
+    :user-start "<|im_start|>user\n"
+    :user-end "<|im_end|>\n"
+    :assistant-start "<|im_start|>assistant\n"
+    :stop-sequences ["<|im_end|>"]}
+
+   :deepseek-v3
+   {:bos "<|begin▁of▁sentence|>"
+    :system-start "<|System|>"
+    :system-end ""
+    :user-start "<|User|>"
+    :user-end ""
+    :assistant-start "<|Assistant|>"
+    :stop-sequences ["<|end▁of▁sentence|>" "<|User|>"]}
+
+   :glm-4
+   {:bos "[gMASK]<sop>"
+    :system-start "<|system|>\n"
+    :system-end ""
+    :user-start "<|user|>\n"
+    :user-end ""
+    :assistant-start "<|assistant|>\n"
+    :stop-sequences ["<|user|>" "<|observation|>"]}})
+
+(defn- detect-chat-template [model-id]
+  (let [model-id (str/lower-case (or model-id ""))]
+    (cond
+      (str/includes? model-id "glm") :glm-4
+      (str/includes? model-id "deepseek") :deepseek-v3
+      :else :chatml)))
+
+(defn- resolve-chat-template [chat-template model-id]
+  (let [template-spec (or chat-template (detect-chat-template model-id))]
+    (cond
+      (map? template-spec) template-spec
+      (keyword? template-spec)
+      (or (get fireworks-chat-templates template-spec)
+          (throw (ex-info (str "Unknown Fireworks chat template: " template-spec)
+                          {:chat-template template-spec})))
+      :else
+      (throw (ex-info "Fireworks chat template must be a keyword or map"
+                      {:chat-template template-spec})))))
+
+(defn- format-completions-prompt [template system-prompt user-message prefix]
+  (let [{:keys [bos system-start system-end user-start user-end assistant-start]} template]
+    (str (or bos "")
+         (when-not (str/blank? system-prompt)
+           (str system-start system-prompt system-end))
+         (or user-start "")
+         user-message
+         (or user-end "")
+         (or assistant-start "")
+         (or prefix ""))))
+
+(defn- convert-think-tags [text]
+  (if-let [[match think-text] (re-find #"(?s)^\s*<think>(.*?)</think>\s*" (or text ""))]
+    (let [rest-text (subs text (count match))
+          think-form (str "(think " (pr-str think-text) ")")]
+      (if (str/blank? rest-text)
+        think-form
+        (str think-form " " rest-text)))
+    text))
+
+(defn- fireworks-completions-request
+  [api-key base-url model prompt system-prompt prefix max-tokens chat-template thinking]
+  (let [template (resolve-chat-template chat-template model)
+        body (cond-> {:model model
+                      :prompt (format-completions-prompt template system-prompt prompt prefix)
+                      :max_tokens (or max-tokens 16384)
+                      :stream true
+                      :stream_options {:include_usage true}
+                      :echo false}
+               (seq (:stop-sequences template)) (assoc :stop (:stop-sequences template))
+               thinking (assoc :thinking thinking))
+        request (-> (HttpRequest/newBuilder)
+                    (.uri (URI/create (str base-url "/completions")))
+                    (.header "Content-Type" "application/json")
+                    (.header "Authorization" (str "Bearer " api-key))
+                    (.POST (HttpRequest$BodyPublishers/ofString (json/write-str body)))
+                    (.build))]
+    request))
+
+(defn- parse-fireworks-sse-stream
+  "Parse an SSE stream response, accumulating text chunks and extracting final usage."
+  [response-body]
+  (let [lines (str/split-lines response-body)
+        text-sb (StringBuilder.)
+        usage (atom nil)]
+    (doseq [line lines]
+      (when (str/starts-with? line "data: ")
+        (let [data (subs line 6)]
+          (when-not (= data "[DONE]")
+            (let [parsed (json/read-str data :key-fn keyword)]
+              (when-let [error (:error parsed)]
+                (throw (ex-info "Fireworks API error" {:error error})))
+              (when-let [text (get-in parsed [:choices 0 :text])]
+                (.append text-sb text))
+              (when-let [u (:usage parsed)]
+                (reset! usage u)))))))
+    (let [u @usage
+          cached-tokens (or (get-in u [:prompt_tokens_details :cached_tokens])
+                            (:cached_tokens u)
+                            0)
+          prompt-tokens (:prompt_tokens u 0)]
+      {:text (str text-sb)
+       :usage {:input_tokens (max 0 (- prompt-tokens cached-tokens))
+               :output_tokens (:completion_tokens u 0)
+               :cache_read_input_tokens cached-tokens}})))
+
+(defrecord FireworksProvider [api-key base-url model max-tokens http-client costs chat-template convert-think?]
+  LLMProvider
+  (call-llm [this prompt] (call-llm this prompt {}))
+  (call-llm [_ prompt opts]
+    (let [effective-model (or (:model opts) model)
+          request (fireworks-completions-request api-key
+                                                 base-url
+                                                 effective-model
+                                                 prompt
+                                                 (:system opts)
+                                                 (:prefix opts)
+                                                 max-tokens
+                                                 chat-template
+                                                 (:thinking opts))
+          response (.send http-client request (HttpResponse$BodyHandlers/ofString))
+          status (.statusCode response)]
+      (if (<= 200 status 299)
+        (let [{:keys [text usage]} (parse-fireworks-sse-stream (.body response))
+              text (cond-> text convert-think? convert-think-tags)]
+          (track-usage! effective-model usage costs)
+          text)
+        (throw (ex-info "Fireworks completions request failed"
+                        {:status status :body (.body response)})))))
+  (supports-prefill [_] true))
+
+(defn fireworks-provider
+  "Create a Fireworks provider using the completions API for true prefill.
+
+   Options:
+   - :api-key        - API key (default: FIREWORKS_API_KEY env var)
+   - :base-url       - API base URL (default: https://api.fireworks.ai/inference/v1)
+   - :model          - Model name or Fireworks account path (default: glm-5)
+   - :max-tokens     - Max tokens per response
+   - :chat-template  - Keyword in `fireworks-chat-templates` or explicit template map
+   - :convert-think? - Convert leading <think>...</think> to Spell `(think ...)`
+   - :costs          - Cost table {model-prefix price-spec}"
+  ([] (fireworks-provider {}))
+  ([{:keys [api-key base-url model max-tokens costs chat-template convert-think?]
+     :or {model "glm-5"
+          base-url "https://api.fireworks.ai/inference/v1"
+          convert-think? true}}]
+   (let [key (or api-key (System/getenv "FIREWORKS_API_KEY"))
+         effective-model (if (str/starts-with? model "accounts/")
+                           model
+                           (str "accounts/fireworks/models/" model))
+         url (str/replace (or base-url "https://api.fireworks.ai/inference/v1") #"/$" "")]
+     (when-not key
+       (throw (ex-info "No API key provided. Set FIREWORKS_API_KEY or pass :api-key"
+                       {:env "FIREWORKS_API_KEY"})))
+     (->FireworksProvider key url effective-model max-tokens (make-http-client) costs
+                          chat-template convert-think?))))
 
 ;; ---------------------------------------------------------------------------
 ;; Test Provider (declarative testing)
@@ -1220,7 +1472,7 @@
   "Load provider from a .provider.edn file path."
   [path]
   (let [{:keys [type api-key-env base-url model max-tokens costs use-responses-api auth-file account-id
-                responses response-rules response prefill?]}
+                responses response-rules response prefill? chat-template convert-think?]}
         (edn/read-string (slurp path))
         api-key (when api-key-env (System/getenv api-key-env))
         opts (cond-> {:costs (or costs {})}
@@ -1230,13 +1482,16 @@
                max-tokens (assoc :max-tokens max-tokens)
                use-responses-api (assoc :use-responses-api true)
                auth-file (assoc :auth-file auth-file)
-               account-id (assoc :account-id account-id))]
+               account-id (assoc :account-id account-id)
+               chat-template (assoc :chat-template chat-template)
+               (some? convert-think?) (assoc :convert-think? convert-think?))]
     (case type
       :anthropic-pf (anthropic-pf-provider opts)
       :anthropic-tc (anthropic-tc-provider opts)
       :openai    (openai-provider opts)
       :codex-msg (codex-msg-provider opts)
       :codex-tc  (codex-tc-provider opts)
+      :fireworks (fireworks-provider opts)
       :ollama    (ollama-provider opts)
       :kimi      (kimi-provider opts)
       :test      (test-provider {:responses responses :response-rules response-rules
@@ -1256,7 +1511,7 @@
 (defn- load-provider-from-map
   "Create a provider from an inline config map (same keys as .provider.edn)."
   [{:keys [type api-key-env base-url model max-tokens costs use-responses-api auth-file account-id
-           responses response-rules response prefill?] :as spec}]
+           responses response-rules response prefill? chat-template convert-think?] :as spec}]
   (let [api-key (when api-key-env (System/getenv api-key-env))
         opts (cond-> {:costs (or costs {})}
                api-key (assoc :api-key api-key)
@@ -1265,13 +1520,16 @@
                max-tokens (assoc :max-tokens max-tokens)
                use-responses-api (assoc :use-responses-api true)
                auth-file (assoc :auth-file auth-file)
-               account-id (assoc :account-id account-id))]
+               account-id (assoc :account-id account-id)
+               chat-template (assoc :chat-template chat-template)
+               (some? convert-think?) (assoc :convert-think? convert-think?))]
     (case type
       :anthropic-pf (anthropic-pf-provider opts)
       :anthropic-tc (anthropic-tc-provider opts)
       :openai    (openai-provider opts)
       :codex-msg (codex-msg-provider opts)
       :codex-tc  (codex-tc-provider opts)
+      :fireworks (fireworks-provider opts)
       :ollama    (ollama-provider opts)
       :kimi      (kimi-provider opts)
       :test      (test-provider {:responses responses :response-rules response-rules

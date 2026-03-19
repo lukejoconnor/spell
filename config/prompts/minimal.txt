@@ -51,7 +51,7 @@ It means that on your previous turn, you called !extend. When you append to this
 
 Tool call example:
   (quine completion (eval (do (quine prompt "Your task...") ▌
-  '(!call-now files (io/sh "ls")) ;; !call-now is how you use tools; see below
+  '(!call-now files (io/ls ".")) ;; !call-now is how you use tools; see below
 
 When you make an LLM call with !llm-self and a string literal, the wrapper is applied automatically.
     ...▌
@@ -68,6 +68,9 @@ Use wrap-cat to add the wrapper:
     (quine completion (eval (do
     (quine msg-to-self "Hello me!") "Something else"▌
 
+wrap-cat and reopen return quine forms as data. !llm-self serializes those
+quines back into the child's open completion prefix.
+
 ONE TRAILING EXPRESSION PER RESPONSE
 
 Each response ends with a quoted expression — the trailing expression. It fires via double evaluation. Everything before this is local computation, unable to interact with global state.
@@ -77,11 +80,11 @@ Always quote your trailing expression with '
 
 EXTENSIONS
 
-An extension is a new turn whose prefix includes your previous completion, up to trailing parentheses.
+An extension is a new turn whose prefix reuses your previous completion quine.
 The following completion produces an extension:
     (quine completion (eval (do
         (quine prompt "Use two turns to say hello world.")
-        '(!llm-self (reopen completion))))) ; reopen strips trailing parens from do block
+        '(!llm-self (reopen completion))))) ; reopen keeps the quine wrapper and reuses its do block
 
 Your next turn:
     (quine completion (eval (do
@@ -90,7 +93,10 @@ Your next turn:
         "Hello world!")))
     ;; the program returns; !llm-self is not re-evaluated
 
-'(!llm-self (reopen completion))) is equivalent to '(!extend).
+'(!llm-self (reopen completion))) extends the same quine directly. It is only
+equivalent to '(!extend) when no prune/rethink pruning or persist
+materialization is pending; !extend is the usual choice when you want those
+reopen-time cleanups.
 
 NEW-TURN FUNCTIONS
 
@@ -98,7 +104,7 @@ Functions that create a new turn are prefixed with `!`.
 New-turn functions are:
     (!llm-self prompt); flexible self-call primitive
     (!call-now result-name tool-call) ; call tool, bind to result-name, print result, extend
-    (!peek result-name tool-call) ; !call-now + auto-rethink; binding disappears unless persisted
+    (!peek result-name tool-call) ; !call-now + auto-prune; command + binding disappear unless persisted
     (!extend) ; extend your current completion
     (!describe ns) ; disclose namespace documentation and extend completion
     (!compact) ; compact your context window and continue
@@ -110,7 +116,7 @@ Extension-producing forms:
     '(!extend) ; simple extension
     '(!print any-expression) ; print the value of any-expression into your context window
     '(!call-now result-name any-expression) ; bind the value to result-name and print
-    '(!peek result-name any-expression) ; ephemeral binding (alias: !peek-now)
+    '(!peek result-name any-expression) ; prunes the peek call + binding next turn (alias: !peek-now)
     '(!describe some-namespace) ; print documentation
     '(agents/!ask :agent-handle query) ; see below
 
@@ -140,13 +146,14 @@ Internally, (quine name my-expr) binds name to the quine form *before* evaluatin
 
 Rule of thumb: use `quine` to name string literals and pass them to other LLMs; use `def` for calculations and control flow.
 
-THINK/RETHINK
+THINK/PRUNE/RETHINK
 
-Structure your reasoning with think/rethink:
+Structure your reasoning with think/prune/rethink:
 
 1. Use (think "label" ...) for each reasoning step. think evaluates its body and returns nil.
-2. If you realize a step was wrong, use (rethink "...") to replace it.
-3. Your next extension prunes any expression preceeding a rethink.
+2. Use (prune) or (prune N) for pure structural cleanup when you want expressions to disappear entirely.
+3. Use (rethink "...") when you want pruning plus a residual think summary.
+4. Your next extension prunes any expression preceeding a prune/rethink marker.
 
 For example:
   ...(quine prompt "Hard arithmetic problem")
@@ -166,28 +173,38 @@ You can also use rethink to delete a tool call result from context:
     ;; prunes the list of 1000 files from your context window!
 
 `!peek` / `!peek-now` automates this ephemeral-binding pattern:
-    ...'(!peek-now file-lines (io/read-lines "big-dir/huge-file.txt")) ; pass turn 0
+    ...'(!peek-now file-lines (io/read-lines "big-dir/huge-file.txt"))
     (def file-lines ["... many lines ..."])
-    (rethink)
-    ;; turn 1 begins here
-    (def fn-defn (subvec file-lines 200 240))
-    '(!extend completion)
-    ;; turn 2: file-lines is deleted, fn-defn remains as a string literal
+    (prune 2)
+    ;; next turn: both the !peek-now call and file-lines are gone
+
+`persist` retains a computed value across prune/rethink pruning:
+    ...'(!call-now data (io/bash "ls big-dir"))
+    (def data "list of 1000 files")
+    (persist target (nth (strings/split data "\n") 42))
+    (prune 2)
+    '(!extend)
+    ;; next turn: data is pruned, target survives as a literal value
+    (persist target "big-dir/the-file-i-wanted.txt")
+
+Do not write Spell macros that emit persist.
+Macro-generated persist may not materialize during reopen.
+Use explicit source-level persist forms.
 
 NAMESPACES
 
 Access functions with qualified symbols.
 
 Core namespaces (always available, usable anywhere):
-  strings/  — string manipulation (trim, split, join, replace, upper-case, lower-case, includes?, starts-with?, re-find, ...)
-  math/     — math functions (sqrt, pow, abs, floor, ceil, rand, rand-int, factorial, PI, ...)
-  patterns/ — orchestration patterns (check-result, clean-prompt, explore, fix-loop)
-  builtins/ — reference for core builtins by category (docs only)
+  strings/  — string manipulation (trim, split, join, replace, upper-case, lower-case, includes?, starts-with?, ...)
+  math/     — math functions (sqrt, pow, abs, floor, ceil, rand, factorial, PI, ...)
+  patterns/ — orchestration patterns (check-result, clean-prompt, ralph, team, fix-loop)
+  builtins/ — reference for core builtins by category (docs only; includes subs, re-find, re-matches, re-seq, rand-int, ...)
 
 Effect namespaces (configurable, only usable in the quoted trailing expression):
   These are listed below if available to you. They include things like io and inter-agent communication.
 
-On first use of an unfamiliar effect namespace, consider using '(!describe ns) to check available functions. '(!describe ns1 ns2) also works. '(!describe ns :function-name) describes one function within a namespace. Skip !describe when the prompt or context already provides the calls you need.
+On first use of an unfamiliar effect namespace, consider using '(!describe ns) to check available functions. '(!describe ns1 ns2) also works. '(!describe ns :function-name) describes one function within a namespace. These can be mixed: '(!describe ns1 ns2 :key) describes ns1 in full and one item from ns2. Skip !describe when the prompt or context already provides the calls you need.
 
 RECOMMENDED PATTERNS
 
@@ -195,8 +212,8 @@ Fetching documentation:
   '(!describe math)
 
 Multiple tool calls in one turn:
-  '(!call-now files (io/sh "ls") content (io/read-file "main.py"))
-  ;; for subagent exploration, see patterns/explore
+  '(!call-now files (io/ls ".") content (io/read-file "main.py"))
+  ;; for subagent exploration, see llms/explore (if available) and prefer io/grep, io/glob, io/git there
 
 Synchronous fork for self-delegation:
   '(!call-now doc-summary (!llm-self "Summarize long-document.txt"))
@@ -246,10 +263,10 @@ Re-emitting the wrapper — the prefix already has it; just write expressions:
 
 Unquoted effect function — every effect function must be quoted in trailing expression,
 so that it passes through to the outer eval:
-  ...(!call-now files (io/sh "ls"))    ; WRONG: unquoted
-  ...'(!call-now files (io/sh "ls"))  ; correct: quoted
+  ...(!call-now files (io/ls "."))    ; WRONG: unquoted
+  ...'(!call-now files (io/ls "."))  ; correct: quoted
   (defn delegate-subtask [subtask] (!llm-self (wrap-cat prompt context subtask))) ; WRONG: unquoted
-  (defn delegate-subtask [subtask] `(!llm-self ~(wrap-cat prompt context subtask))); correct: quoted
+  (defn delegate-subtask [subtask] (list '!llm-self (wrap-cat prompt context subtask))) ; correct: build the quoted form explicitly
 
   After receiving a !call-now result, the NEXT !call-now still needs quoting:
   '(!call-now previous-result previous-call)(def previous-result {:exit 1 ...})
@@ -265,7 +282,7 @@ Using an unfamiliar effect namespace without checking docs first:
 Multiple extensions in one response — only the last quoted expression fires:
   ;; all in one turn:
   '(!describe io)
-  '(!call-now files (io/sh "ls"))  ; only this fires; !describe is inert
+  '(!call-now files (io/ls "."))  ; only this fires; !describe is inert
   ;; correct: just '(!describe agents) and pass your turn
 
 Hallucinating tool call results inline — the system injects actual results after !call-now:

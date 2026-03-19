@@ -4,6 +4,7 @@
             [spell.core :as spell]
             [spell.eval :as eval]
             [spell.provider :as provider]
+            [spell.stdlib :as stdlib]
             [spell.test-helpers :as th]))
 
 ;; Clean registry between tests
@@ -64,7 +65,7 @@
 (deftest reopen-last-top-level-form-test
   (testing "reopen targets the last top-level quine and preserves prior forms"
     (let [raw "(quine completion (eval (do (def first-msg \"kept\") nil ))) (quine completion (eval (do (def second-msg \"open-me\") )))"
-          reopened (#'runtime/reopen raw)]
+          reopened (#'runtime/reopen-completion raw)]
       (is (.contains ^String reopened "(def first-msg \"kept\")"))
       (is (.contains ^String reopened "(def second-msg \"open-me\")"))
       (is (.endsWith ^String reopened "(def second-msg \"open-me\") "))
@@ -683,11 +684,11 @@
     (is (thrown-with-msg? Exception #"handle not registered"
           (runtime/send-await :missing {:kind :wake})))))
 
-(deftest futures-ask-await-wakeup-test
-  (testing "futures/!ask-await blocks for wakeup and resumes with a future result message"
+(deftest ask-await-builtin-wakeup-test
+  (testing "!ask-await blocks for wakeup and resumes with a future result message"
     (let [handle :futures-ask-await
           raw "(quine completion (eval (do )))"
-          ask-await (get-in spell/all-namespaces ['futures :!ask-await])
+          ask-await stdlib/ask-await-builtin
           first? (atom true)
           eval-fn (fn [current-raw]
                     (if (compare-and-set! first? true false)
@@ -1123,9 +1124,9 @@
           (eval/run-spell '(agents/current-handle))))
     (is (thrown-with-msg? Exception #"Unbound symbol: agents"
           (eval/run-spell '(agents/parent-handle))))
-    ;; futures/ — effect namespace is not available in first pass
-    (is (thrown-with-msg? Exception #"Unbound symbol: futures"
-          (eval/run-spell '(futures/!ask-await (future 1)))))
+    ;; !ask-await — effect builtin is not available in first pass
+    (is (thrown-with-msg? Exception #"Unbound symbol: !ask-await"
+          (eval/run-spell '(!ask-await (future 1)))))
     ;; io/, globals/ — side-effectful namespaces
     (is (thrown-with-msg? Exception #"Unbound symbol: io"
           (eval/run-spell '(io/sh "echo hi"))))
@@ -1290,6 +1291,7 @@
 (deftest effect-guard-allows-in-second-pass-test
   (testing "dangerous fns work through double-evaluation (eval special form)"
     ;; agents/!ask resolves through eval double-evaluation but fails at runtime
-    (let [{:keys [llm]} (th/make-test-llm {:response "(agents/!ask :nobody \"hello\")))"})]
+    (let [{:keys [llm]} (th/make-test-llm {:response "(agents/!ask :nobody \"hello\")))"}
+                        :recover false)]
       (is (thrown-with-msg? Exception #"not inside an agent context|not registered"
             (llm "(eval (do '"))))))
