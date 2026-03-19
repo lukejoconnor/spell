@@ -83,6 +83,57 @@
   [v]
   (and (map? v) (:spell/future v)))
 
+(defn spell-exception?
+  "Returns true if v is a Spell exception map."
+  [v]
+  (and (map? v) (true? (:spell/exception v))))
+
+(defn- throwable->spell-exception
+  "Convert a host Throwable into Spell's plain-data exception representation."
+  [^Throwable t]
+  (cond-> {:spell/exception true
+           :message (ex-message t)
+           :data (ex-data t)}
+    (some? (ex-cause t))
+    (assoc :cause (throwable->spell-exception (ex-cause t)))))
+
+(defn spell-ex-info
+  "Create a plain-data exception value safe to persist across continuations."
+  ([msg data]
+   {:spell/exception true
+    :message msg
+    :data data})
+  ([msg data cause]
+   (cond-> (spell-ex-info msg data)
+     (some? cause)
+     (assoc :cause (if (instance? Throwable cause)
+                     (throwable->spell-exception cause)
+                     cause)))))
+
+(defn spell-ex-data
+  "Extract exception data from a Spell exception value or host Throwable."
+  [v]
+  (cond
+    (spell-exception? v) (:data v)
+    (instance? Throwable v) (ex-data v)
+    :else nil))
+
+(defn spell-ex-message
+  "Extract an exception message from a Spell exception value or host Throwable."
+  [v]
+  (cond
+    (spell-exception? v) (:message v)
+    (instance? Throwable v) (ex-message v)
+    :else nil))
+
+(defn spell-ex-cause
+  "Extract an exception cause from a Spell exception value or host Throwable."
+  [v]
+  (cond
+    (spell-exception? v) (:cause v)
+    (instance? Throwable v) (some-> v ex-cause throwable->spell-exception)
+    :else nil))
+
 ;; =============================================================================
 ;; Call-now value store (out-of-band storage for large values)
 ;; =============================================================================
@@ -370,6 +421,9 @@
                        (if (re-find #"\." m) (Double/parseDouble m) (Long/parseLong m))))),
    ;; Numeric predicates
    'even? even?, 'odd? odd?, 'pos? pos?, 'neg? neg?, 'zero? zero?,
+   'integer? integer?, 'ratio? ratio?, 'rational? rational?,
+   'pos-int? pos-int?, 'neg-int? neg-int?,
+   'numerator numerator, 'denominator denominator,
    ;; Comparison
    '< <, '> >, '<= <=, '>= >=, '= =, 'not= not=, 'compare compare,
    ;; Logic
@@ -628,6 +682,8 @@
    'throw (fn [v]
             (throw (ex-info (if (string? v) v (pr-str v))
                             {:spell/thrown v}))),
+   'ex-info spell-ex-info,
+   'ex-data spell-ex-data, 'ex-message spell-ex-message, 'ex-cause spell-ex-cause,
    ;; future* — run a thunk in a new thread, return a future handle
    'future* (fn [thunk]
               (let [f (bound-fn []

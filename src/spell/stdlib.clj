@@ -246,11 +246,11 @@ Each extension should carry forward only what the next step needs."}})
 
 Categories (use (!describe builtins :category) for full listing):
   special-forms — quote, def, persist, do, if, let, fn, quine, loop, recur, for, try
-  macros        — when, defn, cond, case, ->, ->>, !call-now, !peek/!peek-now, !print, !describe, think/rethink/!extend/!compact, ...
+  macros        — when, defn, cond, if-let/if-some, when-let/when-some, case, ->, ->>, !call-now, ...
   effect        — eval, !llm-self, !ask-await, leaf-llm, describe-fn, llm (trailing expression only)
-  math          — +, -, *, /, inc, dec, mod, abs, max, min, rand, ...
+  math          — +, -, *, /, inc, dec, mod, abs, integer?, numerator, denominator, rand, ...
   comparison    — <, >, =, not, nil?, empty?, identity, ...
-  types         — string?, number?, vector?, map?, fn?, keyword?, name, type, int, double, ...
+  types         — string?, number?, vector?, map?, fn?, keyword?, integer?, ratio?, rational?, ...
   strings       — str, pr-str, subs, cat, format, read-string, re-find, ...
   collections   — list, vector, set, first, rest, nth, conj, count, get, assoc, into, ...
   maps          — keys, vals, merge, update, get-in, assoc-in, dissoc, select-keys, ...
@@ -259,7 +259,7 @@ Categories (use (!describe builtins :category) for full listing):
   bitwise       — bit-and, bit-or, bit-xor, bit-shift-left, ...
   spell         — spell-eval, reopen, wrap-cat, prune-and-reopen, serialize, stored
   concurrency   — future*
-  error         — throw, gensym
+  error         — throw, ex-info, ex-data, ex-message, ex-cause, gensym
 
 Use (!describe builtins :category) for full listing of any category.
 Use (!describe builtins :fn-name) for individual function docs.
@@ -297,7 +297,9 @@ Common mistakes:
   or — short-circuit logical or; returns first truthy value or last falsy value
   cond — multi-branch conditional; pairs of test/expr evaluated left to right
   if-let — bind test result; evaluate then if truthy, else otherwise
+  if-some — bind test result; evaluate then when value is non-nil, else otherwise
   when-let — bind test result; evaluate body only if binding is truthy
+  when-some — bind test result; evaluate body only when value is non-nil
   case — dispatch on equality; matches expr against constant values with optional default
   as-> — thread a value through forms, rebinding a name at each step
   cond-> — thread-first conditionally; applies each step only when its test is truthy
@@ -351,7 +353,9 @@ Common mistakes:
   random-uuid — generate and return a random UUID as a string
   +' -' *' inc' dec' — auto-promoting arithmetic (arbitrary precision on overflow)
   parse-number — parse a numeric string to an integer or float; nil if no number found
-  even? odd? pos? neg? zero? — numeric predicates"
+  numerator — return the numerator of a ratio in lowest terms
+  denominator — return the denominator of a ratio in lowest terms
+  even? odd? pos? neg? zero? integer? ratio? rational? pos-int? neg-int? — numeric predicates"
 
     :comparison
     "  < — return true if arguments are in strictly increasing order
@@ -370,7 +374,7 @@ Common mistakes:
   identity — return its single argument unchanged"
 
     :types
-    "  string? number? list? seq? vector? set? map? fn? keyword? symbol? coll? sequential? int? boolean? — type predicates
+    "  string? number? list? seq? vector? set? map? fn? keyword? symbol? coll? sequential? int? boolean? integer? ratio? rational? pos-int? neg-int? — type predicates
   name — return the local name portion of a keyword or symbol as a string
   symbol — create a symbol from a string: (symbol \"foo\") => foo
   keyword — create a keyword from a string: (keyword \"foo\") => :foo
@@ -381,6 +385,14 @@ Common mistakes:
   boolean — coerce a value to boolean: false and nil become false, everything else true
 
 Note: map? returns false for spell functions ({:spell/fn true ...}) and futures ({:spell/future true ...})."
+
+    :error
+    "  throw — raise a catchable Spell error value
+  ex-info — create a plain-data exception map with message, data, and optional cause
+  ex-data — extract the data map from a Spell exception value or host exception
+  ex-message — extract the message string from a Spell exception value or host exception
+  ex-cause — extract the cause from a Spell exception value or host exception, or nil if absent
+  gensym — generate a fresh symbol, often used for macro hygiene"
 
     :strings
     "  str — concatenate any arguments into a single string; nil arguments are skipped

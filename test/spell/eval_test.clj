@@ -1722,7 +1722,87 @@
     (is (false? (run-spell '(neg? 0)))))
   (testing "zero?"
     (is (true? (run-spell '(zero? 0))))
-    (is (false? (run-spell '(zero? 1))))))
+    (is (false? (run-spell '(zero? 1)))))
+  (testing "integer?"
+    (is (true? (run-spell '(integer? 42))))
+    (is (true? (run-spell '(integer? 42N))))
+    (is (false? (run-spell '(integer? (/ 1 3)))))
+    (is (false? (run-spell '(integer? 3.14)))))
+  (testing "ratio?"
+    (is (true? (run-spell '(ratio? (/ 1 3)))))
+    (is (false? (run-spell '(ratio? 42))))
+    (is (false? (run-spell '(ratio? 3.14)))))
+  (testing "rational?"
+    (is (true? (run-spell '(rational? 42))))
+    (is (true? (run-spell '(rational? 42N))))
+    (is (true? (run-spell '(rational? (/ 1 3)))))
+    (is (false? (run-spell '(rational? 3.14)))))
+  (testing "pos-int?"
+    (is (true? (run-spell '(pos-int? 5))))
+    (is (false? (run-spell '(pos-int? 0))))
+    (is (false? (run-spell '(pos-int? -5))))
+    (is (false? (run-spell '(pos-int? 3.14)))))
+  (testing "neg-int?"
+    (is (true? (run-spell '(neg-int? -5))))
+    (is (false? (run-spell '(neg-int? 0))))
+    (is (false? (run-spell '(neg-int? 5))))
+    (is (false? (run-spell '(neg-int? -3.14))))))
+
+(deftest ratio-builtins-test
+  (testing "numerator"
+    (is (= 3 (run-spell '(numerator (/ 3 4)))))
+    (is (= 122 (run-spell '(numerator (/ 122 39))))))
+  (testing "denominator"
+    (is (= 4 (run-spell '(denominator (/ 3 4)))))
+    (is (= 39 (run-spell '(denominator (/ 122 39)))))))
+
+(deftest exception-builtins-test
+  (testing "ex-info creates exception values with readable fields"
+    (is (= {:spell/exception true
+            :message "not found"
+            :data {:code 404}}
+           (run-spell '(ex-info "not found" {:code 404}))))
+    (is (= "not found"
+           (run-spell '(ex-message (ex-info "not found" {:code 404})))))
+    (is (= {:code 404}
+           (run-spell '(ex-data (ex-info "not found" {:code 404})))))
+    (is (nil? (run-spell '(ex-cause (ex-info "not found" {:code 404})))))
+    (is (= {:spell/exception true
+            :message "root cause"
+            :data {:kind :root}}
+           (run-spell '(ex-cause
+                         (ex-info "not found"
+                                  {:code 404}
+                                  (ex-info "root cause" {:kind :root}))))))))
+
+(deftest throw-exception-value-test
+  (testing "throw preserves ex-info for catch handlers"
+    (is (= {:code 404}
+           (run-spell '(try
+                         (throw (ex-info "not found" {:code 404}))
+                         (catch e (ex-data e))))))
+    (is (= "not found"
+           (run-spell '(try
+                         (throw (ex-info "not found" {:code 404}))
+                         (catch e (ex-message e))))))))
+
+(deftest persisted-exception-value-test
+  (testing "persisted ex-info stays reader-safe across reopen"
+    (let [result (run-spell '(do
+                               (def err (ex-info "not found" {:code 404}))
+                               (prune-and-reopen
+                                 '(quine completion
+                                    (eval (do
+                                            (persist err err)
+                                            (quote (!extend completion))))))))
+          parsed (first (spell.parse/read-all (str result ")))")))
+          persisted (-> parsed (nth 2) second second)]
+      (is (string? result))
+      (is (not (str/includes? result "#error")))
+      (is (= '(persist err (quote {:spell/exception true
+                                   :message "not found"
+                                   :data {:code 404}}))
+             persisted)))))
 
 (deftest rem-builtin
   (testing "rem basic"
@@ -1951,6 +2031,26 @@
     (is (nil? (run-spell '(when-let [x nil] 42)))))
   (testing "multiple body expressions"
     (is (= 3 (run-spell '(when-let [x 1] (+ x 1) (+ x 2)))))))
+
+(deftest test-if-some
+  (testing "non-nil binding executes then branch"
+    (is (= 10 (run-spell '(if-some [x 5] (* x 2) 0)))))
+  (testing "false is treated as present"
+    (is (= :present (run-spell '(if-some [x false] :present :missing)))))
+  (testing "nil executes else branch"
+    (is (= :missing (run-spell '(if-some [x nil] :present :missing)))))
+  (testing "no else branch returns nil for nil bindings"
+    (is (nil? (run-spell '(if-some [x nil] 42))))))
+
+(deftest test-when-some
+  (testing "non-nil binding executes body"
+    (is (= 10 (run-spell '(when-some [x 5] (* x 2))))))
+  (testing "false is treated as present"
+    (is (= 1 (run-spell '(when-some [x false] (if x 2 1))))))
+  (testing "nil binding returns nil"
+    (is (nil? (run-spell '(when-some [x nil] 42)))))
+  (testing "multiple body expressions"
+    (is (= 3 (run-spell '(when-some [x 1] (+ x 1) (+ x 2)))))))
 
 (deftest test-case
   (testing "matching clause"
