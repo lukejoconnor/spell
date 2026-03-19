@@ -90,7 +90,7 @@ Your next turn:
         "Hello world!")))
     ;; the program returns; !llm-self is not re-evaluated
 
-'(!llm-self (reopen completion))) is only equivalent to '(!extend) when no rethink pruning is pending; !extend is the usual choice because it runs prune-and-reopen first.
+'(!llm-self (reopen completion))) is only equivalent to '(!extend) when no prune/rethink pruning is pending; !extend is the usual choice because it runs prune-and-reopen first.
 
 NEW-TURN FUNCTIONS
 
@@ -98,7 +98,7 @@ Functions that create a new turn are prefixed with `!`.
 New-turn functions are:
     (!llm-self prompt); flexible self-call primitive
     (!call-now result-name tool-call) ; call tool, bind to result-name, print result, extend
-    (!peek result-name tool-call) ; !call-now + auto-rethink; command + binding disappear unless persisted
+    (!peek result-name tool-call) ; !call-now + auto-prune; command + binding disappear unless persisted
     (!extend) ; extend your current completion
     (!describe ns) ; disclose namespace documentation and extend completion
     (!compact) ; compact your context window and continue
@@ -140,13 +140,14 @@ Internally, (quine name my-expr) binds name to the quine form *before* evaluatin
 
 Rule of thumb: use `quine` to name string literals and pass them to other LLMs; use `def` for calculations and control flow.
 
-THINK/RETHINK
+THINK/PRUNE/RETHINK
 
-Structure your reasoning with think/rethink:
+Structure your reasoning with think/prune/rethink:
 
 1. Use (think "label" ...) for each reasoning step. think evaluates its body and returns nil.
-2. If you realize a step was wrong, use (rethink "...") to replace it.
-3. Your next extension prunes any expression preceeding a rethink.
+2. Use (prune) or (prune N) for pure structural cleanup when you want expressions to disappear entirely.
+3. Use (rethink "...") when you want pruning plus a residual think summary.
+4. Your next extension prunes any expression preceeding a prune/rethink marker.
 
 For example:
   ...(quine prompt "Hard arithmetic problem")
@@ -168,14 +169,14 @@ You can also use rethink to delete a tool call result from context:
 `!peek` / `!peek-now` automates this ephemeral-binding pattern:
     ...'(!peek-now file-lines (io/read-lines "big-dir/huge-file.txt"))
     (def file-lines ["... many lines ..."])
-    (rethink)
+    (prune 2)
     ;; next turn: both the !peek-now call and file-lines are gone
 
-`persist` retains a computed value across rethink pruning:
+`persist` retains a computed value across prune/rethink pruning:
     ...'(!call-now data (io/bash "ls big-dir"))
     (def data "list of 1000 files")
     (persist target (nth (strings/split data "\n") 42))
-    (rethink)
+    (prune 2)
     '(!extend)
     ;; next turn: data is pruned, target survives as a literal value
     (persist target "big-dir/the-file-i-wanted.txt")
@@ -212,7 +213,7 @@ When reading a file or making a tool call whose result you need only briefly, us
 When running a shell script or Python program that you do not need to rerun, use !peek-now:
     '(!peek-now verify (io/sh "cd /repo && python - <<'PY'\nimport ...\nPY"))
     ;; next turn: persist what you learned, then extend
-    (rethink "Verification passed: the fix handles both edge cases.")
+    (think "Verification passed: the fix handles both edge cases.")
     '(!extend)
 
 When you need a script to be reusable across turns, write it to disk first:
@@ -240,7 +241,7 @@ When switching from investigation to execution, delegate to a child with a clean
     '(!llm-self (wrap-cat prompt plan))
 
 Do not prune when you are still determining which results matter.
-    Rethink is irreversible. During multi-step reasoning, keep data for at least one more turn before deciding to discard it.
+    Prune/rethink are irreversible. During multi-step reasoning, keep data for at least one more turn before deciding to discard it.
 
 RECOMMENDED PATTERNS
 

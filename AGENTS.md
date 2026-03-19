@@ -17,7 +17,7 @@ See `writeup/language-design-v2.md` for full semantics. Key concepts:
 - **Prompt-as-prefix**: prompt text is both user message and assistant prefix; response is appended and eval'd.
 - **Double evaluation**: the outer `eval` in the completion wrapper makes effect namespaces available to the trailing expression. Without it, only core namespaces are in scope.
 - **Completion wrapper**: NL prompts wrapped as `(quine completion (eval (do ...)))` with double evaluation of trailing expression.
-- **Think/rethink/extend**: context management. `rethink` prunes sibling expressions; `!extend` continues with pruned context.
+- **Think/prune/rethink/extend**: context management. `prune` removes sibling expressions, `rethink` is `prune` plus residual `think`, and `!extend` continues with pruned context.
 - **Namespaces**: core (`strings`, `math`, `builtins`) always available. Effect (`io`, `web`, `globals`, `agents`, `patterns`) available via trailing-expression `eval`. Future threads also get `blocking/` (`await`, `await-all`, `pmap`, `completion-promise`, `send-await`).
 - **Concurrency**: `!llm-self` for serial self-calls; `agents/spawn` for async agents; `future`/`blocking/await` for deterministic compute. These are intentionally separate.
 - **Communication**: `agents/!ask` (request/reply, poke-only, multi-target), `agents/send` (fire-and-forget), keyword handles. `!ask-await` bridges main-thread agent waits with future waits.

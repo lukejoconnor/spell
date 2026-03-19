@@ -2481,7 +2481,7 @@
       (is (= 'let (first expanded))))))
 
 (deftest peek-macro-and-prune-test
-  (testing "!peek-now expands like !call-now with an injected rethink marker"
+  (testing "!peek-now expands like !call-now with an injected prune marker"
     (let [expanded (macros/spell-macroexpand-1 '(!peek-now code (io/read-lines "main.py")))
           llm-call (nth expanded 2)
           str-form (second llm-call)]
@@ -2489,21 +2489,21 @@
       (is (= '!llm-self (first llm-call)))
       (is (= 'str (first str-form)))
       (is (= '(prune-and-reopen completion) (second str-form)))
-      (is (some #(= "(rethink 2 \"!peek-now call and binding(s) disappear unless you persist what you need.\") " %)
+      (is (some #(= "(prune 2) " %)
                 (rest str-form)))))
 
   (testing "!peek-now multi-binding prunes the command and both result bindings"
     (let [expanded (macros/spell-macroexpand-1 '(!peek-now a (io/read-file "a.txt") b (io/read-file "b.txt")))
           llm-call (nth expanded 2)
           str-form (second llm-call)]
-      (is (some #(= "(rethink 3 \"!peek-now call and binding(s) disappear unless you persist what you need.\") " %)
+      (is (some #(= "(prune 3) " %)
                 (rest str-form)))))
 
   (testing "peeked full binding is pruned on extension while persisted slice remains"
     (let [quine-form '(quine completion (eval (do
                           '(!peek-now file-lines (io/read-lines "main.py"))
                           (def file-lines ["L1" "L2" "L3" "L4" "L5"])
-                          (rethink 2 "!peek-now call and binding(s) disappear unless you persist what you need.")
+                          (prune 2)
                           (def fn-defn ["L2" "L3"])
                           (quote (!extend completion)))))
           result (run-spell (list 'prune-and-reopen (list 'quote quine-form)))]
@@ -2511,9 +2511,8 @@
       (is (.contains ^String result "(def fn-defn [\"L2\" \"L3\"])"))
       (is (false? (.contains ^String result "(def file-lines")))
       (is (false? (.contains ^String result "(!peek-now file-lines (io/read-lines \"main.py\"))")))
-      (is (.contains ^String result "(think \"!peek-now call and binding(s) disappear unless you persist what you need.\")"))
-      (is (false? (.contains ^String result
-                             "(rethink \"!peek-now call and binding(s) disappear unless you persist what you need.\")"))))))
+      (is (false? (.contains ^String result "(prune 2)")))
+      (is (false? (.contains ^String result "(think"))))))
 
 ;; =============================================================================
 ;; Think / Rethink / Extend
@@ -2533,6 +2532,13 @@
     (is (= 5 (run-spell '(do (think "step 1" (def a 2))
                               (think "step 2" (def b 3))
                               (+ a b)))))))
+
+(deftest prune-macro-test
+  (testing "prune evaluates to nil"
+    (is (nil? (run-spell '(prune)))))
+
+  (testing "prune with count evaluates to nil"
+    (is (nil? (run-spell '(prune 3))))))
 
 (deftest rethink-macro-test
   (testing "rethink evaluates body and returns nil"
@@ -2554,6 +2560,14 @@
     (is (= '(do (think "A" 1) (think "B" 2))
            (eval/prune-substitute '(do (think "A" 1) (think "B" 2)) nil))))
 
+  (testing "prune prunes previous sibling and disappears"
+    (is (= '(do)
+           (eval/prune-substitute '(do (think "A" 1) (prune)) nil))))
+
+  (testing "prune with count prunes N previous siblings and disappears"
+    (is (= '(do)
+           (eval/prune-substitute '(do (def x 1) (def y 2) (prune 2)) nil))))
+
   (testing "rethink prunes previous sibling"
     (is (= '(do (think "B" 2))
            (eval/prune-substitute '(do (think "A" 1) (rethink "B" 2)) nil))))
@@ -2569,6 +2583,10 @@
   (testing "rethink converts to think after pruning"
     (let [result (eval/prune-substitute '(do (think "A" 1) (rethink "B" 2)) nil)]
       (is (= 'think (first (second result))))))
+
+  (testing "prune plus think matches rethink pruning behavior"
+    (is (= (eval/prune-substitute '(do (think "A" 1) (prune) (think "B" 2)) nil)
+           (eval/prune-substitute '(do (think "A" 1) (rethink "B" 2)) nil))))
 
   (testing "chained rethinks"
     (is (= '(do (think "C" 3))
@@ -2606,6 +2624,17 @@
       ;; Should prune think "A", convert rethink to think "B"
       (is (= '(quine completion (eval (do
                 (think "B" (def x 2))
+                (quote (!extend completion)))))
+             result))))
+
+  (testing "prune through quine structure disappears without residual marker"
+    (let [result (eval/prune-substitute
+                   '(quine completion (eval (do
+                      (def big "...")
+                      (prune)
+                      (quote (!extend completion)))))
+                   nil)]
+      (is (= '(quine completion (eval (do
                 (quote (!extend completion)))))
              result))))
 

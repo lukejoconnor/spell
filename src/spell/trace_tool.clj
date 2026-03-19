@@ -15,6 +15,7 @@
 
 (def ^:private tracked-form-order
   ['think
+   'prune
    'rethink
    '!extend
    '!call-now
@@ -46,7 +47,7 @@
     "lower-case" "upper-case" "capitalize"})
 
 (def ^:private summary-tsv-columns
-  ["trace_dir" "nodes" "think" "rethink" "rethink_mean_c" "rethink_total_c" "rethink_max_c"
+  ["trace_dir" "nodes" "think" "prune" "rethink" "pruning_mean_c" "pruning_total_c" "pruning_max_c"
    "extend" "call_now" "peek" "compact" "llm_self" "ask_await" "persist" "print" "describe"
    "leaf_llm" "future" "defn" "fn"
    "io" "agents" "globals" "blocking" "patterns" "math_fns" "strings_fns" "llms"
@@ -64,9 +65,9 @@
    [nil "--fn SYMBOL" "Function symbol to count (repeatable)"
     :assoc-fn (fn [m k v] (update m k (fnil conj []) v))]
    [nil "--count-all-nodes" "Count function calls across all nodes (default: selected node only)"]
-   [nil "--rethinks" "Report rethink forms and preceding expressions (single trace or trace root)"]
-   [nil "--context-trajectory" "Report per-node context size trajectory (single trace or trace root)"]
-   [nil "--summary" "Report tracked-form, namespace, rethink, and error summary (single trace, trace root, or results JSONL)"]
+   [nil "--rethinks" "Report prune/rethink forms and preceding expressions (single trace or trace root)"]
+   [nil "--context-trajectory" "Report per-node context size trajectory and pruning markers (single trace or trace root)"]
+   [nil "--summary" "Report tracked-form, namespace, pruning, and error summary (single trace, trace root, or results JSONL)"]
    [nil "--tsv" "Print summary output as TSV rows (requires --summary with --trace-root)"]
    ["-h" "--help" "Show help"]])
 
@@ -326,14 +327,14 @@
            :instances []}
           (filter :forms parsed-nodes)))
 
-(defn- rethink-form? [form]
+(defn- pruning-form? [form]
   (and (seq? form)
-       (= 'rethink (first form))))
+       (contains? #{'prune 'rethink} (first form))))
 
 (defn collect-rethinks
-  "Collect rethink forms and their preceding sibling expressions.
+  "Collect prune/rethink forms and their preceding sibling expressions.
    Returns seq of:
-   {:path vec :rethink form :previous form-or-nil}"
+   {:path vec :marker form :kind sym :previous form-or-nil}"
   ([form] (collect-rethinks form []))
   ([form path]
    (letfn [(walk-indexed [xs]
@@ -342,9 +343,10 @@
                 (fn [idx]
                   (let [child (nth v idx)
                         child-path (conj path idx)
-                        here (when (rethink-form? child)
+                        here (when (pruning-form? child)
                                [{:path child-path
-                                 :rethink child
+                                 :marker child
+                                 :kind (first child)
                                  :previous (when (pos? idx) (nth v (dec idx)))}])]
                     (concat here (collect-rethinks child child-path))))
                 (range (count v)))))]
@@ -361,7 +363,7 @@
        :else nil))))
 
 (defn- collect-rethinks-in-forms
-  "Collect rethink forms across top-level response forms.
+  "Collect prune/rethink forms across top-level response forms.
    Uses a synthetic `do` wrapper so top-level sibling relationships are preserved."
   [forms]
   (when (seq forms)
@@ -375,7 +377,7 @@
                       (collect-rethinks-in-forms forms))))))
 
 (defn collect-trace-rethinks
-  "Collect rethinks from all program nodes in one trace.
+  "Collect prune/rethink markers from all program nodes in one trace.
    Adds :node-id for reporting."
   [trace]
   (->> (:nodes trace)
@@ -445,12 +447,12 @@
         (let [node (first remaining)
               size (node-context-size trace-dir node)
               delta (when (some? prev-size) (- size prev-size))
-              rethinks (collect-rethinks-in-forms (response-forms (:response node)))
-              pruned (reduce + 0 (map (comp pruned-size :previous) rethinks))
+              pruning-items (collect-rethinks-in-forms (response-forms (:response node)))
+              pruned (reduce + 0 (map (comp pruned-size :previous) pruning-items))
               row {:node-id (:id node)
                    :chars size
                    :delta delta
-                   :rethink-count (count rethinks)
+                   :pruning-count (count pruning-items)
                    :pruned-chars pruned}]
           (recur (rest remaining)
                  size
@@ -479,14 +481,15 @@
    (empty-namespace-usage)
    counts))
 
-(defn- rethink-detail [item]
+(defn- pruning-detail [item]
   (let [chars-pruned (pruned-size (:previous item))]
     {:node-id (:node-id item)
      :path (:path item)
+     :kind (:kind item)
      :chars-pruned chars-pruned
      :head-sym (call-head (:previous item))}))
 
-(defn- rethink-stats [details]
+(defn- pruning-stats [details]
   (let [count' (count details)
         total (reduce + 0 (map :chars-pruned details))
         max' (reduce max 0 (map :chars-pruned details))]
@@ -558,14 +561,14 @@
                                      :error parse-error})))
                           vec)
         {:keys [counts]} (count-function-calls-in-parsed-nodes parsed-nodes {:fns nil})
-        rethink-details (->> (collect-trace-rethinks-in-parsed-nodes parsed-nodes)
-                             (map rethink-detail)
+        pruning-details (->> (collect-trace-rethinks-in-parsed-nodes parsed-nodes)
+                             (map pruning-detail)
                              vec)
         summary {:trace-dir trace-dir
                  :node-count (count (:nodes trace))
                  :tracked-counts (tracked-counts-for-summary counts)
-                 :rethink-stats (rethink-stats rethink-details)
-                 :rethink-details rethink-details
+                 :pruning-stats (pruning-stats pruning-details)
+                 :pruning-details pruning-details
                  :namespace-usage (namespace-usage-for-summary counts)
                  :response-parse-errors parse-errors
                  :errors (summarize-errors trace)}]
@@ -634,13 +637,13 @@
 (defn- print-rethinks-for-trace [trace-dir trace max-string-chars]
   (let [items (collect-trace-rethinks trace)]
     (println (str "Trace: " trace-dir))
-    (println (str "Rethinks: " (count items)))
+    (println (str "Pruning markers: " (count items)))
     (if (empty? items)
       (println "  (none)")
       (doseq [it items]
         (println (format "  node=%s path=%s" (:node-id it) (path->str (:path it))))
-        (print "    rethink: ")
-        (pp/pprint (skeletonize-form (:rethink it) {:max-string-chars max-string-chars}))
+        (print (format "    %s: " (name (:kind it))))
+        (pp/pprint (skeletonize-form (:marker it) {:max-string-chars max-string-chars}))
         (print "    previous: ")
         (if-let [prev (:previous it)]
           (pp/pprint prev)
@@ -653,12 +656,12 @@
     (println "Context Trajectory:")
     (if (empty? items)
       (println "  (none)")
-      (doseq [{:keys [node-id chars delta rethink-count pruned-chars]} items]
+      (doseq [{:keys [node-id chars delta pruning-count pruned-chars]} items]
         (let [delta-part (if (some? delta)
                            (format "  (%+,dc)" delta)
                            "")
-              note-part (if (pos? rethink-count)
-                          (str "  [rethink: pruned " (format-count pruned-chars) "]")
+              note-part (if (pos? pruning-count)
+                          (str "  [pruning: pruned " (format-count pruned-chars) "]")
                           "")]
           (println (format "  %04d: %,7dc%s%s"
                            node-id
@@ -667,7 +670,7 @@
                            note-part)))))
     (println)))
 
-(defn- print-summary [{:keys [trace-dir node-count tracked-counts rethink-stats rethink-details
+(defn- print-summary [{:keys [trace-dir node-count tracked-counts pruning-stats pruning-details
                               namespace-usage errors flags]}]
   (println (str "Trace: " trace-dir))
   (println (str "Nodes: " node-count))
@@ -677,15 +680,16 @@
                               (map (fn [sym] [sym (get tracked-counts sym 0)])
                                    tracked-form-order)))]
     (doseq [[sym n] items]
-      (if (= 'rethink sym)
-        (println (format "  %s: %d  (total: %s  mean: %s  max: %s)"
-                         sym
-                         n
-                         (format-count (:total-chars rethink-stats))
-                         (format-mean-count (:mean-chars rethink-stats))
-                         (format-count (:max-chars rethink-stats))))
-        (println (format "  %s: %d" sym n))))
+      (println (format "  %s: %d" sym n)))
     (println "  (none)"))
+  (when (pos? (:count pruning-stats))
+    (println)
+    (println "=== Pruning Stats ===")
+    (println (format "  markers: %d  total: %s  mean: %s  max: %s"
+                     (:count pruning-stats)
+                     (format-count (:total-chars pruning-stats))
+                     (format-mean-count (:mean-chars pruning-stats))
+                     (format-count (:max-chars pruning-stats)))))
   (println)
   (println "=== Namespace Usage ===")
   (doseq [namespace namespace-order]
@@ -698,13 +702,14 @@
                            (for [[fn-name n] (sort-by key items)]
                              (format "%s(%d)" fn-name n)))
                  "(none)")))))
-  (when (seq rethink-details)
+  (when (seq pruning-details)
     (println)
-    (println "=== Rethink Details ===")
-    (doseq [{:keys [node-id path chars-pruned head-sym]} rethink-details]
-      (println (format "  node=%s path=%s pruned=%s head=%s"
+    (println "=== Pruning Details ===")
+    (doseq [{:keys [node-id path kind chars-pruned head-sym]} pruning-details]
+      (println (format "  node=%s path=%s kind=%s pruned=%s head=%s"
                        node-id
                        (path->str path)
+                       (name kind)
                        (format-count chars-pruned)
                        (or head-sym "<none>")))))
   (println)
@@ -728,7 +733,7 @@
 
 (defn summary-tsv-row
   "Return a TSV-ready row for a trace summary."
-  [{:keys [trace-dir node-count tracked-counts rethink-stats errors flags] :as summary}]
+  [{:keys [trace-dir node-count tracked-counts pruning-stats errors flags] :as summary}]
   (let [peek-count (+ (get tracked-counts '!peek-now 0)
                       (get tracked-counts '!peek 0))
         fatal-errors (count (remove :recovered? errors))
@@ -736,10 +741,11 @@
     [trace-dir
      node-count
      (get tracked-counts 'think 0)
+     (get tracked-counts 'prune 0)
      (get tracked-counts 'rethink 0)
-     (format "%.1f" (double (:mean-chars rethink-stats)))
-     (:total-chars rethink-stats)
-     (:max-chars rethink-stats)
+     (format "%.1f" (double (:mean-chars pruning-stats)))
+     (:total-chars pruning-stats)
+     (:max-chars pruning-stats)
      (get tracked-counts '!extend 0)
      (get tracked-counts '!call-now 0)
      peek-count

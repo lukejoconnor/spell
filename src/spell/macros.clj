@@ -256,23 +256,20 @@
       (throw (ex-info (str macro-name ": expected 2 args (name expr), 3 args (name expr limit), or even >= 4 args (name1 expr1 name2 expr2 ...)")
                       {:args-count (count args)})))))
 
-(def ^:private peek-rethink-message
-  "!peek-now call and binding(s) disappear unless you persist what you need.")
-
 (defn- peek-extra-str-parts
   [args]
   (let [n-bindings (if (and (even? (count args)) (>= (count args) 4))
                      (/ (count args) 2)
                      1)]
-    [(str "(rethink " (inc n-bindings) " " (pr-str peek-rethink-message) ") ")]))
+    [(str "(prune " (inc n-bindings) ") ")]))
 
 (defspellmacro '!call-now
   (fn [& args]
     (call-now-expander "!call-now" args nil)))
 
 ;; !peek-now: same as !call-now, but marks the binding as one-turn ephemeral.
-;; The injected rethink prunes both the peek command and its result binding(s)
-;; on the following extension unless the model persists the needed subset into a new def.
+;; The injected prune marker removes both the peek command and its result
+;; binding(s) on the following extension unless the model persists a needed subset.
 (defspellmacro '!peek-now
   (fn [& args]
     (call-now-expander "!peek-now" args (peek-extra-str-parts args))))
@@ -411,6 +408,22 @@
   [form]
   (and (seq? form) (= 'rethink (first form))))
 
+(defn prune-form?
+  "Returns true if form is a (prune) or (prune k) pruning marker."
+  [form]
+  (and (seq? form)
+       (= 'prune (first form))
+       (or (= 1 (count form))
+           (and (= 2 (count form))
+                (number? (second form))))))
+
+(defn prune-n
+  "Return the number of previous siblings to prune for a prune form. Default 1."
+  [form]
+  (if (and (= 2 (count form)) (number? (second form)))
+    (int (second form))
+    1))
+
 (defn rethink-n
   "Return the number of previous siblings to prune. Default 1.
    (rethink \"reason\" body...) → 1
@@ -430,14 +443,20 @@
     (list* 'think (rest form))))
 
 (defn process-siblings
-  "Reduce over sibling forms, pruning previous siblings on rethink."
+  "Reduce over sibling forms, pruning previous siblings on prune/rethink."
   [forms]
   (reduce
     (fn [acc form]
-      (if (rethink-form? form)
+      (cond
+        (prune-form? form)
+        (vec (drop-last (prune-n form) acc))
+
+        (rethink-form? form)
         (let [n (rethink-n form)]
           (conj (vec (drop-last n acc))
                 (rethink->think form)))
+
+        :else
         (conj acc form)))
     []
     forms))
@@ -463,13 +482,23 @@
         (list* 'do (concat body [nil]))
         nil))))
 
-;; extend: (!extend completion) — prune rethinks and continue via !llm-self
+;; prune: (prune) or (prune k) — prune k preceding siblings, then disappear.
+;; Use for pure structural pruning when no residual think marker is needed.
+(defspellmacro 'prune
+  (fn [& args]
+    (cond
+      (empty? args) nil
+      (and (= 1 (count args)) (number? (first args))) nil
+      :else (throw (ex-info "prune: expected 0 args (prune 1) or 1 numeric arg (prune k)"
+                            {:args-count (count args)})))))
+
+;; extend: (!extend completion) — prune prune/rethink markers and continue via !llm-self
 (defspellmacro '!extend
   (fn
     ([] (list '!llm-self (list 'prune-and-reopen 'completion)))
     ([comp-sym] (list '!llm-self (list 'prune-and-reopen comp-sym)))))
 
-;; compact: (!compact completion) — prune rethinks, append compaction instructions, continue via !llm-self
+;; compact: (!compact completion) — prune prune/rethink markers, append compaction instructions, continue via !llm-self
 ;; Prefix ends with '(!llm-self (wrap-cat — LLM writes quoted forms, balance-parens closes everything.
 (def ^:private compact-suffix
   (str "(think \"=compact= Compact your context into the wrap-cat below. "
