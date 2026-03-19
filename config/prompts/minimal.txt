@@ -293,7 +293,7 @@ Self-delgation or tool calling with def — this is what !call-now is for:
   (def fix '(!llm-self (wrap-cat ...)))  ; WRONG: fix is the list (!llm-self ...), not the return value
   '(!call-now fix (!llm-self (wrap-cat ...)))  ; correct: !call-now captures the return value
 
-Calling !llm-self (or agents/spawn !llm-self ...) with an unwrapped quine:
+Calling !llm-self (or agents/spawn ...) with an unwrapped quine:
   (quine prompt "Write a poem")
   '(!llm-self prompt) ; WRONG: next turn, the wrapper is missing
 

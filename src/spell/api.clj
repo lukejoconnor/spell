@@ -51,8 +51,8 @@
   (when-not agent
     (throw (ex-info "Must specify :agent (path to .agent.edn file)" {})))
   (let [;; Load agent config
-        agent-config (cond-> (agent/load-agent-config agent)
-                       ;; Inject provider into agent config (flows to make-llm closure)
+        agent-spec (cond-> (agent/load-agent-spec agent)
+                       ;; Inject provider into the plain spec before compilation
                        provider (assoc :provider provider)
                        (some? prefill?) (assoc :prefill? prefill?)
                        thinking (assoc :thinking thinking)
@@ -62,15 +62,18 @@
                        grammar-max-chars (assoc :grammar-max-chars grammar-max-chars)
                        format (assoc :format format))
         ;; Validate: provider must come from somewhere
-        _ (when-not (:provider agent-config)
+        _ (when-not (:provider agent-spec)
             (throw (ex-info "Must specify :provider (via argument or agent .edn)" {})))
-        ;; Build llm+run from agent config
-        llm-map (agent/make-agent-llm agent-config)
-        ;; Build init program
-        init-program (or init (llm/build-init prompt))
+        ;; Compile runnable spawn-agent function. Preserve the public
+        ;; :prompt/:init distinction here rather than relying on the
+        ;; compiled agent's generic string heuristic.
+        agent-fn (agent/compile-agent-spec agent-spec)
+        run-input (if init
+                    init
+                    (llm/build-init prompt))
         ;; Budget: explicit > agent config > dynamic var default
         effective-budget (cond
-                           (nil? budget) (or (:budget agent-config) provider/*budget*)
+                           (nil? budget) (or (:budget agent-spec) provider/*budget*)
                            (zero? budget) nil
                            :else budget)
         effective-verbose (or verbose (some? log-writer))
@@ -108,15 +111,15 @@
     (try
       (when shutdown-hook
         (.addShutdownHook (Runtime/getRuntime) shutdown-hook))
-      (binding [eval/*verbose* effective-verbose
+        (binding [eval/*verbose* effective-verbose
                 eval/*log-writer* log-writer
                 eval/*max-llm-depth* depth
                 provider/*usage* usage-atom
                 provider/*budget* effective-budget
-                provider/*retries* (or retries (:retries agent-config) provider/*retries*)
+                provider/*retries* (or retries (:retries agent-spec) provider/*retries*)
                 trace/*trace* trace-atom]
         (let [result (try
-                       {:result ((:run llm-map) init-program)
+                       {:result (agent-fn run-input :main)
                         :usage usage-atom}
                        (catch Exception e
                          {:error (.getMessage e)

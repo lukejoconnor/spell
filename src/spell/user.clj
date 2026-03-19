@@ -293,7 +293,7 @@
 (defn- user-call-fn
   "The 'API call' for the user agent.
    Takes a prompt string (the reopened completion) and returns a response string
-   (code to append). Analogous to call-fn in make-llm.
+   (code to append). Analogous to call-fn in the compiled-agent pipeline.
 
    Two cases, checked in order (using only NEW messages):
    1. stdin-signal or expects-reply: display messages, show agent list,

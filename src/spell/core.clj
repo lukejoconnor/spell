@@ -19,7 +19,7 @@
 (def err? eval/err?)
 (def result-value eval/result-value)
 ;; Re-export from spell.llm
-(def make-llm llm-engine/make-llm)
+(def compile-agent llm-engine/compile-agent)
 (def make-leaf-llm llm-engine/make-leaf-llm)
 ;; Re-export from spell.grammar
 (def suffix-lark-grammar grammar/suffix-lark-grammar)
@@ -41,8 +41,8 @@
            llm-engine/core-namespaces)))
 
 (def all-namespaces
-  "Default effect namespaces for the root llm.
-   Core namespaces (strings, math, builtins) are always available via make-llm
+  "Default effect namespaces for compiled agents.
+   Core namespaces (strings, math, builtins) are always available via compile-agent
    and don't need to be listed here."
   {'io io/io-namespace
    'web web/web-namespace

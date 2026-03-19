@@ -239,8 +239,16 @@
    Path is structural index path rooted at the provided form."
   ([form] (collect-call-instances form []))
   ([form path]
-   (let [current (when-let [f (call-head form)]
-                   [{:fn f :path path :form form}])
+   (let [head (call-head form)
+         current (when head
+                   [{:fn head :path path :form form}])
+         extra (when (and (seq? form)
+                          (contains? #{'agents/spawn 'agents/!spawn-ask} head)
+                          (symbol? (second form))
+                          (namespace (second form)))
+                 [{:fn (second form)
+                   :path (conj path 1)
+                   :form (second form)}])
          descend-seq (fn [xs]
                        (mapcat (fn [[idx child]]
                                  (collect-call-instances child (conj path idx)))
@@ -256,7 +264,7 @@
                                           (collect-call-instances child (conj path :s idx)))
                                         (map-indexed vector (sort-by pr-str form)))
                     :else nil)]
-     (concat current children))))
+     (concat current extra children))))
 
 (defn- collect-call-instances-in-forms
   "Collect call instances across top-level response forms.

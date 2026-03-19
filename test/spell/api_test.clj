@@ -37,6 +37,18 @@
                            :agent test-agent})]
       (is (= 42 (:result result)))))
 
+  (testing "run with :prompt preserves prompt wrapping even when it starts with ("
+    (let [call-count (atom 0)
+          p (provider/test-provider
+              {:response-fn (fn [_]
+                              (swap! call-count inc)
+                              "(def answer 42))")})
+          result (api/run {:prompt "(+ 1 2)"
+                           :provider p
+                           :agent test-agent})]
+      (is (= 42 (:result result)))
+      (is (= 1 @call-count))))
+
   (testing "run catches errors gracefully"
     (let [p (provider/test-provider {:response "should not be called"})
           result (api/run {:init "(do undefined-symbol)"

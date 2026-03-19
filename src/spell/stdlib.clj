@@ -669,7 +669,6 @@ The double evaluation pattern:
 (same logical agent, serial execution).
 
 (!llm-self prompt)
-(!llm-self prompt handle)
 
 prompt: string or quine form. If a bare string, automatically wrapped in
 the completion wrapper. If given a quine form (from reopen, wrap-cat, or

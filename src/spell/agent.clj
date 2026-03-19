@@ -1,7 +1,8 @@
 (ns spell.agent
-  "Agent definition file loader.
+  "Agent definition loader and compiler.
 
-   Loads .agent.edn files and resolves them into make-llm configs.
+   Loads .agent.edn files into plain data specs, then compiles those specs
+   into runnable spawn-agent functions.
 
    Inheritance via :base:
      {:base parent.agent.edn
@@ -16,7 +17,7 @@
    - stdlib/X           → stdlib namespace
    - stdlib/X/Y         → nested item from stdlib
    - file.clj/var       → load-file, resolve var
-   - file.agent.edn     → load agent definition → llm fn
+   - file.agent.edn     → load agent spec → compile spawn-agent fn
    - {:file f :items m} → submap of vars from file
    - {:file f}          → slurp file as string"
   (:require [clojure.edn :as edn]
@@ -115,10 +116,10 @@
                         {:path full-path :error (.getMessage e)}))))))
 
 ;; =============================================================================
-;; Forward declaration for recursive agent loading
+;; Forward declarations for recursive spec loading / compilation
 ;; =============================================================================
 
-(declare load-agent)
+(declare load-agent-spec compile-agent-spec)
 
 ;; =============================================================================
 ;; Value resolution
@@ -154,10 +155,10 @@
    - stdlib/X or stdlib/X/Y  → stdlib namespace/item
    - [a b c]                 → resolve and merge namespace maps
    - file.clj/var            → var from Clojure file
-   - file.agent.edn          → load agent → llm fn
+   - file.agent.edn          → load agent spec → compiled spawn-agent fn
    - {:file f :items {...}}  → submap of vars from file
    - {:file f}               → file content as string"
-  [value base-dir clj-cache make-llm-fn]
+  [value base-dir clj-cache compile-agent-fn]
   (cond
     ;; Map with :file key
     (and (map? value) (:file value))
@@ -179,7 +180,7 @@
 
     ;; Vector - merge resolved namespace maps
     (vector? value)
-    (let [resolved (mapv #(resolve-namespace-value % base-dir clj-cache make-llm-fn) value)]
+    (let [resolved (mapv #(resolve-namespace-value % base-dir clj-cache compile-agent-fn) value)]
       (when-not (every? map? resolved)
         (throw (ex-info "Vector namespace values must resolve to namespace maps"
                         {:value value
@@ -202,7 +203,7 @@
 
         ;; file.agent.edn pattern
         (str/ends-with? s ".agent.edn")
-        (load-agent s base-dir make-llm-fn)
+        (compile-agent-fn (load-agent-spec s base-dir))
 
         :else
         (throw (ex-info (str "Unknown namespace value pattern: " value)
@@ -218,11 +219,11 @@
 
 (defn- resolve-namespaces
   "Resolve all namespace entries in the agent definition."
-  [namespaces base-dir make-llm-fn]
+  [namespaces base-dir compile-agent-fn]
   (let [clj-cache (atom {})]
     (into {}
           (map (fn [[k v]]
-                 [(symbol k) (resolve-namespace-value v base-dir clj-cache make-llm-fn)])
+                 [(symbol k) (resolve-namespace-value v base-dir clj-cache compile-agent-fn)])
                namespaces))))
 
 ;; =============================================================================
@@ -347,9 +348,9 @@
 ;; =============================================================================
 
 (defn- resolve-llm-spec
-  "Resolve an llm spec value into an agent def map.
-   - symbol ending in .agent.edn → load agent file, return its def
-   - map → treat as inline spec (mini agent def)"
+  "Resolve an llm spec value into a plain agent spec map.
+   - symbol ending in .agent.edn → load agent file, return its spec
+   - map → treat as inline spec (mini agent spec)"
   [value base-dir]
   (cond
     ;; Symbol referencing a .agent.edn file
@@ -361,62 +362,69 @@
           file (java.io.File. full-path)
           file-base-dir (.getParent file)
           raw-def (read-agent-edn full-path nil)]
-      (resolve-inheritance raw-def file-base-dir))
+      (assoc (resolve-inheritance raw-def file-base-dir) :base-dir file-base-dir))
 
     ;; Inline map spec
     (map? value)
-    value
+    (cond-> value
+      base-dir (assoc :base-dir base-dir))
 
     :else
     (throw (ex-info (str "Invalid llm spec: " value ". Expected .agent.edn symbol or inline map.")
                     {:value value}))))
 
-(defn- build-llm-from-spec
-  "Build a callable LLM function from a resolved agent spec.
-   make-llm-fn: factory for evaluated agents
-   model: parent model (inherited when spec omits :model)
-   parent-provider: provider instance inherited from parent (used when spec omits :provider)
-   extra-namespaces: additional namespaces to merge (e.g. shared llms/ namespace)"
-  [spec make-llm-fn model parent-provider extra-namespaces base-dir]
-  (let [spec-model (or (:model spec) model)
-        ;; Resolve spec's own :provider or inherit from parent
-        spec-provider (if (contains? spec :provider)
-                        (provider/resolve-provider (:provider spec) base-dir)
-                        parent-provider)
-        system (resolve-system-prompt (:system spec) base-dir)
-        ;; Resolve spec's own namespaces if present
-        spec-namespaces (when (:namespaces spec)
-                          (resolve-namespaces (:namespaces spec) base-dir make-llm-fn))
-        ;; Merge extra namespaces (e.g. llms/) with spec's own
-        all-namespaces (merge extra-namespaces spec-namespaces)
-        ;; Build the LLM function
-        base-llm (:llm (make-llm-fn (cond-> {}
-                                (seq all-namespaces) (assoc :namespaces all-namespaces)
-                                spec-model (assoc :model spec-model)
-                                system (assoc :system system)
-                                spec-provider (assoc :provider spec-provider)
-                                (some? (:recover spec)) (assoc :recover (:recover spec))
-                                (:format spec) (assoc :format (:format spec))
-                                (some? (:thinking spec)) (assoc :thinking (:thinking spec))
-                                (:reasoning-effort spec) (assoc :reasoning-effort (:reasoning-effort spec))
-                                (:verbosity spec) (assoc :verbosity (:verbosity spec))
-                                (some? (:suffix-grammar? spec)) (assoc :suffix-grammar? (:suffix-grammar? spec))
-                                (:grammar-max-chars spec) (assoc :grammar-max-chars (:grammar-max-chars spec)))))]
-    ;; Wrap with format validation if specified
+(defn- compile-runtime-agent-from-resolved-spec
+  "Compile a resolved agent spec after model/provider/system/namespaces
+   have already been determined."
+  [spec compile-runtime-agent-fn {:keys [model provider system namespaces]}]
+  (let [base-agent (compile-runtime-agent-fn
+                    (cond-> {}
+                      (seq namespaces) (assoc :namespaces namespaces)
+                      model (assoc :model model)
+                      system (assoc :system system)
+                      provider (assoc :provider provider)
+                      (some? (:recover spec)) (assoc :recover (:recover spec))
+                      (:format spec) (assoc :format (:format spec))
+                      (some? (:prefill? spec)) (assoc :prefill? (:prefill? spec))
+                      (some? (:thinking spec)) (assoc :thinking (:thinking spec))
+                      (:reasoning-effort spec) (assoc :reasoning-effort (:reasoning-effort spec))
+                      (:verbosity spec) (assoc :verbosity (:verbosity spec))
+                      (some? (:suffix-grammar? spec)) (assoc :suffix-grammar? (:suffix-grammar? spec))
+                      (:grammar-max-chars spec) (assoc :grammar-max-chars (:grammar-max-chars spec))))]
     (if (:format spec)
-      (format/wrap-with-format base-llm {:format (:format spec)
-                                       :eval? true
-                                       :max-retries (or (:max-retries spec) 3)})
-      base-llm)))
+      (format/wrap-with-format base-agent {:format (:format spec)
+                                           :eval? true
+                                           :max-retries (or (:max-retries spec) 3)})
+      base-agent)))
+
+(defn- build-compiled-agent-from-spec
+  "Build a compiled spawn-agent function from a resolved agent spec.
+   Used for llms/ entries, which inherit parent model/provider and share a
+   common llms namespace for circular references."
+  [spec compile-runtime-agent-fn compile-agent-fn model parent-provider extra-namespaces base-dir]
+  (let [spec-base-dir (or (:base-dir spec) base-dir)
+        spec-model (or (:model spec) model)
+        spec-provider (if (contains? spec :provider)
+                        (provider/resolve-provider (:provider spec) spec-base-dir)
+                        parent-provider)
+        system (resolve-system-prompt (:system spec) spec-base-dir)
+        spec-namespaces (when (:namespaces spec)
+                          (resolve-namespaces (:namespaces spec) spec-base-dir compile-agent-fn))
+        all-namespaces (merge extra-namespaces spec-namespaces)]
+    (compile-runtime-agent-from-resolved-spec spec compile-runtime-agent-fn
+                                              {:model spec-model
+                                               :provider spec-provider
+                                               :system system
+                                               :namespaces all-namespaces})))
 
 (defn resolve-llms
-  "Resolve :llms map into an effect namespace.
-   Uses atom-based lazy init for circular references (A can call B, B can call A).
-   Returns namespace map with :docs and callable functions, or nil if no llms."
-  [llms-map make-llm-fn model parent-provider base-dir]
+  "Resolve :llms map into an effect namespace of compiled spawn-agent functions.
+   Uses atom-based lazy init for circular references (A can refer to B, B can refer to A).
+   Returns namespace map with :docs and compiled agent functions, or nil if no llms."
+  [llms-map compile-runtime-agent-fn compile-agent-fn model parent-provider base-dir]
   (when (seq llms-map)
     ;; Phase 1: create atoms and proxy namespace
-    (let [fn-atoms (into {} (map (fn [[k _]] [k (atom nil)]) llms-map))
+    (let [agent-atoms (into {} (map (fn [[k _]] [k (atom nil)]) llms-map))
           docs (into {} (map (fn [[k v]]
                                (let [spec (resolve-llm-spec v base-dir)
                                      doc (or (:doc spec) (str "Sub-agent: " (name k)))]
@@ -425,139 +433,36 @@
           llms-ns (merge {:docs docs}
                          (into {} (map (fn [[k _]]
                                          [(keyword k)
-                                          (fn [& args] (apply @(get fn-atoms k) args))])
+                                          (with-meta
+                                            (fn [prompt handle]
+                                              (@(get agent-atoms k) prompt handle))
+                                            {:spell/compiled-agent true})])
                                        llms-map)))]
       ;; Phase 2: resolve each spec and fill atoms
       (doseq [[k v] llms-map]
         (let [spec (resolve-llm-spec v base-dir)
-              llm-fn (build-llm-from-spec spec make-llm-fn model parent-provider {'llms llms-ns} base-dir)]
-          (reset! (get fn-atoms k) llm-fn)))
+              agent-fn (build-compiled-agent-from-spec spec compile-runtime-agent-fn compile-agent-fn
+                                                       model parent-provider {'llms llms-ns} base-dir)]
+          (reset! (get agent-atoms k) agent-fn)))
       llms-ns)))
 
 ;; =============================================================================
 ;; Main loader
 ;; =============================================================================
 
-(defn load-agent
-  "Load an agent definition from a .agent.edn file.
-   Returns an llm function created via make-llm.
-
-   Supports inheritance via :base - child agents can extend parent agents.
-   The make-llm-fn parameter allows injection of the actual make-llm
-   to avoid circular dependencies."
-  ([path] (load-agent path nil nil))
-  ([path base-dir] (load-agent path base-dir nil))
-  ([path base-dir make-llm-fn]
-   (let [;; Determine base directory
-         full-path (if (and base-dir (not (str/starts-with? path "/")))
+(defn load-agent-spec
+  "Load an agent definition from a .agent.edn file into a plain data spec map.
+   Supports inheritance via :base - child agents can extend parent agents."
+  ([path] (load-agent-spec path nil))
+  ([path base-dir]
+   (let [full-path (if (and base-dir (not (str/starts-with? path "/")))
                      (str base-dir "/" path)
                      path)
          file (java.io.File. full-path)
          base-dir' (.getParent file)
-
-         ;; Parse EDN and resolve inheritance
          raw-def (read-agent-edn full-path nil)
-         agent-def (resolve-inheritance raw-def base-dir')
-
-         ;; Extract fields (from merged def)
-         {:keys [name doc system model budget recover namespaces format max-retries
-                 retries thinking reasoning-effort verbosity suffix-grammar? grammar-max-chars
-                 api provider]} agent-def
-
-         ;; Resolve system prompt
-         resolved-system (resolve-system-prompt system base-dir')
-         resolved-provider (when provider
-                             (provider/resolve-provider provider base-dir'))
-
-         ;; Resolve namespaces
-         resolved-namespaces (when namespaces
-                               (resolve-namespaces namespaces base-dir' make-llm-fn))
-
-         ;; Build make-llm config
-         config (cond-> {}
-                  resolved-namespaces (assoc :namespaces resolved-namespaces)
-                  model (assoc :model model)
-                  resolved-system (assoc :system resolved-system)
-                  resolved-provider (assoc :provider resolved-provider)
-                  (some? recover) (assoc :recover recover)
-                  format (assoc :format format)
-                  (some? max-retries) (assoc :max-retries max-retries)
-                  (some? retries) (assoc :retries retries)
-                  (some? thinking) (assoc :thinking thinking)
-                  reasoning-effort (assoc :reasoning-effort reasoning-effort)
-                  verbosity (assoc :verbosity verbosity)
-                  (some? suffix-grammar?) (assoc :suffix-grammar? suffix-grammar?)
-                  grammar-max-chars (assoc :grammar-max-chars grammar-max-chars)
-                  (some? api) (assoc :api api))]
-
-     ;; Create the llm function
-     (if make-llm-fn
-       (:llm (make-llm-fn config))
-       ;; Return config if no make-llm-fn provided (for testing)
-       {:agent-def agent-def
-        :config config
-        :system resolved-system}))))
-
-(defn load-agent-config
-  "Load an agent definition and return a config map suitable for make-llm.
-   Does not create the llm function - caller must pass to make-llm.
-
-   Supports inheritance via :base - child agents can extend parent agents.
-
-   Returns:
-   {:namespaces {...}
-    :model \"...\"
-    :recover ...
-    :system \"...\"    ; resolved system prompt (nil if not specified)
-    :budget ...
-    :format ...        ; optional format spec {:required [...] :optional [...]}
-    :max-retries ...   ; optional retry count for format validation}"
-  [path]
-  (let [file (java.io.File. path)
-        base-dir (.getParent file)
-
-        ;; Parse and resolve inheritance
-        raw-def (read-agent-edn path nil)
-        agent-def (resolve-inheritance raw-def base-dir)
-
-        {:keys [name doc system model budget recover namespaces format max-retries retries
-                thinking reasoning-effort verbosity suffix-grammar? grammar-max-chars
-                api provider]} agent-def
-
-        ;; Resolve :provider if present
-        resolved-provider (when provider
-                            (provider/resolve-provider provider base-dir))
-
-        ;; Normalize :llms — use ::not-set sentinel to distinguish absent from nil
-        raw-llms (get agent-def :llms ::not-set)
-        llms (normalize-llms-config raw-llms base-dir)
-
-        ;; We need make-llm to resolve sub-agents, but we don't have it yet.
-        ;; For now, return a thunk that resolves namespaces when called with make-llm-fn.
-        resolve-fn (fn [make-llm-fn]
-                     (resolve-namespaces namespaces base-dir make-llm-fn))
-        resolve-llms-fn' (when (seq llms)
-                           (fn [make-llm-fn parent-model parent-provider]
-                             (resolve-llms llms make-llm-fn parent-model parent-provider base-dir)))]
-
-    {:name name
-     :doc doc
-     :system (resolve-system-prompt system base-dir)
-     :model model
-     :budget budget
-     :recover recover
-     :format format
-     :max-retries max-retries
-     :retries retries     ; API retry sleep durations, e.g. [0 10]
-     :thinking thinking
-     :reasoning-effort reasoning-effort  ; OpenAI reasoning effort ("low", "medium", "high")
-     :verbosity verbosity               ; OpenAI verbosity ("low", "auto")
-     :suffix-grammar? suffix-grammar?   ; enable prefix-aware grammar constraints
-     :grammar-max-chars grammar-max-chars ; soft grammar size ceiling
-     :api api                           ; :responses or :chat (default: auto-detect)
-     :provider resolved-provider        ; resolved provider instance (or nil)
-     :resolve-namespaces-fn resolve-fn
-     :resolve-llms-fn resolve-llms-fn'}))
+         agent-def (resolve-inheritance raw-def base-dir')]
+     (assoc agent-def :base-dir base-dir'))))
 
 (def ^:private future-only-namespaces
   "Namespaces injected by the evaluator rather than agent :namespaces config."
@@ -588,39 +493,27 @@
                          :missing (sort missing)
                          :available (sort available)}))))))
 
-(defn make-agent-llm
-  "Create an llm+run map from an agent config.
-   Agents are always evaluated with Spell. Use the leaf-llm builtin from within
-   programs when plain text I/O is needed.
-
-   Supports :format for output validation."
-  [agent-config]
-  (let [{:keys [system model budget recover resolve-namespaces-fn resolve-llms-fn format max-retries
+(defn compile-agent-spec
+  "Compile a plain data agent spec into a runnable spawn-agent function."
+  [agent-spec]
+  (let [{:keys [base-dir system model budget recover namespaces format max-retries retries
                 prefill? thinking reasoning-effort verbosity suffix-grammar? grammar-max-chars
-                provider]} agent-config
-        namespaces (when resolve-namespaces-fn
-                     (resolve-namespaces-fn llm/make-llm))
-        _ (validate-pattern-dependencies! namespaces)
-        llms-ns (when resolve-llms-fn
-                  (resolve-llms-fn llm/make-llm model provider))
-        all-namespaces (cond-> (or namespaces {})
-                         llms-ns (assoc 'llms llms-ns))
-        result (let [config (cond-> {}
-                               (seq all-namespaces) (assoc :namespaces all-namespaces)
-                               model (assoc :model model)
-                               system (assoc :system system)
-                               provider (assoc :provider provider)
-                               (some? recover) (assoc :recover recover)
-                               format (assoc :format format)
-                               (some? prefill?) (assoc :prefill? prefill?)
-                               thinking (assoc :thinking thinking)
-                               reasoning-effort (assoc :reasoning-effort reasoning-effort)
-                               verbosity (assoc :verbosity verbosity)
-                               (some? suffix-grammar?) (assoc :suffix-grammar? suffix-grammar?)
-                               grammar-max-chars (assoc :grammar-max-chars grammar-max-chars))]
-                 (llm/make-llm config))]
-    (if format
-      (update result :llm format/wrap-with-format {:format format
-                                                 :eval? true
-                                                 :max-retries (or max-retries 3)})
-      result)))
+                api provider]} agent-spec
+        resolved-system (resolve-system-prompt system base-dir)
+        resolved-provider (when provider
+                            (provider/resolve-provider provider base-dir))
+        compile-agent-fn compile-agent-spec
+        resolved-namespaces (when namespaces
+                              (resolve-namespaces namespaces base-dir compile-agent-fn))
+        _ (validate-pattern-dependencies! resolved-namespaces)
+        raw-llms (get agent-spec :llms ::not-set)
+        llms (normalize-llms-config raw-llms base-dir)
+        llms-ns (when (seq llms)
+                  (resolve-llms llms llm/compile-agent compile-agent-fn model resolved-provider base-dir))
+        all-namespaces (cond-> (or resolved-namespaces {})
+                         llms-ns (assoc 'llms llms-ns))]
+    (compile-runtime-agent-from-resolved-spec agent-spec llm/compile-agent
+                                              {:model model
+                                               :provider resolved-provider
+                                               :system resolved-system
+                                               :namespaces all-namespaces})))

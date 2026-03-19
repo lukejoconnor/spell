@@ -17,16 +17,19 @@ Resolution order: exact match in `:responses`, then `:response-fn`, then `:respo
 Two factory functions eliminate boilerplate:
 
 ```clojure
-;; Full LLM+eval pipeline (returns {:llm fn, :run fn})
-(th/make-test-llm {:response "42)"})
-(th/make-test-llm {:response-fn (fn [p] ...)} :namespaces ns-map :prefill? false)
+;; Compiled spawn-agent function
+(th/make-test-agent {:response "42)"})
+(th/make-test-agent {:response-fn (fn [p] ...)} :namespaces ns-map :prefill? false)
+
+;; Host-level prefix runner for tests (routes through compiled agent + !llm-self)
+(th/make-test-runner {:response "42)"})
 
 ;; Leaf LLM (returns fn, no eval pipeline)
 (th/make-test-leaf-llm "static response")
 (th/make-test-leaf-llm {:response-fn f} :system "system prompt")
 ```
 
-`make-test-llm` accepts either a string (shorthand for `{:response str}`) or a TestProvider opts map. Keyword args control the `make-llm` layer: `:namespaces`, `:prefill?`, `:recover`, `:model`.
+`make-test-agent` accepts either a string (shorthand for `{:response str}`) or a TestProvider opts map. Keyword args control the compiled-agent layer: `:namespaces`, `:prefill?`, `:recover`, `:model`. `make-test-runner` is the convenience helper when a test wants the old host-side `llm prefix` shape but the implementation should still flow through a compiled agent plus `!llm-self`.
 
 ## Response Strings and Prompt-as-Prefix
 
@@ -52,7 +55,7 @@ Common prompt/response patterns in tests:
 ```clojure
 (let [call-count (atom 0)
       responses ["first-response)" "second-response)"]]
-  (th/make-test-llm
+  (th/make-test-agent
     {:response-fn (fn [_]
                     (let [r (nth responses @call-count)]
                       (swap! call-count inc)

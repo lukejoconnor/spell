@@ -168,7 +168,7 @@
 (deftest integration-single-call-test
   (testing "single llm call creates one traced node"
     (binding [trace/*trace* (trace/new-trace)]
-      (let [{:keys [llm]} (th/make-test-llm {:response "42)"})]
+      (let [llm (th/make-test-runner {:response "42)"})]
         (let [result (llm "(do ")]
           (is (= 42 result))
           (let [{:keys [nodes root]} @trace/*trace*]
@@ -187,11 +187,11 @@
           responses ["'(cat \"hello \" (!llm-self \"(do \"))"
                      "\"world\")"]]
       (binding [trace/*trace* (trace/new-trace)]
-        (let [{:keys [llm]} (th/make-test-llm
-                              {:response-fn (fn [_]
-                                              (let [r (nth responses @call-count)]
-                                                (swap! call-count inc)
-                                                r))})]
+        (let [llm (th/make-test-runner
+                   {:response-fn (fn [_]
+                                   (let [r (nth responses @call-count)]
+                                     (swap! call-count inc)
+                                     r))})]
           (let [result (llm "(eval (do ")]
             (is (= "hello world" result))
             (let [{:keys [nodes root]} @trace/*trace*]
@@ -207,14 +207,14 @@
               ;; Child node
               (let [child-node (nth nodes 1)]
                 (is (= 0 (:parent child-node)))
-                (is (= 1 (:depth child-node)))
+                (is (= 2 (:depth child-node)))
                 (is (= "world" (:value child-node)))
                 (is (= [] (:children child-node)))))))))))
 
 (deftest integration-error-recorded-test
   (testing "eval error is captured in trace"
     (binding [trace/*trace* (trace/new-trace)]
-      (let [{:keys [llm]} (th/make-test-llm {:response "undefined-symbol)"} :recover false)]
+      (let [llm (th/make-test-runner {:response "undefined-symbol)"} :recover false)]
         (is (thrown? Exception (llm "(do ")))
         (let [node (first (:nodes @trace/*trace*))]
           (is (some? (:error node)))
@@ -223,7 +223,7 @@
 (deftest integration-tracing-off-test
   (testing "no trace overhead when *trace* is nil"
     (binding [trace/*trace* nil]
-      (let [{:keys [llm]} (th/make-test-llm {:response "42)"})]
+      (let [llm (th/make-test-runner {:response "42)"})]
         (is (= 42 (llm "(do ")))))))
 
 (deftest integration-three-deep-test
@@ -233,11 +233,11 @@
                      "'(!llm-self \"(eval (do \")"
                      "99)))"]]
       (binding [trace/*trace* (trace/new-trace)]
-        (let [{:keys [llm]} (th/make-test-llm
-                              {:response-fn (fn [_]
-                                              (let [r (nth responses @call-count)]
-                                                (swap! call-count inc)
-                                                r))})]
+        (let [llm (th/make-test-runner
+                   {:response-fn (fn [_]
+                                   (let [r (nth responses @call-count)]
+                                     (swap! call-count inc)
+                                     r))})]
           (let [result (llm "(eval (do ")]
             (is (= 99 result))
             (let [nodes (:nodes @trace/*trace*)]
@@ -247,9 +247,9 @@
               (is (= 0 (:parent (nth nodes 1))))
               (is (= 1 (:parent (nth nodes 2))))
               ;; Depths
-              (is (= 0 (:depth (nth nodes 0))))
-              (is (= 1 (:depth (nth nodes 1))))
-              (is (= 2 (:depth (nth nodes 2))))
+              (is (= 1 (:depth (nth nodes 0))))
+              (is (= 2 (:depth (nth nodes 1))))
+              (is (= 3 (:depth (nth nodes 2))))
               ;; All return 99
               (is (= 99 (:value (nth nodes 0))))
               (is (= 99 (:value (nth nodes 1))))
