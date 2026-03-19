@@ -235,23 +235,30 @@
 (def ^:private peek-rethink-message
   "!peek-now binding disappears unless persisted.")
 
+(defn- peek-extra-parts
+  "Build the injected rethink for !peek / !peek-now.
+   Prune the original peek expression plus every binding materialized from it."
+  [args]
+  (let [binding-count (if (and (even? (count args)) (>= (count args) 4))
+                        (/ (count args) 2)
+                        1)]
+    [(str "(rethink " (inc binding-count) " " (pr-str peek-rethink-message) ") ")]))
+
 (defspellmacro '!call-now
   (fn [& args]
     (call-now-expander "!call-now" args nil)))
 
 ;; !peek-now: same as !call-now, but marks the binding as one-turn ephemeral.
-;; The injected rethink prunes the peek binding on the following extension unless
-;; the model persists the needed subset into a new def.
+;; The injected rethink prunes both the peek expression and its result binding(s)
+;; on the following extension unless the model persists the needed subset.
 (defspellmacro '!peek-now
   (fn [& args]
-    (call-now-expander "!peek-now" args
-                       [(str "(rethink " (pr-str peek-rethink-message) ") ")])))
+    (call-now-expander "!peek-now" args (peek-extra-parts args))))
 
 ;; Short alias for !peek-now.
 (defspellmacro '!peek
   (fn [& args]
-    (call-now-expander "!peek" args
-                       [(str "(rethink " (pr-str peek-rethink-message) ") ")])))
+    (call-now-expander "!peek" args (peek-extra-parts args))))
 
 ;; =============================================================================
 ;; Threading helpers (used by -> and ->> macros)
