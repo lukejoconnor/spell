@@ -177,7 +177,7 @@
 (defn make-inbox-fn
   "Create inbox function: [raw] -> value.
    Closes over eval-builtin from config. Calls balance-parens because
-   send transforms can produce unbalanced strings (reopen strips parens).
+   send transforms can produce unbalanced strings (serialized prefixes omit closers).
    trace-data-atom, when non-nil, receives {:program} for tracing."
   [{:keys [variant-builtins eval-builtin recover-fn allow-multiple-top-level? gated-ns-hints]} trace-data-atom]
   (fn [raw]
@@ -328,9 +328,9 @@
    If it starts with '(' it's already code — pass through as string.
    Otherwise, wrap in the standard NL completion prefix."
   [p]
-  (let [s (if (or (seq? p) (list? p)) (pr-str p) (str p))]
+  (let [s (str p)]
     (if (.startsWith (.trim ^String s) "(")
-      (str p)
+      s
       (str "(quine completion (eval (do "
            "(quine prompt \"" (parse/escape-string s) "\") "))))
 
@@ -474,10 +474,9 @@
                                        (:parent-handle (get @runtime/registry handle))  ;; spawn child
                                        )
                           root?      (not= parent handle)
-                          prompt'    (if (or (seq? prompt) (list? prompt))
-                                       (eval/expand-expr prompt (or eval/*spell-env* {}))
-                                       prompt)
-                          prompt-str (wrap-nl prompt')
+                          prompt-str (if (and (seq? prompt) (= 'quine (first prompt)))
+                                       (eval/serialize-quine-prefix prompt)
+                                       (wrap-nl prompt))
                           trace-data (atom nil)
                           inbox-fn   (make-inbox-fn config' trace-data)
                           awake-fn   (runtime/make-awake-fn handle inbox-fn)]

@@ -67,6 +67,8 @@ Use wrap-cat to add the wrapper:
     ;; your next turn:
     (quine completion (eval (do
     (quine msg-to-self "Hello me!") "Something else"
+wrap-cat and reopen return quine forms as data. !llm-self serializes those
+quines back into the child's open completion prefix.
 ONE TRAILING EXPRESSION PER RESPONSE
 
 Each response ends with a quoted expression — the trailing expression. It fires via double evaluation. Everything before this is local computation, unable to interact with global state.
@@ -76,11 +78,11 @@ Always quote your trailing expression with '
 
 EXTENSIONS
 
-An extension is a new turn whose prefix includes your previous completion, up to trailing parentheses.
+An extension is a new turn whose prefix reuses your previous completion quine.
 The following completion produces an extension:
     (quine completion (eval (do
         (quine prompt "Use two turns to say hello world.")
-        '(!llm-self (reopen completion))))) ; reopen strips trailing parens from do block
+        '(!llm-self (reopen completion))))) ; reopen keeps the quine wrapper and reuses its do block
 
 Your next turn:
     (quine completion (eval (do
@@ -88,7 +90,10 @@ Your next turn:
         '(!llm-self (reopen completion)))        "Hello world!")))
     ;; the program returns; !llm-self is not re-evaluated
 
-'(!llm-self (reopen completion))) is only equivalent to '(!extend) when no prune/rethink pruning is pending; !extend is the usual choice because it runs prune-and-reopen first.
+'(!llm-self (reopen completion))) extends the same quine directly. It is only
+equivalent to '(!extend) when no prune/rethink pruning or persist
+materialization is pending; !extend is the usual choice when you want those
+reopen-time cleanups.
 
 NEW-TURN FUNCTIONS
 

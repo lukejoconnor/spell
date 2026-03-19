@@ -282,7 +282,7 @@
 ;; Builtins
 ;; =============================================================================
 
-(declare spell-eval expand-expr prune-substitute reopen)
+(declare spell-eval prune-substitute reopen serialize-quine-prefix)
 
 (defn spell-fn?
   "Returns true if v is a Spell function (dynamic-scoping function map)."
@@ -368,8 +368,7 @@
   (mapcat destructure-bind params args))
 
 (defn param-symbols
-  "Extract all binding symbols from a destructuring param pattern.
-   Used by expand-expr to track locally-bound names."
+  "Extract all binding symbols from a destructuring param pattern."
   [param]
   (cond
     (symbol? param) [param]
@@ -501,28 +500,23 @@
             ([start end step] (vec (range start end step)))),
    ;; Strip / Reopen
    'strip-parens (fn [n s] (parse/strip-trailing-parens n (if (string? s) s (pr-str s)))),
-   'reopen (fn [s]
-              (parse/strip-trailing-parens 3
-                (cond (string? s) s
-                      *raw-text*  *raw-text*
-                      :else       (pr-str s)))),
-   ;; wrap-cat: combine quine-bound forms into an open preamble prefix
+   'serialize-prefix (fn [quine-form] (serialize-quine-prefix quine-form)),
+   'reopen (fn [quine-form & extra-forms] (apply reopen quine-form extra-forms)),
+   ;; wrap-cat: build a quine completion form from the provided forms
    'wrap-cat (fn [& forms]
-               (str "(quine completion (eval (do "
-                    (str/join " " (map pr-str forms))
-                    " ")),
-   ;; Prune rethinks and reopen as prefix string
+               (apply reopen (list 'quine 'completion '(eval (do))) forms)),
+   ;; Prune rethinks and keep the cleaned quine as data
    'prune-and-reopen (fn [quine-form]
-                       (reopen (prune-substitute quine-form (or *spell-env* {})))),
+                       (prune-substitute quine-form (or *spell-env* {}))),
    ;; Value store (for !call-now out-of-band large values)
    'stored stored,
    'serialize (fn
                ([value] (serialize-for-continuation value))
                ([value limit] (serialize-for-continuation value limit))),
    'deep-truncate (fn [value limit] (deep-truncate value (int limit))),
-   ;; Eval — close over caller bindings, then evaluate in a fresh env
+   ;; Eval directly in the caller env.
    'spell-eval (fn [expr]
-                 (let [r (spell-eval (expand-expr expr *spell-env*) {})]
+                 (let [r (spell-eval expr (or *spell-env* {}))]
                    (if (ok? r) (:ok r) (throw (ex-info (:err r) {:result r}))))),
    ;; Extended sequence operations (from seqs/)
    'every? (fn [pred coll] (every? #(invoke-fn pred [%]) coll)),
@@ -752,30 +746,39 @@
 
     :else form))
 
-(defn reopen
-  "Serialize a quine form as an open prefix string (no trailing close-parens)."
+(defn- destructure-quine-form
+  "Validate quine-form and return its quine name, inert args, and do-body forms."
   [quine-form]
   (when-not (and (seq? quine-form)
                  (= 'quine (first quine-form))
                  (<= 3 (count quine-form)))
     (throw (ex-info "reopen expects a quine form" {:form quine-form})))
   (let [elements (vec (seq quine-form))
+        name-sym (second elements)
         inert-args (subvec elements 2 (max 2 (dec (count elements))))
         last-arg (last elements)
-        [eval-sym do-form & extra] (seq last-arg)]
+        tail (when (seq? last-arg) (seq last-arg))
+        [eval-sym do-form & extra] tail]
     (when-not (and (= 'eval eval-sym)
                    (empty? extra)
                    (seq? do-form)
                    (= 'do (first do-form)))
       (throw (ex-info "reopen expects quine tail of the form (eval (do ...))"
                       {:form quine-form :tail last-arg})))
-    (let [body-forms (rest do-form)]
-      (str "(quine completion "
-           (when (seq inert-args)
-             (str (str/join " " (map pr-str inert-args)) " "))
-           "(eval (do "
-           (str/join " " (map pr-str body-forms))
-           " "))))
+    {:name-sym name-sym
+     :inert-args inert-args
+     :body-forms (rest do-form)}))
+
+(defn serialize-quine-prefix
+  "Serialize a quine form as an open prefix string (no trailing close-parens)."
+  [quine-form]
+  (let [{:keys [name-sym inert-args body-forms]} (destructure-quine-form quine-form)]
+    (str "(quine " name-sym " "
+         (when (seq inert-args)
+           (str (str/join " " (map pr-str inert-args)) " "))
+         "(eval (do "
+         (str/join " " (map pr-str body-forms))
+         " ")))
 
 (defn- -expand-expr
   "Walk expr substituting outer-env values for free symbols not in inner (locally defined).
@@ -965,6 +968,13 @@
   "Expand expr, substituting free variables from outer-env. Returns expanded expression."
   [expr outer-env]
   (first (-expand-expr expr outer-env #{})))
+
+(defn reopen
+  "Splice extra forms into a quine's do block. Returns the modified quine form."
+  [quine-form & extra-forms]
+  (let [{:keys [name-sym inert-args body-forms]} (destructure-quine-form quine-form)
+        reopened-tail (list 'eval (list* 'do (concat body-forms extra-forms)))]
+    (apply list 'quine name-sym (concat inert-args [reopened-tail]))))
 
 ;; =============================================================================
 ;; Evaluator
