@@ -180,11 +180,11 @@
 ;; Optional limit controls inline threshold for serialize (default: call-now-inline-limit).
 ;; Negative limit means always inline (no out-of-band storage).
 ;; Multi-binding evaluates all exprs, then extends with all bindings in one turn.
-(defn- serialized-fragment-expr
+(defn- serialized-form
   ([temp]
-   (list 'source-fragment (list 'serialize temp)))
+   (list 'read-string (list 'serialize temp)))
   ([temp limit]
-   (list 'source-fragment (list 'serialize temp limit))))
+   (list 'read-string (list 'serialize temp limit))))
 
 (defn- call-now-expander
   "Shared expander for !call-now and !peek-now.
@@ -193,17 +193,11 @@
   (let [extra-form-exprs (or extra-form-exprs [])
         def-form-expr (fn
                         ([name-sym temp]
-                         (list 'source-fragment
-                               (list 'str
-                                     (str "(def " name-sym " ")
-                                     (list 'serialize temp)
-                                     ")")))
+                         (list 'list (list 'quote 'def) (list 'quote name-sym)
+                               (serialized-form temp)))
                         ([name-sym temp limit]
-                         (list 'source-fragment
-                               (list 'str
-                                     (str "(def " name-sym " ")
-                                     (list 'serialize temp limit)
-                                     ")"))))]
+                         (list 'list (list 'quote 'def) (list 'quote name-sym)
+                               (serialized-form temp limit))))]
     (cond
       ;; Single binding: (!call-now name expr)
       (= (count args) 2)
@@ -312,7 +306,7 @@
   [& val-exprs]
   (let [temps (mapv (fn [_] (gensym "print__")) val-exprs)
         bindings (vec (mapcat vector temps val-exprs))
-        forms (map serialized-fragment-expr temps)]
+        forms (map serialized-form temps)]
     (list 'let bindings
           (list '!llm-self
                 (list* 'reopen (list 'prune-and-reopen 'completion) forms)))))
@@ -321,17 +315,14 @@
 ;; Backward-compatible alias.
 (defspellmacro 'print print-expander)
 
-;; line-offset: (line-offset n data) -> quoted vector with :spell/line-offset metadata.
+;; line-offset: (line-offset n [data...]) -> quoted vector with :spell/line-offset metadata.
 ;; This keeps the annotation alive across pr-str/read-string round-trips.
 (defspellmacro 'line-offset
   (fn [offset data-form]
-    (let [vec-data (cond
-                     (vector? data-form) data-form
-                     (and (seq? data-form)
-                          (= 'quote (first data-form))
-                          (vector? (second data-form))) (second data-form)
-                     :else (throw (ex-info "line-offset expects a vector literal or (quote [...])"
-                                           {:form data-form})))]
+    (let [vec-data (if (vector? data-form)
+                     data-form
+                     (throw (ex-info "line-offset expects a vector literal"
+                                     {:form data-form})))]
       (list 'quote (with-meta vec-data (assoc (or (meta vec-data) {}) :spell/line-offset offset))))))
 
 ;; define: Scheme-style alias for def

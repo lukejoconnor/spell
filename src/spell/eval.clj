@@ -163,6 +163,19 @@
              (str/join "\n" rows)
              "\n])"))))))
 
+(defn- line-offset-form?
+  [form]
+  (and (seq? form)
+       (= 'line-offset (first form))
+       (= 3 (count form))
+       (number? (second form))
+       (vector? (nth form 2))))
+
+(defn- format-line-offset-form
+  [form]
+  (format-line-offset-vector
+    (with-meta (nth form 2) {:spell/line-offset (second form)})))
+
 (defn serialize-for-continuation
   "Serialize a value for embedding in a !call-now continuation.
    Small values are inlined via pr-str. Large strings are truncated with a note.
@@ -200,16 +213,16 @@
                  (let [id (store-value! value)]
                    (str "(stored " (pr-str id) ")")))))))))))
 
-(defn- source-fragment?
-  [value]
-  (and (map? value)
-       (string? (:spell/source-fragment value))
-       (= #{:spell/source-fragment} (set (keys value)))))
-
 (defn- serialize-prefix-form
   [form]
-  (if (source-fragment? form)
-    (:spell/source-fragment form)
+  (cond
+    (line-offset-form? form)
+    (format-line-offset-form form)
+
+    (seq? form)
+    (str "(" (str/join " " (map serialize-prefix-form form)) ")")
+
+    :else
     (pr-str form)))
 
 
@@ -469,8 +482,6 @@
    ;; Prune rethinks and keep the cleaned quine as data
    'prune-and-reopen (fn [quine-form]
                        (prune-substitute quine-form (or *spell-env* {}))),
-   'source-fragment (fn [source]
-                      {:spell/source-fragment (str source)}),
    ;; Value store (for !call-now out-of-band large values)
    'stored stored,
    'serialize (fn
@@ -668,7 +679,7 @@
     (or (nil? v) (number? v) (string? v) (boolean? v) (keyword? v)) v
     (spell-fn? v) (list* 'fn (:params v) (:body v))
     (and (vector? v) (contains? (meta v) :spell/line-offset))
-    (list 'line-offset (:spell/line-offset (meta v)) (list 'quote v))
+    (list 'line-offset (:spell/line-offset (meta v)) v)
     :else (list 'quote v)))
 
 (defn prune-substitute

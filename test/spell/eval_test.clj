@@ -1935,6 +1935,7 @@
           quoted (eval/quote-value value)
           reparsed (first (spell.parse/read-all (pr-str quoted)))
           result (spell-eval reparsed {})]
+      (is (= '(line-offset 17 ["alpha" "beta"]) quoted))
       (is (eval/ok? result))
       (is (= ["alpha" "beta"] (:ok result)))
       (is (= 17 (:spell/line-offset (meta (:ok result)))))))
@@ -1967,6 +1968,34 @@
           prefix (eval/serialize-quine-prefix (:ok result))]
       (is (eval/ok? result))
       (is (.contains ^String prefix "(line-offset 40 ["))
+      (is (.contains ^String prefix "; 40"))
+      (is (.contains ^String prefix "; 41"))))
+
+  (testing "subsequent serialize/parse cycles re-render numbered source"
+    (let [lines (with-meta ["first" "second"] {:spell/line-offset 40})
+          completion '(quine completion (eval (do)))
+          expanded (macros/spell-macroexpand-1 '(!call-now snippet lines))
+          result (spell-eval expanded {'completion completion
+                                       'lines lines
+                                       '!llm-self identity})
+          prefix-1 (eval/serialize-quine-prefix (:ok result))
+          reparsed (first (spell.parse/read-all (spell.parse/balance-parens prefix-1)))
+          prefix-2 (eval/serialize-quine-prefix reparsed)]
+      (is (.contains ^String prefix-2 "(line-offset 40 ["))
+      (is (.contains ^String prefix-2 "; 40"))
+      (is (.contains ^String prefix-2 "; 41"))))
+
+  (testing "persisted line-offset values re-render numbered source"
+    (let [lines (with-meta ["first" "second"] {:spell/line-offset 40})
+          quine-form '(quine completion
+                        (eval (do
+                                (persist snippet lines)
+                                (quote (!extend completion)))))
+          reopened (-> quine-form
+                       (eval/prune-substitute {'snippet lines})
+                       eval/reopen)
+          prefix (eval/serialize-quine-prefix reopened)]
+      (is (.contains ^String prefix "(persist snippet (line-offset 40 ["))
       (is (.contains ^String prefix "; 40"))
       (is (.contains ^String prefix "; 41")))))
 
@@ -2412,7 +2441,7 @@
         (is (= '!llm-self (first llm-call)))
         (is (= 'reopen (first reopen-form)))
         (is (= '(prune-and-reopen completion) (second reopen-form)))
-        (is (= 'source-fragment (first (nth reopen-form 2))))
+        (is (= 'read-string (first (nth reopen-form 2))))
         (is (= 'serialize (first (second (nth reopen-form 2))))))))
 
   (testing "!print macro multi-arity"
@@ -2436,9 +2465,10 @@
       (is (= '!llm-self (first llm-call)))
       (is (= 'reopen (first reopen-form)))
       (is (= '(prune-and-reopen completion) (second reopen-form)))
-      (is (= 'source-fragment (first (nth reopen-form 2))))
-      (is (= 'str (first (second (nth reopen-form 2)))))
-      (is (= "(def code " (second (second (nth reopen-form 2)))))
+      (is (= 'list (first (nth reopen-form 2))))
+      (is (= '(quote def) (second (nth reopen-form 2))))
+      (is (= '(quote code) (nth (nth reopen-form 2) 2)))
+      (is (= 'read-string (first (nth (nth reopen-form 2) 3))))
       (is (= '(list (quote rethink) "!peek-now binding disappears unless persisted.")
              (last reopen-form)))))
 
