@@ -55,6 +55,7 @@ Agents with `:llms` in their `.agent.edn` get a dynamically generated `llms/` na
 
 ## Rules
 
+- **No backwards compatibility.** This is a nascent project with effectively zero users. Do not add compatibility shims, legacy placeholders, migration paths, reopen support for prior serialized shapes, or deprecated aliases unless the user explicitly asks for them. Prefer replacing old paths outright when that simplifies the system.
 - **Model names must be exact.** Never guess or extrapolate model identifiers (e.g., don't assume `gpt-5.4-codex` exists because `gpt-5.3-codex` does). Always consult the provider's API docs or web search to confirm the exact model ID string and pricing before adding models or making API calls.
 - When the user asks for a plan, always enter plan mode (using the EnterPlanMode tool). After the plan is created, tell the user the filesystem path where the plan file is located.
 - When planning any change, consider whether this doc (CLAUDE.md) should be updated; if so, add that to the plan.
