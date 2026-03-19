@@ -2389,19 +2389,28 @@
       (is (= '!llm-self (first llm-call)))
       (is (= 'str (first str-form)))
       (is (= '(prune-and-reopen completion) (second str-form)))
-      (is (some #(= "(rethink \"!peek-now binding disappears unless persisted.\") " %)
+      (is (some #(= "(rethink 2 \"!peek-now binding disappears unless persisted.\") " %)
+                (rest str-form)))))
+
+  (testing "!peek-now multi-binding prunes the command and both result bindings"
+    (let [expanded (macros/spell-macroexpand-1 '(!peek-now a (io/read-file "a.txt") b (io/read-file "b.txt")))
+          llm-call (nth expanded 2)
+          str-form (second llm-call)]
+      (is (some #(= "(rethink 3 \"!peek-now binding disappears unless persisted.\") " %)
                 (rest str-form)))))
 
   (testing "peeked full binding is pruned on extension while persisted slice remains"
     (let [quine-form '(quine completion (eval (do
+                          '(!peek-now file-lines (io/read-lines "main.py"))
                           (def file-lines ["L1" "L2" "L3" "L4" "L5"])
-                          (rethink "!peek-now binding disappears unless persisted.")
+                          (rethink 2 "!peek-now binding disappears unless persisted.")
                           (def fn-defn ["L2" "L3"])
                           (quote (!extend completion)))))
           result (run-spell (list 'prune-and-reopen (list 'quote quine-form)))]
       (is (string? result))
       (is (.contains ^String result "(def fn-defn [\"L2\" \"L3\"])"))
       (is (false? (.contains ^String result "(def file-lines")))
+      (is (false? (.contains ^String result "(!peek-now file-lines (io/read-lines \"main.py\"))")))
       (is (.contains ^String result "(think \"!peek-now binding disappears unless persisted.\")"))
       (is (false? (.contains ^String result
                              "(rethink \"!peek-now binding disappears unless persisted.\")"))))))

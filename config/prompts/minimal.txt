@@ -166,13 +166,10 @@ You can also use rethink to delete a tool call result from context:
     ;; prunes the list of 1000 files from your context window!
 
 `!peek` / `!peek-now` automates this ephemeral-binding pattern:
-    ...'(!peek-now file-lines (io/read-lines "big-dir/huge-file.txt")) ; pass turn 0
+    ...'(!peek-now file-lines (io/read-lines "big-dir/huge-file.txt"))
     (def file-lines ["... many lines ..."])
     (rethink)
-    ;; turn 1 begins here
-    (def fn-defn (subvec file-lines 200 240))
-    '(!extend completion)
-    ;; turn 2: file-lines is deleted, fn-defn remains as a string literal
+    ;; next turn: both the !peek-now call and file-lines are gone
 
 `persist` retains a computed value across rethink pruning:
     ...'(!call-now data (io/bash "ls big-dir"))

@@ -215,9 +215,8 @@ You can also use rethink to delete a tool call result from context:
 `!peek` / `!peek-now` automates this ephemeral-binding pattern:
     ...'(!peek-now file-lines (io/read-lines "big-dir/huge-file.txt"))
     (def file-lines ["... many lines ..."])
-    (def fn-defn (subvec file-lines 200 240))
-    '(!extend completion)
-    ;; next turn: fn-defn remains, file-lines is pruned
+    (rethink)
+    ;; next turn: both the !peek-now call and file-lines are gone
 
 `persist` retains a computed value across rethink pruning:
     ...'(!call-now data (io/bash "ls big-dir"))
@@ -256,6 +255,17 @@ When reading a file or making a tool call whose result you need only briefly, us
     ;; next turn: persist what you need, then extend
     (persist targets (take 5 (strings/split-lines data)))
     '(!extend)
+
+When running a shell script or Python program that you do not need to rerun, use !peek-now:
+    '(!peek-now verify (io/sh "cd /repo && python - <<'PY'\nimport ...\nPY"))
+    ;; next turn: persist what you learned, then extend
+    (rethink "Verification passed: the fix handles both edge cases.")
+    '(!extend)
+
+When you need a script to be reusable across turns, write it to disk first:
+    '(!call-now _ (io/write-file "/tmp/run_tests.py" test-script))
+    '(!call-now test-out (io/sh "python /tmp/run_tests.py"))
+    ;; the script persists on disk; re-run with (io/sh "python /tmp/run_tests.py") later
 
 When you receive a large tool-call result, rethink to replace it with a summary of what you found, then continue:
     '(!call-now results (io/sh "grep -r 'TODO' src/"))

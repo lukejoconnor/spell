@@ -704,8 +704,12 @@ Example — inspect a computation:
   '(!call-now result (+ (* 3 17) (/ 100 4)))
   ;; next turn: result is bound to 76
 
-Use !peek when you want this binding to disappear on the following extension
-unless you explicitly persist what you need."
+Use !peek when you want this command and binding to disappear on the following
+extension unless you explicitly persist what you need.
+
+If the tool call is a disposable shell script or Python program, prefer !peek-now;
+the command and its binding(s) will be pruned on the next extension. If you need
+to rerun the script later, write it to disk first with io/write-file."
 
     :!peek
     "Macro. Ephemeral version of !call-now.
@@ -714,17 +718,18 @@ unless you explicitly persist what you need."
 '(!peek-now name expr)
 
 !peek/!peek-now runs like !call-now, then appends:
-  (rethink \"!peek-now binding disappears unless persisted.\")
+  (rethink 2 \"!peek-now binding disappears unless persisted.\")
 
-On your next extension, that rethink prunes the peek binding from source.
-If you need part of the value, persist it first with your own persist form.
+On your next extension, that rethink prunes both the peek command and its
+result binding(s) from source. If you need part of the value, persist it first
+with your own persist form.
 
 Example:
   '(!peek-now code (io/read-lines \"main.py\"))
-  ;; next turn: code is available for slicing
+  (def code [\"... many lines ...\"])
+  (rethink 2 \"!peek-now binding disappears unless persisted.\")
   (def fn-defn (subvec code 100 111))
-  '(!extend completion)
-  ;; next turn: fn-defn remains; code is pruned"
+  ;; next turn: both the !peek-now call and code are pruned; fn-defn remains"
 
     :!peek-now
     "Alias for !peek."
