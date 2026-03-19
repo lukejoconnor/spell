@@ -1982,30 +1982,66 @@
             id (second (first forms))]
         (is (= big-vec (eval/stored id))))))
 
-  (testing "serialize-for-continuation with line-offset vector produces commented vector literal"
+  (testing "serialize-for-continuation with line-offset vector produces a line-offset wrapper"
     (let [lines (with-meta ["line one" "line two" "line three"] {:spell/line-offset 10})
           result (eval/serialize-for-continuation lines)]
-      (is (.startsWith ^String result "["))
+      (is (.startsWith ^String result "(line-offset 10 ["))
       (is (.contains ^String result "; 10"))
       (is (.contains ^String result "; 12"))
-      ;; Round-trip: evaluating the form should yield the original vector
       (let [parsed (first (spell.parse/read-all result))
-            evaled (run-spell parsed)]
-        (is (= ["line one" "line two" "line three"] evaled)))))
+            evaled (spell-eval parsed {})]
+        (is (eval/ok? evaled))
+        (is (= ["line one" "line two" "line three"] (:ok evaled)))
+        (is (= 10 (:spell/line-offset (meta (:ok evaled))))))))
 
   (testing "serialize-for-continuation with line-offset offset=1"
     (let [lines (with-meta ["alpha" "beta"] {:spell/line-offset 1})
           result (eval/serialize-for-continuation lines)]
+      (is (.startsWith ^String result "(line-offset 1 ["))
       (is (.contains ^String result "; 1"))
       (is (.contains ^String result "; 2"))))
 
   (testing "serialize-for-continuation with empty line-offset vector"
     (let [lines (with-meta [] {:spell/line-offset 5})
           result (eval/serialize-for-continuation lines)]
-      (is (= "[]" result))
+      (is (= "(line-offset 5 [])" result))
       (let [parsed (first (spell.parse/read-all result))
-            evaled (run-spell parsed)]
-        (is (= [] evaled))))))
+            evaled (spell-eval parsed {})]
+        (is (eval/ok? evaled))
+        (is (= [] (:ok evaled)))
+        (is (= 5 (:spell/line-offset (meta (:ok evaled)))))))))
+
+(deftest line-offset-round-trip-test
+  (testing "line-offset macro reconstructs vector metadata"
+    (let [result (spell-eval '(line-offset 5 ["a" "b"]) {})]
+      (is (eval/ok? result))
+      (is (= ["a" "b"] (:ok result)))
+      (is (= 5 (:spell/line-offset (meta (:ok result)))))))
+
+  (testing "quote-value survives pr-str/read-string round-trip for line-offset vectors"
+    (let [value (with-meta ["alpha" "beta"] {:spell/line-offset 17})
+          quoted (eval/quote-value value)
+          reparsed (first (spell.parse/read-all (pr-str quoted)))
+          result (spell-eval reparsed {})]
+      (is (eval/ok? result))
+      (is (= ["alpha" "beta"] (:ok result)))
+      (is (= 17 (:spell/line-offset (meta (:ok result)))))))
+
+  (testing "prune-and-reopen preserves line-offset metadata across read/eval cycle"
+    (let [lines (with-meta ["first" "second"] {:spell/line-offset 40})
+          quine-form '(quine completion
+                        (eval (do
+                                (persist snippet lines)
+                                (quote (!extend completion)))))
+          reopened (-> quine-form
+                       (eval/prune-substitute {'snippet lines})
+                       eval/reopen)
+          reparsed (first (spell.parse/read-all (str reopened ")))")))
+          persist-form (-> reparsed last second second)
+          result (spell-eval persist-form {})]
+      (is (eval/ok? result))
+      (is (= ["first" "second"] (get (:env result) 'snippet)))
+      (is (= 40 (:spell/line-offset (meta (get (:env result) 'snippet))))))))
 
 ;; =============================================================================
 ;; New special forms (from verified clojure.core audit)

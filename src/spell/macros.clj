@@ -342,6 +342,19 @@
 ;; Backward-compatible alias.
 (defspellmacro 'print print-expander)
 
+;; line-offset: (line-offset n data) -> quoted vector with :spell/line-offset metadata.
+;; This keeps the annotation alive across pr-str/read-string round-trips.
+(defspellmacro 'line-offset
+  (fn [offset data-form]
+    (let [vec-data (cond
+                     (vector? data-form) data-form
+                     (and (seq? data-form)
+                          (= 'quote (first data-form))
+                          (vector? (second data-form))) (second data-form)
+                     :else (throw (ex-info "line-offset expects a vector literal or (quote [...])"
+                                           {:form data-form})))]
+      (list 'quote (with-meta vec-data (assoc (or (meta vec-data) {}) :spell/line-offset offset))))))
+
 ;; define: Scheme-style alias for def
 (defspellmacro 'define
   (fn [name-sym val-expr]
