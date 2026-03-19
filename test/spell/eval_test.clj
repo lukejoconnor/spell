@@ -1948,12 +1948,27 @@
           reopened (-> quine-form
                        (eval/prune-substitute {'snippet lines})
                        eval/reopen)
-          reparsed (first (spell.parse/read-all (str reopened ")))")))
+          reparsed (first (spell.parse/read-all
+                            (spell.parse/balance-parens
+                              (eval/serialize-quine-prefix reopened))))
           persist-form (-> reparsed last second second)
           result (spell-eval persist-form {})]
       (is (eval/ok? result))
       (is (= ["first" "second"] (get (:env result) 'snippet)))
-      (is (= 40 (:spell/line-offset (meta (get (:env result) 'snippet))))))))
+      (is (= 40 (:spell/line-offset (meta (get (:env result) 'snippet)))))))
+
+  (testing "!call-now continuation keeps numbered source in the immediate child prompt"
+    (let [lines (with-meta ["first" "second"] {:spell/line-offset 40})
+          completion '(quine completion (eval (do)))
+          expanded (macros/spell-macroexpand-1 '(!call-now snippet lines))
+          result (spell-eval expanded {'completion completion
+                                       'lines lines
+                                       '!llm-self identity})
+          prefix (eval/serialize-quine-prefix (:ok result))]
+      (is (eval/ok? result))
+      (is (.contains ^String prefix "(line-offset 40 ["))
+      (is (.contains ^String prefix "; 40"))
+      (is (.contains ^String prefix "; 41")))))
 
 ;; =============================================================================
 ;; New special forms (from verified clojure.core audit)
@@ -2397,7 +2412,7 @@
         (is (= '!llm-self (first llm-call)))
         (is (= 'reopen (first reopen-form)))
         (is (= '(prune-and-reopen completion) (second reopen-form)))
-        (is (= 'read-string (first (nth reopen-form 2))))
+        (is (= 'source-fragment (first (nth reopen-form 2))))
         (is (= 'serialize (first (second (nth reopen-form 2))))))))
 
   (testing "!print macro multi-arity"
@@ -2421,9 +2436,9 @@
       (is (= '!llm-self (first llm-call)))
       (is (= 'reopen (first reopen-form)))
       (is (= '(prune-and-reopen completion) (second reopen-form)))
-      (is (= 'list (first (nth reopen-form 2))))
-      (is (= '(quote def) (second (nth reopen-form 2))))
-      (is (= '(quote code) (nth (nth reopen-form 2) 2)))
+      (is (= 'source-fragment (first (nth reopen-form 2))))
+      (is (= 'str (first (second (nth reopen-form 2)))))
+      (is (= "(def code " (second (second (nth reopen-form 2)))))
       (is (= '(list (quote rethink) "!peek-now binding disappears unless persisted.")
              (last reopen-form)))))
 

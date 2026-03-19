@@ -180,23 +180,30 @@
 ;; Optional limit controls inline threshold for serialize (default: call-now-inline-limit).
 ;; Negative limit means always inline (no out-of-band storage).
 ;; Multi-binding evaluates all exprs, then extends with all bindings in one turn.
+(defn- serialized-fragment-expr
+  ([temp]
+   (list 'source-fragment (list 'serialize temp)))
+  ([temp limit]
+   (list 'source-fragment (list 'serialize temp limit))))
+
 (defn- call-now-expander
   "Shared expander for !call-now and !peek-now.
    extra-form-exprs are appended to the reopened quine."
   [macro-name args extra-form-exprs]
   (let [extra-form-exprs (or extra-form-exprs [])
-        serialized-form (fn
-                          ([temp]
-                           (list 'read-string (list 'serialize temp)))
-                          ([temp limit]
-                           (list 'read-string (list 'serialize temp limit))))
         def-form-expr (fn
                         ([name-sym temp]
-                         (list 'list (list 'quote 'def) (list 'quote name-sym)
-                               (serialized-form temp)))
+                         (list 'source-fragment
+                               (list 'str
+                                     (str "(def " name-sym " ")
+                                     (list 'serialize temp)
+                                     ")")))
                         ([name-sym temp limit]
-                         (list 'list (list 'quote 'def) (list 'quote name-sym)
-                               (serialized-form temp limit))))]
+                         (list 'source-fragment
+                               (list 'str
+                                     (str "(def " name-sym " ")
+                                     (list 'serialize temp limit)
+                                     ")"))))]
     (cond
       ;; Single binding: (!call-now name expr)
       (= (count args) 2)
@@ -305,7 +312,7 @@
   [& val-exprs]
   (let [temps (mapv (fn [_] (gensym "print__")) val-exprs)
         bindings (vec (mapcat vector temps val-exprs))
-        forms (map (fn [t] (list 'read-string (list 'serialize t))) temps)]
+        forms (map serialized-fragment-expr temps)]
     (list 'let bindings
           (list '!llm-self
                 (list* 'reopen (list 'prune-and-reopen 'completion) forms)))))

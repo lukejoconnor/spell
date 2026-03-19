@@ -200,6 +200,18 @@
                  (let [id (store-value! value)]
                    (str "(stored " (pr-str id) ")")))))))))))
 
+(defn- source-fragment?
+  [value]
+  (and (map? value)
+       (string? (:spell/source-fragment value))
+       (= #{:spell/source-fragment} (set (keys value)))))
+
+(defn- serialize-prefix-form
+  [form]
+  (if (source-fragment? form)
+    (:spell/source-fragment form)
+    (pr-str form)))
+
 
 ;; =============================================================================
 ;; Result helpers
@@ -457,6 +469,8 @@
    ;; Prune rethinks and keep the cleaned quine as data
    'prune-and-reopen (fn [quine-form]
                        (prune-substitute quine-form (or *spell-env* {}))),
+   'source-fragment (fn [source]
+                      {:spell/source-fragment (str source)}),
    ;; Value store (for !call-now out-of-band large values)
    'stored stored,
    'serialize (fn
@@ -726,7 +740,7 @@
          (when (seq inert-args)
            (str (str/join " " (map pr-str inert-args)) " "))
          "(eval (do "
-         (str/join " " (map pr-str body-forms))
+         (str/join " " (map serialize-prefix-form body-forms))
          " ")))
 
 (defn reopen
