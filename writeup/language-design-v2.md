@@ -231,18 +231,18 @@ One common class of LLM error is using a function without qualifying its namespa
 
 ### LLM-driven error recovery
 
-When deterministic fixup fails, Spell falls back to an LLM-driven recovery. The mechanism reuses the extension machinery described above. The current program is already a quine (it has access to its own source via `completion`). Recovery appends a new `eval` block to the quine containing an error map and an `!extend`:
+When deterministic fixup fails, Spell falls back to an LLM-driven recovery. The current program is already a quine (it has access to its own source via `completion`), so recovery can append more quine arguments. Spell inserts a top-level `rethink` plus a new `eval` block containing an error map and a bare `reopen` self-call:
 
 ```clojure
+(rethink "Error recovery - see _error for details.")
 (eval (do (def _recovery_prompt "The previous Spell program threw an error. ...")
-          (def _previous_program "(quine completion ...)")
           (def _error {:error "Handle not registered: \"hi\" (expected keyword)"
                        :in '(!ask "hi" :target)
                        :trace [my-helper]})
-          '(!extend completion)))
+          '(!llm-self (reopen completion))))
 ```
 
-The LLM sees the error map (including the `:trace` of Spell function names the error propagated through), the previous program as a string, and a recovery prompt explaining the situation. It is re-prompted via `!extend` and can write corrective code. Because the recovery block is appended to the quine as an additional argument (see *Self-reference*), all prior context — the chain of thought, previous bindings, tool results — remains visible as inert context. Recovery is limited to two attempts to prevent infinite loops.
+On the recovery turn, the LLM sees the original failed program as an inert quine arg plus the error map (including the `:trace` of Spell function names the error propagated through) and a recovery prompt explaining the situation. It is re-prompted via bare `reopen`, not `!extend`, so the newly inserted `rethink` does not prune anything yet. On the model's next `!extend`, `prune-and-reopen` processes that top-level rethink and removes the failed inert program, leaving behind a `(think ...)` summary instead. Recovery is limited to two attempts to prevent infinite loops.
 
 ### LLM-driven reader recovery
 

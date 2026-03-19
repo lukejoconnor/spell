@@ -85,8 +85,28 @@
 ;; LLM Engine
 ;; ---------------------------------------------------------------------------
 
+(defn- recovery-attempt-arg?
+  "Returns true when a quine arg is one of our injected eval recovery blocks."
+  [form]
+  (and (seq? form)
+       (= 'eval (first form))
+       (let [body (second form)]
+         (and (seq? body)
+              (= 'do (first body))
+              (some (fn [expr]
+                      (and (seq? expr)
+                           (= 'def (first expr))
+                           (= '_recovery_prompt (second expr))))
+                    (rest body))))))
+
+(defn- recovery-attempt-count
+  "Count injected eval-recovery blocks on a quine so rethink marker args
+   do not consume the retry budget."
+  [program]
+  (count (filter recovery-attempt-arg? (drop 2 program))))
+
 (defn- try-quine-recovery
-  "Attempt quine-extension recovery: append error info + !extend to the quine.
+  "Attempt quine-extension recovery: append error info to the quine and reopen it.
    Returns eval result (ok or err). Throws on non-quine or retry limit.
    If program doesn't start with (quine completion ...), wraps it first and recurses."
   [program result variant-builtins eval-builtin gated-ns-hints]
@@ -99,23 +119,22 @@
       (eval/vlog (str indent "Wrapping in quine completion for recovery"))
       (try-quine-recovery wrapped result variant-builtins eval-builtin gated-ns-hints))
     ;; Normal path: program is already (quine completion ...)
-    (let [quine-arg-count (- (count (seq program)) 2)]
-      (if (< quine-arg-count (+ 1 max-recovery-attempts))
+    (let [recovery-attempts (recovery-attempt-count program)]
+      (if (< recovery-attempts max-recovery-attempts)
         ;; Construct recovery quine: append new eval block with error info
         (let [error-map (cond-> {:error (recovery/clean-error-message (:err result))}
                           (:containing-form result)
                           (assoc :in (list 'quote (:containing-form result)))
                           (:trace result)
                           (assoc :trace (:trace result)))
-              previous-program-text (pr-str program)
               recovery-prompt (recovery-prompt-text (:error error-map))
+              rethink-arg '(rethink "Error recovery - see _error for details.")
               recovery-arg (list 'eval
                              (list 'do
                                (list 'def '_recovery_prompt recovery-prompt)
-                               (list 'def '_previous_program previous-program-text)
                                (list 'def '_error error-map)
-                               (list 'quote (list '!extend 'completion))))
-              recovery-quine (apply list (concat (seq program) [recovery-arg]))
+                               (list 'quote (list '!llm-self (list 'reopen 'completion)))))
+              recovery-quine (apply list (concat (seq program) [rethink-arg recovery-arg]))
               indent (apply str (repeat eval/*llm-depth* "  "))
               _     (eval/vlog (str indent "Recovery quine: " (pr-str recovery-quine)))
               retry (binding [eval/*llm-depth* (inc eval/*llm-depth*)
@@ -338,6 +357,7 @@
    - :llm-var          - optional var ref to bind as 'llm for self-recursion (e.g., #'llm)
    - :recover          - error recovery setting (default: true = enabled).
                          - true: namespace recovery + quine-extension recovery
+                           (recovery quine adds error info + rethink, then reopens)
                          - false: disable recovery (errors propagate immediately)
                          - fn: custom namespace recovery function (result-map) -> fixed-expr
    - :prefill?         - whether the provider supports assistant prefill (default: true).

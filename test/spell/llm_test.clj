@@ -964,10 +964,10 @@
         (is @recovery-called)
         (is (= 42 result)))))
 
-  (testing "quine-extension recovery re-enters via extend"
+  (testing "quine-extension recovery re-enters through the recovery quine"
     ;; Program is a quine with an error. Quine-extension recovery appends
-    ;; a new arg with error info + (!extend completion). The second LLM call
-    ;; (via extend) provides the fix.
+    ;; a rethink marker plus a new arg with error info, then reopens the
+    ;; recovery quine. The second LLM call provides the fix.
     (let [call-count (atom 0)
           {:keys [llm]} (th/make-test-llm
                           {:response-fn (fn [_]
@@ -975,12 +975,43 @@
                                             (if (= n 1)
                                               "undefined-symbol) '(!extend completion))"  ; first call fails
                                               "(def fix 42))")))
-                           :prefill? true}                       ; recovery extend returns fix
+                           :prefill? true}
                           :namespaces {})]
       ;; Use quine prefix so recovery can append
       (let [result (llm "(quine completion (eval (do ")]
-        (is (= 2 @call-count))  ; original + recovery extend
+        (is (= 2 @call-count))
         (is (= 42 result)))))
+
+  (testing "quine-extension recovery injects rethink and reopens without _previous_program"
+    (let [prompts (atom [])]
+      (let [{:keys [llm]}
+            (th/make-test-llm
+              {:response-fn (fn [prompt]
+                              (swap! prompts conj prompt)
+                              (if (= 1 (count @prompts))
+                                "undefined-symbol) '(!extend completion))"
+                                "(def fix 42))"))}
+              :namespaces {} :prefill? false)]
+        (let [result (llm "(quine completion (eval (do ")
+              recovery-prompt (second @prompts)]
+          (is (= 42 result))
+          (is (str/includes? recovery-prompt "(rethink \"Error recovery - see _error for details.\")"))
+          (is (str/includes? recovery-prompt "!llm-self (reopen completion)"))
+          (is (not (str/includes? recovery-prompt "_previous_program")))))))
+
+  (testing "eval error recovery depth limit stops runaway loops"
+    (let [call-count (atom 0)]
+      (let [{:keys [llm]}
+            (th/make-test-llm
+              {:response-fn (fn [_]
+                              (swap! call-count inc)
+                              "undefined-symbol)")}
+              :namespaces {})]
+        (let [invoke #(llm "(quine completion (eval (do ")]
+          (is (thrown-with-msg? Exception #"Unbound symbol: undefined-symbol"
+                                (invoke))))
+        ;; Initial call + 2 eval recovery retries
+        (is (= 3 @call-count)))))
 
   (testing "no recovery when explicitly disabled"
     (let [{:keys [llm]} (th/make-test-llm {:response "undefined-symbol)"}
