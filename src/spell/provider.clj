@@ -1443,7 +1443,8 @@
         (= (:type data) :missing-tool-call)
         (instance? java.net.ConnectException ex)
         (instance? java.net.http.HttpConnectTimeoutException ex)
-        (instance? java.net.http.HttpTimeoutException ex))))
+        (instance? java.net.http.HttpTimeoutException ex)
+        (instance? java.io.IOException ex))))
 
 (defn call-with-retries
   "Call f, retrying on transient failures according to retries-seq.
