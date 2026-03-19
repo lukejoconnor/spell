@@ -233,7 +233,7 @@
                       {:args-count (count args)})))))
 
 (def ^:private peek-rethink-message
-  "!peek-now binding disappears unless persisted.")
+  "!peek-now call and binding(s) disappear unless you persist what you need.")
 
 (defn- peek-extra-str-parts
   [args]

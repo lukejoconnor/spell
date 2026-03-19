@@ -726,7 +726,7 @@ to rerun the script later, write it to disk first with io/write-file."
 '(!peek-now name expr)
 
 !peek/!peek-now runs like !call-now, then appends:
-  (rethink 2 \"!peek-now binding disappears unless persisted.\")
+  (rethink 2 \"!peek-now call and binding(s) disappear unless you persist what you need.\")
 
 On your next extension, that rethink prunes both the peek command and its
 result binding(s) from source. If you need part of the value, persist it first
@@ -735,7 +735,7 @@ with your own persist form.
 Example:
   '(!peek-now code (io/read-lines \"main.py\"))
   (def code [\"... many lines ...\"])
-  (rethink 2 \"!peek-now binding disappears unless persisted.\")
+  (rethink 2 \"!peek-now call and binding(s) disappear unless you persist what you need.\")
   (def fn-defn (subvec code 100 111))
   ;; next turn: both the !peek-now call and code are pruned; fn-defn remains"
 
