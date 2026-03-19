@@ -30,9 +30,22 @@
   "Maximum number of recovery retries before failing."
   2)
 
-(def ^:dynamic *reader-recovery-depth*
-  "Current depth of nested reader-error recovery retries."
+(def ^:dynamic *recovery-depth*
+  "Current depth of nested recovery retries across reader and eval recovery."
   0)
+
+(defn- throw-if-recovery-exhausted!
+  "Throw when the shared recovery budget is exhausted."
+  [phase error-msg]
+  (when (>= *recovery-depth* max-recovery-attempts)
+    (throw (ex-info (str "Recovery limit exceeded: " max-recovery-attempts
+                         " while handling " (name phase) " error")
+                    (cond-> {:type :recovery-exhausted
+                             :phase phase
+                             :attempts *recovery-depth*
+                             :limit max-recovery-attempts}
+                      error-msg
+                      (assoc (if (= phase :reader) :parse-error :error) error-msg))))))
 
 (defn- recovery-prompt-text
   "Instruction shown to the model during recovery attempts."
@@ -85,29 +98,9 @@
 ;; LLM Engine
 ;; ---------------------------------------------------------------------------
 
-(defn- recovery-attempt-arg?
-  "Returns true when a quine arg is one of our injected eval recovery blocks."
-  [form]
-  (and (seq? form)
-       (= 'eval (first form))
-       (let [body (second form)]
-         (and (seq? body)
-              (= 'do (first body))
-              (some (fn [expr]
-                      (and (seq? expr)
-                           (= 'def (first expr))
-                           (= '_recovery_prompt (second expr))))
-                    (rest body))))))
-
-(defn- recovery-attempt-count
-  "Count injected eval-recovery blocks on a quine so rethink marker args
-   do not consume the retry budget."
-  [program]
-  (count (filter recovery-attempt-arg? (drop 2 program))))
-
 (defn- try-quine-recovery
   "Attempt quine-extension recovery: append error info to the quine and reopen it.
-   Returns eval result (ok or err). Throws on non-quine or retry limit.
+   Returns eval result (ok or err). Throws on non-quine or shared recovery limit.
    If program doesn't start with (quine completion ...), wraps it first and recurses."
   [program result variant-builtins eval-builtin gated-ns-hints]
   (if-not (and (seq? program)
@@ -119,51 +112,46 @@
       (eval/vlog (str indent "Wrapping in quine completion for recovery"))
       (try-quine-recovery wrapped result variant-builtins eval-builtin gated-ns-hints))
     ;; Normal path: program is already (quine completion ...)
-    (let [recovery-attempts (recovery-attempt-count program)]
-      (if (< recovery-attempts max-recovery-attempts)
-        ;; Construct recovery quine: append new eval block with error info
-        (let [error-map (cond-> {:error (recovery/clean-error-message (:err result))}
-                          (:containing-form result)
-                          (assoc :in (list 'quote (:containing-form result)))
-                          (:trace result)
-                          (assoc :trace (:trace result)))
-              recovery-prompt (recovery-prompt-text (:error error-map))
-              rethink-arg '(rethink "Error recovery - see _error for details.")
-              recovery-arg (list 'eval
-                             (list 'do
-                               (list 'def '_recovery_prompt recovery-prompt)
-                               (list 'def '_error error-map)
-                               (list 'quote (list '!llm-self (list 'reopen 'completion)))))
-              recovery-quine (apply list (concat (seq program) [rethink-arg recovery-arg]))
-              indent (apply str (repeat eval/*llm-depth* "  "))
-              _     (eval/vlog (str indent "Recovery quine: " (pr-str recovery-quine)))
-              retry (binding [eval/*llm-depth* (inc eval/*llm-depth*)
-                              eval/*raw-text*  nil
-                              eval/*builtins*  variant-builtins
-                              eval/*gated-ns-hints* gated-ns-hints]
-                      (eval/spell-eval recovery-quine {'eval eval-builtin}))]
-          (if (eval/ok? retry)
-            retry
-            (throw (ex-info (:err result) {:result result}))))
-        ;; Retry limit reached — propagate error
+    (let [error-map (cond-> {:error (recovery/clean-error-message (:err result))}
+                      (:containing-form result)
+                      (assoc :in (list 'quote (:containing-form result)))
+                      (:trace result)
+                      (assoc :trace (:trace result)))
+          indent (apply str (repeat eval/*llm-depth* "  "))
+          _     (throw-if-recovery-exhausted! :eval (:error error-map))
+          _     (eval/vlog (str indent "Recovery attempt: "
+                                (inc *recovery-depth*) "/" max-recovery-attempts))
+          recovery-prompt (recovery-prompt-text (:error error-map))
+          rethink-arg '(rethink "Error recovery - see _error for details.")
+          recovery-arg (list 'eval
+                         (list 'do
+                           (list 'def '_recovery_prompt recovery-prompt)
+                           (list 'def '_error error-map)
+                           (list 'quote (list '!llm-self (list 'reopen 'completion)))))
+          recovery-quine (apply list (concat (seq program) [rethink-arg recovery-arg]))
+          _     (eval/vlog (str indent "Recovery quine: " (pr-str recovery-quine)))
+          retry (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
+                          eval/*raw-text*       nil
+                          eval/*builtins*       variant-builtins
+                          eval/*gated-ns-hints* gated-ns-hints
+                          *recovery-depth*      (inc *recovery-depth*)]
+                  (eval/spell-eval recovery-quine {'eval eval-builtin}))]
+      (if (eval/ok? retry)
+        retry
         (throw (ex-info (:err result) {:result result}))))))
 
 (defn- try-reader-recovery
   "Attempt recovery from a reader/parse error by embedding the raw text
    as a string in a fresh recovery quine. The LLM sees its broken output
-   and the error message, then gets a fresh chance via !extend."
+   and the error message, then gets a fresh chance via !extend.
+   Shares the same retry budget as eval recovery."
   [raw parse-error variant-builtins eval-builtin gated-ns-hints]
   (let [error-msg (or (.getMessage parse-error) "Unknown reader error")
         indent    (apply str (repeat eval/*llm-depth* "  "))
-        _         (when (>= *reader-recovery-depth* max-recovery-attempts)
-                    (throw (ex-info (str "Reader error recovery limit exceeded: " max-recovery-attempts)
-                                    {:type :reader-recovery-exhausted
-                                     :attempts *reader-recovery-depth*
-                                     :limit max-recovery-attempts
-                                     :parse-error error-msg})))
+        _         (throw-if-recovery-exhausted! :reader error-msg)
         _         (eval/vlog (str indent "=== Reader Error Recovery ==="))
         _         (eval/vlog (str indent "Recovery attempt: "
-                                  (inc *reader-recovery-depth*) "/" max-recovery-attempts))
+                                  (inc *recovery-depth*) "/" max-recovery-attempts))
         _         (eval/vlog (str indent "Parse error: " error-msg))
         recovery-prompt (recovery-prompt-text (str "Reader error: " error-msg))
         error-map {:error (str "Reader error: " error-msg) :raw raw}
@@ -178,7 +166,7 @@
                             eval/*raw-text*            nil
                             eval/*builtins*            variant-builtins
                             eval/*gated-ns-hints*      gated-ns-hints
-                            *reader-recovery-depth*    (inc *reader-recovery-depth*)]
+                            *recovery-depth*           (inc *recovery-depth*)]
                     (eval/spell-eval recovery-quine {'eval eval-builtin}))]
     (if (eval/ok? result)
       (:ok result)

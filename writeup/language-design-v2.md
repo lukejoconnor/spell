@@ -242,11 +242,11 @@ When deterministic fixup fails, Spell falls back to an LLM-driven recovery. The 
           '(!llm-self (reopen completion))))
 ```
 
-On the recovery turn, the LLM sees the original failed program as an inert quine arg plus the error map (including the `:trace` of Spell function names the error propagated through) and a recovery prompt explaining the situation. It is re-prompted via bare `reopen`, not `!extend`, so the newly inserted `rethink` does not prune anything yet. On the model's next `!extend`, `prune-and-reopen` processes that top-level rethink and removes the failed inert program, leaving behind a `(think ...)` summary instead. Recovery is limited to two attempts to prevent infinite loops.
+On the recovery turn, the LLM sees the original failed program as an inert quine arg plus the error map (including the `:trace` of Spell function names the error propagated through) and a recovery prompt explaining the situation. It is re-prompted via bare `reopen`, not `!extend`, so the newly inserted `rethink` does not prune anything yet. On the model's next `!extend`, `prune-and-reopen` processes that top-level rethink and removes the failed inert program, leaving behind a `(think ...)` summary instead. Spell allows at most two recovery re-prompts total: each retry prompted by either an eval error or a reader error consumes one shared recovery attempt.
 
 ### LLM-driven reader recovery
 
-A separate recovery path handles parse errors — unbalanced parentheses, malformed literals, or other syntax that the reader cannot process. These errors are caught before evaluation begins. In this case, the raw (unparseable) completion text is embedded as a string, rather than as code, in a fresh recovery quine along with the parse error message and a recovery prompt. The LLM sees what it wrote (as a string, since it cannot be read as code) and the error, and gets a fresh `!extend` to try again. Like eval recovery, reader recovery is limited to two attempts.
+A separate recovery path handles parse errors — unbalanced parentheses, malformed literals, or other syntax that the reader cannot process. These errors are caught before evaluation begins. In this case, the raw (unparseable) completion text is embedded as a string, rather than as code, in a fresh recovery quine along with the parse error message and a recovery prompt. The LLM sees what it wrote (as a string, since it cannot be read as code) and the error, and gets a fresh `!extend` to try again. Reader recovery uses the same shared two-attempt recovery budget as eval recovery.
 
 ## Concurrent agents and inter-agent communication
 

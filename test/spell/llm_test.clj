@@ -999,7 +999,7 @@
           (is (str/includes? recovery-prompt "!llm-self (reopen completion)"))
           (is (not (str/includes? recovery-prompt "_previous_program")))))))
 
-  (testing "eval error recovery depth limit stops runaway loops"
+  (testing "shared recovery limit stops eval-only runaway loops"
     (let [call-count (atom 0)]
       (let [{:keys [llm]}
             (th/make-test-llm
@@ -1008,7 +1008,7 @@
                               "undefined-symbol)")}
               :namespaces {})]
         (let [invoke #(llm "(quine completion (eval (do ")]
-          (is (thrown-with-msg? Exception #"Unbound symbol: undefined-symbol"
+          (is (thrown-with-msg? Exception #"Recovery limit exceeded: 2 while handling eval error"
                                 (invoke))))
         ;; Initial call + 2 eval recovery retries
         (is (= 3 @call-count)))))
@@ -1067,16 +1067,30 @@
         (is (str/includes? recovery-prompt "Reader error"))
         (is (str/includes? recovery-prompt "\\invalidchar")))))
 
-  (testing "reader error recovery depth limit stops runaway loops"
+  (testing "shared recovery limit stops parse-only runaway loops"
     (let [call-count (atom 0)
           {:keys [llm]} (th/make-test-llm
                           {:response-fn (fn [_]
                                           (swap! call-count inc)
                                           "\\invalidchar)")}
                           :namespaces {})]
-      (is (thrown-with-msg? Exception #"Reader error recovery limit exceeded"
+      (is (thrown-with-msg? Exception #"Recovery limit exceeded: 2 while handling reader error"
                             (llm "(quine completion (eval (do ")))
       ;; Initial call + 2 recovery retries
+      (is (= 3 @call-count))))
+
+  (testing "shared recovery limit applies across reader and eval recovery"
+    (let [call-count (atom 0)
+          {:keys [llm]} (th/make-test-llm
+                          {:response-fn (fn [_]
+                                          (case (swap! call-count inc)
+                                            1 "\\invalidchar)"
+                                            2 "undefined-symbol)"
+                                            3 "undefined-symbol)"))}
+                          :namespaces {})]
+      (is (thrown-with-msg? Exception #"Recovery limit exceeded: 2 while handling eval error"
+                            (llm "(quine completion (eval (do ")))
+      ;; Initial parse error + one reader recovery retry + one eval recovery retry
       (is (= 3 @call-count)))))
 
 (deftest namespace-recovery-invoke-fn-wrapping-test
