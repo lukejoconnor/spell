@@ -2549,8 +2549,9 @@
         (is (= '!llm-self (first llm-call)))
         (is (= 'reopen (first reopen-form)))
         (is (= '(prune-and-reopen completion) (second reopen-form)))
-        (is (= 'read-string (first (nth reopen-form 2))))
-        (is (= 'serialize (first (second (nth reopen-form 2))))))))
+        (is (= 'reopen-eval (first (nth reopen-form 2))))
+        (is (= 'read-string (first (second (nth reopen-form 2)))))
+        (is (= 'serialize (first (second (second (nth reopen-form 2)))))))))
 
   (testing "!print macro multi-arity"
     (let [expanded (macros/spell-macroexpand-1 '(!print a b c))]
@@ -2573,18 +2574,19 @@
       (is (= '!llm-self (first llm-call)))
       (is (= 'reopen (first reopen-form)))
       (is (= '(prune-and-reopen completion) (second reopen-form)))
-      (is (= 'list (first (nth reopen-form 2))))
-      (is (= '(quote def) (second (nth reopen-form 2))))
-      (is (= '(quote code) (nth (nth reopen-form 2) 2)))
-      (is (= 'read-string (first (nth (nth reopen-form 2) 3))))
-      (is (= '(list (quote prune) 2)
+      (is (= 'reopen-eval (first (nth reopen-form 2))))
+      (is (= 'list (first (second (nth reopen-form 2)))))
+      (is (= '(quote def) (second (second (nth reopen-form 2)))))
+      (is (= '(quote code) (nth (second (nth reopen-form 2)) 2)))
+      (is (= 'read-string (first (nth (second (nth reopen-form 2)) 3))))
+      (is (= '(reopen-eval (list (quote prune) 2))
              (last reopen-form)))))
 
   (testing "!peek-now multi-binding prunes the command and both result bindings"
     (let [expanded (macros/spell-macroexpand-1 '(!peek-now a (io/read-file "a.txt") b (io/read-file "b.txt")))
           llm-call (nth expanded 2)
           reopen-form (second llm-call)]
-      (is (= '(list (quote prune) 3) (last reopen-form)))))
+      (is (= '(reopen-eval (list (quote prune) 3)) (last reopen-form)))))
 
   (testing "peeked full binding is pruned on extension while persisted slice remains"
     (let [quine-form '(quine completion (eval (do

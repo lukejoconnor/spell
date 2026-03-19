@@ -210,6 +210,10 @@
   ([temp limit]
    (list 'read-string (list 'serialize temp limit))))
 
+(defn- reopen-eval-form
+  [expr]
+  (list 'reopen-eval expr))
+
 (defn- call-now-expander
   "Shared expander for !call-now and !peek-now.
    extra-form-exprs are appended to the reopened quine."
@@ -217,11 +221,13 @@
   (let [extra-form-exprs (or extra-form-exprs [])
         def-form-expr (fn
                         ([name-sym temp]
-                         (list 'list (list 'quote 'def) (list 'quote name-sym)
-                               (serialized-form temp)))
+                         (reopen-eval-form
+                          (list 'list (list 'quote 'def) (list 'quote name-sym)
+                                (serialized-form temp))))
                         ([name-sym temp limit]
-                         (list 'list (list 'quote 'def) (list 'quote name-sym)
-                               (serialized-form temp limit))))]
+                         (reopen-eval-form
+                          (list 'list (list 'quote 'def) (list 'quote name-sym)
+                                (serialized-form temp limit)))))]
     (cond
       ;; Single binding: (!call-now name expr)
       (= (count args) 2)
@@ -265,7 +271,8 @@
   (let [n-bindings (if (and (even? (count args)) (>= (count args) 4))
                      (/ (count args) 2)
                      1)]
-    [(list 'list (list 'quote 'prune) (inc n-bindings))]))
+    [(reopen-eval-form
+      (list 'list (list 'quote 'prune) (inc n-bindings)))]))
 
 (defspellmacro '!call-now
   (fn [& args]
@@ -332,7 +339,7 @@
   [& val-exprs]
   (let [temps (mapv (fn [_] (gensym "print__")) val-exprs)
         bindings (vec (mapcat vector temps val-exprs))
-        forms (map serialized-form temps)]
+        forms (map (comp reopen-eval-form serialized-form) temps)]
     (list 'let bindings
           (list '!llm-self
                 (list* 'reopen (list 'prune-and-reopen 'completion) forms)))))

@@ -119,7 +119,15 @@
   (testing "splices extra forms into the quine do block"
     (is (= '(quine completion (eval (do (def x 1) (def y 2))))
            (run-spell '(reopen '(quine completion (eval (do (def x 1))))
-                              '(def y 2))))))
+                              (def y 2))))))
+
+  (testing "treats appended expressions as source forms without evaluating them"
+    (is (= ['(quine completion (eval (do (def x 1) x))) 9]
+           (run-spell '(let [x 9
+                             reopened (reopen '(quine completion (eval (do)))
+                                              (def x 1)
+                                              x)]
+                         [reopened x])))))
 
   (testing "serialize-prefix turns a quine into an open prefix string"
     (is (= "(quine completion (eval (do (def x 1) "
