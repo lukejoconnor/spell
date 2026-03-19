@@ -64,9 +64,13 @@
         ;; Validate: provider must come from somewhere
         _ (when-not (:provider agent-spec)
             (throw (ex-info "Must specify :provider (via argument or agent .edn)" {})))
-        ;; Compile runnable spawn-agent function
+        ;; Compile runnable spawn-agent function. Preserve the public
+        ;; :prompt/:init distinction here rather than relying on the
+        ;; compiled agent's generic string heuristic.
         agent-fn (agent/compile-agent-spec agent-spec)
-        run-input (or init prompt)
+        run-input (if init
+                    init
+                    (llm/build-init prompt))
         ;; Budget: explicit > agent config > dynamic var default
         effective-budget (cond
                            (nil? budget) (or (:budget agent-spec) provider/*budget*)
