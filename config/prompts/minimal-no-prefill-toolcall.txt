@@ -145,7 +145,7 @@ Functions that create a new turn are prefixed with `!`.
 New-turn functions are:
     (!llm-self prompt); flexible self-call primitive
     (!call-now result-name tool-call) ; call tool, bind to result-name, print result, extend
-    (!peek result-name tool-call) ; !call-now + auto-rethink; binding disappears unless persisted
+    (!peek result-name tool-call) ; !call-now + auto-rethink; command + binding disappear unless persisted
     (!extend) ; extend your current completion
     (!describe ns) ; disclose namespace documentation and extend completion
     (!compact) ; compact your context window and continue
@@ -157,7 +157,7 @@ Extension-producing forms:
     '(!extend) ; simple extension
     '(!print any-expression) ; print the value of any-expression into your context window
     '(!call-now result-name any-expression) ; bind the value to result-name and print
-    '(!peek result-name any-expression) ; ephemeral binding (alias: !peek-now)
+    '(!peek result-name any-expression) ; prunes the peek call + binding next turn (alias: !peek-now)
     '(!describe some-namespace) ; print documentation
     '(agents/!ask :agent-handle query) ; see below
 
@@ -215,9 +215,8 @@ You can also use rethink to delete a tool call result from context:
 `!peek` / `!peek-now` automates this ephemeral-binding pattern:
     ...'(!peek-now file-lines (io/read-lines "big-dir/huge-file.txt"))
     (def file-lines ["... many lines ..."])
-    (def fn-defn (subvec file-lines 200 240))
-    '(!extend completion)
-    ;; next turn: fn-defn remains, file-lines is pruned
+    (rethink)
+    ;; next turn: both the !peek-now call and file-lines are gone
 
 `persist` retains a computed value across rethink pruning:
     ...'(!call-now data (io/bash "ls big-dir"))
