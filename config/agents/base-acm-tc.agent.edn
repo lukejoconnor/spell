@@ -1,0 +1,7 @@
+;; Base agent for tool-call providers with ACM prompt variant.
+;; Uses acm-no-prefill-toolcall.txt with explicit context management guidance.
+
+{:name base-acm-tc
+ :doc "Base agent for tool-call providers (ACM prompt)"
+ :system {:file "../prompts/acm-no-prefill-toolcall.txt"}
+ :llms []}

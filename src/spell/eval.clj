@@ -68,20 +68,61 @@
    Bound by the LLM pipeline. Consulted on symbol lookup failure to
    produce context-specific error messages instead of generic 'Unbound symbol'."
   {})
-
-(def future-context-key
-  "Env marker key set by future* for future-only runtime primitives."
-  ::in-future)
-
-(defn in-future-context?
-  "True when current evaluation is running inside a Spell future."
-  []
-  (true? (get *spell-env* future-context-key)))
-
 (defn spell-future?
   "Returns true if v is a Spell future handle."
   [v]
   (and (map? v) (:spell/future v)))
+
+(defn spell-exception?
+  "Returns true if v is a Spell exception map."
+  [v]
+  (and (map? v) (true? (:spell/exception v))))
+
+(defn- throwable->spell-exception
+  "Convert a host Throwable into Spell's plain-data exception representation."
+  [^Throwable t]
+  (cond-> {:spell/exception true
+           :message (ex-message t)
+           :data (ex-data t)}
+    (some? (ex-cause t))
+    (assoc :cause (throwable->spell-exception (ex-cause t)))))
+
+(defn spell-ex-info
+  "Create a plain-data exception value safe to persist across continuations."
+  ([msg data]
+   {:spell/exception true
+    :message msg
+    :data data})
+  ([msg data cause]
+   (cond-> (spell-ex-info msg data)
+     (some? cause)
+     (assoc :cause (if (instance? Throwable cause)
+                     (throwable->spell-exception cause)
+                     cause)))))
+
+(defn spell-ex-data
+  "Extract exception data from a Spell exception value or host Throwable."
+  [v]
+  (cond
+    (spell-exception? v) (:data v)
+    (instance? Throwable v) (ex-data v)
+    :else nil))
+
+(defn spell-ex-message
+  "Extract an exception message from a Spell exception value or host Throwable."
+  [v]
+  (cond
+    (spell-exception? v) (:message v)
+    (instance? Throwable v) (ex-message v)
+    :else nil))
+
+(defn spell-ex-cause
+  "Extract an exception cause from a Spell exception value or host Throwable."
+  [v]
+  (cond
+    (spell-exception? v) (:cause v)
+    (instance? Throwable v) (some-> v ex-cause throwable->spell-exception)
+    :else nil))
 
 ;; =============================================================================
 ;; Call-now value store (out-of-band storage for large values)
@@ -397,6 +438,9 @@
                        (if (re-find #"\." m) (Double/parseDouble m) (Long/parseLong m))))),
    ;; Numeric predicates
    'even? even?, 'odd? odd?, 'pos? pos?, 'neg? neg?, 'zero? zero?,
+   'integer? integer?, 'ratio? ratio?, 'rational? rational?,
+   'pos-int? pos-int?, 'neg-int? neg-int?,
+   'numerator numerator, 'denominator denominator,
    ;; Comparison
    '< <, '> >, '<= <=, '>= >=, '= =, 'not= not=, 'compare compare,
    ;; Logic
@@ -649,13 +693,18 @@
    'throw (fn [v]
             (throw (ex-info (if (string? v) v (pr-str v))
                             {:spell/thrown v}))),
+   'ex-info spell-ex-info,
+   'ex-data spell-ex-data, 'ex-message spell-ex-message, 'ex-cause spell-ex-cause,
    ;; future* — run a thunk in a new thread, return a future handle
    'future* (fn [thunk]
-              (let [f (bound-fn []
-                        (binding [*spell-env* (merge *spell-env*
-                                                     *future-env*
-                                                     {future-context-key true})]
-                          (invoke-fn thunk [])))]
+              (let [current-raw-var (resolve 'spell.runtime/*current-raw*)
+                    f (bound-fn []
+                        (if current-raw-var
+                          (with-bindings* {current-raw-var nil}
+                            #(binding [*spell-env* (merge *spell-env* *future-env*)]
+                               (invoke-fn thunk [])))
+                          (binding [*spell-env* (merge *spell-env* *future-env*)]
+                            (invoke-fn thunk []))))]
                 {:spell/future true :ref (clojure.core/future (f))}))})
 
 (def ^:dynamic *builtins*
@@ -688,7 +737,7 @@
   (cond
     (and (seq? form)
          (= 'persist (first form))
-         (= 3 (count form))
+         (#{2 3} (count form))
          (symbol? (second form))
          (some? env))
     (let [sym (second form)]
@@ -752,6 +801,195 @@
          "(eval (do "
          (str/join " " (map serialize-prefix-form body-forms))
          " ")))
+
+(defn- -expand-expr
+  "Walk expr substituting outer-env values for free symbols not in inner (locally defined).
+   Returns [expanded-expr updated-inner]. Mirrors spell-eval's structure but returns
+   transformed data instead of evaluating."
+  [expr outer-env inner]
+  (cond
+    ;; Self-evaluating
+    (or (nil? expr) (string? expr) (number? expr) (boolean? expr) (keyword? expr)
+        (instance? java.util.regex.Pattern expr))
+    [expr inner]
+
+    ;; Symbol: qualified (a/b) -> leave as-is (global ref);
+    ;; inner (locally defined) -> leave; outer-env -> substitute; else -> leave
+    (symbol? expr)
+    (let [;; Use str to get full symbol including namespace
+          sym-str (str expr)
+          ;; Check if this is a qualified symbol (has / with content on both sides)
+          qualified? (when (str/includes? sym-str "/")
+                       (let [p (str/split sym-str #"/")]
+                         (and (> (count p) 1)
+                              (seq (first p))
+                              (seq (second p)))))]
+      (if qualified?
+        ;; Qualified symbols are self-contained namespace references - leave intact
+        [expr inner]
+        [(cond
+           (contains? inner expr) expr
+           (contains? (or *builtins* core-builtins) expr) expr
+           (contains? special-forms expr) expr
+           (contains? outer-env expr) (quote-value (get outer-env expr))
+           :else expr)
+         inner]))
+
+    ;; Vector
+    (vector? expr)
+    [(mapv #(first (-expand-expr % outer-env inner)) expr) inner]
+
+    ;; Map
+    (map? expr)
+    [(into {} (map (fn [[k v]] [k (first (-expand-expr v outer-env inner))]) expr)) inner]
+
+    ;; List
+    (seq? expr)
+    (if (and (symbol? (first expr)) (get @macros/spell-macros (first expr)))
+      ;; Clojure-side macro: expand first, then continue expanding the result
+      (-expand-expr (macros/spell-macroexpand-1 expr) outer-env inner)
+      ;; Check for user-defined macros in outer-env
+      (let [head (first expr)
+            head-val (when (and (symbol? head)
+                                (not (contains? inner head))
+                                (not (special-forms head)))
+                       (get outer-env head))]
+        (if (spell-macro? head-val)
+          ;; User macro: invoke expander, then continue expanding result
+          (let [expander (:expander head-val)
+                macro-env (into outer-env (destructure-bind (:params expander) (vec (rest expr))))
+                r (spell-eval (cons 'do (:body expander)) macro-env)]
+            (if (ok? r)
+              (-expand-expr (:ok r) outer-env inner)
+              (throw (ex-info (str "Macro expansion failed during expand: " (:err r))
+                              {:form expr}))))
+      (let [expand1 #(first (-expand-expr % outer-env inner))]
+      (case (first expr)
+        nil   [expr inner]
+        quote [expr inner]
+
+        def (let [sym (second expr)
+                  [val-expanded _] (-expand-expr (nth expr 2) outer-env inner)]
+              [(list 'def sym val-expanded) (conj inner sym)])
+
+        persist (if (= 2 (count expr))
+                  [(list 'persist (second expr)) (conj inner (second expr))]
+                  (let [sym (second expr)
+                        [val-expanded _] (-expand-expr (nth expr 2) outer-env inner)]
+                    [(list 'persist sym val-expanded) (conj inner sym)]))
+
+        do (let [[forms final-inner]
+                 (reduce (fn [[acc i] sub-expr]
+                           (let [[expanded new-i] (-expand-expr sub-expr outer-env i)]
+                             [(conj acc expanded) new-i]))
+                         [[] inner]
+                         (rest expr))]
+             [(list* 'do forms) final-inner])
+
+        if [(list* 'if (map expand1 (rest expr))) inner]
+
+
+        let (let [pairs (partition 2 (second expr))
+                  [expanded-bindings final-inner]
+                  (reduce (fn [[acc i] [pattern val-expr]]
+                            [(conj acc pattern (first (-expand-expr val-expr outer-env i)))
+                             (into i (param-symbols pattern))])
+                          [[] inner] pairs)
+                  expanded-body (map #(first (-expand-expr % outer-env final-inner)) (drop 2 expr))]
+              [(list* 'let (vec expanded-bindings) expanded-body) inner])
+
+        (fn fn*) (let [all-syms (set (mapcat param-symbols (second expr)))
+                       body-inner (into inner all-syms)]
+                   [(list* 'fn (second expr) (map #(first (-expand-expr % outer-env body-inner)) (drop 2 expr))) inner])
+
+
+
+        quine (let [name-sym (second expr)
+                    inner' (conj inner name-sym)
+                    args (drop 2 expr)
+                    expanded-args (map #(first (-expand-expr % outer-env inner')) args)]
+                [(apply list 'quine name-sym expanded-args) inner'])
+
+        loop (let [pairs (partition 2 (second expr))
+                   [expanded-bindings final-inner]
+                   (reduce (fn [[acc i] [pattern val-expr]]
+                             [(conj acc pattern (first (-expand-expr val-expr outer-env i)))
+                              (into i (param-symbols pattern))])
+                           [[] inner] pairs)
+                   expanded-body (map #(first (-expand-expr % outer-env final-inner)) (drop 2 expr))]
+               [(list* 'loop (vec expanded-bindings) expanded-body) inner])
+
+        recur [(list* 'recur (map expand1 (rest expr))) inner]
+
+        ;; for: (for [x coll :when pred :let [y expr]] body)
+        for (let [bindings (second expr)
+                  body (nth expr 2)
+                  ;; Parse bindings into segments, tracking bound symbols
+                  [expanded-bindings final-inner]
+                  (loop [remaining (seq bindings)
+                         acc []
+                         bound inner]
+                    (if (empty? remaining)
+                      [acc bound]
+                      (let [item (first remaining)]
+                        (cond
+                          ;; :when pred
+                          (= item :when)
+                          (let [[pred-expanded _] (-expand-expr (second remaining) outer-env bound)]
+                            (recur (drop 2 remaining)
+                                   (conj acc :when pred-expanded)
+                                   bound))
+                          ;; :let [bindings...]
+                          (= item :let)
+                          (let [let-pairs (partition 2 (second remaining))
+                                [let-expanded let-bound]
+                                (reduce (fn [[lacc lbound] [pattern val-expr]]
+                                          [(conj lacc pattern (first (-expand-expr val-expr outer-env lbound)))
+                                           (into lbound (param-symbols pattern))])
+                                        [[] bound] let-pairs)]
+                            (recur (drop 2 remaining)
+                                   (conj acc :let (vec let-expanded))
+                                   let-bound))
+                          ;; Normal binding: pattern coll
+                          :else
+                          (let [pattern item
+                                coll-expr (second remaining)
+                                [coll-expanded _] (-expand-expr coll-expr outer-env bound)]
+                            (recur (drop 2 remaining)
+                                   (conj acc pattern coll-expanded)
+                                   (into bound (param-symbols pattern))))))))]
+              [(list 'for (vec expanded-bindings) (first (-expand-expr body outer-env final-inner))) inner])
+
+        try (let [forms (rest expr)
+                  catch-form (when (and (seq forms) (seq? (last forms))
+                                        (= 'catch (first (last forms))))
+                               (last forms))
+                  body-forms (if catch-form (butlast forms) forms)
+                  [expanded-body final-inner]
+                  (reduce (fn [[acc i] sub-expr]
+                            (let [[expanded new-i] (-expand-expr sub-expr outer-env i)]
+                              [(conj acc expanded) new-i]))
+                          [[] inner] body-forms)
+                  expanded-catch (when catch-form
+                                   (let [catch-sym (second catch-form)
+                                         catch-inner (conj final-inner catch-sym)
+                                         expanded-catch-body (map #(first (-expand-expr % outer-env catch-inner))
+                                                                  (drop 2 catch-form))]
+                                     (list* 'catch catch-sym expanded-catch-body)))]
+              [(if expanded-catch
+                 (list* 'try (concat expanded-body [expanded-catch]))
+                 (list* 'try expanded-body))
+               inner])
+
+        ;; Default: recurse into all sub-expressions
+        [(apply list (map expand1 expr)) inner])))))
+
+    :else [expr inner]))
+
+(defn expand-expr
+  "Expand expr, substituting free variables from outer-env. Returns expanded expression."
+  [expr outer-env]
+  (first (-expand-expr expr outer-env #{})))
 
 (defn reopen
   "Splice extra forms into a quine's do block. Returns the modified quine form."
@@ -904,7 +1142,10 @@
                     (assoc (:env val-result) sym (:ok val-result)))))
 
       persist (let [sym (second expr)
-                    val-result (spell-eval (nth expr 2) env)]
+                    val-result (if (= 2 (count expr))
+                                 ;; (persist x) is sugar for (persist x x)
+                                 (spell-eval sym env)
+                                 (spell-eval (nth expr 2) env))]
                 (if (err? val-result)
                   val-result
                   (ok (:ok val-result)

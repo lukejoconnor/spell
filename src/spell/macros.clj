@@ -93,6 +93,30 @@
             (list 'when temp
                   (list* 'let [sym temp] body))))))
 
+;; if-some: (if-some [sym test] then else?) -> like if-let, but false is treated as present
+(defspellmacro 'if-some
+  (fn
+    ([bindings then] (list 'if-some bindings then nil))
+    ([bindings then else]
+     (let [sym (first bindings)
+           tst (second bindings)
+           temp (gensym "if-some__")]
+       (list 'let [temp tst]
+             (list 'if (list 'some? temp)
+                   (list 'let [sym temp] then)
+                   else))))))
+
+;; when-some: (when-some [sym test] body...) -> like when-let, but false is treated as present
+(defspellmacro 'when-some
+  (fn [bindings & body]
+    (let [sym (first bindings)
+          tst (second bindings)
+          temp (gensym "when-some__")]
+      (list 'let [temp tst]
+            (list 'if (list 'some? temp)
+                  (list* 'let [sym temp] body)
+                  nil)))))
+
 ;; case: (case expr val1 result1 val2 result2 ... default?) -> nested cond + =
 (defspellmacro 'case
   (fn [test-expr & clauses]
@@ -242,28 +266,29 @@
       (throw (ex-info (str macro-name ": expected 2 args (name expr), 3 args (name expr limit), or even >= 4 args (name1 expr1 name2 expr2 ...)")
                       {:args-count (count args)})))))
 
-(def ^:private peek-rethink-message
-  "!peek-now binding disappears unless persisted.")
+(defn- peek-extra-form-exprs
+  [args]
+  (let [n-bindings (if (and (even? (count args)) (>= (count args) 4))
+                     (/ (count args) 2)
+                     1)]
+    [(reopen-eval-form
+      (list 'list (list 'quote 'prune) (inc n-bindings)))]))
 
 (defspellmacro '!call-now
   (fn [& args]
     (call-now-expander "!call-now" args nil)))
 
 ;; !peek-now: same as !call-now, but marks the binding as one-turn ephemeral.
-;; The injected rethink prunes the peek binding on the following extension unless
-;; the model persists the needed subset into a new def.
+;; The injected prune marker removes both the peek command and its result
+;; binding(s) on the following extension unless the model persists a needed subset.
 (defspellmacro '!peek-now
   (fn [& args]
-    (call-now-expander "!peek-now" args
-                       [(reopen-eval-form
-                         (list 'list (list 'quote 'rethink) peek-rethink-message))])))
+    (call-now-expander "!peek-now" args (peek-extra-form-exprs args))))
 
 ;; Short alias for !peek-now.
 (defspellmacro '!peek
   (fn [& args]
-    (call-now-expander "!peek" args
-                       [(reopen-eval-form
-                         (list 'list (list 'quote 'rethink) peek-rethink-message))])))
+    (call-now-expander "!peek" args (peek-extra-form-exprs args))))
 
 ;; =============================================================================
 ;; Threading helpers (used by -> and ->> macros)
@@ -402,6 +427,22 @@
   [form]
   (and (seq? form) (= 'rethink (first form))))
 
+(defn prune-form?
+  "Returns true if form is a (prune) or (prune k) pruning marker."
+  [form]
+  (and (seq? form)
+       (= 'prune (first form))
+       (or (= 1 (count form))
+           (and (= 2 (count form))
+                (number? (second form))))))
+
+(defn prune-n
+  "Return the number of previous siblings to prune for a prune form. Default 1."
+  [form]
+  (if (and (= 2 (count form)) (number? (second form)))
+    (int (second form))
+    1))
+
 (defn rethink-n
   "Return the number of previous siblings to prune. Default 1.
    (rethink \"reason\" body...) → 1
@@ -421,14 +462,20 @@
     (list* 'think (rest form))))
 
 (defn process-siblings
-  "Reduce over sibling forms, pruning previous siblings on rethink."
+  "Reduce over sibling forms, pruning previous siblings on prune/rethink."
   [forms]
   (reduce
     (fn [acc form]
-      (if (rethink-form? form)
+      (cond
+        (prune-form? form)
+        (vec (drop-last (prune-n form) acc))
+
+        (rethink-form? form)
         (let [n (rethink-n form)]
           (conj (vec (drop-last n acc))
                 (rethink->think form)))
+
+        :else
         (conj acc form)))
     []
     forms))
@@ -454,18 +501,32 @@
         (list* 'do (concat body [nil]))
         nil))))
 
-;; extend: (!extend completion) — prune rethinks and continue via !llm-self
+;; prune: (prune) or (prune k) — prune k preceding siblings, then disappear.
+;; Use for pure structural pruning when no residual think marker is needed.
+(defspellmacro 'prune
+  (fn [& args]
+    (cond
+      (empty? args) nil
+      (and (= 1 (count args)) (number? (first args))) nil
+      :else (throw (ex-info "prune: expected 0 args (prune 1) or 1 numeric arg (prune k)"
+                            {:args-count (count args)})))))
+
+;; extend: (!extend completion) — prune prune/rethink markers and continue via !llm-self
 (defspellmacro '!extend
   (fn
     ([] (list '!llm-self (list 'prune-and-reopen 'completion)))
     ([comp-sym] (list '!llm-self (list 'prune-and-reopen comp-sym)))))
 
-;; compact: (!compact completion) — prune rethinks, append compaction instructions, continue via !llm-self
+;; compact: (!compact completion) — prune prune/rethink markers, append compaction instructions, continue via !llm-self
 ;; Prefix ends with '(!llm-self (wrap-cat — LLM writes quoted forms, balance-parens closes everything.
 (def ^:private compact-suffix
   (str "(think \"=compact= Compact your context into the wrap-cat below. "
        "Each argument is a QUOTED form: '(def x 1) '(think \\\"label\\\" ...) etc. "
-       "For large values: (list 'def 'x (deep-truncate x 500)). "
+       "For bindings you need to keep, emit an explicit literal rebinding like "
+       "'(def name 1) or '(persist name 1). "
+       "Do not use '(persist name) or expressions that refer to earlier bindings; "
+       "the compacted forms are evaluated in a fresh env on the next self-call. "
+       "For large values, keep a smaller literal summary instead of referring to the old binding. "
        "Preserve =compact:N= markers. Drop routine thinks; keep decisions/key defs. "
        "Just write the forms — closing parens and continuation are automatic.\" nil) "
        "'(!llm-self (wrap-cat "))

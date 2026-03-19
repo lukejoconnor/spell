@@ -17,7 +17,7 @@ See `writeup/language-design-v2.md` for full semantics. Key concepts:
 - **Prompt-as-prefix**: prompt text is both user message and assistant prefix; response is appended and eval'd.
 - **Double evaluation**: the outer `eval` in the completion wrapper makes effect namespaces available to the trailing expression. Without it, only core namespaces are in scope.
 - **Completion wrapper**: NL prompts wrapped as `(quine completion (eval (do ...)))` with double evaluation of trailing expression.
-- **Think/rethink/extend**: context management. `rethink` prunes sibling expressions; `!extend` continues with pruned context.
+- **Think/prune/rethink/extend**: context management. `prune` removes sibling expressions, `rethink` is `prune` plus residual `think`, and `!extend` continues with pruned context.
 - **Namespaces**: core (`strings`, `math`, `builtins`) always available. Effect (`io`, `web`, `globals`, `agents`, `patterns`) available via trailing-expression `eval`. Future threads also get `blocking/` (`await`, `await-all`, `pmap`, `completion-promise`, `send-await`).
 - **Concurrency**: `!llm-self` for serial self-calls; `agents/spawn` for async agents; `future`/`blocking/await` for deterministic compute. These are intentionally separate.
 - **Communication**: `agents/!ask` (request/reply, poke-only, multi-target), `agents/send` (fire-and-forget), keyword handles. `!ask-await` bridges main-thread agent waits with future waits.
@@ -26,7 +26,7 @@ See `writeup/language-design-v2.md` for full semantics. Key concepts:
 
 Primary providers: Anthropic tool-call (`anthropic-tc`) and Codex tool-call (`codex-tc`). Test provider for unit tests. See `config/providers/` for all `.provider.edn` files and `config/CLAUDE.md` for loading semantics.
 
-Three base agents (prefill, message, tool-call) in `config/agents/base-*.agent.edn`. Specialized agents inherit and add namespaces. See `config/agents/` for full listing and `config/CLAUDE.md` for inheritance rules.
+Three base agents (prefill, message, tool-call) in `config/agents/base-*.agent.edn`, plus `base-glm` for GLM-5 (experimental; currently unreliable — see `glm5-failure-modes`). Specialized agents inherit and add namespaces. See `config/agents/` for full listing and `config/CLAUDE.md` for inheritance rules.
 
 Agents with `:llms` in their `.agent.edn` get a dynamically generated `llms/` namespace with named sub-LLM variants.
 
@@ -55,6 +55,8 @@ Agents with `:llms` in their `.agent.edn` get a dynamically generated `llms/` na
 
 ## Rules
 
+- **No backwards compatibility.** This is a nascent project with effectively zero users. Do not add compatibility shims, legacy placeholders, migration paths, reopen support for prior serialized shapes, or deprecated aliases unless the user explicitly asks for them. Prefer replacing old paths outright when that simplifies the system.
+- **Model names must be exact.** Never guess or extrapolate model identifiers (e.g., don't assume `gpt-5.4-codex` exists because `gpt-5.3-codex` does). Always consult the provider's API docs or web search to confirm the exact model ID string and pricing before adding models or making API calls.
 - When the user asks for a plan, always enter plan mode (using the EnterPlanMode tool). After the plan is created, tell the user the filesystem path where the plan file is located.
 - When planning any change, consider whether this doc (CLAUDE.md) should be updated; if so, add that to the plan.
 - When planning, consider whether a notebook entry is warranted; if so, add entry creation to the plan (almost always yes).

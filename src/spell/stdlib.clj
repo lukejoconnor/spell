@@ -197,16 +197,25 @@ Recommended usage pattern: Write a function, evaluate, inspect the result.
 
 Context tokens are your scarcest resource. Prune aggressively to stay effective over long tasks.
 
-Prefer !peek-now over !call-now for tool calls (auto-appends rethink):
+Prefer !peek-now over !call-now for disposable tool calls (auto-appends prune that removes the command and binding on the following extension):
     '(!peek-now data (io/bash \"find . -name '*.py'\"))
 
 On the subsequent turn, persist what you need before extending:
     (def data \"... 200 lines ...\")
-    (rethink)
+    (prune)
     ;; turn begins here — data still in scope
     (persist targets (take 5 (strings/split-lines data)))
     '(!extend)
-    ;; next turn: data is pruned, targets survives as a literal value
+    ;; next turn: the !peek-now call and data are pruned; targets survive as literals
+
+When running a shell script or Python program that you do not need to rerun, keep it inside !peek-now:
+    '(!peek-now verify (io/sh \"cd /repo && python - <<'PY'\\nimport ...\\nPY\"))
+    (prune)
+    (think \"Verification passed: the fix handles both edge cases.\")
+    '(!extend)
+    ;; next turn: both the command and result are gone
+
+When you need to rerun a script later, write it to disk first and then call it with !call-now.
 
 After extended reasoning, rethink to compress:
     (think \"Long analysis of the bug... examining stack traces, testing hypotheses... the root cause is in parse_args line 42.\")
@@ -238,11 +247,11 @@ Each extension should carry forward only what the next step needs."}})
 
 Categories (use (!describe builtins :category) for full listing):
   special-forms — quote, def, persist, do, if, let, fn, quine, loop, recur, for, try
-  macros        — when, defn, cond, case, ->, ->>, !call-now, !peek/!peek-now, !print, !describe, think/rethink/!extend/!compact, ...
+  macros        — when, defn, cond, if-let/if-some, when-let/when-some, case, ->, ->>, !call-now, ...
   effect        — eval, !llm-self, !ask-await, leaf-llm, describe-fn, llm (trailing expression only)
-  math          — +, -, *, /, inc, dec, mod, abs, max, min, rand, ...
+  math          — +, -, *, /, inc, dec, mod, abs, integer?, numerator, denominator, rand, ...
   comparison    — <, >, =, not, nil?, empty?, identity, ...
-  types         — string?, number?, vector?, map?, fn?, keyword?, name, type, int, double, ...
+  types         — string?, number?, vector?, map?, fn?, keyword?, integer?, ratio?, rational?, ...
   strings       — str, pr-str, subs, cat, format, read-string, re-find, ...
   collections   — list, vector, set, first, rest, nth, conj, count, get, assoc, into, ...
   maps          — keys, vals, merge, update, get-in, assoc-in, dissoc, select-keys, ...
@@ -251,7 +260,7 @@ Categories (use (!describe builtins :category) for full listing):
   bitwise       — bit-and, bit-or, bit-xor, bit-shift-left, ...
   spell         — spell-eval, reopen, wrap-cat, serialize-prefix, prune-and-reopen, serialize, stored
   concurrency   — future*
-  error         — throw, gensym
+  error         — throw, ex-info, ex-data, ex-message, ex-cause, gensym
 
 Use (!describe builtins :category) for full listing of any category.
 Use (!describe builtins :fn-name) for individual function docs.
@@ -289,7 +298,9 @@ Common mistakes:
   or — short-circuit logical or; returns first truthy value or last falsy value
   cond — multi-branch conditional; pairs of test/expr evaluated left to right
   if-let — bind test result; evaluate then if truthy, else otherwise
+  if-some — bind test result; evaluate then when value is non-nil, else otherwise
   when-let — bind test result; evaluate body only if binding is truthy
+  when-some — bind test result; evaluate body only when value is non-nil
   case — dispatch on equality; matches expr against constant values with optional default
   as-> — thread a value through forms, rebinding a name at each step
   cond-> — thread-first conditionally; applies each step only when its test is truthy
@@ -297,7 +308,7 @@ Common mistakes:
   some-> — thread-first with nil short-circuit; stops and returns nil on nil intermediate
   some->> — thread-last with nil short-circuit; stops and returns nil on nil intermediate
   !call-now — evaluate expr, extend completion with named binding; crosses the effect boundary
-  !peek — same as !call-now, but automatically marks the new binding as one-turn ephemeral
+  !peek — same as !call-now, but automatically marks the originating call and new binding as one-turn ephemeral
   !peek-now — alias for !peek
   -> — thread-first; insert value as first argument through a chain of forms
   ->> — thread-last; insert value as last argument through a chain of forms
@@ -307,9 +318,10 @@ Common mistakes:
   defmacro — define a user-level macro; expander receives unevaluated argument forms
   !describe — extend completion with namespace documentation; accepts ns, ns :key, or mixed (ns1 ns2 :key)
   think — label a reasoning step; evaluates body for side effects, returns nil
-  rethink — like think but prunes N previous sibling expressions from source on !extend
-  !extend — prune rethink forms from the completion and continue execution via !llm-self
-  !compact — prune rethinks and prompt the LLM to compress its context via wrap-cat"
+  prune — prune N previous sibling expressions from source on !extend, then disappear
+  rethink — equivalent to prune N siblings, then leave behind a think marker
+  !extend — prune prune/rethink forms from the completion and continue execution via !llm-self
+  !compact — prune prune/rethink markers and prompt the LLM to compress its context via wrap-cat"
 
     :effect
     "Per-agent effect builtins (available in trailing expression via double evaluation):
@@ -343,7 +355,9 @@ Common mistakes:
   random-uuid — generate and return a random UUID as a string
   +' -' *' inc' dec' — auto-promoting arithmetic (arbitrary precision on overflow)
   parse-number — parse a numeric string to an integer or float; nil if no number found
-  even? odd? pos? neg? zero? — numeric predicates"
+  numerator — return the numerator of a ratio in lowest terms
+  denominator — return the denominator of a ratio in lowest terms
+  even? odd? pos? neg? zero? integer? ratio? rational? pos-int? neg-int? — numeric predicates"
 
     :comparison
     "  < — return true if arguments are in strictly increasing order
@@ -362,7 +376,7 @@ Common mistakes:
   identity — return its single argument unchanged"
 
     :types
-    "  string? number? list? seq? vector? set? map? fn? keyword? symbol? coll? sequential? int? boolean? — type predicates
+    "  string? number? list? seq? vector? set? map? fn? keyword? symbol? coll? sequential? int? boolean? integer? ratio? rational? pos-int? neg-int? — type predicates
   name — return the local name portion of a keyword or symbol as a string
   symbol — create a symbol from a string: (symbol \"foo\") => foo
   keyword — create a keyword from a string: (keyword \"foo\") => :foo
@@ -373,6 +387,14 @@ Common mistakes:
   boolean — coerce a value to boolean: false and nil become false, everything else true
 
 Note: map? returns false for spell functions ({:spell/fn true ...}) and futures ({:spell/future true ...})."
+
+    :error
+    "  throw — raise a catchable Spell error value
+  ex-info — create a plain-data exception map with message, data, and optional cause
+  ex-data — extract the data map from a Spell exception value or host exception
+  ex-message — extract the message string from a Spell exception value or host exception
+  ex-cause — extract the cause from a Spell exception value or host exception, or nil if absent
+  gensym — generate a fresh symbol, often used for macro hygiene"
 
     :strings
     "  str — concatenate any arguments into a single string; nil arguments are skipped
@@ -487,9 +509,12 @@ Note: map? returns false for spell functions ({:spell/fn true ...}) and futures 
     :persist
     "Special form. Bind like def, but mark the binding for explicit reopen-time retention.
 
+(persist sym)
 (persist sym expr)
 
-Eval-time semantics are identical to def: expr is evaluated, sym is bound, and
+(persist sym) is sugar for (persist sym sym).
+
+Eval-time semantics otherwise match def: expr is evaluated, sym is bound, and
 the resulting value is returned.
 
 During prune-and-reopen, explicit source-level persist forms are rewritten to:
@@ -576,13 +601,14 @@ Used internally by !llm-self and !compact when a quine form needs to cross the
 LLM boundary as text."
 
     :prune-and-reopen
-    "Prune rethink-marked expressions and materialize explicit persist forms in a quine.
+    "Prune prune/rethink-marked expressions and materialize explicit persist forms
+in a quine.
 
 (prune-and-reopen completion)
 
 Returns a cleaned quine form, not a string. It:
 1. Walks the quine form
-2. Removes expressions marked for pruning by rethink
+2. Removes expressions marked for pruning by prune/rethink
 3. Rewrites explicit source-level (persist sym expr) forms to
    (persist sym <literal-runtime-value-of-sym>)
 
@@ -712,8 +738,12 @@ Example — inspect a computation:
   '(!call-now result (+ (* 3 17) (/ 100 4)))
   ;; next turn: result is bound to 76
 
-Use !peek when you want this binding to disappear on the following extension
-unless you explicitly persist what you need."
+Use !peek when you want this command and binding to disappear on the following
+extension unless you explicitly persist what you need.
+
+If the tool call is a disposable shell script or Python program, prefer !peek-now;
+the command and its binding(s) will be pruned on the next extension. If you need
+to rerun the script later, write it to disk first with io/write-file."
 
     :!peek
     "Macro. Ephemeral version of !call-now.
@@ -722,17 +752,18 @@ unless you explicitly persist what you need."
 '(!peek-now name expr)
 
 !peek/!peek-now runs like !call-now, then appends:
-  (rethink \"!peek-now binding disappears unless persisted.\")
+  (prune 2)
 
-On your next extension, that rethink prunes the peek binding from source.
-If you need part of the value, persist it first with your own persist form.
+On your next extension, that prune removes both the peek command and its
+result binding(s) from source. If you need part of the value, persist it first
+with your own persist form.
 
 Example:
   '(!peek-now code (io/read-lines \"main.py\"))
-  ;; next turn: code is available for slicing
+  (def code [\"... many lines ...\"])
+  (prune 2)
   (def fn-defn (subvec code 100 111))
-  '(!extend completion)
-  ;; next turn: fn-defn remains; code is pruned"
+  ;; next turn: both the !peek-now call and code are pruned; fn-defn remains"
 
     :!peek-now
     "Alias for !peek."
@@ -761,15 +792,34 @@ code for context but does not produce a return value.
 Example:
   (think \"Sum formula is n*(n+1)/2.\" (def total (/ (* 100 101) 2)))"
 
+    :prune
+    "Macro. Prune previous sibling expressions from the source on extend, then disappear.
+
+(prune)
+(prune N)
+
+When the completion is next extended (via !extend, !call-now, !print, or !describe),
+the previous sibling expressions are removed from the source and the prune form itself
+disappears. Use this for structural cleanup when you do not want a residual think marker.
+
+N defaults to 1 (prune previous sibling). Specify N to prune more siblings.
+
+Example:
+  '(!peek-now code (io/read-lines \"main.py\"))
+  (def code [\"... many lines ...\"])
+  (prune 2)
+  (persist fn-defn (subvec code 100 111))
+  '(!extend completion)"
+
     :rethink
-    "Macro. Like think but marks the previous sibling expression for pruning on extend.
+    "Macro. Equivalent to prune plus think: prune previous siblings, then keep a think marker.
 
 (rethink label body...)
 (rethink N label body...)
 
 When the completion is next extended (via !extend, !call-now, !print, or !describe),
-the marked expressions are removed from the source. This keeps the context
-window clean after corrections.
+the marked expressions are removed from the source and the rethink becomes a think.
+This keeps the context window clean after corrections while preserving a summary.
 
 N defaults to 1 (prune previous sibling). Specify N to prune more siblings.
 
@@ -780,16 +830,15 @@ Example:
   ;; child sees only the corrected think"
 
     :!extend
-    "Macro. Prune rethink-marked expressions from the completion and continue via !llm-self.
+    "Macro. Prune prune/rethink-marked expressions from the completion and continue via !llm-self.
 
 '(!extend completion)
 
-Calls !llm-self on the completion quine. The child call path prunes rethink
-markers and materializes explicit persist forms before serializing the prefix.
-Use after a rethink to continue with a shorter, corrected context."
+Calls prune-and-reopen on the completion quine, then !llm-self on the cleaned
+result. Use after prune/rethink to continue with a shorter, corrected context."
 
     :!compact
-    "Macro. Prune rethinks, then prompt the LLM to compress its context.
+    "Macro. Prune prune/rethink markers, then prompt the LLM to compress its context.
 
 '(!compact completion)
 

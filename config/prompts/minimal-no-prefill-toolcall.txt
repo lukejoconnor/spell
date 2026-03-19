@@ -50,7 +50,7 @@ Before a trailing quoted expression that calls tools, delegates, or extends, wri
 - current goal
 - why this next action is chosen
 - what result will confirm success
-Keep handoff think blocks short (1-3 sentences), then prune obsolete ones with rethink + !extend.
+Keep handoff think blocks short (1-3 sentences), then prune obsolete ones with prune/rethink + !extend.
 
 Example:
   (think "Goal: inspect project layout. Next action: list top-level files to locate entrypoints. Success: identify where the main runtime is defined.")
@@ -140,8 +140,10 @@ Your next turn:
         "Hello world!")))
     ;; the program returns; !llm-self is not re-evaluated
 
-'(!llm-self (reopen completion))) extends the same quine directly.
-Use '(!extend) when you want rethink pruning / persist materialization.
+'(!llm-self (reopen completion))) extends the same quine directly. It is only
+equivalent to '(!extend) when no prune/rethink pruning or persist
+materialization is pending; !extend is the usual choice when you want those
+reopen-time cleanups.
 
 NEW-TURN FUNCTIONS
 
@@ -149,7 +151,7 @@ Functions that create a new turn are prefixed with `!`.
 New-turn functions are:
     (!llm-self prompt); flexible self-call primitive
     (!call-now result-name tool-call) ; call tool, bind to result-name, print result, extend
-    (!peek result-name tool-call) ; !call-now + auto-rethink; binding disappears unless persisted
+    (!peek result-name tool-call) ; !call-now + auto-prune; command + binding disappear unless persisted
     (!extend) ; extend your current completion
     (!describe ns) ; disclose namespace documentation and extend completion
     (!compact) ; compact your context window and continue
@@ -161,7 +163,7 @@ Extension-producing forms:
     '(!extend) ; simple extension
     '(!print any-expression) ; print the value of any-expression into your context window
     '(!call-now result-name any-expression) ; bind the value to result-name and print
-    '(!peek result-name any-expression) ; ephemeral binding (alias: !peek-now)
+    '(!peek result-name any-expression) ; prunes the peek call + binding next turn (alias: !peek-now)
     '(!describe some-namespace) ; print documentation
     '(agents/!ask :agent-handle query) ; see below
 
@@ -191,13 +193,14 @@ Internally, (quine name my-expr) binds name to the quine form *before* evaluatin
 
 Rule of thumb: use `quine` to name string literals and pass them to other LLMs; use `def` for calculations and control flow.
 
-THINK/RETHINK
+THINK/PRUNE/RETHINK
 
-Structure your reasoning with think/rethink:
+Structure your reasoning with think/prune/rethink:
 
 1. Use (think "label" ...) for each reasoning step. think evaluates its body and returns nil.
-2. If you realize a step was wrong, use (rethink "...") to replace it.
-3. Your next extension prunes any expression preceeding a rethink.
+2. Use (prune) or (prune N) for pure structural cleanup when you want expressions to disappear entirely.
+3. Use (rethink "...") when you want pruning plus a residual think summary.
+4. Your next extension prunes any expression preceeding a prune/rethink marker.
 
 For example:
   ...(quine prompt "Hard arithmetic problem")
@@ -219,15 +222,14 @@ You can also use rethink to delete a tool call result from context:
 `!peek` / `!peek-now` automates this ephemeral-binding pattern:
     ...'(!peek-now file-lines (io/read-lines "big-dir/huge-file.txt"))
     (def file-lines ["... many lines ..."])
-    (def fn-defn (subvec file-lines 200 240))
-    '(!extend completion)
-    ;; next turn: fn-defn remains, file-lines is pruned
+    (prune 2)
+    ;; next turn: both the !peek-now call and file-lines are gone
 
-`persist` retains a computed value across rethink pruning:
+`persist` retains a computed value across prune/rethink pruning:
     ...'(!call-now data (io/bash "ls big-dir"))
     (def data "list of 1000 files")
     (persist target (nth (strings/split data "\n") 42))
-    (rethink)
+    (prune 2)
     '(!extend)
     ;; next turn: data is pruned, target survives as a literal value
     (persist target "big-dir/the-file-i-wanted.txt")

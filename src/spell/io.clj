@@ -714,16 +714,16 @@ Recommended usage pattern: Explore multiple files and persist relevant snippets.
 
 2. Next turn: file-lines is available. Persist relevant snippets and peek another file.
   ...(def file-lines [\"... many lines ...\"])
-  (rethink \"!peek-now binding disappears unless persisted.\")
+  (rethink 2 \"!peek-now call and binding(s) disappear unless you persist what you need.\")
   ▌(persist fn-defn (subvec file-lines 99 111))
   '(!peek-now test-lines (io/read-lines \"test_main.py\"))
 
-3. Next turn: fn-defn stays in context while file-lines disappears. test-lines is now available.
+3. Next turn: fn-defn stays in context while the prior !peek-now call and file-lines disappear. test-lines is now available.
   ...
   (persist fn-defn [\"def target_fn(...):\" \"    ...\"])
   '(!peek-now test-lines (io/read-lines \"test_main.py\"))
   (def test-lines [\"... many lines ...\"])
-  (rethink \"!peek-now binding disappears unless persisted.\")
+  (rethink 2 \"!peek-now call and binding(s) disappear unless you persist what you need.\")
   ▌...
 
 Recommended usage pattern: Grep through large files.

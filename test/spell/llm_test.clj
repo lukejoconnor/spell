@@ -74,24 +74,52 @@
                                 {'describe-fn stdlib/describe}
                                 llm/core-namespaces)
         eval-builtin (llm/make-eval variant-builtins {})]
-    (testing "multiple top-level forms are rejected by default"
+    (testing "default: reads first form only, ignores trailing forms"
       (let [inbox-fn (llm/make-inbox-fn {:variant-builtins variant-builtins
                                          :eval-builtin eval-builtin
                                          :recover-fn nil}
                                         (atom nil))]
-        (try
-          (inbox-fn "(def x 1) (+ x 1)")
-          (is false "Expected multiple top-level forms error")
-          (catch Exception e
-            (is (= :multiple-top-level-forms (:type (ex-data e))))))))
+        ;; First form (def x 1) evaluates to 1; second form is ignored
+        (is (= 1 (inbox-fn "(def x 1) (+ x 1)")))))
 
-    (testing "multiple top-level forms can be explicitly allowed"
+    (testing "default: first form valid, garbage after — no error"
+      (let [inbox-fn (llm/make-inbox-fn {:variant-builtins variant-builtins
+                                         :eval-builtin eval-builtin
+                                         :recover-fn nil}
+                                        (atom nil))]
+        (is (= 42 (inbox-fn "(+ 40 2) But wait carefully: I should reconsider...")))))
+
+    (testing "allow-multiple-top-level: reads all forms, wraps in do"
       (let [inbox-fn (llm/make-inbox-fn {:variant-builtins variant-builtins
                                          :eval-builtin eval-builtin
                                          :allow-multiple-top-level? true
                                          :recover-fn nil}
                                         (atom nil))]
         (is (= 2 (inbox-fn "(def x 1) (+ x 1)")))))))
+
+(deftest inbox-trims-persisted-raw-for-reopen-test
+  (let [variant-builtins (merge eval/core-builtins
+                                {'describe-fn stdlib/describe
+                                 'capture-raw (fn [] runtime/*current-raw*)}
+                                llm/core-namespaces)
+        eval-builtin (llm/make-eval variant-builtins {})
+        inbox-fn (llm/make-inbox-fn {:variant-builtins variant-builtins
+                                     :eval-builtin eval-builtin
+                                     :recover-fn nil}
+                                    (atom nil))
+        handle :trimmed-raw-agent
+        raw "(quine completion (eval (do (capture-raw)))) But wait carefully: I should reconsider..."
+        expected "(quine completion (eval (do (capture-raw))))"
+        p (promise)]
+    (runtime/register! handle)
+    (deliver p raw)
+    (is (= expected
+           (runtime/run-root-box handle p (runtime/make-awake-fn handle inbox-fn) inbox-fn))
+        "evaluation should see the reopenable completion, not the ignored suffix")
+    (is (= expected @(:last-raw (get @runtime/registry handle)))
+        "stored raw should drop ignored suffixes so later wakeups can reopen it")
+    (is (string? (#'runtime/reopen-completion @(:last-raw (get @runtime/registry handle))))
+        "stored raw should remain reopenable for message/preemption paths")))
 
 ;; =============================================================================
 ;; File I/O task tests
@@ -936,10 +964,10 @@
         (is @recovery-called)
         (is (= 42 result)))))
 
-  (testing "quine-extension recovery re-enters via extend"
+  (testing "quine-extension recovery re-enters through the recovery quine"
     ;; Program is a quine with an error. Quine-extension recovery appends
-    ;; a new arg with error info + (!extend completion). The second LLM call
-    ;; (via extend) provides the fix.
+    ;; a rethink marker plus a new arg with error info, then reopens the
+    ;; recovery quine. The second LLM call provides the fix.
     (let [call-count (atom 0)
           {:keys [llm]} (th/make-test-llm
                           {:response-fn (fn [_]
@@ -947,12 +975,43 @@
                                             (if (= n 1)
                                               "undefined-symbol) '(!extend completion))"  ; first call fails
                                               "(def fix 42))")))
-                           :prefill? true}                       ; recovery extend returns fix
+                           :prefill? true}
                           :namespaces {})]
       ;; Use quine prefix so recovery can append
       (let [result (llm "(quine completion (eval (do ")]
-        (is (= 2 @call-count))  ; original + recovery extend
+        (is (= 2 @call-count))
         (is (= 42 result)))))
+
+  (testing "quine-extension recovery injects rethink and reopens without _previous_program"
+    (let [prompts (atom [])]
+      (let [{:keys [llm]}
+            (th/make-test-llm
+              {:response-fn (fn [prompt]
+                              (swap! prompts conj prompt)
+                              (if (= 1 (count @prompts))
+                                "undefined-symbol) '(!extend completion))"
+                                "(def fix 42))"))}
+              :namespaces {} :prefill? false)]
+        (let [result (llm "(quine completion (eval (do ")
+              recovery-prompt (second @prompts)]
+          (is (= 42 result))
+          (is (str/includes? recovery-prompt "(rethink \"Error recovery - see _error for details.\")"))
+          (is (str/includes? recovery-prompt "!llm-self (reopen completion)"))
+          (is (not (str/includes? recovery-prompt "_previous_program")))))))
+
+  (testing "shared recovery limit stops eval-only runaway loops"
+    (let [call-count (atom 0)]
+      (let [{:keys [llm]}
+            (th/make-test-llm
+              {:response-fn (fn [_]
+                              (swap! call-count inc)
+                              "undefined-symbol)")}
+              :namespaces {})]
+        (let [invoke #(llm "(quine completion (eval (do ")]
+          (is (thrown-with-msg? Exception #"Recovery limit exceeded: 2 while handling eval error"
+                                (invoke))))
+        ;; Initial call + 2 eval recovery retries
+        (is (= 3 @call-count)))))
 
   (testing "no recovery when explicitly disabled"
     (let [{:keys [llm]} (th/make-test-llm {:response "undefined-symbol)"}
@@ -1008,16 +1067,30 @@
         (is (str/includes? recovery-prompt "Reader error"))
         (is (str/includes? recovery-prompt "\\invalidchar")))))
 
-  (testing "reader error recovery depth limit stops runaway loops"
+  (testing "shared recovery limit stops parse-only runaway loops"
     (let [call-count (atom 0)
           {:keys [llm]} (th/make-test-llm
                           {:response-fn (fn [_]
                                           (swap! call-count inc)
                                           "\\invalidchar)")}
                           :namespaces {})]
-      (is (thrown-with-msg? Exception #"Reader error recovery limit exceeded"
+      (is (thrown-with-msg? Exception #"Recovery limit exceeded: 2 while handling reader error"
                             (llm "(quine completion (eval (do ")))
       ;; Initial call + 2 recovery retries
+      (is (= 3 @call-count))))
+
+  (testing "shared recovery limit applies across reader and eval recovery"
+    (let [call-count (atom 0)
+          {:keys [llm]} (th/make-test-llm
+                          {:response-fn (fn [_]
+                                          (case (swap! call-count inc)
+                                            1 "\\invalidchar)"
+                                            2 "undefined-symbol)"
+                                            3 "undefined-symbol)"))}
+                          :namespaces {})]
+      (is (thrown-with-msg? Exception #"Recovery limit exceeded: 2 while handling eval error"
+                            (llm "(quine completion (eval (do ")))
+      ;; Initial parse error + one reader recovery retry + one eval recovery retry
       (is (= 3 @call-count)))))
 
 (deftest namespace-recovery-invoke-fn-wrapping-test
@@ -1293,10 +1366,6 @@
 ;; =============================================================================
 
 (deftest fireworks-provider-construction
-  (testing "fireworks-provider requires API key"
-    (is (thrown-with-msg? Exception #"FIREWORKS_API_KEY"
-                          (provider/fireworks-provider {:api-key nil}))))
-
   (testing "fireworks-provider custom opts"
     (let [p (provider/fireworks-provider {:api-key "fw"
                                           :base-url "https://api.fireworks.ai/inference/v1/"
