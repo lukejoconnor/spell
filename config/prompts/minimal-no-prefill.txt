@@ -127,7 +127,7 @@ Your next turn:
         "Hello world!")))
     ;; the program returns; !llm-self is not re-evaluated
 
-'(!llm-self (reopen completion))) is equivalent to '(!extend).
+'(!llm-self (reopen completion))) is only equivalent to '(!extend) when no rethink pruning is pending; !extend is the usual choice because it runs prune-and-reopen first.
 
 NEW-TURN FUNCTIONS
 

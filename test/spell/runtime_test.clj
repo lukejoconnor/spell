@@ -1290,6 +1290,7 @@
 (deftest effect-guard-allows-in-second-pass-test
   (testing "dangerous fns work through double-evaluation (eval special form)"
     ;; agents/!ask resolves through eval double-evaluation but fails at runtime
-    (let [{:keys [llm]} (th/make-test-llm {:response "(agents/!ask :nobody \"hello\")))"})]
+    (let [{:keys [llm]} (th/make-test-llm {:response "(agents/!ask :nobody \"hello\")))"}
+                        :recover false)]
       (is (thrown-with-msg? Exception #"not inside an agent context|not registered"
             (llm "(eval (do '"))))))

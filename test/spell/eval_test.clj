@@ -2662,6 +2662,19 @@
       ;; Should contain the pruned last arg
       (is (.contains ^String result "(def y 2)"))))
 
+  (testing "prune-and-reopen can prune an inert quine arg via a top-level rethink sibling"
+      (let [quine-form '(quine completion
+                        (eval (do (def bad undefined-symbol) (quote (!extend completion))))
+                        (rethink "Error recovery - see _error for details.")
+                        (eval (do
+                                (def _error {:error "Unbound symbol: undefined-symbol"})
+                                (quote (!llm-self (reopen completion))))))
+          result (run-spell (list 'prune-and-reopen (list 'quote quine-form)))]
+      (is (.startsWith ^String result "(quine completion "))
+      (is (not (.contains ^String result "(def bad undefined-symbol)")))
+      (is (.contains ^String result "(think \"Error recovery - see _error for details.\")"))
+      (is (.contains ^String result "(quote (!llm-self (reopen completion)))"))))
+
   (testing "prune-and-reopen with standard (2-arg) quine unchanged behavior"
     (let [quine-form '(quine completion (eval (do (def a 10))))
           result (run-spell (list 'prune-and-reopen (list 'quote quine-form)))]
