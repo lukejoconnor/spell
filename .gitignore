@@ -26,6 +26,7 @@ results/
 # Claude Code worktrees
 .claude/worktrees/
 .claude/plan.md
+.claude/scheduled_tasks.lock
 
 # Scratch/temp files
 .__tmp_*

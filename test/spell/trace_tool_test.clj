@@ -91,28 +91,36 @@
 (deftest collect-rethinks-test
   (let [program '(do
                    (think "first")
-                   (rethink "drop that")
+                   (prune)
                    (def x 1)
-                   (rethink "drop x"))]
-    (is (= 2 (count (tt/collect-rethinks program))))
-    (let [[r1 r2] (tt/collect-rethinks program)]
-      (is (= '(rethink "drop that") (:rethink r1)))
+                   (rethink "drop that")
+                   (prune 2))]
+    (is (= 3 (count (tt/collect-rethinks program))))
+    (let [[r1 r2 r3] (tt/collect-rethinks program)]
+      (is (= 'prune (:kind r1)))
+      (is (= '(prune) (:marker r1)))
       (is (= '(think "first") (:previous r1)))
-      (is (= '(rethink "drop x") (:rethink r2)))
-      (is (= '(def x 1) (:previous r2))))))
+      (is (= 'rethink (:kind r2)))
+      (is (= '(rethink "drop that") (:marker r2)))
+      (is (= '(def x 1) (:previous r2)))
+      (is (= 'prune (:kind r3)))
+      (is (= '(prune 2) (:marker r3)))
+      (is (= '(rethink "drop that") (:previous r3))))))
 
 (deftest collect-trace-rethinks-response-only-test
   (let [trace {:nodes [{:id 0
                         :program '(quine completion
-                                    (eval (do (think "a") (rethink "drop a"))))
-                        :response "(think \"a\") (rethink \"drop a\")"}
+                                    (eval (do (think "a") (prune))))
+                        :response "(think \"a\") (prune)"}
                        {:id 1
-                        :program '(do (think "a") (rethink "drop a") (think "b") (rethink "drop b"))
+                        :program '(do (think "a") (prune) (think "b") (rethink "drop b"))
                         :response "(think \"b\") (rethink \"drop b\")"}]}]
-    (testing "inherited rethink state in full programs is not re-counted"
+    (testing "inherited pruning state in full programs is not re-counted"
       (let [items (tt/collect-trace-rethinks trace)]
         (is (= 2 (count items)))
         (is (= #{0 1} (set (map :node-id items))))
+        (is (= ['prune 'rethink]
+               (mapv :kind items)))
         (is (= [[2] [2]]
                (mapv :path items)))))))
 
@@ -121,12 +129,13 @@
                         :depth 0
                         :program '(do
                                     (think "a")
+                                    (prune)
                                     (rethink "drop a")
                                     (io/sh "ls")
                                     (globals/set :k 1)
                                     (defn helper [x] (math/sqrt x))
                                     (persist state))
-                        :response "(think \"a\") (rethink \"drop a\") (io/sh \"ls\") (globals/set :k 1) (defn helper [x] (math/sqrt x)) (persist state)"}
+                        :response "(think \"a\") (prune) (rethink \"drop a\") (io/sh \"ls\") (globals/set :k 1) (defn helper [x] (math/sqrt x)) (persist state)"}
                        {:id 1
                         :depth 1
                        :error "boom"
@@ -151,10 +160,12 @@
                         :program '(do (!print :done))
                         :response "(!print :done)"}]}
         summary (tt/trace-summary "traces/example" trace)
-        pruned (count (pr-str '(think "a")))]
+        pruned-think (count (pr-str '(think "a")))
+        pruned-prune (count (pr-str '(prune)))]
     (is (= "traces/example" (:trace-dir summary)))
     (is (= 4 (:node-count summary)))
     (is (= {'think 1
+            'prune 1
             'rethink 1
             '!compact 1
             '!llm-self 1
@@ -181,16 +192,22 @@
            (get-in summary [:namespace-usage "strings"])))
     (is (= {"coder" 1}
            (get-in summary [:namespace-usage "llms"])))
-    (is (= {:count 1
-            :total-chars pruned
-            :mean-chars (double pruned)
-            :max-chars pruned}
-           (:rethink-stats summary)))
+    (is (= {:count 2
+            :total-chars (+ pruned-think pruned-prune)
+            :mean-chars (/ (double (+ pruned-think pruned-prune)) 2.0)
+            :max-chars pruned-think}
+           (:pruning-stats summary)))
     (is (= [{:node-id 0
              :path [2]
-             :chars-pruned pruned
-             :head-sym 'think}]
-           (:rethink-details summary)))
+             :kind 'prune
+             :chars-pruned pruned-think
+             :head-sym 'think}
+            {:node-id 0
+             :path [3]
+             :kind 'rethink
+             :chars-pruned pruned-prune
+             :head-sym 'prune}]
+           (:pruning-details summary)))
     (is (= [{:node-id 1
              :error "boom"
              :recovered? true
@@ -257,6 +274,7 @@
   (let [summary {:trace-dir "traces/example"
                  :node-count 2
                  :tracked-counts {'think 3
+                                  'prune 2
                                   'rethink 1
                                   '!extend 2
                                   '!call-now 4
@@ -272,7 +290,7 @@
                                   'future 2
                                   'defn 1
                                   'fn 3}
-                 :rethink-stats {:count 1 :mean-chars 12.0 :total-chars 12 :max-chars 12}
+                 :pruning-stats {:count 3 :mean-chars 12.0 :total-chars 36 :max-chars 20}
                  :namespace-usage {"io" {"sh" 2}
                                    "agents" {"spawn" 1}
                                    "globals" {"get" 1}
@@ -284,7 +302,7 @@
                  :errors [{:node-id 1 :recovered? true}
                           {:node-id 2 :recovered? false}]
                  :flags #{:concurrency-used :function-definitions}}]
-    (is (= ["traces/example" 2 3 1 "12.0" 12 12 2 4 3 1 1 2 1 5 1 1 2 1 3 2 1 1 2 1 1 3 1 1 1
+    (is (= ["traces/example" 2 3 2 1 "12.0" 36 20 2 4 3 1 1 2 1 5 1 1 2 1 3 2 1 1 2 1 1 3 1 1 1
             ":concurrency-used :function-definitions"]
            (tt/summary-tsv-row summary)))))
 
@@ -382,13 +400,13 @@
         _ (spit file-2 (apply str (repeat 400 "c")))
         trace {:nodes [{:id 0
                         :file "0000.spl"
-                        :program '(do (think "a") (rethink "drop a"))
-                        :response "(think \"a\") (rethink \"drop a\")"}
+                        :program '(do (think "a") (prune))
+                        :response "(think \"a\") (prune)"}
                        {:id 1
                         :file "0001.spl"
                         :program '(do
                                     (think "a")
-                                    (rethink "drop a")
+                                    (prune)
                                     (def payload {:id 1})
                                     (rethink "drop payload"))
                         :response "(def payload {:id 1}) (rethink \"drop payload\")"}
@@ -396,7 +414,7 @@
                         :file "0002.spl"
                         :program '(do
                                     (think "a")
-                                    (rethink "drop a")
+                                    (prune)
                                     (def payload {:id 1})
                                     (rethink "drop payload")
                                     (think "continue"))
@@ -409,7 +427,7 @@
         fallback-size (count (pr-str '(do (foo "bar"))))]
     (is (= [300 3500 400 fallback-size] (mapv :chars rows)))
     (is (= [nil 3200 -3100 (- fallback-size 400)] (mapv :delta rows)))
-    (is (= [1 1 0 0] (mapv :rethink-count rows)))
+    (is (= [1 1 0 0] (mapv :pruning-count rows)))
     (is (pos? (:pruned-chars (first rows))))
     (is (pos? (:pruned-chars (second rows))))
     (is (zero? (:pruned-chars (nth rows 2))))

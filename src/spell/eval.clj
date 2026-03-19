@@ -68,20 +68,61 @@
    Bound by the LLM pipeline. Consulted on symbol lookup failure to
    produce context-specific error messages instead of generic 'Unbound symbol'."
   {})
-
-(def future-context-key
-  "Env marker key set by future* for future-only runtime primitives."
-  ::in-future)
-
-(defn in-future-context?
-  "True when current evaluation is running inside a Spell future."
-  []
-  (true? (get *spell-env* future-context-key)))
-
 (defn spell-future?
   "Returns true if v is a Spell future handle."
   [v]
   (and (map? v) (:spell/future v)))
+
+(defn spell-exception?
+  "Returns true if v is a Spell exception map."
+  [v]
+  (and (map? v) (true? (:spell/exception v))))
+
+(defn- throwable->spell-exception
+  "Convert a host Throwable into Spell's plain-data exception representation."
+  [^Throwable t]
+  (cond-> {:spell/exception true
+           :message (ex-message t)
+           :data (ex-data t)}
+    (some? (ex-cause t))
+    (assoc :cause (throwable->spell-exception (ex-cause t)))))
+
+(defn spell-ex-info
+  "Create a plain-data exception value safe to persist across continuations."
+  ([msg data]
+   {:spell/exception true
+    :message msg
+    :data data})
+  ([msg data cause]
+   (cond-> (spell-ex-info msg data)
+     (some? cause)
+     (assoc :cause (if (instance? Throwable cause)
+                     (throwable->spell-exception cause)
+                     cause)))))
+
+(defn spell-ex-data
+  "Extract exception data from a Spell exception value or host Throwable."
+  [v]
+  (cond
+    (spell-exception? v) (:data v)
+    (instance? Throwable v) (ex-data v)
+    :else nil))
+
+(defn spell-ex-message
+  "Extract an exception message from a Spell exception value or host Throwable."
+  [v]
+  (cond
+    (spell-exception? v) (:message v)
+    (instance? Throwable v) (ex-message v)
+    :else nil))
+
+(defn spell-ex-cause
+  "Extract an exception cause from a Spell exception value or host Throwable."
+  [v]
+  (cond
+    (spell-exception? v) (:cause v)
+    (instance? Throwable v) (some-> v ex-cause throwable->spell-exception)
+    :else nil))
 
 ;; =============================================================================
 ;; Call-now value store (out-of-band storage for large values)
@@ -144,13 +185,14 @@
     :else value))
 
 (defn- format-line-offset-vector
-  "Serialize a vector with :spell/line-offset metadata as a vector literal
-   where each entry has an inline ; line-number comment.
+  "Serialize a vector with :spell/line-offset metadata as a (line-offset ...)
+   form where each entry has an inline ; line-number comment.
    Returns nil if the vector doesn't have line-offset metadata."
   [value]
-  (when-let [offset (:spell/line-offset (meta value))]
+  (when (and (vector? value) (contains? (meta value) :spell/line-offset))
+    (let [offset (:spell/line-offset (meta value))]
     (if (empty? value)
-      "[]"
+      (str "(line-offset " offset " [])")
       (let [last-line (+ offset (dec (count value)))
             width (count (str last-line))
             rows (map-indexed (fn [i line]
@@ -158,15 +200,30 @@
                                      " ; "
                                      (format (str "%" width "d") (+ offset i))))
                               value)]
-        (str "[\n" (str/join "\n" rows) "\n]")))))
+        (str "(line-offset " offset " [\n"
+             (str/join "\n" rows)
+             "\n])"))))))
+
+(defn- line-offset-form?
+  [form]
+  (and (seq? form)
+       (= 'line-offset (first form))
+       (= 3 (count form))
+       (number? (second form))
+       (vector? (nth form 2))))
+
+(defn- format-line-offset-form
+  [form]
+  (format-line-offset-vector
+    (with-meta (nth form 2) {:spell/line-offset (second form)})))
 
 (defn serialize-for-continuation
   "Serialize a value for embedding in a !call-now continuation.
    Small values are inlined via pr-str. Large strings are truncated with a note.
    Large non-strings are deep-truncated (string values within maps/seqs are
    individually truncated) then inlined. Only stored out-of-band if still too large.
-   Vectors with :spell/line-offset metadata produce a vector literal with
-   inline line-number comments.
+   Vectors with :spell/line-offset metadata produce a (line-offset ...) form
+   with inline line-number comments.
    limit: max pr-str chars before truncation/storage. Negative means always inline."
   ([value] (serialize-for-continuation value call-now-inline-limit))
   ([value limit]
@@ -196,6 +253,18 @@
                  ;; Still too large — store out-of-band
                  (let [id (store-value! value)]
                    (str "(stored " (pr-str id) ")")))))))))))
+
+(defn- serialize-prefix-form
+  [form]
+  (cond
+    (line-offset-form? form)
+    (format-line-offset-form form)
+
+    (seq? form)
+    (str "(" (str/join " " (map serialize-prefix-form form)) ")")
+
+    :else
+    (pr-str form)))
 
 
 ;; =============================================================================
@@ -231,7 +300,7 @@
 ;; Builtins
 ;; =============================================================================
 
-(declare spell-eval expand-expr prune-substitute reopen)
+(declare spell-eval prune-substitute reopen serialize-quine-prefix)
 
 (defn spell-fn?
   "Returns true if v is a Spell function (dynamic-scoping function map)."
@@ -317,8 +386,7 @@
   (mapcat destructure-bind params args))
 
 (defn param-symbols
-  "Extract all binding symbols from a destructuring param pattern.
-   Used by expand-expr to track locally-bound names."
+  "Extract all binding symbols from a destructuring param pattern."
   [param]
   (cond
     (symbol? param) [param]
@@ -360,7 +428,7 @@
    '+ +, '- -, '* *, '/ /, 'inc inc, 'dec dec,
    'int int, 'long long, 'float float, 'double double, 'bigdec bigdec, 'rationalize rationalize,
    'quot quot, 'mod mod, 'max max, 'min min, 'max-key max-key, 'min-key min-key, 'rem rem,
-   'abs abs, 'floor (fn [x] (long (Math/floor x))), 'ceil (fn [x] (long (Math/ceil x))),
+   'abs abs,
    'rand rand, 'rand-int (fn [n] (rand-int n)),
    '+' +', '-' -', '*' *', 'inc' inc', 'dec' dec',
    'parse-number (fn [s]
@@ -370,6 +438,9 @@
                        (if (re-find #"\." m) (Double/parseDouble m) (Long/parseLong m))))),
    ;; Numeric predicates
    'even? even?, 'odd? odd?, 'pos? pos?, 'neg? neg?, 'zero? zero?,
+   'integer? integer?, 'ratio? ratio?, 'rational? rational?,
+   'pos-int? pos-int?, 'neg-int? neg-int?,
+   'numerator numerator, 'denominator denominator,
    ;; Comparison
    '< <, '> >, '<= <=, '>= >=, '= =, 'not= not=, 'compare compare,
    ;; Logic
@@ -447,28 +518,22 @@
             ([start end step] (vec (range start end step)))),
    ;; Strip / Reopen
    'strip-parens (fn [n s] (parse/strip-trailing-parens n (if (string? s) s (pr-str s)))),
-   'reopen (fn [s]
-              (parse/strip-trailing-parens 3
-                (cond (string? s) s
-                      *raw-text*  *raw-text*
-                      :else       (pr-str s)))),
-   ;; wrap-cat: combine quine-bound forms into an open preamble prefix
+   'serialize-prefix (fn [quine-form] (serialize-quine-prefix quine-form)),
+   ;; wrap-cat: build a quine completion form from the provided forms
    'wrap-cat (fn [& forms]
-               (str "(quine completion (eval (do "
-                    (str/join " " (map pr-str forms))
-                    " ")),
-   ;; Prune rethinks and reopen as prefix string
+               (apply reopen (list 'quine 'completion '(eval (do))) forms)),
+   ;; Prune rethinks and keep the cleaned quine as data
    'prune-and-reopen (fn [quine-form]
-                       (reopen (prune-substitute quine-form (or *spell-env* {})))),
+                       (prune-substitute quine-form (or *spell-env* {}))),
    ;; Value store (for !call-now out-of-band large values)
    'stored stored,
    'serialize (fn
                ([value] (serialize-for-continuation value))
                ([value limit] (serialize-for-continuation value limit))),
    'deep-truncate (fn [value limit] (deep-truncate value (int limit))),
-   ;; Eval — close over caller bindings, then evaluate in a fresh env
+   ;; Eval directly in the caller env.
    'spell-eval (fn [expr]
-                 (let [r (spell-eval (expand-expr expr *spell-env*) {})]
+                 (let [r (spell-eval expr (or *spell-env* {}))]
                    (if (ok? r) (:ok r) (throw (ex-info (:err r) {:result r}))))),
    ;; Extended sequence operations (from seqs/)
    'every? (fn [pred coll] (every? #(invoke-fn pred [%]) coll)),
@@ -628,13 +693,18 @@
    'throw (fn [v]
             (throw (ex-info (if (string? v) v (pr-str v))
                             {:spell/thrown v}))),
+   'ex-info spell-ex-info,
+   'ex-data spell-ex-data, 'ex-message spell-ex-message, 'ex-cause spell-ex-cause,
    ;; future* — run a thunk in a new thread, return a future handle
    'future* (fn [thunk]
-              (let [f (bound-fn []
-                        (binding [*spell-env* (merge *spell-env*
-                                                     *future-env*
-                                                     {future-context-key true})]
-                          (invoke-fn thunk [])))]
+              (let [current-raw-var (resolve 'spell.runtime/*current-raw*)
+                    f (bound-fn []
+                        (if current-raw-var
+                          (with-bindings* {current-raw-var nil}
+                            #(binding [*spell-env* (merge *spell-env* *future-env*)]
+                               (invoke-fn thunk [])))
+                          (binding [*spell-env* (merge *spell-env* *future-env*)]
+                            (invoke-fn thunk []))))]
                 {:spell/future true :ref (clojure.core/future (f))}))})
 
 (def ^:dynamic *builtins*
@@ -648,7 +718,7 @@
 
 (def special-forms
   "Special forms that are not free variables."
-  #{'quote 'def 'persist 'do 'if 'let 'fn 'fn* 'quine 'loop 'recur 'for 'try})
+  #{'quote 'def 'persist 'do 'if 'let 'fn 'fn* 'quine 'reopen 'loop 'recur 'for 'try})
 
 (defn quote-value
   "Wrap non-self-evaluating values in (quote ...) for safe embedding in generated code."
@@ -656,6 +726,8 @@
   (cond
     (or (nil? v) (number? v) (string? v) (boolean? v) (keyword? v)) v
     (spell-fn? v) (list* 'fn (:params v) (:body v))
+    (and (vector? v) (contains? (meta v) :spell/line-offset))
+    (list 'line-offset (:spell/line-offset (meta v)) v)
     :else (list 'quote v)))
 
 (defn prune-substitute
@@ -665,7 +737,7 @@
   (cond
     (and (seq? form)
          (= 'persist (first form))
-         (= 3 (count form))
+         (#{2 3} (count form))
          (symbol? (second form))
          (some? env))
     (let [sym (second form)]
@@ -696,30 +768,39 @@
 
     :else form))
 
-(defn reopen
-  "Serialize a quine form as an open prefix string (no trailing close-parens)."
+(defn- destructure-quine-form
+  "Validate quine-form and return its quine name, inert args, and do-body forms."
   [quine-form]
   (when-not (and (seq? quine-form)
                  (= 'quine (first quine-form))
                  (<= 3 (count quine-form)))
     (throw (ex-info "reopen expects a quine form" {:form quine-form})))
   (let [elements (vec (seq quine-form))
+        name-sym (second elements)
         inert-args (subvec elements 2 (max 2 (dec (count elements))))
         last-arg (last elements)
-        [eval-sym do-form & extra] (seq last-arg)]
+        tail (when (seq? last-arg) (seq last-arg))
+        [eval-sym do-form & extra] tail]
     (when-not (and (= 'eval eval-sym)
                    (empty? extra)
                    (seq? do-form)
                    (= 'do (first do-form)))
       (throw (ex-info "reopen expects quine tail of the form (eval (do ...))"
                       {:form quine-form :tail last-arg})))
-    (let [body-forms (rest do-form)]
-      (str "(quine completion "
-           (when (seq inert-args)
-             (str (str/join " " (map pr-str inert-args)) " "))
-           "(eval (do "
-           (str/join " " (map pr-str body-forms))
-           " "))))
+    {:name-sym name-sym
+     :inert-args inert-args
+     :body-forms (rest do-form)}))
+
+(defn serialize-quine-prefix
+  "Serialize a quine form as an open prefix string (no trailing close-parens)."
+  [quine-form]
+  (let [{:keys [name-sym inert-args body-forms]} (destructure-quine-form quine-form)]
+    (str "(quine " name-sym " "
+         (when (seq inert-args)
+           (str (str/join " " (map pr-str inert-args)) " "))
+         "(eval (do "
+         (str/join " " (map serialize-prefix-form body-forms))
+         " ")))
 
 (defn- -expand-expr
   "Walk expr substituting outer-env values for free symbols not in inner (locally defined).
@@ -791,9 +872,11 @@
                   [val-expanded _] (-expand-expr (nth expr 2) outer-env inner)]
               [(list 'def sym val-expanded) (conj inner sym)])
 
-        persist (let [sym (second expr)
-                      [val-expanded _] (-expand-expr (nth expr 2) outer-env inner)]
-                  [(list 'persist sym val-expanded) (conj inner sym)])
+        persist (if (= 2 (count expr))
+                  [(list 'persist (second expr)) (conj inner (second expr))]
+                  (let [sym (second expr)
+                        [val-expanded _] (-expand-expr (nth expr 2) outer-env inner)]
+                    [(list 'persist sym val-expanded) (conj inner sym)]))
 
         do (let [[forms final-inner]
                  (reduce (fn [[acc i] sub-expr]
@@ -907,6 +990,34 @@
   "Expand expr, substituting free variables from outer-env. Returns expanded expression."
   [expr outer-env]
   (first (-expand-expr expr outer-env #{})))
+
+(defn reopen
+  "Splice extra forms into a quine's do block. Returns the modified quine form."
+  [quine-form & extra-forms]
+  (let [{:keys [name-sym inert-args body-forms]} (destructure-quine-form quine-form)
+        reopened-tail (list 'eval (list* 'do (concat body-forms extra-forms)))]
+    (apply list 'quine name-sym (concat inert-args [reopened-tail]))))
+
+(defn- eval-reopen-extra-forms
+  "Resolve reopen extra args. Raw forms are spliced as-is.
+   (reopen-eval expr) evaluates expr first and splices the resulting form."
+  [extra-exprs env]
+  (loop [remaining extra-exprs
+         resolved []
+         e env]
+    (if (empty? remaining)
+      (ok resolved e)
+      (let [extra-expr (first remaining)]
+        (if (and (seq? extra-expr) (= 'reopen-eval (first extra-expr)))
+          (let [result (spell-eval (second extra-expr) e)]
+            (if (err? result)
+              result
+              (recur (rest remaining)
+                     (conj resolved (:ok result))
+                     (:env result))))
+          (recur (rest remaining)
+                 (conj resolved extra-expr)
+                 e))))))
 
 ;; =============================================================================
 ;; Evaluator
@@ -1031,13 +1142,25 @@
                     (assoc (:env val-result) sym (:ok val-result)))))
 
       persist (let [sym (second expr)
-                    val-result (spell-eval (nth expr 2) env)]
+                    val-result (if (= 2 (count expr))
+                                 ;; (persist x) is sugar for (persist x x)
+                                 (spell-eval sym env)
+                                 (spell-eval (nth expr 2) env))]
                 (if (err? val-result)
                   val-result
                   (ok (:ok val-result)
                       (assoc (:env val-result) sym (:ok val-result)))))
 
       do    (eval-seq (rest expr) env)
+
+      reopen (let [quine-result (spell-eval (second expr) env)]
+               (if (err? quine-result)
+                 quine-result
+                 (let [extra-result (eval-reopen-extra-forms (drop 2 expr) (:env quine-result))]
+                   (if (err? extra-result)
+                     extra-result
+                     (ok (apply reopen (:ok quine-result) (:ok extra-result))
+                         (:env extra-result))))))
 
       if    (let [test-result (spell-eval (second expr) env)]
               (if (err? test-result)

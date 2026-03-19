@@ -10,7 +10,7 @@
 
 (def provider-prefixes
   #{"ollama" "codex-msg" "codex-tc" "openclaw" "openai"
-    "anthropic-pf" "anthropic-tc" "kimi" "moonshot" "test"})
+    "anthropic-pf" "anthropic-tc" "fireworks" "kimi" "moonshot" "test"})
 
 (def cli-options
   [["-r" "--request FILE" "Request JSON path, or '-' for stdin" :default "-"]
@@ -55,6 +55,7 @@
    "anthropic-tc"  "config/providers/anthropic-tc.provider.edn"
    "codex-msg"     "config/providers/codex-msg.provider.edn"
    "codex-tc"      "config/providers/codex-tc.provider.edn"
+   "fireworks"     "config/providers/fireworks.provider.edn"
    "openai"        "config/providers/openai.provider.edn"
    "ollama"        "config/providers/ollama.provider.edn"
    "openclaw"      "config/providers/openclaw.provider.edn"
@@ -160,6 +161,9 @@
       "openai"
       (provider/openai-provider (cond-> base-opts
                                   responses-api (assoc :use-responses-api true)))
+
+      "fireworks"
+      (provider/fireworks-provider base-opts)
 
       ("kimi" "moonshot")
       (provider/kimi-provider base-opts)

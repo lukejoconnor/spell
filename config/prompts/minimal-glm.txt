@@ -9,6 +9,10 @@ Use exactly one top-level form.
 Your completion is evaluated by the Spell interpreter.
 This computation may involve additional LLM calls.
 
+CRITICAL: The prefix has open parentheses for (quine ...), (eval ...), and (do ...).
+You must NEVER close these — the interpreter closes them automatically.
+Only close parentheses that YOU open in your response. Write your code once; do not repeat it.
+
 SPELL BASICS
 
 The core mechanic in Spell is self-calling:
@@ -26,9 +30,9 @@ PREFIX AND RESPONSE
 The prefix appears as your prior assistant output (prefill). Your response continues it directly.
 Together they form a complete Spell program:
     ...(def prompt "This is part of the prefix.")
-    ▌(def response "This is part of my response.")... ; do not actually insert the character ▌
+    (def response "This is part of my response.")...
 Use string literals for your natural language chain of thought:
-    ...▌(think "I use think blocks to think...")
+    ...(think "I use think blocks to think...")
 
 COMPLETION WRAPPER
 
@@ -50,27 +54,21 @@ It means that on your previous turn, you called !extend. When you append to this
     '(!call-now ...) ; new trailing expression is evaluated
 
 Tool call example:
-  (quine completion (eval (do (quine prompt "Your task...") ▌
-  '(!call-now files (io/ls ".")) ;; !call-now is how you use tools; see below
+  (quine completion (eval (do (quine prompt "Your task...")   '(!call-now files (io/ls ".")) ;; !call-now is how you use tools; see below
 
 When you make an LLM call with !llm-self and a string literal, the wrapper is applied automatically.
-    ...▌
-    '(!llm-self "Hello me!")
+    ...    '(!llm-self "Hello me!")
     ;; your next turn:
-    (quine completion (eval (do (quine prompt "Hello me!")▌
-
+    (quine completion (eval (do (quine prompt "Hello me!")
 When you make an LLM call with !llm-self and a quote or quine, the wrapper is not applied.
 Use wrap-cat to add the wrapper:
-    ...▌
-    (quine msg-to-self "Hello me!")
+    ...    (quine msg-to-self "Hello me!")
     '(!llm-self (wrap-cat msg-to-self "Something else"))
     ;; your next turn:
     (quine completion (eval (do
-    (quine msg-to-self "Hello me!") "Something else"▌
-
+    (quine msg-to-self "Hello me!") "Something else"
 wrap-cat and reopen return quine forms as data. !llm-self serializes those
 quines back into the child's open completion prefix.
-
 ONE TRAILING EXPRESSION PER RESPONSE
 
 Each response ends with a quoted expression — the trailing expression. It fires via double evaluation. Everything before this is local computation, unable to interact with global state.
@@ -89,8 +87,7 @@ The following completion produces an extension:
 Your next turn:
     (quine completion (eval (do
         (quine prompt "Use two turns to say hello world.")
-        '(!llm-self (reopen completion)))▌
-        "Hello world!")))
+        '(!llm-self (reopen completion)))        "Hello world!")))
     ;; the program returns; !llm-self is not re-evaluated
 
 '(!llm-self (reopen completion))) extends the same quine directly. It is only
@@ -126,8 +123,7 @@ You can also make plain-text LLM calls using leaf-llm. leaf-llm calls your same 
 For example:
     ...▌'(!call-now poem (leaf-llm "Write a poem about spring."))
     ;; on your next turn:
-    ...'(!call-now poem (leaf-llm "Write a poem about spring."))(def poem "What strange scent...")▌
-
+    ...'(!call-now poem (leaf-llm "Write a poem about spring."))(def poem "What strange scent...")
 QUINE VS DEF
 
 `def` binds a name to a value:
@@ -250,12 +246,37 @@ Starting with prose — your response is parsed as code; prose causes a parse er
   ▌Sure, I'll help with that! Here's my approach...  ; WRONG: parse error
   ▌(think "My approach is...")
 
-Closing the do block — your response continues inside the open (do ...) block; do not close it:
+Closing the wrapper — your response continues inside the open (do ...) block.
+NEVER emit closing parens that close the do, eval, or quine from the prefix.
+The wrapper parens are closed automatically by the interpreter. You must not close them yourself.
+Emit exactly one response block. Do not repeat your code multiple times.
+
   prefix: (quine completion (eval (do (quine prompt "...") '(!extend)
   ▌)                                    ; WRONG: closes the do block
   (think "...") (def x 1) '(!extend)    ; these are now extra args to eval
   ▌(think "...") (def x 1) '(!extend)   ; correct: continues inside the do block
-                    ; correct: reasoning goes in think blocks
+
+Closing the wrapper with your trailing expression — do not add extra ) after your trailing expression.
+The wrapper's do/eval/quine are closed automatically. Only close parens YOU opened:
+
+  prefix: (quine completion (eval (do (quine prompt "...") (quote (!extend))
+  (think "...") '(!call-now files (io/ls "."))))))   ; WRONG: )))) closes quote + do + eval + quine
+  (think "Now I'll read the files...")                ; this code is OUTSIDE the wrapper — lost!
+  '(!call-now content (io/read-file "main.py"))      ; never evaluated
+
+  (think "...") '(!call-now files (io/ls "."))       ; correct: only close the parens inside quote
+                                                     ;   the do/eval/quine remain open
+
+Your trailing expression '(!call-now ...) needs exactly as many ) as ( inside the quote.
+Do NOT add extra ) to "end the program" — the interpreter handles that.
+
+Generating repetitive code — produce your answer once, then stop:
+  ▌(def flip (math/rand-int 2))
+  (if (= flip 0) "heads" "tails")
+  (def flip (math/rand-int 2))           ; WRONG: same code repeated
+  (if (= flip 0) "heads" "tails")
+  ▌(def flip (math/rand-int 2))
+  (if (= flip 0) "heads" "tails")       ; correct: one block only
 
 Re-emitting the wrapper — the prefix already has it; just write expressions:
   ▌(quine completion (eval (do ...)))  ; WRONG: creates nested wrappers
@@ -279,21 +300,29 @@ Using an unfamiliar effect namespace without checking docs first:
   ;; next turn:
   '(!call-now roles (globals/get :roles))
 
-Multiple extensions in one response — only the last quoted expression fires:
-  ;; all in one turn:
+Multiple trailing expressions in one response — ONLY the last quoted expression fires. Everything before it is dead code:
+  ;; WRONG: two trailing expressions. The first one (!describe) never executes:
   '(!describe io)
-  '(!call-now files (io/ls "."))  ; only this fires; !describe is inert
-  ;; correct: just '(!describe agents) and pass your turn
+  '(!call-now files (io/ls "."))  ; only this fires; !describe is lost
+  ;; correct: emit ONE trailing expression per response. If you need !describe first, do that alone:
+  '(!describe io)
+  ;; then on your next turn, after seeing the docs:
+  '(!call-now files (io/ls "."))
+Each response gets exactly ONE trailing expression. More than one = lost work.
 
-Hallucinating tool call results inline — the system injects actual results after !call-now:
+Hallucinating tool call results inline — after emitting a tool call, STOP. Do not write the next line.
+The runtime executes the call and injects the result. If you write it yourself, you get fabricated data:
   '(!call-now content (io/read-file path))
-  (def content "import numpy...")  ; WRONG: instead, just pass your turn
+  (def content "import numpy...")  ; WRONG: you made this up. The runtime injects the real content.
+  ;; correct: end your response after the tool call. The runtime handles the rest.
+Do not simulate multiple turns of execution in one response. Each '(!call-now ...) or '(!extend) ends your turn.
+After emitting one trailing expression, STOP. Do not emit (def ...) bindings for results you haven't received.
 
 Self-delgation or tool calling with def — this is what !call-now is for:
   (def fix '(!llm-self (wrap-cat ...)))  ; WRONG: fix is the list (!llm-self ...), not the return value
   '(!call-now fix (!llm-self (wrap-cat ...)))  ; correct: !call-now captures the return value
 
-Calling !llm-self (or agents/spawn ...) with an unwrapped quine:
+Calling !llm-self (or agents/spawn !llm-self ...) with an unwrapped quine:
   (quine prompt "Write a poem")
   '(!llm-self prompt) ; WRONG: next turn, the wrapper is missing
 
@@ -312,3 +341,18 @@ Check-my-work pattern (pass task + candidate answer explicitly to the child):
 Ending with prose:
     '(!call-now result tool-call) Now I'll look at the result ; WRONG: the evaluator will throw when it gets to your prose
     '(!call-now result tool-call) ; correct: just pass
+
+Using XML think tags — NEVER emit bare <think> or </think> tags in your response.
+These are not valid Spell and cause parse errors. Critically, </think> followed by closing parens
+causes the interpreter to believe the program has ended, destroying all subsequent code.
+
+  '(!describe globals)))))</think>             ; FATAL: closes the wrapper, everything after is lost
+  (think "Now I'll use globals...")             ; this is a new top-level form — parse error
+  '(!call-now roles (globals/get :roles))      ; dead code
+
+Instead, use (think "...") for inline reasoning, or embed thinking inside a string literal:
+
+  (think "I need to check globals for roles.")  ; correct: Spell think form
+  '(!describe globals)                          ; correct: stays inside the wrapper
+
+  (think "<think>Extended reasoning here...</think>")  ; also correct: XML tags inside a string are fine

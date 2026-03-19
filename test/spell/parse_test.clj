@@ -1,6 +1,6 @@
 (ns spell.parse-test
   (:require [clojure.test :refer [deftest is testing]]
-            [spell.parse :refer [read-all paren-balance balance-parens
+            [spell.parse :refer [read-all read-first paren-balance balance-parens
                                  strip-trailing-parens escape-string
                                  sanitize-string-escapes
                                  sanitize-nonspell-comment-markers]]))
@@ -73,10 +73,10 @@
     (is (= "(+ 1 2)" (balance-parens "(+ 1 2)"))))
 
   (testing "needs one paren"
-    (is (= "(+ 1 2)" (balance-parens "(+ 1 2"))))
+    (is (= "(+ 1 2\n)" (balance-parens "(+ 1 2"))))
 
   (testing "needs multiple parens"
-    (is (= "((+ 1 2))" (balance-parens "((+ 1 2"))))
+    (is (= "((+ 1 2\n))" (balance-parens "((+ 1 2"))))
 
   (testing "negative balance - returns unchanged"
     (is (= "(+ 1))" (balance-parens "(+ 1))"))))
@@ -85,7 +85,35 @@
     (is (= "" (balance-parens ""))))
 
   (testing "string with no parens"
-    (is (= "hello" (balance-parens "hello")))))
+    (is (= "hello" (balance-parens "hello"))))
+
+  (testing "trailing comment does not swallow balanced parens"
+    (is (= 0 (paren-balance (balance-parens "(+ 1 2 ; comment"))))
+    (is (= 0 (paren-balance (balance-parens "(do (+ 1 2) ; trailing")))))
+
+  (testing "balanced result with trailing comment is readable"
+    (is (= ['(+ 1 2)] (read-all (balance-parens "(+ 1 2 ; comment"))))))
+
+;; =============================================================================
+;; read-first tests
+;; =============================================================================
+
+(deftest read-first-test
+  (testing "single form"
+    (is (= '(+ 1 2) (read-first "(+ 1 2)"))))
+
+  (testing "returns first form, ignores rest"
+    (is (= '(+ 1 2) (read-first "(+ 1 2) (def x 3) garbage"))))
+
+  (testing "first form valid, garbage after — no error"
+    (is (= '(quine c (eval (do 42)))
+           (read-first "(quine c (eval (do 42))) But wait carefully: I should..."))))
+
+  (testing "empty string returns nil"
+    (is (nil? (read-first ""))))
+
+  (testing "reader error on first token still throws"
+    (is (thrown? RuntimeException (read-first "carefully: invalid")))))
 
 ;; =============================================================================
 ;; strip-trailing-parens tests

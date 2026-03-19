@@ -14,6 +14,7 @@
 
 (def fix-loop (:fix-loop stdlib/patterns))
 (def ralph (:ralph stdlib/patterns))
+(def relay (:relay stdlib/patterns))
 (def team (:team stdlib/patterns))
 (def sh-test (:sh-test sio/io-namespace))
 (def stub-ask-await (fn [fut] (deref (:ref fut) 5000 :timeout)))
@@ -30,6 +31,13 @@
                                      'io (assoc sio/io-namespace :sh sio/sh)}
                                     env)]
     (eval/invoke-fn ralph [opts])))
+
+(defn- run-relay [opts env]
+  (binding [eval/*builtins* (assoc eval/*builtins* '!ask-await stub-ask-await)
+            eval/*spell-env* (merge {'strings stdlib/strings
+                                     'patterns stdlib/patterns}
+                                    env)]
+    (eval/invoke-fn relay [opts])))
 
 (defn- run-team [opts env]
   (binding [eval/*builtins* (assoc eval/*builtins* '!ask-await stub-ask-await)
@@ -494,11 +502,13 @@
                                        (if (= 1 @reflect-count)
                                          {:resolved false
                                           :diagnosis "Create fixed.txt."
-                                          :test "./run_tests.sh"
+
+                                          :test-output "FAIL: fixed.txt is missing"
                                           :panic false}
                                          {:resolved true
                                           :diagnosis "Issue resolved."
-                                          :test "./run_tests.sh"
+
+                                          :test-output "PASS: fixed.txt exists"
                                           :panic false}))
                             :repair (do
                                       (spit (str dir "/fixed.txt") "ok")
@@ -512,7 +522,7 @@
                          'blocking {:send-await send-await-fn}})]
             (is (= true (:pass result)))
             (is (= "Issue resolved." (:diagnosis result)))
-            (is (= "./run_tests.sh" (:test result)))
+            (is (= "PASS: fixed.txt exists" (:test-output result)))
             (is (= "created fixed.txt" (:last-worker-summary result)))
             (is (keyword? (:reflector-handle result)))
             (is (keyword? (:worker-handle result)))
@@ -524,10 +534,13 @@
             (is (= (-> @register-calls second :handle) (:worker-handle result)))
             (is (= "created fixed.txt"
                    (get-in (last @send-await-calls) [:msg :last-worker-summary])))
-            (is (str/includes? (get-in (last @send-await-calls) [:msg :last-test-output]) "EXIT: 0"))
+            (is (not (contains? (get-in (last @send-await-calls) [:msg])
+                                :last-test-output)))
+            (is (not (contains? (get-in (second @send-await-calls) [:msg])
+                                :failed-output)))
             (is (some #(str/includes? (:completion %) "reflector agent in patterns/fix-loop")
                       @register-calls))
-            (is (some #(str/includes? (:completion %) "code repair worker used by patterns/fix-loop")
+            (is (some #(str/includes? (:completion %) "You are a code repair worker.")
                       @register-calls))
             (is (every? #(str/includes? (:completion %) "shell commands, process execution and file watching.")
                         @register-calls))))
@@ -552,15 +565,18 @@
                                        (case @reflect-count
                                          1 {:resolved false
                                             :diagnosis "Create file-a.txt and file-b.txt."
-                                            :test "./run_tests.sh"
+  
+                                            :test-output "FAIL: file-a.txt and file-b.txt are missing"
                                             :panic false}
                                          2 {:resolved false
                                             :diagnosis "file-a.txt exists. Create file-b.txt next."
-                                            :test "./run_tests.sh"
+  
+                                            :test-output "FAIL: file-b.txt is still missing"
                                             :panic false}
                                          {:resolved true
                                           :diagnosis "Both files exist and issue is resolved."
-                                          :test "./run_tests.sh"
+
+                                          :test-output "PASS: both files exist"
                                           :panic false}))
                             :repair (do
                                       (swap! repair-count inc)
@@ -583,7 +599,7 @@
                          'blocking {:send-await send-await-fn}})]
             (is (= true (:pass result)))
             (is (= "Both files exist and issue is resolved." (:diagnosis result)))
-            (is (= "./run_tests.sh" (:test result)))
+            (is (= "PASS: both files exist" (:test-output result)))
             (is (= "added file-b too" (:last-worker-summary result)))
             (is (= (-> @register-calls first :handle) (:reflector-handle result)))
             (is (= (-> @register-calls second :handle) (:worker-handle result)))
@@ -593,10 +609,9 @@
             (is (= [0 1 2] (mapv :attempt @reflector-msgs)))
             (is (= "Create file-a.txt and file-b.txt."
                    (:last-diagnosis (second @reflector-msgs))))
+            (is (not (contains? (second @reflector-msgs) :last-test-output)))
             (is (= "added file-a only"
-                   (:last-worker-summary (second @reflector-msgs))))
-            (is (= "./run_tests.sh"
-                   (:active-test (second @reflector-msgs))))))
+                   (:last-worker-summary (second @reflector-msgs))))))
         (finally
           (cleanup-dir dir))))))
 
@@ -611,7 +626,6 @@
           send-await-fn (fn [_handle msg]
                           (case (:kind msg)
                             :reflect {:diagnosis "Fundamentally unsolvable"
-                                      :test "./run_tests.sh"
                                       :panic true}
                             :repair (do
                                       (swap! worker-calls inc)
@@ -630,7 +644,7 @@
             (is (string? (:fail result)))
             (is (str/includes? (:fail result) "unsolvable"))
             (is (= true (:panic result)))
-            (is (nil? (:test result)))
+            (is (nil? (:test-output result)))
             (is (keyword? (:reflector-handle result)))
             (is (keyword? (:worker-handle result)))
             (is (= 0 @worker-calls))
@@ -640,44 +654,43 @@
           (cleanup-dir dir))))))
 
 (deftest fix-loop-reflector-string-map-test
-  (testing "parses string-map reflector responses and uses reflector test command"
+  (testing "parses string-map reflector responses and forwards optional reflector failed-output"
     (let [dir (create-temp-git-repo
                {"focused.sh" "#!/bin/bash\ntest -f target.txt && test -f secondary.txt"
                 "broad.sh" "#!/bin/bash\nexit 1"})
-          commands (atom [])
+          repair-msgs (atom [])
           reflect-count (atom 0)
-          sh-base (sh-in-dir dir)
-          tracking-sh (fn [cmd & more]
-                        (swap! commands conj cmd)
-                        (apply sh-base cmd more))
           register-fn (fn [handle completion] handle)
           send-await-fn (fn [_handle msg]
                           (case (:kind msg)
                             :reflect (do
                                        (swap! reflect-count inc)
                                        (if (= 1 @reflect-count)
-                                         "{:resolved false :diagnosis \"Create target.txt and secondary.txt\" :test \"./focused.sh\" :panic false}"
-                                         "{:resolved true :diagnosis \"Issue is resolved\" :test \"./focused.sh\" :panic false}"))
+                                         "{:resolved false :diagnosis \"Create target.txt and secondary.txt\" :test-output \"Focused test failed; see failed-output for the exact command\" :failed-output \"COMMAND: ./focused.sh\\nEXIT: 1\\nSTDERR:\\n\" :panic false}"
+                                         "{:resolved true :diagnosis \"Issue is resolved\" :test-output \"PASS: focused test succeeded\" :panic false}"))
                             :repair (do
+                                      (swap! repair-msgs conj msg)
                                       (spit (str dir "/target.txt") "t")
                                       (spit (str dir "/secondary.txt") "s")
                                       {:summary "created both"})
                             {:panic true :diagnosis "unexpected message"}))]
       (try
-        (with-redefs [sio/sh tracking-sh]
+        (with-redefs [sio/sh (sh-in-dir dir)]
           (let [result (run-fix-loop
                         {:issue "Need both files"
                          :max-retries 2}
                         {'agents {:register register-fn}
                          'blocking {:send-await send-await-fn}})]
             (is (= true (:pass result)))
-            (is (some #{"./focused.sh"} @commands))
-            (is (not (some #{"./broad.sh"} @commands)))))
+            (is (= "PASS: focused test succeeded" (:test-output result)))
+            (is (= 1 (count @repair-msgs)))
+            (is (= "COMMAND: ./focused.sh\nEXIT: 1\nSTDERR:\n"
+                   (:failed-output (first @repair-msgs))))))
         (finally
           (cleanup-dir dir))))))
 
-(deftest fix-loop-reflector-must-provide-test-command
-  (testing "invalid reflector schema reprompts reflector without running worker"
+(deftest fix-loop-reflector-must-provide-test-results
+  (testing "invalid reflector schema reprompts reflector when test results are missing"
     (let [dir (create-temp-git-repo {"run_tests.sh" "#!/bin/bash\ntest -f target.txt"})
           worker-calls (atom 0)
           reflect-count (atom 0)
@@ -693,7 +706,6 @@
                                         :resolved false
                                         :panic false}
                                        {:diagnosis "Stopping after invalid schema"
-                                        :test "./run_tests.sh"
                                         :panic true})
                             :repair (do
                                       (swap! worker-calls inc)
@@ -712,7 +724,9 @@
             (is (= 0 @worker-calls))
             (is (= 2 @reflect-count))
             (is (str/includes? (:feedback (second @reflector-msgs))
-                               "Invalid reflector schema"))))
+                               "Invalid reflector schema"))
+            (is (str/includes? (:feedback (second @reflector-msgs))
+                               ":test-output must be a non-empty string"))))
         (finally
           (cleanup-dir dir))))))
 
@@ -724,7 +738,7 @@
                           (case (:kind msg)
                             :reflect {:resolved false
                                       :diagnosis "Create target.txt"
-                                      :test "./run_tests.sh"
+                                      :test-output "FAIL: target.txt missing"
                                       :panic false}
                             :repair (do
                                       (spit (str dir "/leak.txt") "should-not-leak")
@@ -741,7 +755,7 @@
                 end-branch (str/trim (:out (sio/sh "git rev-parse --abbrev-ref HEAD")))]
             (is (nil? (:pass result)))
             (is (str/includes? (:fail result) "Max worker retries"))
-            (is (= "./run_tests.sh" (:test result)))
+            (is (= "FAIL: target.txt missing" (:test-output result)))
             (is (= "wrote leak.txt" (:last-worker-summary result)))
             (is (keyword? (:reflector-handle result)))
             (is (keyword? (:worker-handle result)))
@@ -751,66 +765,6 @@
         (finally
           (cleanup-dir dir))))))
 
-(deftest fix-loop-reflector-result-mismatch-reprompts-without-consuming-worker-retries
-  (testing "resolved/test-result mismatch reprompts reflector and does not increment worker attempt"
-    (let [dir (create-temp-git-repo
-               {"run_tests.sh" "#!/bin/bash\ntest -f target.txt"
-                "always_pass.sh" "#!/bin/bash\nexit 0"
-                "always_fail.sh" "#!/bin/bash\nexit 1"})
-          reflect-count (atom 0)
-          repair-count (atom 0)
-          reflector-msgs (atom [])
-          register-fn (fn [handle completion] handle)
-          send-await-fn
-          (fn [_handle msg]
-            (case (:kind msg)
-              :reflect (do
-                         (swap! reflect-count inc)
-                         (swap! reflector-msgs conj msg)
-                         (case @reflect-count
-                           1 {:resolved false
-                              :diagnosis "Need target file."
-                              :test "./always_pass.sh"
-                              :panic false}
-                           2 {:resolved false
-                              :diagnosis "Need target file."
-                              :test "./run_tests.sh"
-                              :panic false}
-                           3 {:resolved true
-                              :diagnosis "Looks resolved."
-                              :test "./always_fail.sh"
-                              :panic false}
-                           {:resolved true
-                            :diagnosis "Issue is resolved."
-                            :test "./run_tests.sh"
-                            :panic false}))
-              :repair (do
-                        (swap! repair-count inc)
-                        (spit (str dir "/target.txt") "ok")
-                        {:summary "created target.txt"})
-              {:panic true :diagnosis "unexpected message"}))]
-      (try
-        (with-redefs [sio/sh (sh-in-dir dir)]
-          (let [result (run-fix-loop
-                        {:issue "Need target file"
-                         :max-retries 1}
-                        {'agents {:register register-fn}
-                         'blocking {:send-await send-await-fn}})]
-            (is (= true (:pass result)))
-            (is (= "Issue is resolved." (:diagnosis result)))
-            (is (= "./run_tests.sh" (:test result)))
-            (is (= "created target.txt" (:last-worker-summary result)))
-            (is (keyword? (:reflector-handle result)))
-            (is (keyword? (:worker-handle result)))
-            (is (= 4 @reflect-count))
-            (is (= 1 @repair-count))
-            (is (= [0 0 1 1] (mapv :attempt @reflector-msgs)))
-            (is (str/includes? (:feedback (second @reflector-msgs))
-                               "Expected test pass == resolved flag"))
-            (is (str/includes? (:feedback (nth @reflector-msgs 3))
-                               "Expected test pass == resolved flag"))))
-        (finally
-          (cleanup-dir dir))))))
 
 (deftest fix-loop-reset-worker-fresh-handle-test
   (testing "reset-worker registers and uses a fresh worker handle"
@@ -828,12 +782,14 @@
                                        (if (= 1 @reflect-count)
                                          {:resolved false
                                           :diagnosis "Create target.txt with a fresh worker."
-                                          :test "./run_tests.sh"
+
+                                          :test-output "FAIL: target.txt missing"
                                           :panic false
                                           :reset-worker true}
                                          {:resolved true
                                           :diagnosis "Issue resolved."
-                                          :test "./run_tests.sh"
+
+                                          :test-output "PASS: target.txt exists"
                                           :panic false}))
                             :repair (do
                                       (swap! repair-handles conj handle)
@@ -853,79 +809,8 @@
             (is (= 1 (count @repair-handles)))
             (is (= (nth registered-handles 2) (first @repair-handles)))
             (is (= (nth registered-handles 2) (:worker-handle result)))
-            (is (not= (nth registered-handles 1) (nth registered-handles 2)))))
-        (finally
-          (cleanup-dir dir))))))
-
-(deftest fix-loop-test-thunk-test
-  (testing "fix-loop accepts a single test thunk"
-    (let [dir (create-temp-git-repo {})
-          reflect-count (atom 0)
-          send-await-fn (fn [_handle msg]
-                          (case (:kind msg)
-                            :reflect (do
-                                       (swap! reflect-count inc)
-                                       {:resolved (= 2 @reflect-count)
-                                        :diagnosis (if (= 1 @reflect-count)
-                                                     "Create target.txt."
-                                                     "Issue resolved.")
-                                        :test (fn []
-                                                {:pass (.exists (java.io.File. (str dir "/target.txt")))
-                                                 :output "checked target.txt"})
-                                        :panic false})
-                            :repair (do
-                                      (spit (str dir "/target.txt") "ok")
-                                      {:summary "created target.txt"})
-                            {:panic true :diagnosis "unexpected message"}))]
-      (try
-        (with-redefs [sio/sh (sh-in-dir dir)]
-          (let [result (run-fix-loop
-                        {:issue "Need target file"
-                         :max-retries 1}
-                        {'agents {:register (fn [handle _completion] handle)}
-                         'blocking {:send-await send-await-fn}})]
-            (is (= true (:pass result)))
-            (is (= "Issue resolved." (:diagnosis result)))
-            (is (fn? (:test result)))
-            (is (= "created target.txt" (:last-worker-summary result)))))
-        (finally
-          (cleanup-dir dir))))))
-
-(deftest fix-loop-test-vector-test
-  (testing "fix-loop requires all vectorized test thunks to pass"
-    (let [dir (create-temp-git-repo {})
-          reflect-count (atom 0)
-          send-await-fn (fn [_handle msg]
-                          (case (:kind msg)
-                            :reflect (do
-                                       (swap! reflect-count inc)
-                                       {:resolved (= 2 @reflect-count)
-                                        :diagnosis (if (= 1 @reflect-count)
-                                                     "Create both files."
-                                                     "Both files exist.")
-                                        :test [(fn []
-                                                 {:pass (.exists (java.io.File. (str dir "/file-a.txt")))
-                                                  :output "checked file-a"})
-                                               (fn []
-                                                 {:pass (.exists (java.io.File. (str dir "/file-b.txt")))
-                                                  :output "checked file-b"})]
-                                        :panic false})
-                            :repair (do
-                                      (spit (str dir "/file-a.txt") "a")
-                                      (spit (str dir "/file-b.txt") "b")
-                                      {:summary "created both files"})
-                            {:panic true :diagnosis "unexpected message"}))]
-      (try
-        (with-redefs [sio/sh (sh-in-dir dir)]
-          (let [result (run-fix-loop
-                        {:issue "Need two files"
-                         :max-retries 1}
-                        {'agents {:register (fn [handle _completion] handle)}
-                         'blocking {:send-await send-await-fn}})]
-            (is (= true (:pass result)))
-            (is (vector? (:test result)))
-            (is (= 2 (count (:test result))))
-            (is (= "created both files" (:last-worker-summary result)))))
+            (is (not= (nth registered-handles 1) (nth registered-handles 2)))
+            (is (= "PASS: target.txt exists" (:test-output result)))))
         (finally
           (cleanup-dir dir))))))
 
@@ -941,42 +826,153 @@
           (is (str/includes? (:output result) "COMMAND: echo hello"))
           (is (str/includes? (:output result) "EXIT: 0")))))))
 
-(deftest fix-loop-thunk-error-handling-test
-  (testing "thunk test errors reprompt the reflector without calling the worker"
-    (let [dir (create-temp-git-repo {})
-          worker-calls (atom 0)
-          reflect-count (atom 0)
-          reflector-msgs (atom [])
+(deftest relay-solved-first-round-test
+  (testing "relay returns a confirmed first-round solution and records worker handles"
+    (let [register-calls (atom [])
+          send-await-calls (atom [])
+          register-fn (fn [handle completion]
+                        (swap! register-calls conj {:handle handle :completion completion})
+                        handle)
+          send-await-fn (fn [handle msg]
+                          (swap! send-await-calls conj {:handle handle :msg msg})
+                          (if (str/starts-with? (name handle) "relay-worker-")
+                            {:status :solved
+                             :report "Computed the product directly."
+                             :answer 42}
+                            {:confirmed true
+                             :feedback "Checked independently and confirmed."}))
+          result (run-relay {:problem "What is 6 * 7?"
+                             :max-rounds 3}
+                            {'agents {:register register-fn}
+                             'blocking {:send-await send-await-fn}})
+          report (first (:rounds result))]
+      (is (= true (:solved result)))
+      (is (= 42 (:answer result)))
+      (is (= 1 (count (:rounds result))))
+      (is (= 0 (:round report)))
+      (is (= :solved (:status report)))
+      (is (= "Computed the product directly." (:report report)))
+      (is (= (-> @register-calls first :handle) (:worker-handle report)))
+      (is (= 2 (count @register-calls)))
+      (is (= 2 (count @send-await-calls)))
+      (is (= :solve (get-in (first @send-await-calls) [:msg :kind])))
+      (is (= 0 (get-in (first @send-await-calls) [:msg :round])))
+      (is (= [] (get-in (first @send-await-calls) [:msg :previous-reports])))
+      (is (= :verify (get-in (second @send-await-calls) [:msg :kind])))
+      (is (= report (get-in (second @send-await-calls) [:msg :candidate-report])))
+      (is (str/includes? (-> @register-calls first :completion) "may message previous workers"))
+      (is (str/includes? (-> @register-calls first :completion) "{:kind :clarify :question str}"))
+      (is (str/includes? (-> @register-calls first :completion) "{:status :clarified :report"))
+      (is (str/includes? (-> @register-calls first :completion) "Do not continue your completion after that reply"))
+      (is (str/includes? (-> @register-calls second :completion) "may message previous workers"))
+      (is (str/includes? (-> @register-calls second :completion) "{:kind :clarify :question"))
+      (is (str/includes? (-> @register-calls second :completion) "{:status :clarified :report")))))
+
+(deftest relay-progress-then-solved-test
+  (testing "relay accumulates prior reports and uses a fresh worker each round"
+    (let [register-calls (atom [])
+          worker-msgs (atom [])
+          register-fn (fn [handle completion]
+                        (swap! register-calls conj {:handle handle :completion completion})
+                        handle)
+          send-await-fn (fn [handle msg]
+                          (if (str/starts-with? (name handle) "relay-worker-")
+                            (do
+                              (swap! worker-msgs conj {:handle handle :msg msg})
+                              (case (:round msg)
+                                0 {:status :progress
+                                   :report "Tried substitution; not enough yet."}
+                                {:status :solved
+                                 :report "Second approach succeeds."
+                                 :answer 9}))
+                            {:confirmed true
+                             :feedback "Verified the second approach."}))
+          result (run-relay {:problem "Solve the toy problem"
+                             :max-rounds 3}
+                            {'agents {:register register-fn}
+                             'blocking {:send-await send-await-fn}})
+          reports (:rounds result)
+          worker-handles (mapv :handle (filter #(str/starts-with? (name (:handle %)) "relay-worker-")
+                                               @register-calls))]
+      (is (= true (:solved result)))
+      (is (= 9 (:answer result)))
+      (is (= 2 (count reports)))
+      (is (= [:progress :solved] (mapv :status reports)))
+      (is (= 2 (count worker-handles)))
+      (is (= 2 (count (set worker-handles))))
+      (is (= worker-handles (mapv :worker-handle reports)))
+      (is (= [(first reports)]
+             (get-in (second @worker-msgs) [:msg :previous-reports]))))))
+
+(deftest relay-verification-rejects-then-continues-test
+  (testing "relay re-registers the verifier per attempt and carries rejection reports forward"
+    (let [register-calls (atom [])
+          worker-msgs (atom [])
+          verifier-msgs (atom [])
+          verifier-call-count (atom 0)
+          register-fn (fn [handle completion]
+                        (swap! register-calls conj {:handle handle :completion completion})
+                        handle)
+          send-await-fn (fn [handle msg]
+                          (if (str/starts-with? (name handle) "relay-worker-")
+                            (do
+                              (swap! worker-msgs conj {:handle handle :msg msg})
+                              (case (:round msg)
+                                0 {:status :solved
+                                   :report "I think the answer is 10."
+                                   :answer 10}
+                                {:status :solved
+                                 :report "Recomputed carefully; answer is 12."
+                                 :answer 12}))
+                            (do
+                              (swap! verifier-msgs conj {:handle handle :msg msg})
+                              (case (swap! verifier-call-count inc)
+                                1 "not a map"
+                                2 {:confirmed false
+                                   :feedback "Answer 10 is inconsistent with the problem constraints."}
+                                {:confirmed true
+                                 :feedback "Confirmed 12 independently."}))))
+          result (run-relay {:problem "Find the correct answer"
+                             :max-rounds 4}
+                            {'agents {:register register-fn}
+                             'blocking {:send-await send-await-fn}})
+          reports (:rounds result)
+          verifier-handles (mapv :handle (filter #(str/starts-with? (name (:handle %)) "relay-verifier-")
+                                                 @register-calls))
+          rejected-report (second reports)]
+      (is (= true (:solved result)))
+      (is (= 12 (:answer result)))
+      (is (= [:solved :rejected :solved] (mapv :status reports)))
+      (is (= 3 (count verifier-handles)))
+      (is (= 3 (count (set verifier-handles))))
+      (is (= "Answer 10 is inconsistent with the problem constraints."
+             (:report rejected-report)))
+      (is (= (:worker-handle (first reports)) (:worker-handle rejected-report)))
+      (is (= (second verifier-handles) (:verifier-handle rejected-report)))
+      (is (str/includes? (get-in (second @verifier-msgs) [:msg :feedback])
+                         "Verifier must return"))
+      (is (= [(first reports) rejected-report]
+             (get-in (second @worker-msgs) [:msg :previous-reports]))))))
+
+(deftest relay-invalid-report-and-max-rounds-test
+  (testing "relay normalizes invalid worker output into stuck reports and stops at max rounds"
+    (let [register-calls (atom [])
+          register-fn (fn [handle completion]
+                        (swap! register-calls conj {:handle handle :completion completion})
+                        handle)
           send-await-fn (fn [_handle msg]
-                          (case (:kind msg)
-                            :reflect (do
-                                       (swap! reflect-count inc)
-                                       (swap! reflector-msgs conj msg)
-                                       (if (= 1 @reflect-count)
-                                         {:resolved false
-                                          :diagnosis "Investigate failing thunk."
-                                          :test (fn [] (throw (Exception. "boom")))
-                                          :panic false}
-                                         {:panic true
-                                          :diagnosis "Stopping after thunk failure"}))
-                            :repair (do
-                                      (swap! worker-calls inc)
-                                      {:summary "saw thunk error"})
-                            {:panic true :diagnosis "unexpected message"}))]
-      (try
-        (with-redefs [sio/sh (sh-in-dir dir)]
-          (let [result (run-fix-loop
-                        {:issue "Need target file"
-                         :max-retries 1}
-                        {'agents {:register (fn [handle _completion] handle)}
-                         'blocking {:send-await send-await-fn}})]
-            (is (nil? (:pass result)))
-            (is (str/includes? (:fail result) "Stopping after thunk failure"))
-            (is (= 0 @worker-calls))
-            (is (= 2 @reflect-count))
-            (is (str/includes? (:feedback (second @reflector-msgs))
-                               "Test execution failed before any worker call"))
-            (is (str/includes? (:feedback (second @reflector-msgs))
-                               "THUNK ERROR"))))
-        (finally
-          (cleanup-dir dir))))))
+                          (case (:round msg)
+                            0 "garbage response"
+                            "{:status :solved :report \"missing answer\"}"))
+          result (run-relay {:problem "Keep trying"
+                             :max-rounds 2}
+                            {'agents {:register register-fn}
+                             'blocking {:send-await send-await-fn}})
+          reports (:rounds result)]
+      (is (= false (:solved result)))
+      (is (= 2 (count reports)))
+      (is (= [:stuck :stuck] (mapv :status reports)))
+      (is (= 2 (count @register-calls)))
+      (is (= 2 (count (set (map :worker-handle reports)))))
+      (is (str/includes? (:report (first reports)) "garbage response"))
+      (is (str/includes? (:report (second reports)) ":answer is required")))))

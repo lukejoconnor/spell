@@ -101,7 +101,9 @@
     ;; Reset runtime registry and globals for fresh run
     (reset! runtime/registry {})
     (globals/reset-globals!)
-    ;; Register user agent if requested
+    ;; Seed :roles with :main (always present)
+    (globals/set-val :roles {:main {}})
+    ;; Register user agent if requested (adds :user to :roles)
     (when user?
       (if user-reader
         (user/register-user-agent! user-reader)

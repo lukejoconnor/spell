@@ -73,24 +73,52 @@
                                 {'describe-fn stdlib/describe}
                                 llm/core-namespaces)
         eval-builtin (llm/make-eval variant-builtins {})]
-    (testing "multiple top-level forms are rejected by default"
+    (testing "default: reads first form only, ignores trailing forms"
       (let [inbox-fn (llm/make-inbox-fn {:variant-builtins variant-builtins
                                          :eval-builtin eval-builtin
                                          :recover-fn nil}
                                         (atom nil))]
-        (try
-          (inbox-fn "(def x 1) (+ x 1)")
-          (is false "Expected multiple top-level forms error")
-          (catch Exception e
-            (is (= :multiple-top-level-forms (:type (ex-data e))))))))
+        ;; First form (def x 1) evaluates to 1; second form is ignored
+        (is (= 1 (inbox-fn "(def x 1) (+ x 1)")))))
 
-    (testing "multiple top-level forms can be explicitly allowed"
+    (testing "default: first form valid, garbage after — no error"
+      (let [inbox-fn (llm/make-inbox-fn {:variant-builtins variant-builtins
+                                         :eval-builtin eval-builtin
+                                         :recover-fn nil}
+                                        (atom nil))]
+        (is (= 42 (inbox-fn "(+ 40 2) But wait carefully: I should reconsider...")))))
+
+    (testing "allow-multiple-top-level: reads all forms, wraps in do"
       (let [inbox-fn (llm/make-inbox-fn {:variant-builtins variant-builtins
                                          :eval-builtin eval-builtin
                                          :allow-multiple-top-level? true
                                          :recover-fn nil}
                                         (atom nil))]
         (is (= 2 (inbox-fn "(def x 1) (+ x 1)")))))))
+
+(deftest inbox-trims-persisted-raw-for-reopen-test
+  (let [variant-builtins (merge eval/core-builtins
+                                {'describe-fn stdlib/describe
+                                 'capture-raw (fn [] runtime/*current-raw*)}
+                                llm/core-namespaces)
+        eval-builtin (llm/make-eval variant-builtins {})
+        inbox-fn (llm/make-inbox-fn {:variant-builtins variant-builtins
+                                     :eval-builtin eval-builtin
+                                     :recover-fn nil}
+                                    (atom nil))
+        handle :trimmed-raw-agent
+        raw "(quine completion (eval (do (capture-raw)))) But wait carefully: I should reconsider..."
+        expected "(quine completion (eval (do (capture-raw))))"
+        p (promise)]
+    (runtime/register! handle)
+    (deliver p raw)
+    (is (= expected
+           (runtime/run-root-box handle p (runtime/make-awake-fn handle inbox-fn) inbox-fn))
+        "evaluation should see the reopenable completion, not the ignored suffix")
+    (is (= expected @(:last-raw (get @runtime/registry handle)))
+        "stored raw should drop ignored suffixes so later wakeups can reopen it")
+    (is (string? (#'runtime/reopen-completion @(:last-raw (get @runtime/registry handle))))
+        "stored raw should remain reopenable for message/preemption paths")))
 
 ;; =============================================================================
 ;; File I/O task tests
@@ -119,7 +147,8 @@
                           {:input_tokens 100 :output_tokens 50})
         (is (= {:by-model {"claude-sonnet-4-20250514"
                            {:input_tokens 100 :output_tokens 50 :calls 1
-                            :cache_creation_input_tokens 0 :cache_read_input_tokens 0}}}
+                            :cache_creation_input_tokens 0 :cache_read_input_tokens 0
+                            :max_total_tokens 150}}}
                @usage-atom))))))
 
 (deftest track-usage-accumulates-test
@@ -129,11 +158,16 @@
         (provider/track-usage! "claude-sonnet-4-20250514"
                           {:input_tokens 100 :output_tokens 50})
         (provider/track-usage! "claude-sonnet-4-20250514"
-                          {:input_tokens 200 :output_tokens 75})
+                          {:input_tokens 200 :output_tokens 75
+                           :cache_creation_input_tokens 10
+                           :cache_read_input_tokens 5})
         (let [stats (get-in @usage-atom [:by-model "claude-sonnet-4-20250514"])]
           (is (= 300 (:input_tokens stats)))
           (is (= 125 (:output_tokens stats)))
-          (is (= 2 (:calls stats))))))))
+          (is (= 10 (:cache_creation_input_tokens stats)))
+          (is (= 5 (:cache_read_input_tokens stats)))
+          (is (= 2 (:calls stats)))
+          (is (= 290 (:max_total_tokens stats))))))))
 
 (deftest track-usage-multi-model-test
   (testing "track-usage! tracks per-model"
@@ -152,6 +186,65 @@
     (binding [provider/*usage* nil]
       ;; Should not throw
       (provider/track-usage! "model" {:input_tokens 100 :output_tokens 50}))))
+
+(deftest usage-summary-context-stats-test
+  (testing "usage-summary reports per-model and total context mean/max"
+    (let [usage-atom (atom {:by-model {}})]
+      (binding [provider/*usage* usage-atom]
+        (provider/track-usage! "claude-sonnet-4-20250514"
+                          {:input_tokens 100 :output_tokens 50})
+        (provider/track-usage! "claude-sonnet-4-20250514"
+                          {:input_tokens 200 :output_tokens 75
+                           :cache_creation_input_tokens 10
+                           :cache_read_input_tokens 5})
+        (provider/track-usage! "claude-3-5-haiku-20241022"
+                          {:input_tokens 80 :output_tokens 20
+                           :cache_read_input_tokens 30}))
+      (let [{:keys [by-model total]} (provider/usage-summary usage-atom)
+            sonnet (get by-model "claude-sonnet-4-20250514")
+            haiku (get by-model "claude-3-5-haiku-20241022")]
+        (is (== 220.0 (:mean_total_tokens sonnet)))
+        (is (= 290 (:max_total_tokens sonnet)))
+        (is (== 130.0 (:mean_total_tokens haiku)))
+        (is (= 130 (:max_total_tokens haiku)))
+        (is (== 190.0 (:mean_total_tokens total)))
+        (is (= 290 (:max_total_tokens total))))))
+
+  (testing "usage-summary defaults missing max_total_tokens to zero for prepopulated atoms"
+    (let [usage-atom (atom {:by-model {"legacy-model" {:input_tokens 150
+                                                       :output_tokens 50
+                                                       :calls 2}}})
+          {:keys [by-model total]} (provider/usage-summary usage-atom)]
+      (is (== 100.0 (get-in by-model ["legacy-model" :mean_total_tokens])))
+      (is (= 0 (get-in by-model ["legacy-model" :max_total_tokens])))
+      (is (== 100.0 (:mean_total_tokens total)))
+      (is (= 0 (:max_total_tokens total)))))
+
+  (testing "track-usage! preserves explicit prepopulated max_total_tokens"
+    (let [usage-atom (atom {:by-model {"legacy-model" {:input_tokens 2000
+                                                       :output_tokens 0
+                                                       :calls 2
+                                                       :max_total_tokens 1000}}})]
+      (binding [provider/*usage* usage-atom]
+        (provider/track-usage! "legacy-model" {:input_tokens 100 :output_tokens 0}))
+      (let [stats (get-in @usage-atom [:by-model "legacy-model"])]
+        (is (= 3 (:calls stats)))
+        (is (= 1000 (:max_total_tokens stats)))))))
+
+(deftest current-cost-supports-explicit-cache-read-price-test
+  (testing "current-cost uses model-specific cache read pricing when provided"
+    (let [usage-atom (atom {:by-model {"accounts/fireworks/models/glm-5"
+                                       {:input_tokens 1000000
+                                        :output_tokens 500000
+                                        :cache_read_input_tokens 200000
+                                        :calls 1
+                                        :cache_creation_input_tokens 0
+                                        :max_total_tokens 1700000}}
+                            :cost-table {"accounts/fireworks/models/glm-5"
+                                         {:input 1.00
+                                          :cache-read-input 0.20
+                                          :output 3.20}}})]
+      (is (= 2.64 (double (provider/current-cost usage-atom)))))))
 
 ;; =============================================================================
 ;; compile-agent factory tests
@@ -377,6 +470,22 @@
             (is (= :anthropic-tc (:provider p)))
             (is (= "claude-sonnet-4-5-20250929" (get-in p [:opts :model])))))
         (finally
+          (.delete provider-file)))))
+
+  (testing "load-provider supports fireworks type"
+    (let [provider-file (java.io.File/createTempFile "provider-fireworks-" ".provider.edn")]
+      (try
+        (spit provider-file (pr-str {:type :fireworks
+                                     :model "glm-5"
+                                     :convert-think? false}))
+        (with-redefs [provider/fireworks-provider (fn [opts]
+                                                    {:provider :fireworks
+                                                     :opts opts})]
+          (let [p (provider/load-provider (.getAbsolutePath provider-file))]
+            (is (= :fireworks (:provider p)))
+            (is (= "glm-5" (get-in p [:opts :model])))
+            (is (false? (get-in p [:opts :convert-think?])))))
+        (finally
           (.delete provider-file))))))
 
 (deftest ollama-parse-response-test
@@ -487,6 +596,48 @@
                                                   :type "invalid_request_error"}})]
       (is (thrown-with-msg? Exception #"OpenAI Responses API error"
             (#'provider/parse-openai-responses-response response-body))))))
+
+(deftest fireworks-provider-construction-and-helpers-test
+  (testing "fireworks-provider defaults and expands short model ids"
+    (let [p (provider/fireworks-provider {:api-key "fw-test"})]
+      (is (instance? spell.provider.FireworksProvider p))
+      (is (= "https://api.fireworks.ai/inference/v1" (:base-url p)))
+      (is (= "accounts/fireworks/models/glm-5" (:model p)))
+      (is (:convert-think? p))))
+
+  (testing "fireworks-provider strips trailing slash and preserves full account model ids"
+    (let [p (provider/fireworks-provider {:api-key "fw-test"
+                                          :base-url "https://api.fireworks.ai/inference/v1/"
+                                          :model "accounts/fireworks/models/deepseek-v3p1"})]
+      (is (= "https://api.fireworks.ai/inference/v1" (:base-url p)))
+      (is (= "accounts/fireworks/models/deepseek-v3p1" (:model p)))))
+
+  (testing "format-completions-prompt leaves assistant prefix open"
+    (is (= "<|im_start|>system\nsys<|im_end|>\n<|im_start|>user\nuser<|im_end|>\n<|im_start|>assistant\n(prefill"
+           (#'provider/format-completions-prompt
+            (:chatml provider/fireworks-chat-templates)
+            "sys"
+            "user"
+            "(prefill"))))
+
+  (testing "convert-think-tags rewrites a leading think block into Spell"
+    (is (= "(think \"reasoning\\nnext\") (def x 1)"
+           (#'provider/convert-think-tags "<think>reasoning\nnext</think>\n(def x 1)")))
+    (is (= "(def x 1)"
+           (#'provider/convert-think-tags "(def x 1)"))))
+
+  (testing "parse-fireworks-sse-stream accumulates chunks and extracts usage"
+    (let [response-body (str "data: " (json/write-str {:choices [{:text "<think>plan"}]}) "\n\n"
+                             "data: " (json/write-str {:choices [{:text "</think>\n(def x 1)"}]
+                                                       :usage {:prompt_tokens 120
+                                                               :completion_tokens 25
+                                                               :prompt_tokens_details {:cached_tokens 20}}}) "\n\n"
+                             "data: [DONE]\n\n")
+          result (#'provider/parse-fireworks-sse-stream response-body)]
+      (is (= "<think>plan</think>\n(def x 1)" (:text result)))
+      (is (= 100 (get-in result [:usage :input_tokens])))
+      (is (= 25 (get-in result [:usage :output_tokens])))
+      (is (= 20 (get-in result [:usage :cache_read_input_tokens]))))))
 
 (deftest anthropic-tc-provider-constructor-test
   (testing "constructs with explicit api-key and model"
@@ -730,6 +881,10 @@
     (is (= {:provider "openai" :model "gpt-4o"}
            (cli/parse-model-spec "openai:gpt-4o"))))
 
+  (testing "fireworks provider prefix"
+    (is (= {:provider "fireworks" :model "glm-5"}
+           (cli/parse-model-spec "fireworks:glm-5"))))
+
   (testing "anthropic-tc provider prefix"
     (is (= {:provider "anthropic-tc" :model "claude-sonnet-4-5-20250929"}
            (cli/parse-model-spec "anthropic-tc:claude-sonnet-4-5-20250929"))))
@@ -806,10 +961,10 @@
         (is @recovery-called)
         (is (= 42 result)))))
 
-  (testing "quine-extension recovery re-enters via extend"
+  (testing "quine-extension recovery re-enters through the recovery quine"
     ;; Program is a quine with an error. Quine-extension recovery appends
-    ;; a new arg with error info + (!extend completion). The second LLM call
-    ;; (via extend) provides the fix.
+    ;; a rethink marker plus a new arg with error info, then reopens the
+    ;; recovery quine. The second LLM call provides the fix.
     (let [call-count (atom 0)
           llm (th/make-test-runner
                {:response-fn (fn [_]
@@ -821,8 +976,37 @@
                :namespaces {})]
       ;; Use quine prefix so recovery can append
       (let [result (llm "(quine completion (eval (do ")]
-        (is (= 2 @call-count))  ; original + recovery extend
+        (is (= 2 @call-count))
         (is (= 42 result)))))
+
+  (testing "quine-extension recovery injects rethink and reopens without _previous_program"
+    (let [prompts (atom [])]
+      (let [llm (th/make-test-runner
+                 {:response-fn (fn [prompt]
+                                 (swap! prompts conj prompt)
+                                 (if (= 1 (count @prompts))
+                                   "undefined-symbol) '(!extend completion))"
+                                   "(def fix 42))"))}
+                 :namespaces {} :prefill? false)]
+        (let [result (llm "(quine completion (eval (do ")
+              recovery-prompt (second @prompts)]
+          (is (= 42 result))
+          (is (str/includes? recovery-prompt "(rethink \"Error recovery - see _error for details.\")"))
+          (is (str/includes? recovery-prompt "!llm-self (reopen completion)"))
+          (is (not (str/includes? recovery-prompt "_previous_program")))))))
+
+  (testing "shared recovery limit stops eval-only runaway loops"
+    (let [call-count (atom 0)]
+      (let [llm (th/make-test-runner
+                 {:response-fn (fn [_]
+                                 (swap! call-count inc)
+                                 "undefined-symbol)")}
+                 :namespaces {})]
+        (let [invoke #(llm "(quine completion (eval (do ")]
+          (is (thrown-with-msg? Exception #"Recovery limit exceeded: 2 while handling eval error"
+                                (invoke))))
+        ;; Initial call + 2 eval recovery retries
+        (is (= 3 @call-count)))))
 
   (testing "no recovery when explicitly disabled"
     (let [llm (th/make-test-runner {:response "undefined-symbol)"}
@@ -878,16 +1062,30 @@
         (is (str/includes? recovery-prompt "Reader error"))
         (is (str/includes? recovery-prompt "\\invalidchar")))))
 
-  (testing "reader error recovery depth limit stops runaway loops"
+  (testing "shared recovery limit stops parse-only runaway loops"
     (let [call-count (atom 0)
           llm (th/make-test-runner
                {:response-fn (fn [_]
                                (swap! call-count inc)
                                "\\invalidchar)")}
                :namespaces {})]
-      (is (thrown-with-msg? Exception #"Reader error recovery limit exceeded"
+      (is (thrown-with-msg? Exception #"Recovery limit exceeded: 2 while handling reader error"
                             (llm "(quine completion (eval (do ")))
       ;; Initial call + 2 recovery retries
+      (is (= 3 @call-count))))
+
+  (testing "shared recovery limit applies across reader and eval recovery"
+    (let [call-count (atom 0)
+          llm (th/make-test-runner
+               {:response-fn (fn [_]
+                               (case (swap! call-count inc)
+                                 1 "\\invalidchar)"
+                                 2 "undefined-symbol)"
+                                 3 "undefined-symbol)"))}
+               :namespaces {})]
+      (is (thrown-with-msg? Exception #"Recovery limit exceeded: 2 while handling eval error"
+                            (llm "(quine completion (eval (do ")))
+      ;; Initial parse error + one reader recovery retry + one eval recovery retry
       (is (= 3 @call-count)))))
 
 (deftest namespace-recovery-invoke-fn-wrapping-test
@@ -1159,6 +1357,24 @@
 )
 
 ;; =============================================================================
+;; Fireworks provider
+;; =============================================================================
+
+(deftest fireworks-provider-construction
+  (testing "fireworks-provider custom opts"
+    (let [p (provider/fireworks-provider {:api-key "fw"
+                                          :base-url "https://api.fireworks.ai/inference/v1/"
+                                          :model "deepseek-v3p1"
+                                          :max-tokens 8192
+                                          :chat-template :deepseek-v3
+                                          :convert-think? false})]
+      (is (= "accounts/fireworks/models/deepseek-v3p1" (:model p)))
+      (is (= "https://api.fireworks.ai/inference/v1" (:base-url p)))
+      (is (= 8192 (:max-tokens p)))
+      (is (= :deepseek-v3 (:chat-template p)))
+      (is (false? (:convert-think? p))))))
+
+;; =============================================================================
 ;; supports-prefill protocol tests
 ;; =============================================================================
 
@@ -1185,6 +1401,10 @@
 
   (testing "Kimi provider supports prefill"
     (let [p (provider/kimi-provider {:api-key "test"})]
+      (is (true? (provider/supports-prefill p)))))
+
+  (testing "Fireworks provider supports prefill"
+    (let [p (provider/fireworks-provider {:api-key "test"})]
       (is (true? (provider/supports-prefill p))))))
 
 ;; =============================================================================

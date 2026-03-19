@@ -256,7 +256,7 @@
             processed (eval/prune-substitute form nil)]
         (str (when (seq prior-forms)
                (str (str/join " " (map pr-str prior-forms)) " "))
-             (eval/reopen processed)))
+             (eval/serialize-quine-prefix processed)))
       (parse/strip-trailing-parens 3 s))))
 
 (defn- create-msg
@@ -337,36 +337,25 @@
   (when-not *current-raw*
     (throw (ex-info (str caller ": no raw completion available") {}))))
 
-(defn- assert-future-context!
-  "Throw if not running inside a Spell future."
-  [caller]
-  (when-not (eval/in-future-context?)
-    (throw (ex-info (str caller ": must be called from within a future. "
-                         "Future-only blocking helpers are only available inside (future ...) blocks.")
-                    {}))))
-
 (defn completion-promise
   "Return await token for handle's current completion promise.
-   Future-only primitive: must be called from a Spell future."
+   Used by the future-gated blocking/ namespace."
   [handle]
-  (assert-future-context! "completion-promise")
   (let [entry (get @registry handle)]
     (when-not entry
       (throw (ex-info "completion-promise: handle not registered" {:handle handle})))
     (completion-token @(:completed entry))))
 
 (defn blocking-await
-  "Future-only await helper for the blocking/ namespace."
+  "Await helper for Spell futures (exposed via future-gated blocking/ namespace)."
   [fut]
-  (assert-future-context! "blocking/await")
   (if (eval/spell-future? fut)
     (deref (:ref fut))
     (throw (ex-info "blocking/await requires a future" {:value fut}))))
 
 (defn blocking-await-all
-  "Future-only helper: await a collection of Spell futures."
+  "Await a collection of Spell futures (exposed via future-gated blocking/ namespace)."
   [futures]
-  (assert-future-context! "blocking/await-all")
   (when-not (sequential? futures)
     (throw (ex-info "blocking/await-all: argument must be a collection" {:got futures})))
   (mapv (fn [f]
@@ -376,9 +365,8 @@
         futures))
 
 (defn blocking-pmap
-  "Future-only parallel map. Applies f to each item concurrently and awaits results."
+  "Parallel map over Spell futures (exposed via future-gated blocking/ namespace)."
   [f coll]
-  (assert-future-context! "blocking/pmap")
   (let [futures (mapv (fn [item]
                         (completion-token
                           (clojure.core/future
@@ -388,9 +376,8 @@
     (blocking-await-all futures)))
 
 (defn send-await
-  "Future-only helper: capture completion token, send message, await completion."
+  "Capture completion token, send message, await completion (via blocking/ namespace)."
   [handle msg]
-  (assert-future-context! "blocking/send-await")
   (let [token (completion-promise handle)]
     (send handle msg)
     (blocking-await token)))
@@ -609,7 +596,7 @@
 Use from inside (future ...) orchestration code."
           }
    :detail
-   {:await "(blocking/await fut) — future-only await. Throws outside (future ...)."
+   {:await "(blocking/await fut) — await a Spell future token. Exposed via future-only blocking/."
     :await-all "(blocking/await-all [f1 f2 ...]) — future-only await-many helper."
     :pmap "(blocking/pmap f coll) — future-only parallel map with blocking join."
     :plet "(blocking/plet [bindings] body...) — macro; parallel let using blocking/await."
