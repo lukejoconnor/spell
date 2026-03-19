@@ -475,7 +475,6 @@
    ;; Strip / Reopen
    'strip-parens (fn [n s] (parse/strip-trailing-parens n (if (string? s) s (pr-str s)))),
    'serialize-prefix (fn [quine-form] (serialize-quine-prefix quine-form)),
-   'reopen (fn [quine-form & extra-forms] (apply reopen quine-form extra-forms)),
    ;; wrap-cat: build a quine completion form from the provided forms
    'wrap-cat (fn [& forms]
                (apply reopen (list 'quine 'completion '(eval (do))) forms)),
@@ -670,7 +669,7 @@
 
 (def special-forms
   "Special forms that are not free variables."
-  #{'quote 'def 'persist 'do 'if 'let 'fn 'fn* 'quine 'loop 'recur 'for 'try})
+  #{'quote 'def 'persist 'do 'if 'let 'fn 'fn* 'quine 'reopen 'loop 'recur 'for 'try})
 
 (defn quote-value
   "Wrap non-self-evaluating values in (quote ...) for safe embedding in generated code."
@@ -760,6 +759,27 @@
   (let [{:keys [name-sym inert-args body-forms]} (destructure-quine-form quine-form)
         reopened-tail (list 'eval (list* 'do (concat body-forms extra-forms)))]
     (apply list 'quine name-sym (concat inert-args [reopened-tail]))))
+
+(defn- eval-reopen-extra-forms
+  "Resolve reopen extra args. Raw forms are spliced as-is.
+   (reopen-eval expr) evaluates expr first and splices the resulting form."
+  [extra-exprs env]
+  (loop [remaining extra-exprs
+         resolved []
+         e env]
+    (if (empty? remaining)
+      (ok resolved e)
+      (let [extra-expr (first remaining)]
+        (if (and (seq? extra-expr) (= 'reopen-eval (first extra-expr)))
+          (let [result (spell-eval (second extra-expr) e)]
+            (if (err? result)
+              result
+              (recur (rest remaining)
+                     (conj resolved (:ok result))
+                     (:env result))))
+          (recur (rest remaining)
+                 (conj resolved extra-expr)
+                 e))))))
 
 ;; =============================================================================
 ;; Evaluator
@@ -891,6 +911,15 @@
                       (assoc (:env val-result) sym (:ok val-result)))))
 
       do    (eval-seq (rest expr) env)
+
+      reopen (let [quine-result (spell-eval (second expr) env)]
+               (if (err? quine-result)
+                 quine-result
+                 (let [extra-result (eval-reopen-extra-forms (drop 2 expr) (:env quine-result))]
+                   (if (err? extra-result)
+                     extra-result
+                     (ok (apply reopen (:ok quine-result) (:ok extra-result))
+                         (:env extra-result))))))
 
       if    (let [test-result (spell-eval (second expr) env)]
               (if (err? test-result)

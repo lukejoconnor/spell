@@ -535,7 +535,8 @@ spell-eval evaluation and do not update the caller's outer env."
 
 The completion wrapper is (quine completion (eval (do ...))).
 reopen keeps that wrapper as data and appends any extra expressions inside
-the existing do block.
+the existing do block. Appended expressions are spliced in as source forms;
+they are not evaluated in the current turn before reopen sees them.
 
 Example:
   '(!llm-self (reopen completion (def x 1)))"
