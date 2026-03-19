@@ -30,7 +30,8 @@
             [spell.provider :as provider]
             [spell.stdlib :as stdlib]
             [spell.io :as io]
-            [spell.web :as web]))
+            [spell.web :as web]
+            [spell.react :as react]))
 
 ;; =============================================================================
 ;; Stdlib resolution
@@ -51,7 +52,8 @@
    'reminders stdlib/reminders-namespace
    'strings stdlib/strings
    'math stdlib/math
-   'patterns stdlib/patterns})
+   'patterns stdlib/patterns
+   'react react/react})
 
 (defn- resolve-stdlib-path
   "Resolve a stdlib/X or stdlib/X/Y path.

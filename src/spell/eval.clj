@@ -462,6 +462,7 @@
    'name name, 'symbol symbol, 'keyword keyword,
    ;; Identity/utility
    'identity identity,
+   'println (fn [& args] (apply println args)),
    ;; Collections (core only - extended in seqs registry)
    'list list, 'vector vector, 'set set, 'first first, 'second second, 'rest rest, 'last last,
    'cons cons, 'conj conj, 'get get, 'assoc assoc, 'count count,

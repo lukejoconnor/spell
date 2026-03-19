@@ -1,0 +1,136 @@
+;; React pattern — ReAct loop with bash actions.
+;; Based on reimplementation/react/react.spl (Yao et al., 2022 structure),
+;; adapted for bash execution instead of web search.
+;; Loaded as react/ namespace via src/spell/react.clj.
+;;
+;; Usage: (react/run "Fix the failing test in test_foo.py")
+;; Returns: {:exit_status "submitted"|"LimitsExceeded" :submission str}
+;;
+;; Termination: Action N: Finish[answer] or max-steps reached.
+;; Prompt ends with "Thought N:" — model continues naturally (no fenced blocks).
+
+;; react-few-shot: bash-oriented few-shot examples
+(defn react-few-shot []
+  (cat
+    "Task: How many .clj files are in the src/ directory?\n"
+    "Thought 1: I need to count the .clj files in src/.\n"
+    "Action 1: Bash[find src/ -name \"*.clj\" | wc -l]\n"
+    "Observation 1: Exit code: 0\n24\n"
+    "Thought 2: There are 24 .clj files in src/.\n"
+    "Action 2: Finish[24]\n"
+    "\n"
+    "Task: Write hello world to /tmp/hello.py and run it.\n"
+    "Thought 1: I'll write the file using printf to keep it single-line, then run it.\n"
+    "Action 1: Bash[printf 'print(\"Hello, world!\")\\n' > /tmp/hello.py && python3 /tmp/hello.py]\n"
+    "Observation 1: Exit code: 0\nHello, world!\n"
+    "Thought 2: The script ran successfully and printed the expected output.\n"
+    "Action 2: Finish[Done. /tmp/hello.py written and verified.]\n"
+    "\n"))
+
+;; react-format-history: vec of step entries -> string
+(defn react-format-history [history]
+  (strings/join "\n"
+    (map (fn [e]
+           (let [n (str (:step e))]
+             (cat "Thought " n ": " (:thought e) "\n"
+                  "Action " n ": " (:action e) "\n"
+                  "Observation " n ": " (:observation e))))
+         history)))
+
+;; react-extract-thought: first line after "Thought N: " prefix
+(defn react-extract-thought [raw step]
+  (let [prefix (cat "Thought " (str step) ": ")]
+    (if (strings/starts-with? raw prefix)
+      (first (strings/split (subs raw (count prefix)) "\n"))
+      (first (strings/split (strings/trim raw) "\n")))))
+
+;; react-extract-action-line: find "Action N: ..." line in raw response
+(defn react-extract-action-line [raw step]
+  (let [prefix (cat "Action " (str step) ": ")
+        lines  (strings/split raw "\n")]
+    (loop [ls lines]
+      (if (empty? ls)
+        ""
+        (let [l (strings/trim (first ls))]
+          (if (strings/starts-with? l prefix)
+            (subs l (count prefix))
+            (recur (rest ls))))))))
+
+;; react-parse-action: "Bash[cmd]" | "Finish[answer]" -> {:type :payload}
+(defn react-parse-action [line]
+  (let [t (strings/trim line)]
+    (cond
+      (strings/starts-with? t "Bash[")
+        {:type :bash   :payload (subs t 5 (- (count t) 1))}
+      (strings/starts-with? t "Finish[")
+        {:type :finish :payload (subs t 7 (- (count t) 1))}
+      :else
+        {:type :unknown :payload t})))
+
+;; react-format-observation: io/sh result -> string
+(defn react-format-observation [result]
+  (let [exit     (:exit result)
+        out      (or (:out result) "")
+        err      (or (:err result) "")
+        combined (if (strings/blank? err) out (cat out "\n" err))
+        body     (if (> (count combined) 10000)
+                   (cat (subs combined 0 5000)
+                        "\n<elided>\n"
+                        (subs combined (- (count combined) 5000)))
+                   combined)]
+    (cat "Exit code: " (str exit) "\n" body)))
+
+;; run: ReAct loop with Thought/Action/Observation structure.
+;; opts:
+;;   string       - task text
+;;   :task        - task text (required if opts map)
+;;   :max-steps   - max steps before LimitsExceeded (default: 30, 0 = unlimited)
+;;   :verbose     - print each step (default: false)
+(defn run [opts]
+  (let [opts      (if (string? opts) {:task opts} opts)
+        task      (or (:task opts) (throw "react/run: :task required"))
+        max-steps (or (:max-steps opts) 30)
+        verbose   (or (:verbose opts) false)
+        few-shot  (react/react-few-shot)]
+    (loop [step 1 history []]
+      (if (and (> max-steps 0) (>= step max-steps))
+        {:exit_status "LimitsExceeded" :submission ""}
+        (let [history-str (react/react-format-history history)
+              prompt      (cat "You are a ReAct agent. Continue the trace below with exactly:\n"
+                               "Thought " (str step) ": <your reasoning>\n"
+                               "Action " (str step) ": Bash[command] or Finish[answer]\n\n"
+                               "IMPORTANT: Bash commands must be single-line only. "
+                               "To write multi-line files use printf with \\n escapes. "
+                               "Never use heredoc (EOF) syntax.\n\n"
+                               "--- Examples ---\n"
+                               few-shot
+                               "--- Task ---\n"
+                               "Task: " task "\n"
+                               (if (empty? history) "" (cat history-str "\n")))
+              raw         (leaf-llm prompt)
+              thought     (react/react-extract-thought raw step)
+              act-line    (react/react-extract-action-line raw step)
+              action      (react/react-parse-action act-line)]
+          (if verbose
+            (do
+              (println (cat "\n=== Step " (str step) " ==="))
+              (println (cat "Thought: " thought))
+              (println (cat "Action:  " act-line))))
+          (cond
+            (or (= (:type action) :finish) (= act-line ""))
+            (do
+              (if verbose (println (cat "Observation: [Finish]")))
+              {:exit_status "submitted" :submission (:payload action)})
+
+            (= (:type action) :bash)
+            (let [result  (io/sh (:payload action))
+                  obs     (react/react-format-observation result)
+                  entry   {:step step :thought thought :action act-line :observation obs}]
+              (if verbose (println (cat "Observation: " obs)))
+              (recur (+ step 1) (conj history entry)))
+
+            :else
+            (let [obs   (cat "Unrecognized action: " act-line)
+                  entry {:step step :thought thought :action act-line :observation obs}]
+              (if verbose (println (cat "Observation: " obs)))
+              (recur (+ step 1) (conj history entry)))))))))

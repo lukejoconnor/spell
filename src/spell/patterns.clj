@@ -11,7 +11,7 @@
   "config/spl-lib/patterns.spl")
 
 (def ^:private patterns-docs
-  {:short-docs "Reusable orchestration patterns: check-result, clean-prompt, ralph, team, fix-loop, relay, react."
+  {:short-docs "Reusable orchestration patterns: check-result, clean-prompt, ralph, team, fix-loop, relay."
    :docs {:guide "PATTERNS - Reusable orchestration patterns (effect namespace).
 
   (patterns/check-result prompt answer)  - verify answer with leaf-llm
@@ -20,7 +20,6 @@
   (patterns/team goal-or-opts)           - planner + parallel worktree team orchestrator
   (patterns/fix-loop issue)              - test-driven code fixing loop (reflector + worker agents)
   (patterns/relay opts)                  - fresh-worker reasoning rounds with fresh verification
-  (patterns/react task-or-opts)          - ReAct loop (Yao et al. 2022): web search + reasoning
 
 Use (!describe patterns :fn-name) for detailed docs on any function.
 
@@ -66,6 +65,7 @@ Common mistakes:
 
 1. calling check-result outside the trailing expression: must be quoted like all effect calls
 2. using team without an io-capable agent profile: workers and verifier need io/ and agents/; blocking/ is future-only and !ask-await is a builtin
+3. using relay without an agents/-capable profile: workers are spawned via agents/spawn
 
 In examples, | marks cursor position in a completion. It is doc-only; do not type it into code.
 
@@ -157,26 +157,6 @@ Execution model:
 Workers and verifiers may optionally message prior workers named in accumulated
 reports. Requires agent profile with agents/ support and future-only blocking/
 helpers."
-    :react "(patterns/react task-or-opts) - mini-swe-agent style ReAct loop (bash actions).
-Mirrors DefaultAgent from github.com/SWE-agent/mini-swe-agent.
-
-opts:
-  string           - task text
-  :task            - task text (required if opts map)
-  :max-steps       - max steps before LimitsExceeded (default: 30, 0 = unlimited)
-
-Execution model (mirrors DefaultAgent.run/step/query/execute_actions):
-1. Build system prompt + instance template (task)
-2. loop: assemble conversation string -> leaf-llm -> extract ```mswea_bash_command block
-3. If no command: feed format error back (mirrors FormatError exception)
-4. Execute command via io/sh (mirrors env.execute)
-5. Format observation: <returncode>N</returncode><output>...</output> (truncated at 10000 chars)
-6. Terminate when output contains COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT or max-steps reached
-
-Returns: {:exit_status \"submitted\"|\"LimitsExceeded\" :submission str}
-
-Example:
-  '(patterns/react \"Fix the failing test in test_foo.py\")"
     }})
 
 (def ^:private pattern-requires
@@ -189,8 +169,7 @@ Example:
    :ralph ['agents 'blocking]
    :team ['strings 'io 'agents 'blocking]
    :fix-loop ['strings 'io 'agents 'blocking]
-   :relay ['agents 'blocking]
-   :react ['strings 'io]})
+   :relay ['agents 'blocking]})
 
 (defn- defn-form?
   [form]

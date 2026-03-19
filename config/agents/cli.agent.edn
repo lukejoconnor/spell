@@ -11,5 +11,6 @@
  {io       stdlib/io
   web      stdlib/web
   patterns stdlib/patterns
+  react    stdlib/react
   agents   stdlib/agents
   globals  stdlib/globals}}

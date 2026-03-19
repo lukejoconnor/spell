@@ -5,7 +5,8 @@
 ;; Set {:search {:backend ...}} here to force a backend.
 
 {:search {:max-results 5
-          :region "us-en"}
+          :region "us-en"
+          :serper-api-key "c176d90c278edb338c9383b1cb2d4eb511824a7c"}
 
  :fetch {:backend :jina
          :max-chars 40000
