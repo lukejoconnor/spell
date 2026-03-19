@@ -201,7 +201,7 @@
   [value]
   (when-let [offset (:spell/line-offset (meta value))]
     (if (empty? value)
-      "[]"
+      (str "(line-offset " offset " [])")
       (let [last-line (+ offset (dec (count value)))
             width (count (str last-line))
             rows (map-indexed (fn [i line]
@@ -209,7 +209,7 @@
                                      " ; "
                                      (format (str "%" width "d") (+ offset i))))
                               value)]
-        (str "[\n" (str/join "\n" rows) "\n]")))))
+        (str "(line-offset " offset " [\n" (str/join "\n" rows) "\n])")))))
 
 (defn serialize-for-continuation
   "Serialize a value for embedding in a !call-now continuation.
@@ -711,6 +711,8 @@
   [v]
   (cond
     (or (nil? v) (number? v) (string? v) (boolean? v) (keyword? v)) v
+    (and (vector? v) (:spell/line-offset (meta v)))
+    (list 'line-offset (:spell/line-offset (meta v)) (list 'quote v))
     (spell-fn? v) (list* 'fn (:params v) (:body v))
     :else (list 'quote v)))
 

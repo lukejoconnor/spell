@@ -347,6 +347,15 @@
   (fn [name-sym val-expr]
     (list 'def name-sym val-expr)))
 
+;; line-offset: attach :spell/line-offset metadata to a vector literal that
+;; round-trips through prune/reopen as ordinary source.
+(defspellmacro 'line-offset
+  (fn [offset data-form]
+    (let [vec-data (if (and (seq? data-form) (= 'quote (first data-form)))
+                     (vec (second data-form))
+                     (vec data-form))]
+      (list 'quote (with-meta vec-data {:spell/line-offset offset})))))
+
 ;; defmacro: (defmacro name [params] body...) — user-defined macro
 ;; Expands to (def name {:spell/macro true :expander (fn [params] body...)})
 ;; The fn receives unevaluated argument forms and returns a new form to evaluate.
