@@ -197,12 +197,12 @@ Recommended usage pattern: Write a function, evaluate, inspect the result.
 
 Context tokens are your scarcest resource. Prune aggressively to stay effective over long tasks.
 
-Prefer !peek-now over !call-now for disposable tool calls (auto-appends rethink that prunes the command and binding on the following extension):
+Prefer !peek-now over !call-now for disposable tool calls (auto-appends prune that removes the command and binding on the following extension):
     '(!peek-now data (io/bash \"find . -name '*.py'\"))
 
 On the subsequent turn, persist what you need before extending:
     (def data \"... 200 lines ...\")
-    (rethink)
+    (prune)
     ;; turn begins here — data still in scope
     (persist targets (take 5 (strings/split-lines data)))
     '(!extend)
@@ -210,7 +210,8 @@ On the subsequent turn, persist what you need before extending:
 
 When running a shell script or Python program that you do not need to rerun, keep it inside !peek-now:
     '(!peek-now verify (io/sh \"cd /repo && python - <<'PY'\\nimport ...\\nPY\"))
-    (rethink \"Verification passed: the fix handles both edge cases.\")
+    (prune)
+    (think \"Verification passed: the fix handles both edge cases.\")
     '(!extend)
     ;; next turn: both the command and result are gone
 
@@ -317,9 +318,10 @@ Common mistakes:
   defmacro — define a user-level macro; expander receives unevaluated argument forms
   !describe — extend completion with namespace documentation; accepts ns, ns :key, or mixed (ns1 ns2 :key)
   think — label a reasoning step; evaluates body for side effects, returns nil
-  rethink — like think but prunes N previous sibling expressions from source on !extend
-  !extend — prune rethink forms from the completion and continue execution via !llm-self
-  !compact — prune rethinks and prompt the LLM to compress its context via wrap-cat"
+  prune — prune N previous sibling expressions from source on !extend, then disappear
+  rethink — equivalent to prune N siblings, then leave behind a think marker
+  !extend — prune prune/rethink forms from the completion and continue execution via !llm-self
+  !compact — prune prune/rethink markers and prompt the LLM to compress its context via wrap-cat"
 
     :effect
     "Per-agent effect builtins (available in trailing expression via double evaluation):
@@ -587,13 +589,13 @@ wrap-cat is for when you want to embed multiple values (data, prior results)
 directly into the child's do block rather than as a single string prompt."
 
     :prune-and-reopen
-    "Destructure a quine form, prune rethink-marked expressions, rebuild as open prefix.
+    "Destructure a quine form, prune prune/rethink-marked expressions, rebuild as open prefix.
 
 (prune-and-reopen completion)
 
 Unlike reopen (which just strips 3 trailing parens), prune-and-reopen:
 1. Parses the quine form
-2. Removes expressions marked for pruning by rethink
+2. Removes expressions marked for pruning by prune/rethink
 3. Rewrites explicit source-level (persist sym expr) forms to
    (persist sym <literal-runtime-value-of-sym>)
 4. Rebuilds the prefix from the cleaned AST
@@ -738,16 +740,16 @@ to rerun the script later, write it to disk first with io/write-file."
 '(!peek-now name expr)
 
 !peek/!peek-now runs like !call-now, then appends:
-  (rethink 2 \"!peek-now call and binding(s) disappear unless you persist what you need.\")
+  (prune 2)
 
-On your next extension, that rethink prunes both the peek command and its
+On your next extension, that prune removes both the peek command and its
 result binding(s) from source. If you need part of the value, persist it first
 with your own persist form.
 
 Example:
   '(!peek-now code (io/read-lines \"main.py\"))
   (def code [\"... many lines ...\"])
-  (rethink 2 \"!peek-now call and binding(s) disappear unless you persist what you need.\")
+  (prune 2)
   (def fn-defn (subvec code 100 111))
   ;; next turn: both the !peek-now call and code are pruned; fn-defn remains"
 
@@ -778,15 +780,34 @@ code for context but does not produce a return value.
 Example:
   (think \"Sum formula is n*(n+1)/2.\" (def total (/ (* 100 101) 2)))"
 
+    :prune
+    "Macro. Prune previous sibling expressions from the source on extend, then disappear.
+
+(prune)
+(prune N)
+
+When the completion is next extended (via !extend, !call-now, !print, or !describe),
+the previous sibling expressions are removed from the source and the prune form itself
+disappears. Use this for structural cleanup when you do not want a residual think marker.
+
+N defaults to 1 (prune previous sibling). Specify N to prune more siblings.
+
+Example:
+  '(!peek-now code (io/read-lines \"main.py\"))
+  (def code [\"... many lines ...\"])
+  (prune 2)
+  (persist fn-defn (subvec code 100 111))
+  '(!extend completion)"
+
     :rethink
-    "Macro. Like think but marks the previous sibling expression for pruning on extend.
+    "Macro. Equivalent to prune plus think: prune previous siblings, then keep a think marker.
 
 (rethink label body...)
 (rethink N label body...)
 
 When the completion is next extended (via !extend, !call-now, !print, or !describe),
-the marked expressions are removed from the source. This keeps the context
-window clean after corrections.
+the marked expressions are removed from the source and the rethink becomes a think.
+This keeps the context window clean after corrections while preserving a summary.
 
 N defaults to 1 (prune previous sibling). Specify N to prune more siblings.
 
@@ -797,15 +818,15 @@ Example:
   ;; child sees only the corrected think"
 
     :!extend
-    "Macro. Prune rethink-marked expressions from the completion and continue via !llm-self.
+    "Macro. Prune prune/rethink-marked expressions from the completion and continue via !llm-self.
 
 '(!extend completion)
 
 Calls prune-and-reopen on the completion, then !llm-self with the cleaned prefix.
-Use after a rethink to continue with a shorter, corrected context."
+Use after prune/rethink to continue with a shorter, corrected context."
 
     :!compact
-    "Macro. Prune rethinks, then prompt the LLM to compress its context.
+    "Macro. Prune prune/rethink markers, then prompt the LLM to compress its context.
 
 '(!compact completion)
 

@@ -109,7 +109,7 @@ The last expression in the completion wrapper's `do` block is the *trailing expr
 ```clojure
 '(llm (reopen (pr-str completion)))
 ```
-where `pr-str` serializes the data to a string and `reopen` strips the closing parentheses of the completion wrapper (the `do` block, `eval`, and `quine` forms) so that the `do` block can be continued by the child LLM. The builtin `reopen` operates at the string level; the related internal function `prune-and-reopen` (used by `!extend` and `!call-now`) works at the AST level, parsing the quine structure and rebuilding an open prefix after pruning `rethink` siblings and materializing `persist` forms. Because this quoted expression is the trailing expression, it is passed to the outer `eval` and evaluated. When a completion ends with a trailing `llm` call (or with a trailing tool call; see below), this is called an extension.
+where `pr-str` serializes the data to a string and `reopen` strips the closing parentheses of the completion wrapper (the `do` block, `eval`, and `quine` forms) so that the `do` block can be continued by the child LLM. The builtin `reopen` operates at the string level; the related internal function `prune-and-reopen` (used by `!extend` and `!call-now`) works at the AST level, parsing the quine structure and rebuilding an open prefix after pruning `prune`/`rethink` siblings and materializing `persist` forms. Because this quoted expression is the trailing expression, it is passed to the outer `eval` and evaluated. When a completion ends with a trailing `llm` call (or with a trailing tool call; see below), this is called an extension.
 
 The trailing expression pattern---quoting the trailing expression---is important because it makes the expression inert in extensions. When a new expression is appended, the previously-quoted expression is no longer trailing; the quote makes it return data (discarded as an intermediate value). Without quoting, the `!llm-self` call would be re-evaluated every time the completion is extended. In fact, Spell enforces that any function with effects outside the local runtime environment can only be called via double-evaluation. Such functions are unavailable in the built-in functions namespace of `spell-eval`, and they are inserted into the namespace of `eval`. 
 
@@ -144,6 +144,21 @@ For the same reason, functions in Spell are dynamically scoped. There are no clo
 
 As a completion grows through successive extensions, it accumulates stale context. Spell provides several functions that make it more convenient to discard stale context and retain what is still needed.
 
+### The `prune` macro
+
+`prune` is the lowest-level source-pruning primitive:
+
+```clojure
+'(!call-now dir-contents (io/sh "ls -l big-dir"))
+(def dir-contents "[1000 files]")
+(prune 2)
+'(!call-now my-file (io/read-lines "big-dir/my-file.txt"))
+```
+
+On the following turn, both the large tool call and its serialized binding are removed from the agent's context window, and the `prune` form itself disappears.
+
+At evaluation time, `prune` behaves like `do` with an empty body, returning `nil`. When the completion is extended via `!extend` or `!call-now`, the `prune-substitute` function walks the source and removes the requested number of previous sibling expressions. An optional count argument controls how many previous siblings to prune: `(prune 2)` prunes the two preceding siblings.
+
 ### The `rethink` macro
 
 `think` and `rethink` are macros that mark reasoning steps in the completion. `think` simply records a labeled reasoning step:
@@ -166,7 +181,7 @@ At evaluation time, `think` behaves like `do` — it evaluates its body forms an
 
 On the following turn, the 1000-line tool call result is removed from the agent's context window.
 
-At evaluation time, `rethink` behaves identically to `think` or `do`, but when the completion is extended via `!extend` or `!call-now`, the `prune-substitute` function walks the source and removes sibling expressions marked by each `rethink`, converting each `rethink` to a `think` so that it becomes inert on the following turn. An optional count argument controls how many previous siblings to prune: `(rethink 2 "reason" ...)` prunes the two preceding siblings.
+At evaluation time, `rethink` behaves identically to `think` or `do`, but when the completion is extended via `!extend` or `!call-now`, the `prune-substitute` function walks the source and removes sibling expressions marked by each `rethink`, converting each `rethink` to a `think` so that it becomes inert on the following turn. Conceptually, `rethink` is sugar for `(prune N)` followed by `(think label body...)`: it prunes prior siblings but leaves behind a summary marker. An optional count argument controls how many previous siblings to prune: `(rethink 2 "reason" ...)` prunes the two preceding siblings.
 
 ### The `persist` function
 
@@ -193,7 +208,7 @@ At runtime, `persist` is identical to `def`. However, when `prune-substitute` is
 
 For longer-running agents, even pruned context may grow too large. `!compact` provides self-referential context compaction: the agent compresses its own completion without an external summarizer.
 
-`!compact` works as a two-hop self-call. The first hop prunes rethinks (like `!extend`), then appends instructions asking the LLM to rewrite its context as `wrap-cat` arguments — a sequence of quoted forms (`'(def x 1)`, `'(think "label" ...)`) representing key definitions and reasoning steps, dropping routine thinks and truncating large values. The second hop continues execution from the compressed prefix that `wrap-cat` produces. Because the same agent performs the compaction, it can make informed decisions about what to keep.
+`!compact` works as a two-hop self-call. The first hop prunes `prune`/`rethink` markers (like `!extend`), then appends instructions asking the LLM to rewrite its context as `wrap-cat` arguments — a sequence of quoted forms (`'(def x 1)`, `'(think "label" ...)`) representing key definitions and reasoning steps, dropping routine thinks and truncating large values. The second hop continues execution from the compressed prefix that `wrap-cat` produces. Because the same agent performs the compaction, it can make informed decisions about what to keep.
 
 ## Macros
 
