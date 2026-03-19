@@ -204,16 +204,17 @@
 ;; Optional limit controls inline threshold for serialize (default: call-now-inline-limit).
 ;; Negative limit means always inline (no out-of-band storage).
 ;; Multi-binding evaluates all exprs, then extends with all bindings in one turn.
+(defn- serialized-form
+  ([temp]
+   (list 'read-string (list 'serialize temp)))
+  ([temp limit]
+   (list 'read-string (list 'serialize temp limit))))
+
 (defn- call-now-expander
   "Shared expander for !call-now and !peek-now.
    extra-form-exprs are appended to the reopened quine."
   [macro-name args extra-form-exprs]
   (let [extra-form-exprs (or extra-form-exprs [])
-        serialized-form (fn
-                          ([temp]
-                           (list 'read-string (list 'serialize temp)))
-                          ([temp limit]
-                           (list 'read-string (list 'serialize temp limit))))
         def-form-expr (fn
                         ([name-sym temp]
                          (list 'list (list 'quote 'def) (list 'quote name-sym)
@@ -331,7 +332,7 @@
   [& val-exprs]
   (let [temps (mapv (fn [_] (gensym "print__")) val-exprs)
         bindings (vec (mapcat vector temps val-exprs))
-        forms (map (fn [t] (list 'read-string (list 'serialize t))) temps)]
+        forms (map serialized-form temps)]
     (list 'let bindings
           (list '!llm-self
                 (list* 'reopen (list 'prune-and-reopen 'completion) forms)))))
@@ -339,6 +340,16 @@
 (defspellmacro '!print print-expander)
 ;; Backward-compatible alias.
 (defspellmacro 'print print-expander)
+
+;; line-offset: (line-offset n [data...]) -> quoted vector with :spell/line-offset metadata.
+;; This keeps the annotation alive across pr-str/read-string round-trips.
+(defspellmacro 'line-offset
+  (fn [offset data-form]
+    (let [vec-data (if (vector? data-form)
+                     data-form
+                     (throw (ex-info "line-offset expects a vector literal"
+                                     {:form data-form})))]
+      (list 'quote (with-meta vec-data (assoc (or (meta vec-data) {}) :spell/line-offset offset))))))
 
 ;; define: Scheme-style alias for def
 (defspellmacro 'define

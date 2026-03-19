@@ -1982,30 +1982,110 @@
             id (second (first forms))]
         (is (= big-vec (eval/stored id))))))
 
-  (testing "serialize-for-continuation with line-offset vector produces commented vector literal"
+  (testing "serialize-for-continuation with line-offset vector produces a line-offset wrapper"
     (let [lines (with-meta ["line one" "line two" "line three"] {:spell/line-offset 10})
           result (eval/serialize-for-continuation lines)]
-      (is (.startsWith ^String result "["))
+      (is (.startsWith ^String result "(line-offset 10 ["))
       (is (.contains ^String result "; 10"))
       (is (.contains ^String result "; 12"))
-      ;; Round-trip: evaluating the form should yield the original vector
       (let [parsed (first (spell.parse/read-all result))
-            evaled (run-spell parsed)]
-        (is (= ["line one" "line two" "line three"] evaled)))))
+            evaled (spell-eval parsed {})]
+        (is (eval/ok? evaled))
+        (is (= ["line one" "line two" "line three"] (:ok evaled)))
+        (is (= 10 (:spell/line-offset (meta (:ok evaled))))))))
 
   (testing "serialize-for-continuation with line-offset offset=1"
     (let [lines (with-meta ["alpha" "beta"] {:spell/line-offset 1})
           result (eval/serialize-for-continuation lines)]
+      (is (.startsWith ^String result "(line-offset 1 ["))
       (is (.contains ^String result "; 1"))
       (is (.contains ^String result "; 2"))))
 
   (testing "serialize-for-continuation with empty line-offset vector"
     (let [lines (with-meta [] {:spell/line-offset 5})
           result (eval/serialize-for-continuation lines)]
-      (is (= "[]" result))
+      (is (= "(line-offset 5 [])" result))
       (let [parsed (first (spell.parse/read-all result))
-            evaled (run-spell parsed)]
-        (is (= [] evaled))))))
+            evaled (spell-eval parsed {})]
+        (is (eval/ok? evaled))
+        (is (= [] (:ok evaled)))
+        (is (= 5 (:spell/line-offset (meta (:ok evaled)))))))))
+
+(deftest line-offset-round-trip-test
+  (testing "line-offset macro reconstructs vector metadata"
+    (let [result (spell-eval '(line-offset 5 ["a" "b"]) {})]
+      (is (eval/ok? result))
+      (is (= ["a" "b"] (:ok result)))
+      (is (= 5 (:spell/line-offset (meta (:ok result)))))))
+
+  (testing "quote-value survives pr-str/read-string round-trip for line-offset vectors"
+    (let [value (with-meta ["alpha" "beta"] {:spell/line-offset 17})
+          quoted (eval/quote-value value)
+          reparsed (first (spell.parse/read-all (pr-str quoted)))
+          result (spell-eval reparsed {})]
+      (is (= '(line-offset 17 ["alpha" "beta"]) quoted))
+      (is (eval/ok? result))
+      (is (= ["alpha" "beta"] (:ok result)))
+      (is (= 17 (:spell/line-offset (meta (:ok result)))))))
+
+  (testing "prune-and-reopen preserves line-offset metadata across read/eval cycle"
+    (let [lines (with-meta ["first" "second"] {:spell/line-offset 40})
+          quine-form '(quine completion
+                        (eval (do
+                                (persist snippet lines)
+                                (quote (!extend completion)))))
+          reopened (-> quine-form
+                       (eval/prune-substitute {'snippet lines})
+                       eval/reopen)
+          reparsed (first (spell.parse/read-all
+                            (spell.parse/balance-parens
+                              (eval/serialize-quine-prefix reopened))))
+          persist-form (-> reparsed last second second)
+          result (spell-eval persist-form {})]
+      (is (eval/ok? result))
+      (is (= ["first" "second"] (get (:env result) 'snippet)))
+      (is (= 40 (:spell/line-offset (meta (get (:env result) 'snippet)))))))
+
+  (testing "!call-now continuation keeps numbered source in the immediate child prompt"
+    (let [lines (with-meta ["first" "second"] {:spell/line-offset 40})
+          completion '(quine completion (eval (do)))
+          expanded (macros/spell-macroexpand-1 '(!call-now snippet lines))
+          result (spell-eval expanded {'completion completion
+                                       'lines lines
+                                       '!llm-self identity})
+          prefix (eval/serialize-quine-prefix (:ok result))]
+      (is (eval/ok? result))
+      (is (.contains ^String prefix "(line-offset 40 ["))
+      (is (.contains ^String prefix "; 40"))
+      (is (.contains ^String prefix "; 41"))))
+
+  (testing "subsequent serialize/parse cycles re-render numbered source"
+    (let [lines (with-meta ["first" "second"] {:spell/line-offset 40})
+          completion '(quine completion (eval (do)))
+          expanded (macros/spell-macroexpand-1 '(!call-now snippet lines))
+          result (spell-eval expanded {'completion completion
+                                       'lines lines
+                                       '!llm-self identity})
+          prefix-1 (eval/serialize-quine-prefix (:ok result))
+          reparsed (first (spell.parse/read-all (spell.parse/balance-parens prefix-1)))
+          prefix-2 (eval/serialize-quine-prefix reparsed)]
+      (is (.contains ^String prefix-2 "(line-offset 40 ["))
+      (is (.contains ^String prefix-2 "; 40"))
+      (is (.contains ^String prefix-2 "; 41"))))
+
+  (testing "persisted line-offset values re-render numbered source"
+    (let [lines (with-meta ["first" "second"] {:spell/line-offset 40})
+          quine-form '(quine completion
+                        (eval (do
+                                (persist snippet lines)
+                                (quote (!extend completion)))))
+          reopened (-> quine-form
+                       (eval/prune-substitute {'snippet lines})
+                       eval/reopen)
+          prefix (eval/serialize-quine-prefix reopened)]
+      (is (.contains ^String prefix "(persist snippet (line-offset 40 ["))
+      (is (.contains ^String prefix "; 40"))
+      (is (.contains ^String prefix "; 41")))))
 
 ;; =============================================================================
 ;; New special forms (from verified clojure.core audit)
@@ -2496,6 +2576,7 @@
       (is (= 'list (first (nth reopen-form 2))))
       (is (= '(quote def) (second (nth reopen-form 2))))
       (is (= '(quote code) (nth (nth reopen-form 2) 2)))
+      (is (= 'read-string (first (nth (nth reopen-form 2) 3))))
       (is (= '(list (quote prune) 2)
              (last reopen-form)))))
 

@@ -195,13 +195,14 @@
     :else value))
 
 (defn- format-line-offset-vector
-  "Serialize a vector with :spell/line-offset metadata as a vector literal
-   where each entry has an inline ; line-number comment.
+  "Serialize a vector with :spell/line-offset metadata as a (line-offset ...)
+   form where each entry has an inline ; line-number comment.
    Returns nil if the vector doesn't have line-offset metadata."
   [value]
-  (when-let [offset (:spell/line-offset (meta value))]
+  (when (and (vector? value) (contains? (meta value) :spell/line-offset))
+    (let [offset (:spell/line-offset (meta value))]
     (if (empty? value)
-      "[]"
+      (str "(line-offset " offset " [])")
       (let [last-line (+ offset (dec (count value)))
             width (count (str last-line))
             rows (map-indexed (fn [i line]
@@ -209,15 +210,30 @@
                                      " ; "
                                      (format (str "%" width "d") (+ offset i))))
                               value)]
-        (str "[\n" (str/join "\n" rows) "\n]")))))
+        (str "(line-offset " offset " [\n"
+             (str/join "\n" rows)
+             "\n])"))))))
+
+(defn- line-offset-form?
+  [form]
+  (and (seq? form)
+       (= 'line-offset (first form))
+       (= 3 (count form))
+       (number? (second form))
+       (vector? (nth form 2))))
+
+(defn- format-line-offset-form
+  [form]
+  (format-line-offset-vector
+    (with-meta (nth form 2) {:spell/line-offset (second form)})))
 
 (defn serialize-for-continuation
   "Serialize a value for embedding in a !call-now continuation.
    Small values are inlined via pr-str. Large strings are truncated with a note.
    Large non-strings are deep-truncated (string values within maps/seqs are
    individually truncated) then inlined. Only stored out-of-band if still too large.
-   Vectors with :spell/line-offset metadata produce a vector literal with
-   inline line-number comments.
+   Vectors with :spell/line-offset metadata produce a (line-offset ...) form
+   with inline line-number comments.
    limit: max pr-str chars before truncation/storage. Negative means always inline."
   ([value] (serialize-for-continuation value call-now-inline-limit))
   ([value limit]
@@ -247,6 +263,18 @@
                  ;; Still too large — store out-of-band
                  (let [id (store-value! value)]
                    (str "(stored " (pr-str id) ")")))))))))))
+
+(defn- serialize-prefix-form
+  [form]
+  (cond
+    (line-offset-form? form)
+    (format-line-offset-form form)
+
+    (seq? form)
+    (str "(" (str/join " " (map serialize-prefix-form form)) ")")
+
+    :else
+    (pr-str form)))
 
 
 ;; =============================================================================
@@ -706,6 +734,8 @@
   (cond
     (or (nil? v) (number? v) (string? v) (boolean? v) (keyword? v)) v
     (spell-fn? v) (list* 'fn (:params v) (:body v))
+    (and (vector? v) (contains? (meta v) :spell/line-offset))
+    (list 'line-offset (:spell/line-offset (meta v)) v)
     :else (list 'quote v)))
 
 (defn prune-substitute
@@ -777,7 +807,7 @@
          (when (seq inert-args)
            (str (str/join " " (map pr-str inert-args)) " "))
          "(eval (do "
-         (str/join " " (map pr-str body-forms))
+         (str/join " " (map serialize-prefix-form body-forms))
          " ")))
 
 (defn- -expand-expr
