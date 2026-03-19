@@ -145,7 +145,7 @@ Functions that create a new turn are prefixed with `!`.
 New-turn functions are:
     (!llm-self prompt); flexible self-call primitive
     (!call-now result-name tool-call) ; call tool, bind to result-name, print result, extend
-    (!peek result-name tool-call) ; !call-now + auto-rethink; binding disappears unless persisted
+    (!peek result-name tool-call) ; !call-now + auto-rethink; command + binding disappear unless persisted
     (!extend) ; extend your current completion
     (!describe ns) ; disclose namespace documentation and extend completion
     (!compact) ; compact your context window and continue
@@ -157,7 +157,7 @@ Extension-producing forms:
     '(!extend) ; simple extension
     '(!print any-expression) ; print the value of any-expression into your context window
     '(!call-now result-name any-expression) ; bind the value to result-name and print
-    '(!peek result-name any-expression) ; ephemeral binding (alias: !peek-now)
+    '(!peek result-name any-expression) ; prunes the peek call + binding next turn (alias: !peek-now)
     '(!describe some-namespace) ; print documentation
     '(agents/!ask :agent-handle query) ; see below
 
@@ -252,7 +252,7 @@ Context tokens are your scarcest resource. Each extension should carry forward o
 
 When reading a file or making a tool call whose result you need only briefly, use !peek-now:
     '(!peek-now data (io/bash "find . -name '*.py'"))
-    ;; next turn: persist what you need, then extend
+    ;; next turn: persist what you need, then extend; the command and binding are pruned after that
     (persist targets (take 5 (strings/split-lines data)))
     '(!extend)
 

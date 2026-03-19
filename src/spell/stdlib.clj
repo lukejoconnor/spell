@@ -197,7 +197,7 @@ Recommended usage pattern: Write a function, evaluate, inspect the result.
 
 Context tokens are your scarcest resource. Prune aggressively to stay effective over long tasks.
 
-Prefer !peek-now over !call-now for tool calls (auto-appends rethink):
+Prefer !peek-now over !call-now for disposable tool calls (auto-appends rethink that prunes the command and binding on the following extension):
     '(!peek-now data (io/bash \"find . -name '*.py'\"))
 
 On the subsequent turn, persist what you need before extending:
@@ -206,7 +206,15 @@ On the subsequent turn, persist what you need before extending:
     ;; turn begins here — data still in scope
     (persist targets (take 5 (strings/split-lines data)))
     '(!extend)
-    ;; next turn: data is pruned, targets survives as a literal value
+    ;; next turn: the !peek-now call and data are pruned; targets survive as literals
+
+When running a shell script or Python program that you do not need to rerun, keep it inside !peek-now:
+    '(!peek-now verify (io/sh \"cd /repo && python - <<'PY'\\nimport ...\\nPY\"))
+    (rethink \"Verification passed: the fix handles both edge cases.\")
+    '(!extend)
+    ;; next turn: both the command and result are gone
+
+When you need to rerun a script later, write it to disk first and then call it with !call-now.
 
 After extended reasoning, rethink to compress:
     (think \"Long analysis of the bug... examining stack traces, testing hypotheses... the root cause is in parse_args line 42.\")
@@ -297,7 +305,7 @@ Common mistakes:
   some-> — thread-first with nil short-circuit; stops and returns nil on nil intermediate
   some->> — thread-last with nil short-circuit; stops and returns nil on nil intermediate
   !call-now — evaluate expr, extend completion with named binding; crosses the effect boundary
-  !peek — same as !call-now, but automatically marks the new binding as one-turn ephemeral
+  !peek — same as !call-now, but automatically marks the originating call and new binding as one-turn ephemeral
   !peek-now — alias for !peek
   -> — thread-first; insert value as first argument through a chain of forms
   ->> — thread-last; insert value as last argument through a chain of forms
