@@ -370,6 +370,9 @@
                        (if (re-find #"\." m) (Double/parseDouble m) (Long/parseLong m))))),
    ;; Numeric predicates
    'even? even?, 'odd? odd?, 'pos? pos?, 'neg? neg?, 'zero? zero?,
+   'integer? integer?, 'ratio? ratio?, 'rational? rational?,
+   'pos-int? pos-int?, 'neg-int? neg-int?,
+   'numerator numerator, 'denominator denominator,
    ;; Comparison
    '< <, '> >, '<= <=, '>= >=, '= =, 'not= not=, 'compare compare,
    ;; Logic
@@ -628,6 +631,8 @@
    'throw (fn [v]
             (throw (ex-info (if (string? v) v (pr-str v))
                             {:spell/thrown v}))),
+   'ex-info (fn [msg data] (ex-info msg data)),
+   'ex-data ex-data, 'ex-message ex-message, 'ex-cause ex-cause,
    ;; future* — run a thunk in a new thread, return a future handle
    'future* (fn [thunk]
               (let [f (bound-fn []

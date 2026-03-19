@@ -93,6 +93,30 @@
             (list 'when temp
                   (list* 'let [sym temp] body))))))
 
+;; if-some: (if-some [sym test] then else?) -> like if-let, but false is treated as present
+(defspellmacro 'if-some
+  (fn
+    ([bindings then] (list 'if-some bindings then nil))
+    ([bindings then else]
+     (let [sym (first bindings)
+           tst (second bindings)
+           temp (gensym "if-some__")]
+       (list 'let [temp tst]
+             (list 'if (list 'some? temp)
+                   (list 'let [sym temp] then)
+                   else))))))
+
+;; when-some: (when-some [sym test] body...) -> like when-let, but false is treated as present
+(defspellmacro 'when-some
+  (fn [bindings & body]
+    (let [sym (first bindings)
+          tst (second bindings)
+          temp (gensym "when-some__")]
+      (list 'let [temp tst]
+            (list 'if (list 'some? temp)
+                  (list* 'let [sym temp] body)
+                  nil)))))
+
 ;; case: (case expr val1 result1 val2 result2 ... default?) -> nested cond + =
 (defspellmacro 'case
   (fn [test-expr & clauses]
