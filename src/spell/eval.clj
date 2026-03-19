@@ -532,10 +532,31 @@
                ([value] (serialize-for-continuation value))
                ([value limit] (serialize-for-continuation value limit))),
    'deep-truncate (fn [value limit] (deep-truncate value (int limit))),
+   'println println,
+   'ok?     ok?,
+   'err?    err?,
    ;; Eval directly in the caller env.
    'spell-eval (fn [expr]
                  (let [r (spell-eval expr (or *spell-env* {}))]
                    (if (ok? r) (:ok r) (throw (ex-info (:err r) {:result r}))))),
+   ;; eval-string: parse a code string and evaluate all top-level forms sequentially,
+   ;; threading env. Returns {:ok val :env env'} or {:err msg :env env}.
+   ;; Unlike spell-eval, takes an explicit env and returns the result map (no throwing).
+   ;; Useful for agent loops that eval LM-generated code and accumulate bindings.
+   'eval-string (fn [code env]
+                  (try
+                    (let [forms (parse/read-all (str code))]
+                      (loop [remaining forms
+                             cur-env    env
+                             last-result {:ok nil :env env}]
+                        (if (empty? remaining)
+                          last-result
+                          (let [result (spell-eval (first remaining) cur-env)
+                                val    (when (ok? result) (:ok result))
+                                env'   (if (ok? result) (:env result) cur-env)]
+                            (recur (rest remaining) env' result)))))
+                    (catch Exception e
+                      {:err (.getMessage e) :env env}))),
    ;; Extended sequence operations (from seqs/)
    'every? (fn [pred coll] (every? #(invoke-fn pred [%]) coll)),
    'remove (fn [pred coll] (filterv #(not (invoke-fn pred [%])) coll)),

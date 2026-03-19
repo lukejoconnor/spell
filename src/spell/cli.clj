@@ -108,6 +108,7 @@
    [nil "--responses-api" "Force OpenAI Responses API instead of Chat Completions"]
    ["-T" "--trace" "Record execution trace to traces/"]
    ["-l" "--log FILE" "Log verbose output to FILE (implies -v)"]
+   ["-i" "--init" "Treat file/prompt as a Spell program (skip quine wrapping)"]
    ["-v" "--verbose" "Show raw LLM response"]
    ["-S" "--setup CMD" "Shell command to run before spell execution"]
    ["-C" "--cleanup CMD" "Shell command to run after spell execution"]
@@ -171,13 +172,17 @@
          :ok? false})
 
       (and (= 1 (count arguments)) (spl-file? (first arguments)))
-      (if-let [prompt (load-file-prompt (first arguments))]
-        {:prompt prompt :options options}
+      (if-let [content (load-file-prompt (first arguments))]
+        (if (:init options)
+          {:init content :options options}
+          {:prompt content :options options})
         {:exit-message (str "File not found: " (first arguments))
          :ok? false})
 
       (= 1 (count arguments))
-      {:prompt (first arguments) :options options}
+      (if (:init options)
+        {:init (first arguments) :options options}
+        {:prompt (first arguments) :options options})
 
       :else
       {:exit-message (usage summary) :ok? false})))
@@ -240,7 +245,7 @@
 
 (defn run-prompt
   [prompt {:keys [depth verbose log budget trace agent model thinking reasoning-effort verbosity
-                  suffix-grammar grammar-max-chars]
+                  suffix-grammar grammar-max-chars init]
            :as opts}
    usage-atom]
   (let [max-depth (cond
@@ -254,25 +259,26 @@
         prefill? (and (provider/supports-prefill prov) (not thinking))
         resolved-agent (or agent "config/agents/cli.agent.edn")
         log-writer (when log (io/writer (io/file log) :append true))]
-    (api/run {:prompt prompt
-              :provider prov
-              :agent resolved-agent
-              :user? (and (some? (. System console)) (not= model "user"))
-              :verbose (or verbose (some? log))
-              :log-writer log-writer
-              :budget (cond
-                        (nil? budget) nil  ; api/run handles agent/default fallback
-                        (zero? budget) 0   ; api/run maps 0 -> nil (unlimited)
-                        :else budget)
-              :depth max-depth
-              :trace trace
-              :prefill? prefill?
-              :thinking thinking
-              :reasoning-effort reasoning-effort
-              :verbosity verbosity
-              :suffix-grammar? suffix-grammar
-              :grammar-max-chars grammar-max-chars
-              :usage usage-atom})))
+    (api/run (cond-> {:provider prov
+                      :agent resolved-agent
+                      :user? (and (some? (. System console)) (not= model "user"))
+                      :verbose (or verbose (some? log))
+                      :log-writer log-writer
+                      :budget (cond
+                                (nil? budget) nil
+                                (zero? budget) 0
+                                :else budget)
+                      :depth max-depth
+                      :trace trace
+                      :prefill? prefill?
+                      :thinking thinking
+                      :reasoning-effort reasoning-effort
+                      :verbosity verbosity
+                      :suffix-grammar? suffix-grammar
+                      :grammar-max-chars grammar-max-chars
+                      :usage usage-atom}
+               init        (assoc :init init)
+               (not init)  (assoc :prompt prompt)))))
 
 (defn- format-cache-stats [stats]
   (let [cache-write (:cache_creation_input_tokens stats 0)
@@ -332,7 +338,7 @@
       (.exitValue proc))))
 
 (defn -main [& args]
-  (let [{:keys [prompt options exit-message ok?]} (validate-args args)]
+  (let [{:keys [prompt init options exit-message ok?]} (validate-args args)]
     (if exit-message
       (do
         (println exit-message)
@@ -348,7 +354,7 @@
                                       (println (format "\nCost: $%.4f" c))))))))]
         (.addShutdownHook (Runtime/getRuntime) shutdown-hook)
         (run-shell (:setup options))
-        (let [{:keys [result error error-data usage trace-dir]} (run-prompt prompt options usage-atom)]
+        (let [{:keys [result error error-data usage trace-dir]} (run-prompt prompt (cond-> options init (assoc :init init)) usage-atom)]
           (run-shell (:cleanup options))
           (when trace-dir
             (binding [*out* *err*]
