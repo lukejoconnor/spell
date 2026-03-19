@@ -380,10 +380,10 @@ Note: map? returns false for spell functions ({:spell/fn true ...}) and futures 
 
     :error
     "  throw — raise a catchable Spell error value
-  ex-info — create an ExceptionInfo with message and data map
-  ex-data — extract the data map from an exception, or nil if absent
-  ex-message — extract the message string from an exception
-  ex-cause — extract the cause from an exception, or nil if absent
+  ex-info — create a plain-data exception map with message, data, and optional cause
+  ex-data — extract the data map from a Spell exception value or host exception
+  ex-message — extract the message string from a Spell exception value or host exception
+  ex-cause — extract the cause from a Spell exception value or host exception, or nil if absent
   gensym — generate a fresh symbol, often used for macro hygiene"
 
     :strings

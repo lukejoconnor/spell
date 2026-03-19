@@ -1758,11 +1758,22 @@
 
 (deftest exception-builtins-test
   (testing "ex-info creates exception values with readable fields"
+    (is (= {:spell/exception true
+            :message "not found"
+            :data {:code 404}}
+           (run-spell '(ex-info "not found" {:code 404}))))
     (is (= "not found"
            (run-spell '(ex-message (ex-info "not found" {:code 404})))))
     (is (= {:code 404}
            (run-spell '(ex-data (ex-info "not found" {:code 404})))))
-    (is (nil? (run-spell '(ex-cause (ex-info "not found" {:code 404})))))))
+    (is (nil? (run-spell '(ex-cause (ex-info "not found" {:code 404})))))
+    (is (= {:spell/exception true
+            :message "root cause"
+            :data {:kind :root}}
+           (run-spell '(ex-cause
+                         (ex-info "not found"
+                                  {:code 404}
+                                  (ex-info "root cause" {:kind :root}))))))))
 
 (deftest throw-exception-value-test
   (testing "throw preserves ex-info for catch handlers"
@@ -1774,6 +1785,24 @@
            (run-spell '(try
                          (throw (ex-info "not found" {:code 404}))
                          (catch e (ex-message e))))))))
+
+(deftest persisted-exception-value-test
+  (testing "persisted ex-info stays reader-safe across reopen"
+    (let [result (run-spell '(do
+                               (def err (ex-info "not found" {:code 404}))
+                               (prune-and-reopen
+                                 '(quine completion
+                                    (eval (do
+                                            (persist err err)
+                                            (quote (!extend completion))))))))
+          parsed (first (spell.parse/read-all (str result ")))")))
+          persisted (-> parsed (nth 2) second second)]
+      (is (string? result))
+      (is (not (str/includes? result "#error")))
+      (is (= '(persist err (quote {:spell/exception true
+                                   :message "not found"
+                                   :data {:code 404}}))
+             persisted)))))
 
 (deftest rem-builtin
   (testing "rem basic"
