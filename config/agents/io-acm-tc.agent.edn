@@ -3,6 +3,7 @@
 {:base base-acm-tc.agent.edn
  :name io-acm-tc
  :doc "Tool-call agent with ACM prompt + io/web/patterns/agents/globals namespaces"
+ :llms {explore explore.agent.edn}
 
  :namespaces
  {io       stdlib/io

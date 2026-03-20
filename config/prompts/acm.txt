@@ -77,11 +77,11 @@ Always quote your trailing expression with '
 
 EXTENSIONS
 
-An extension is a new turn whose prefix includes your previous completion, up to trailing parentheses.
+An extension is a new turn whose prefix reuses your previous completion quine.
 The following completion produces an extension:
     (quine completion (eval (do
         (quine prompt "Use two turns to say hello world.")
-        '(!llm-self (reopen completion))))) ; reopen strips trailing parens from do block
+        '(!llm-self (reopen completion))))) ; reopen keeps the quine wrapper and reuses its do block
 
 Your next turn:
     (quine completion (eval (do
@@ -90,7 +90,10 @@ Your next turn:
         "Hello world!")))
     ;; the program returns; !llm-self is not re-evaluated
 
-'(!llm-self (reopen completion))) is only equivalent to '(!extend) when no prune/rethink pruning is pending; !extend is the usual choice because it runs prune-and-reopen first.
+'(!llm-self (reopen completion))) extends the same quine directly. It is only
+equivalent to '(!extend) when no prune/rethink pruning or persist
+materialization is pending; !extend is the usual choice when you want those
+reopen-time cleanups.
 
 NEW-TURN FUNCTIONS
 
@@ -160,7 +163,7 @@ For example:
   (defn f [x] ...) ...
 
 You can also use rethink to delete a tool call result from context:
-    ...'(!call-now file (io/bash "ls big-dir"))
+    ...'(!call-now file (io/sh "ls big-dir"))
     (def file-list "list of 1000 files")
     (rethink "big-dir has 1000 files. The one I was looking for is big-dir/my-file.txt")
     '(!call-now file-text (io/read-lines "big-dir/my-file.txt"))
@@ -173,7 +176,7 @@ You can also use rethink to delete a tool call result from context:
     ;; next turn: both the !peek-now call and file-lines are gone
 
 `persist` retains a computed value across prune/rethink pruning:
-    ...'(!call-now data (io/bash "ls big-dir"))
+    ...'(!call-now data (io/sh "ls big-dir"))
     (def data "list of 1000 files")
     (persist target (nth (strings/split data "\n") 42))
     (prune 2)
@@ -205,7 +208,7 @@ CONTEXT MANAGEMENT
 Context tokens are your scarcest resource. Each extension should carry forward only what the next step needs.
 
 When reading a file or making a tool call whose result you need only briefly, use !peek-now:
-    '(!peek-now data (io/bash "find . -name '*.py'"))
+    '(!peek-now data (io/sh "find . -name '*.py'"))
     ;; next turn: persist what you need, then extend; the command and binding are pruned after that
     (persist targets (take 5 (strings/split-lines data)))
     '(!extend)

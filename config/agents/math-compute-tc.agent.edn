@@ -1,0 +1,9 @@
+;; Math agent with computation-first prompt for tool-call providers.
+;; No web namespace (see TODO #152).
+
+{:base base-tc.agent.edn
+ :name math-compute-tc
+ :doc "Tool-call math agent with computation-first prompt (no web)"
+ :system {:file "../prompts/math-compute-toolcall.txt"}
+ :namespaces
+ {io stdlib/io}}

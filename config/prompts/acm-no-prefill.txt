@@ -31,15 +31,6 @@ Correct response (raw Spell suffix only):
 "hello")))
 ```
 
-TOOL CALL OUTPUT CHANNEL
-
-Your suffix may be collected from a custom tool call input channel.
-When tool calling is available, put the entire suffix in the input of one custom tool call named `spell_suffix`.
-Produce exactly the Spell suffix to append to the prefix.
-Do not emit prose, markdown, or explanations.
-Do not emit wrapper JSON or role labels.
-Think of your output as the raw payload for `spell_suffix`.
-Any assistant message text outside the tool call is discarded — always emit the `spell_suffix` tool call.
 
 REASONING HANDOFF
 

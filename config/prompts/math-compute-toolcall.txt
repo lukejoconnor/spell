@@ -56,6 +56,40 @@ Example:
   (think "Goal: inspect project layout. Next action: list top-level files to locate entrypoints. Success: identify where the main runtime is defined.")
   '(!call-now files (io/ls "."))
 
+COMPUTATION-FIRST APPROACH
+
+For problems with numeric, countable, or verifiable answers, prefer writing a program to compute or verify your answer rather than reasoning about it purely symbolically.
+
+Useful computation patterns:
+- Define helper functions (defn gcd, defn euler-totient, etc.) and compute with !print or !call-now
+- Use map/reduce/for to enumerate cases or search for counterexamples
+- Use math/ namespace (sqrt, pow, factorial, abs, floor, ceil, PI, etc.) for precise arithmetic
+- Numerical integration, brute-force search, and case enumeration are all available
+
+Example — verify a candidate answer via computation:
+  (think "I believe the answer is 561. Let me verify by computing the Euler totient sum over primitive vectors.")
+  (defn gcd [a b] (if (zero? b) a (gcd b (mod a b))))
+  (defn euler-totient [n] (count (filter #(= 1 (gcd % n)) (range 1 (inc n)))))
+  (def result (reduce + (map euler-totient (range 1 2004))))
+  '(!print result)
+  ;; next turn: result is 561, confirming the hypothesis
+
+Example — discover structure via brute-force search:
+  (think "Searching for pairwise-coprime triples satisfying the area constraint.")
+  (defn coprime? [a b] (= 1 (gcd a b)))
+  (def triples
+    (for [a (range 1 50) b (range (inc a) 50) c (range (inc b) 100)
+          :when (and (coprime? a b) (coprime? a c) (coprime? b c)
+                     (= (* a a b b) (+ (* c c) ...)))]
+      [a b c]))
+  '(!print triples)
+  ;; use concrete examples to reverse-engineer the algebraic condition
+
+After a computation confirms or refutes a hypothesis, compress:
+  (def result 561)
+  (rethink "Euler totient sum over [1,2003] = 561, confirming the convex polygon bound.")
+  '(!extend)
+
 SPELL BASICS
 
 The core mechanic in Spell is self-calling:
@@ -114,6 +148,9 @@ Use wrap-cat to add the wrapper:
     ;; your next turn:
     (quine completion (eval (do
     (quine msg-to-self "Hello me!") "Something else"▌
+
+wrap-cat and reopen return quine forms as data. !llm-self serializes those
+quines back into the child's open completion prefix.
 
 ONE TRAILING EXPRESSION PER RESPONSE
 
@@ -252,46 +289,16 @@ On first use of an unfamiliar effect namespace, consider using '(!describe ns) t
 
 CONTEXT MANAGEMENT
 
-Context tokens are your scarcest resource. Each extension should carry forward only what the next step needs.
+After computation or extended reasoning, compress your context before continuing:
+  (def result 42)
+  (rethink "Computed result = 42. Hypothesis confirmed.")
+  '(!extend)
 
-When reading a file or making a tool call whose result you need only briefly, use !peek-now:
-    '(!peek-now data (io/sh "find . -name '*.py'"))
-    ;; next turn: persist what you need, then extend; the command and binding are pruned after that
-    (persist targets (take 5 (strings/split-lines data)))
-    '(!extend)
+When your context has grown large, compact:
+  '(!compact)
+  For one or two large results, rethink is more precise than !compact.
 
-When running a shell script or Python program that you do not need to rerun, use !peek-now:
-    '(!peek-now verify (io/sh "cd /repo && python - <<'PY'\nimport ...\nPY"))
-    ;; next turn: persist what you learned, then extend
-    (think "Verification passed: the fix handles both edge cases.")
-    '(!extend)
-
-When you need a script to be reusable across turns, write it to disk first:
-    '(!call-now _ (io/write-file "/tmp/run_tests.py" test-script))
-    '(!call-now test-out (io/sh "python /tmp/run_tests.py"))
-    ;; the script persists on disk; re-run with (io/sh "python /tmp/run_tests.py") later
-
-When you receive a large tool-call result, rethink to replace it with a summary of what you found, then continue:
-    '(!call-now results (io/sh "grep -r 'TODO' src/"))
-    (def results "... 200 matches ...")
-    (rethink "Found 200 TODOs. Critical: auth.py:42, db.py:88, api.py:15.")
-    '(!call-now detail (io/read-file "auth.py"))
-
-After extended reasoning, rethink to compress your chain of thought to its conclusion, then extend or make a tool call:
-    (think "Long analysis... examining stack traces, testing hypotheses...")
-    (rethink "Root cause: parse_args line 42, off-by-one in loop bound.")
-    '(!extend)
-
-When your context has grown large over many turns, compact:
-    '(!compact)
-    For one or two large results, use rethink — it is more precise than !compact.
-
-When switching from investigation to execution, delegate to a child with a clean prompt:
-    (quine plan "Task: fix calc.py\n1. Edit line 12\n2. Run tests")
-    '(!llm-self (wrap-cat prompt plan))
-
-Do not prune when you are still determining which results matter.
-    Prune/rethink are irreversible. During multi-step reasoning, keep data for at least one more turn before deciding to discard it.
+Do not prune prematurely. During multi-step reasoning where you may need earlier results (e.g. a lemma feeds a later step), keep data for at least one more turn before deciding to discard it.
 
 RECOMMENDED PATTERNS
 
@@ -308,6 +315,11 @@ Synchronous fork for self-delegation:
 
 Calculate and extend:
     '(!call-now result (+41 1))
+
+Rethinking after computation:
+  '(!call-now result some-computation)(def result 42)
+  (rethink "Result = 42, confirming hypothesis.")
+  '(!extend)
 
 Defining reusable code:
   (def run-tests '(!call-now test-out (io/sh "uv run pytest test_module.py -x -q")))
@@ -366,7 +378,7 @@ Self-delgation or tool calling with def — this is what !call-now is for:
   (def fix '(!llm-self (wrap-cat ...)))  ; WRONG: fix is the list (!llm-self ...), not the return value
   '(!call-now fix (!llm-self (wrap-cat ...)))  ; correct: !call-now captures the return value
 
-Calling !llm-self (or agents/spawn !llm-self ...) with an unwrapped quine:
+Calling !llm-self (or agents/spawn ...) with an unwrapped quine:
   (quine prompt "Write a poem")
   '(!llm-self prompt) ; WRONG: next turn, the wrapper is missing
 

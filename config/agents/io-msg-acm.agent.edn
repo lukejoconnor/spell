@@ -1,0 +1,14 @@
+;; I/O-capable profile for message transport providers.
+;; Uses the ACM (active context management) prompt variant.
+
+{:base base-msg-acm.agent.edn
+ :name io-msg-acm
+ :doc "Message transport agent with ACM prompt + io+web namespaces"
+ :llms {explore explore.agent.edn}
+
+ :namespaces
+ {io       stdlib/io
+  web      stdlib/web
+  patterns stdlib/patterns
+  agents   stdlib/agents
+  globals  stdlib/globals}}

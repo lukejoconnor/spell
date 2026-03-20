@@ -19,6 +19,8 @@ Loaded by `src/spell/agent.clj`.
 - `base-pf.agent.edn` — Anthropic (prefill mode), uses `minimal.txt`
 - `base-msg.agent.edn` — message providers (no prefill), uses `minimal-no-prefill.txt`
 - `base-tc.agent.edn` — tool-call providers, uses `minimal-no-prefill-toolcall.txt`
+- `base-msg-acm.agent.edn` — message providers with the ACM no-prefill prompt
+- `base-acm-tc.agent.edn` — tool-call providers with the ACM tool-call prompt
 - `base-glm.agent.edn` — GLM-5 (prefill mode), uses `minimal-glm.txt` (experimental; currently unreliable)
 
 **Specialized agents** inherit from a base and add namespaces:
@@ -27,8 +29,9 @@ Loaded by `src/spell/agent.clj`.
 - `io-pf.agent.edn` — benchmark/runtime I/O profile for prefill providers
 - `io-msg.agent.edn` — benchmark/runtime I/O profile for message providers
 - `io-tc.agent.edn` — benchmark/runtime I/O profile for mandatory toolcall providers
+- `io-msg-acm.agent.edn`, `io-acm-tc.agent.edn` — ACM prompt variants of the runtime I/O profiles
 - `explore.agent.edn` — read-only codebase exploration (io-read namespace only)
-- `math-tc.agent.edn`, `math-pf.agent.edn`, `math-msg.agent.edn` — math benchmark agents (no web namespace)
+- `math-tc.agent.edn`, `math-pf.agent.edn`, `math-msg.agent.edn`, `math-compute-tc.agent.edn` — math benchmark agents (no web namespace; `math-compute-tc` uses a computation-first tool-call prompt)
 
 Key semantics:
 - `:base` supports file-based inheritance; paths resolved relative to the current agent file.
@@ -74,6 +77,10 @@ Current variants:
 - `minimal.txt`
 - `minimal-no-prefill.txt`
 - `minimal-no-prefill-toolcall.txt`
+- `acm.txt`
+- `acm-no-prefill.txt`
+- `acm-no-prefill-toolcall.txt`
+- `math-compute-toolcall.txt`
 - `minimal-glm.txt` — GLM-5 variant with targeted antipattern guidance
 
 Rules:
