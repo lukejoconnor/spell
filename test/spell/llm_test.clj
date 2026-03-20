@@ -242,9 +242,20 @@
                                         :max_total_tokens 1700000}}
                             :cost-table {"accounts/fireworks/models/glm-5"
                                          {:input 1.00
-                                          :cache-read-input 0.20
-                                          :output 3.20}}})]
+                                         :cache-read-input 0.20
+                                         :output 3.20}}})]
       (is (= 2.64 (double (provider/current-cost usage-atom)))))))
+
+(deftest current-cost-prices-gpt-5-4-pro-at-pro-rate-test
+  (testing "current-cost prices gpt-5.4-pro before the overlapping gpt-5.4 prefix"
+    (let [usage-atom (atom {:by-model {"gpt-5.4-pro"
+                                       {:input_tokens 1000000
+                                        :output_tokens 0
+                                        :cache_creation_input_tokens 0
+                                        :cache_read_input_tokens 0
+                                        :calls 1
+                                        :max_total_tokens 1000000}}})]
+      (is (= 30.0 (double (provider/current-cost usage-atom)))))))
 
 ;; =============================================================================
 ;; compile-agent factory tests
@@ -472,6 +483,29 @@
         (finally
           (.delete provider-file)))))
 
+  (testing "load-provider threads OpenAI toolcall opts and cache-read ratio"
+    (let [provider-file (java.io.File/createTempFile "provider-openai-tc-" ".provider.edn")]
+      (try
+        (spit provider-file (pr-str {:type :openai
+                                     :model "gpt-5.4"
+                                     :force-tool-call true
+                                     :costs {"gpt-5.4" [2.50 15.00]}
+                                     :cache-read-ratio 0.25}))
+        (let [p (provider/load-provider (.getAbsolutePath provider-file))
+              usage-atom (atom {:by-model {"gpt-5.4"
+                                           {:input_tokens 1000000
+                                            :output_tokens 0
+                                            :cache_read_input_tokens 1000000
+                                            :calls 1
+                                            :cache_creation_input_tokens 0
+                                            :max_total_tokens 2000000}}
+                                :cost-table (:costs p)})]
+          (is (instance? spell.provider.OpenAIProvider p))
+          (is (true? (:force-tool-call p)))
+          (is (= 3.125 (double (provider/current-cost usage-atom)))))
+        (finally
+          (.delete provider-file)))))
+
   (testing "load-provider supports fireworks type"
     (let [provider-file (java.io.File/createTempFile "provider-fireworks-" ".provider.edn")]
       (try
@@ -533,7 +567,12 @@
   (testing "strips trailing slash from base-url"
     (let [provider (provider/openai-provider {:api-key "sk-test"
                                           :base-url "https://api.openai.com/v1/"})]
-      (is (= "https://api.openai.com/v1" (:base-url provider))))))
+      (is (= "https://api.openai.com/v1" (:base-url provider)))))
+
+  (testing "retains force-tool-call when requested"
+    (let [provider (provider/openai-provider {:api-key "sk-test"
+                                              :force-tool-call true})]
+      (is (true? (:force-tool-call provider))))))
 
 (deftest openai-parse-response-test
   (testing "parses successful chat completion"
@@ -590,6 +629,27 @@
       (is (= "OK" (:text result)))
       (is (= 3 (get-in result [:usage :input_tokens])))
       (is (= 2 (get-in result [:usage :output_tokens])))))
+
+  (testing "toolcall mode requires spell_suffix and separates cached tokens from input"
+    (let [response-body (json/write-str {:output_text "ignored"
+                                         :output [{:type "custom_tool_call"
+                                                   :name "spell_suffix"
+                                                   :input "(def x 1)"}]
+                                         :usage {:input_tokens 20
+                                                 :output_tokens 7
+                                                 :input_tokens_details {:cached_tokens 8}}})
+          result (#'provider/parse-openai-responses-response response-body true)]
+      (is (= "(def x 1)" (:text result)))
+      (is (= 12 (get-in result [:usage :input_tokens])))
+      (is (= 8 (get-in result [:usage :cache_read_input_tokens])))
+      (is (= 7 (get-in result [:usage :output_tokens])))))
+
+  (testing "toolcall mode throws when spell_suffix tool call is missing"
+    (let [response-body (json/write-str {:output_text "plain text"
+                                         :usage {:input_tokens 3
+                                                 :output_tokens 2}})]
+      (is (thrown-with-msg? Exception #"missing custom_tool_call"
+            (#'provider/parse-openai-responses-response response-body true)))))
 
   (testing "throws on error response"
     (let [response-body (json/write-str {:error {:message "invalid api key"
@@ -880,6 +940,10 @@
   (testing "openai provider prefix"
     (is (= {:provider "openai" :model "gpt-4o"}
            (cli/parse-model-spec "openai:gpt-4o"))))
+
+  (testing "openai-tc provider prefix"
+    (is (= {:provider "openai-tc" :model "gpt-5.4"}
+           (cli/parse-model-spec "openai-tc:gpt-5.4"))))
 
   (testing "fireworks provider prefix"
     (is (= {:provider "fireworks" :model "glm-5"}

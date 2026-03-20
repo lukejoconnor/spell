@@ -9,7 +9,7 @@
   (:gen-class))
 
 (def provider-prefixes
-  #{"ollama" "codex-msg" "codex-tc" "openclaw" "openai"
+  #{"ollama" "codex-msg" "codex-tc" "openai-tc" "openclaw" "openai"
     "anthropic-pf" "anthropic-tc" "fireworks" "kimi" "moonshot" "test"})
 
 (def cli-options
@@ -45,7 +45,8 @@
    "o3" "o3"
    "o4-mini" "o4-mini"
    "gpt52" "gpt-5.2"
-   "gpt53" "gpt-5.3"})
+   "gpt53" "gpt-5.3"
+   "gpt54" "gpt-5.4"})
 
 (defn- resolve-model [model]
   (get model-aliases model model))
@@ -57,6 +58,7 @@
    "codex-tc"      "config/providers/codex-tc.provider.edn"
    "fireworks"     "config/providers/fireworks.provider.edn"
    "openai"        "config/providers/openai.provider.edn"
+   "openai-tc"     "config/providers/openai-tc.provider.edn"
    "ollama"        "config/providers/ollama.provider.edn"
    "openclaw"      "config/providers/openclaw.provider.edn"
    "kimi"          "config/providers/kimi.provider.edn"
@@ -157,6 +159,11 @@
 
       "codex-tc"
       (provider/codex-tc-provider base-opts)
+
+      "openai-tc"
+      (provider/openai-provider (assoc base-opts
+                                       :use-responses-api true
+                                       :force-tool-call true))
 
       "openai"
       (provider/openai-provider (cond-> base-opts
