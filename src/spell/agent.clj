@@ -31,7 +31,8 @@
             [spell.stdlib :as stdlib]
             [spell.io :as io]
             [spell.web :as web]
-            [spell.react :as react]))
+            [spell.react :as react]
+            [spell.context-folding :as context-folding]))
 
 ;; =============================================================================
 ;; Stdlib resolution
@@ -53,7 +54,8 @@
    'strings stdlib/strings
    'math stdlib/math
    'patterns stdlib/patterns
-   'react react/react})
+   'react react/react
+   'context-folding context-folding/context-folding})
 
 (defn- resolve-stdlib-path
   "Resolve a stdlib/X or stdlib/X/Y path.
@@ -392,7 +394,8 @@
                       (:reasoning-effort spec) (assoc :reasoning-effort (:reasoning-effort spec))
                       (:verbosity spec) (assoc :verbosity (:verbosity spec))
                       (some? (:suffix-grammar? spec)) (assoc :suffix-grammar? (:suffix-grammar? spec))
-                      (:grammar-max-chars spec) (assoc :grammar-max-chars (:grammar-max-chars spec))))]
+                      (:grammar-max-chars spec) (assoc :grammar-max-chars (:grammar-max-chars spec))
+                      (some? (:temperature spec)) (assoc :temperature (:temperature spec))))]
     (if (:format spec)
       (format/wrap-with-format base-agent {:format (:format spec)
                                            :eval? true

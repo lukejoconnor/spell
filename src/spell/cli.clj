@@ -106,6 +106,9 @@
     :parse-fn #(Integer/parseInt %)
     :validate [pos? "Must be positive"]]
    [nil "--responses-api" "Force OpenAI Responses API instead of Chat Completions"]
+   ["-p" "--temperature TEMP" "Sampling temperature (e.g. 0, 0.7, 1.0)"
+    :parse-fn #(Double/parseDouble %)
+    :validate [#(<= 0 % 2) "Must be between 0 and 2"]]
    ["-T" "--trace" "Record execution trace to traces/"]
    ["-l" "--log FILE" "Log verbose output to FILE (implies -v)"]
    ["-i" "--init" "Treat file/prompt as a Spell program (skip quine wrapping)"]
@@ -245,7 +248,7 @@
 
 (defn run-prompt
   [prompt {:keys [depth verbose log budget trace agent model thinking reasoning-effort verbosity
-                  suffix-grammar grammar-max-chars init]
+                  suffix-grammar grammar-max-chars temperature init]
            :as opts}
    usage-atom]
   (let [max-depth (cond
@@ -276,6 +279,7 @@
                       :verbosity verbosity
                       :suffix-grammar? suffix-grammar
                       :grammar-max-chars grammar-max-chars
+                      :temperature temperature
                       :usage usage-atom}
                init        (assoc :init init)
                (not init)  (assoc :prompt prompt)))))

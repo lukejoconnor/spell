@@ -1,0 +1,12 @@
+;; ReAct agent (mini-swe-agent style bash loop).
+
+{:base base-tc.agent.edn
+ :name react
+ :doc "ReAct loop agent — mini-swe-agent v2 style bash tool calling"
+
+ :namespaces
+ {io       stdlib/io
+  web      stdlib/web
+  agents   stdlib/agents
+  patterns stdlib/patterns
+  react    stdlib/react}}

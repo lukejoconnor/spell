@@ -1,0 +1,210 @@
+;; Context Folding implementation in Spell.
+;; Based on: "Context Folding: Reducing LLM Context Window with Context-Aware
+;;            Branching" (arxiv 2510.11967).
+;; Repo: https://github.com/sunnweiwei/FoldAgent
+;; Loaded as context-folding/ namespace via src/spell/context_folding.clj.
+;;
+;; Usage: (context-folding/run "Were Scott Derrickson and Ed Wood of the same nationality?")
+;; Returns: the final answer string
+
+;; ── Few-shot for the MAIN planning loop ──────────────────────────────────────
+;; Shows the Branch[description | prompt] / Finish[answer] format.
+;; The main thread is a pure orchestrator — no direct Search/Lookup.
+(defn planning-few-shot []
+  (cat
+    "Question: Were Pavel Urysohn and Leonhard Euler born in the same country?\n"
+    "Thought 1: I need to find the birth countries of both Pavel Urysohn and Leonhard Euler separately.\n"
+    "Action 1: Branch[Birth country of Pavel Urysohn | Search for Pavel Urysohn and determine what country he was born in. Return only the country name and brief context.]\n"
+    "Observation 1: [Branch result: Pavel Urysohn was born in Odessa, Russian Empire (present-day Ukraine).]\n"
+    "Thought 2: Urysohn was born in the Russian Empire. Now I need Euler's birth country.\n"
+    "Action 2: Branch[Birth country of Leonhard Euler | Search for Leonhard Euler and determine what country he was born in. Return only the country name and brief context.]\n"
+    "Observation 2: [Branch result: Leonhard Euler was born in Basel, Switzerland.]\n"
+    "Thought 3: Urysohn was born in the Russian Empire and Euler in Switzerland. They were not born in the same country.\n"
+    "Action 3: Finish[No]\n"
+    "\n"
+    "Question: Which magazine was started first, Arthur's Magazine or First for Women?\n"
+    "Thought 1: I need to find the founding dates of both Arthur's Magazine and First for Women.\n"
+    "Action 1: Branch[Founding date of Arthur's Magazine | Search for Arthur's Magazine and find when it was founded or first published. Return the year.]\n"
+    "Observation 1: [Branch result: Arthur's Magazine was founded in 1844.]\n"
+    "Thought 2: Arthur's Magazine was founded in 1844. Now I need the founding date of First for Women.\n"
+    "Action 2: Branch[Founding date of First for Women | Search for First for Women magazine and find when it was founded or first published. Return the year.]\n"
+    "Observation 2: [Branch result: First for Women was founded in 1989.]\n"
+    "Thought 3: Arthur's Magazine (1844) was started before First for Women (1989).\n"
+    "Action 3: Finish[Arthur's Magazine]\n"
+    "\n"))
+
+;; ── Few-shot for BRANCH sub-loops ─────────────────────────────────────────────
+;; Standard ReAct few-shot (Search/Lookup/Finish format).
+(defn branch-few-shot []
+  (cat
+    "Question: What is the elevation range for the area that the eastern sector of the Colorado orogeny extends into?\n"
+    "Thought 1: I need to search Colorado orogeny, find the area that the eastern sector of it extends into, then find the elevation range of the area.\n"
+    "Action 1: Search[Colorado orogeny]\n"
+    "Observation 1: The Colorado orogeny was an episode of mountain building (an orogeny) in Colorado and surrounding areas.\n"
+    "Thought 2: It does not mention the eastern sector. Let me look up eastern sector.\n"
+    "Action 2: Lookup[eastern sector]\n"
+    "Observation 2: (Result 1 / 1) The eastern sector extends into the High Plains and is called the Central Plains orogeny.\n"
+    "Thought 3: The eastern sector of Colorado orogeny extends into the High Plains. So I need to search High Plains and find its elevation range.\n"
+    "Action 3: Search[High Plains]\n"
+    "Observation 3: High Plains refers to one of two distinct land regions. High Plains is a subregion of the Great Plains. From east to west, the High Plains rise in elevation from around 1,800 to 7,000 ft (550 to 2,130 m).\n"
+    "Thought 4: High Plains rise in elevation from around 1,800 to 7,000 ft, so the answer is 1,800 to 7,000 ft.\n"
+    "Action 4: Finish[1,800 to 7,000 ft (550 to 2,130 m)]\n"
+    "\n"))
+
+;; ── Shared utilities ──────────────────────────────────────────────────────────
+
+(defn cf-web-search [query]
+  (let [resp    (web/search query)
+        results (if (map? resp) (:ok resp) resp)]
+    (if (or (nil? results) (empty? results))
+      (cat "No results found for: " query)
+      (strings/join " | "
+        (map (fn [r] (cat (:title r) ": " (:snippet r)))
+             (if (> (count results) 3)
+               (subvec (vec results) 0 3)
+               results))))))
+
+(defn cf-web-lookup [keyword passage from-idx]
+  (let [sentences (vec (strings/split passage "\\. "))
+        n         (count sentences)]
+    (loop [i from-idx]
+      (if (>= i n)
+        [(cat "Keyword not found: " keyword) from-idx]
+        (let [s (nth sentences i)]
+          (if (strings/index-of (strings/lower-case s)
+                                (strings/lower-case keyword))
+            [(cat "(Result " (str (- i from-idx -1)) " / 1) " s) (+ i 1)]
+            (recur (+ i 1))))))))
+
+(defn cf-parse-action [line]
+  (let [t (strings/trim line)]
+    (cond
+      (strings/starts-with? t "Branch[")
+      (let [payload (subs t 7 (- (count t) 1))
+            sep-idx (strings/index-of payload "|")
+            desc    (if sep-idx (strings/trim (subs payload 0 sep-idx)) payload)
+            prompt  (if sep-idx (strings/trim (subs payload (+ sep-idx 1))) payload)]
+        {:type :branch :description desc :prompt prompt})
+      (strings/starts-with? t "Search[")
+        {:type :search :payload (subs t 7 (- (count t) 1))}
+      (strings/starts-with? t "Lookup[")
+        {:type :lookup :payload (subs t 7 (- (count t) 1))}
+      (strings/starts-with? t "Finish[")
+        {:type :finish :payload (subs t 7 (- (count t) 1))}
+      :else
+        {:type :unknown :payload t})))
+
+(defn cf-format-history [history]
+  (strings/join "\n"
+    (map (fn [e]
+           (let [n (str (:step e))]
+             (cat "Thought " n ": " (:thought e) "\n"
+                  "Action " n ": " (:action e) "\n"
+                  "Observation " n ": " (:observation e))))
+         history)))
+
+(defn cf-extract-thought [raw step]
+  (let [prefix (cat "Thought " (str step) ": ")]
+    (if (strings/starts-with? raw prefix)
+      (first (strings/split (subs raw (count prefix)) "\n"))
+      (first (strings/split (strings/trim raw) "\n")))))
+
+(defn cf-extract-action-line [raw step]
+  (let [prefix (cat "Action " (str step) ": ")
+        lines  (strings/split raw "\n")]
+    (loop [ls lines]
+      (if (empty? ls)
+        ""
+        (let [l (strings/trim (first ls))]
+          (if (strings/starts-with? l prefix)
+            (subs l (count prefix))
+            (recur (rest ls))))))))
+
+;; ── Branch sub-loop ───────────────────────────────────────────────────────────
+;; Runs a full ReAct loop for the given branch-task.
+;; All intermediate steps are invisible to the main thread — folded by definition.
+(defn run-branch [branch-task max-branch-steps verbose]
+  (loop [step 1 history [] passage "" lookup-pos 0]
+    (let [history-str (cf-format-history history)
+          prompt      (cat (context-folding/branch-few-shot)
+                           "Question: " branch-task "\n"
+                           (if (empty? history) "" (cat history-str "\n"))
+                           "Thought " (str step) ":")
+          raw      (leaf-llm prompt)
+          thought  (cf-extract-thought raw step)
+          act-line (cf-extract-action-line raw step)
+          action   (cf-parse-action act-line)]
+      (if verbose
+        (do
+          (println (cat "  [Branch] Thought " (str step) ": " thought))
+          (println (cat "  [Branch] Action "  (str step) ": " act-line))))
+      (cond
+        (or (= (:type action) :finish) (>= step max-branch-steps))
+        (do
+          (if verbose (println (cat "  [Branch] Finish: " (:payload action))))
+          (:payload action))
+
+        (= (:type action) :search)
+        (let [obs   (cf-web-search (:payload action))
+              entry {:step step :thought thought :action act-line :observation obs}]
+          (if verbose (println (cat "  [Branch] Observation " (str step) ": " obs)))
+          (recur (+ step 1) (conj history entry) obs 0))
+
+        (= (:type action) :lookup)
+        (let [[obs new-pos] (cf-web-lookup (:payload action) passage lookup-pos)
+              entry         {:step step :thought thought :action act-line :observation obs}]
+          (if verbose (println (cat "  [Branch] Observation " (str step) ": " obs)))
+          (recur (+ step 1) (conj history entry) passage new-pos))
+
+        :else
+        (let [obs   (cat "Unrecognized action: " act-line)
+              entry {:step step :thought thought :action act-line :observation obs}]
+          (if verbose (println (cat "  [Branch] Observation " (str step) ": " obs)))
+          (recur (+ step 1) (conj history entry) passage lookup-pos))))))
+
+;; ── Main planning loop ────────────────────────────────────────────────────────
+;; Pure orchestrator: only Branch[...] and Finish[...] actions.
+;; No direct Search/Lookup — all tool use happens inside branches.
+;;
+;; opts:
+;;   string              - task text
+;;   :task               - task text (required if opts map)
+;;   :max-steps          - main loop limit (default: 5)
+;;   :max-branch-steps   - sub-loop limit per branch (default: 7)
+;;   :verbose            - print each step (default: false)
+(defn run [opts]
+  (let [opts             (if (string? opts) {:task opts} opts)
+        task             (or (:task opts) (throw "context-folding/run: :task required"))
+        max-steps        (or (:max-steps opts) 5)
+        max-branch-steps (or (:max-branch-steps opts) 7)
+        verbose          (or (:verbose opts) false)]
+    (loop [step 1 history []]
+      (let [history-str (cf-format-history history)
+            prompt      (cat (context-folding/planning-few-shot)
+                             "Question: " task "\n"
+                             (if (empty? history) "" (cat history-str "\n"))
+                             "Thought " (str step) ":")
+            raw      (leaf-llm prompt)
+            thought  (cf-extract-thought raw step)
+            act-line (cf-extract-action-line raw step)
+            action   (cf-parse-action act-line)]
+        (if verbose
+          (do
+            (println (cat "Thought " (str step) ": " thought))
+            (println (cat "Action "  (str step) ": " act-line))))
+        (cond
+          (or (= (:type action) :finish) (>= step max-steps))
+          (:payload action)
+
+          (= (:type action) :branch)
+          (let [branch-result (context-folding/run-branch (:prompt action) max-branch-steps verbose)
+                obs           (cat "[Branch result: " (or branch-result "no result") "]")
+                entry         {:step step :thought thought :action act-line :observation obs}]
+            (if verbose (println (cat "Observation " (str step) ": " obs)))
+            (recur (+ step 1) (conj history entry)))
+
+          :else
+          (let [obs   (cat "Unrecognized action: " act-line)
+                entry {:step step :thought thought :action act-line :observation obs}]
+            (if verbose (println (cat "Observation " (str step) ": " obs)))
+            (recur (+ step 1) (conj history entry))))))))

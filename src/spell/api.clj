@@ -42,7 +42,7 @@
   [{:keys [prompt init agent provider user? user-reader
            verbose log-writer budget depth trace trace-dir
            prefill? thinking reasoning-effort verbosity
-           suffix-grammar? grammar-max-chars format retries usage]}]
+           suffix-grammar? grammar-max-chars temperature format retries usage]}]
   ;; Validate inputs
   (when (and prompt init)
     (throw (ex-info "Specify exactly one of :prompt or :init, not both" {})))
@@ -60,6 +60,7 @@
                        verbosity (assoc :verbosity verbosity)
                        suffix-grammar? (assoc :suffix-grammar? suffix-grammar?)
                        grammar-max-chars (assoc :grammar-max-chars grammar-max-chars)
+                       temperature (assoc :temperature temperature)
                        format (assoc :format format))
         ;; Validate: provider must come from somewhere
         _ (when-not (:provider agent-spec)
