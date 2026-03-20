@@ -13,7 +13,7 @@
             [spell.stdlib :as stdlib]
             [spell.trace :as trace]))
 
-(declare make-leaf-llm build-init)
+(declare make-leaf-llm make-leaf-llm-tool build-init)
 
 ;; ---------------------------------------------------------------------------
 ;; Core namespaces — always available, never need to be configured
@@ -428,7 +428,9 @@
                                 '!ask-await stdlib/ask-await-builtin
                                 'leaf-llm (make-leaf-llm (cond-> {}
                                                            provider (assoc :provider provider)
-                                                           model (assoc :model model)))}
+                                                           model (assoc :model model)))
+                                'leaf-llm-tool (make-leaf-llm-tool (cond-> {}
+                                                                      provider (assoc :provider provider)))}
                                effect-ns-builtins
                                (when llm-var {'llm llm-var}))
         future-only-builtins {'blocking runtime/blocking-namespace}
@@ -507,6 +509,29 @@
 ;; ---------------------------------------------------------------------------
 ;; Leaf LLM
 ;; ---------------------------------------------------------------------------
+
+(defn make-leaf-llm-tool
+  "Factory: create a messages-in/tool-map-out LLM function.
+   Sends messages vector with a bash tool, returns tool invocation map.
+
+   Options:
+   - :provider - LLM provider instance
+   - :model    - optional model name override (nil uses provider default)
+
+   Returns (fn [messages] {:command str :tool_call_id str :assistant-message map})."
+  ([] (make-leaf-llm-tool {}))
+  ([{:keys [provider]}]
+   (with-meta
+     (fn [messages]
+       (let [indent   (apply str (repeat eval/*llm-depth* "  "))
+             _        (when eval/*verbose*
+                        (eval/vlog (str indent "=== Leaf LLM Tool Call (depth " eval/*llm-depth* ") ===")))
+             result   (provider/call-with-retries
+                        (fn [_] (provider/call-llm-tool provider messages))
+                        provider/*retries*)
+             _        (eval/vlog (str indent "Command: " (:command result)))]
+         result))
+     {:spell/leaf-tool true})))
 
 (defn make-leaf-llm
   "Factory: create a text-in/text-out LLM function.

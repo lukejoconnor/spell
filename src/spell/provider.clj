@@ -27,6 +27,10 @@
     "Send prompt to LLM, return response string.
      prompt is a string. opts may include :system for system prompt.
      Returns the assistant's text response.")
+  (call-llm-tool [this messages]
+    "Send a messages vector to LLM with a bash tool, return tool invocation map.
+     Returns {:command str :tool_call_id str :assistant-message map}
+     where assistant-message is the full assistant turn ready to append to messages.")
   (supports-prefill [this]
     "Returns true if this provider supports assistant prefill."))
 
@@ -412,6 +416,7 @@
           text)
         (throw (ex-info "Anthropic API request failed"
                         {:status status :body (.body response)})))))
+  (call-llm-tool [_ _] (throw (ex-info "call-llm-tool not supported by AnthropicPfProvider" {})))
   (supports-prefill [_]
     ;; Opus 4.6 does not support assistant prefill (returns 400 error)
     (not (str/includes? (str model) "opus-4-6"))))
@@ -487,6 +492,40 @@
                     (.POST (HttpRequest$BodyPublishers/ofString (json/write-str body)))
                     (.build))]
     request))
+
+(def ^:private bash-tool
+  "Anthropic tool definition for bash command execution (mirrors mini-swe-agent BASH_TOOL)."
+  {:name "bash"
+   :description "Execute a bash command"
+   :input_schema {:type "object"
+                  :properties {:command {:type "string"
+                                         :description "The bash command to execute"}}
+                  :required ["command"]
+                  :additionalProperties false}})
+
+(defn- parse-anthropic-bash-tool-response
+  "Parse Anthropic response for bash tool call.
+   Returns {:command str :tool_call_id str :assistant-message map}."
+  [response-body]
+  (let [parsed  (json/read-str response-body :key-fn keyword)]
+    (if-let [error (:error parsed)]
+      (throw (ex-info "Anthropic API error" {:error error}))
+      (let [usage    (:usage parsed)
+            content  (:content parsed)
+            tool-use (some (fn [b] (when (and (= "tool_use" (:type b))
+                                              (= "bash" (:name b))) b))
+                           content)
+            command  (get-in tool-use [:input :command])]
+        (when (nil? command)
+          (throw (ex-info "Anthropic bash tool response missing bash tool_use"
+                          {:type :missing-tool-call :content content})))
+        {:command          command
+         :tool_call_id     (:id tool-use)
+         :assistant-message {:role "assistant" :content (mapv (fn [b] (into {} b)) content)}
+         :usage            {:input_tokens  (:input_tokens usage 0)
+                            :output_tokens (:output_tokens usage 0)
+                            :cache_creation_input_tokens (:cache_creation_input_tokens usage 0)
+                            :cache_read_input_tokens     (:cache_read_input_tokens usage 0)}}))))
 
 (defn- tool-use->suffix
   "Extract Spell suffix text from an Anthropic tool_use block."
@@ -605,6 +644,40 @@
           text)
         (throw (ex-info "Anthropic mandatory tool-call request failed"
                         {:status status :body (.body response)})))))
+  (call-llm-tool [_ messages]
+    (let [;; Hoist leading system message to top-level system param
+          effective-system (when (= "system" (:role (first messages)))
+                             (:content (first messages)))
+          effective-messages (if effective-system (vec (rest messages)) messages)
+          min-chars (cache-min-chars model)
+          cached-system (when effective-system
+                          [(cond-> {:type "text" :text effective-system}
+                             (>= (count effective-system) min-chars)
+                             (assoc :cache_control {:type "ephemeral"}))])
+          body (cond-> {:model          model
+                        :max_tokens     (or max-tokens 16384)
+                        :messages       effective-messages
+                        :tools          [bash-tool]
+                        :tool_choice    {:type "any"}}
+                 cached-system (assoc :system cached-system))
+          request (-> (HttpRequest/newBuilder)
+                      (.uri (URI/create "https://api.anthropic.com/v1/messages"))
+                      (.header "Content-Type" "application/json")
+                      (.header "x-api-key" api-key)
+                      (.header "anthropic-version" "2023-06-01")
+                      (.POST (HttpRequest$BodyPublishers/ofString (json/write-str body)))
+                      (.build))
+          response (.send http-client request (HttpResponse$BodyHandlers/ofString))
+          status   (.statusCode response)]
+      (if (<= 200 status 299)
+        (let [{:keys [command tool_call_id assistant-message usage]}
+              (parse-anthropic-bash-tool-response (.body response))]
+          (track-usage! model usage costs)
+          {:command           command
+           :tool_call_id      tool_call_id
+           :assistant-message assistant-message})
+        (throw (ex-info "Anthropic bash tool request failed"
+                        {:status status :body (.body response)})))))
   (supports-prefill [_] false))
 
 (defn anthropic-tc-provider
@@ -665,6 +738,7 @@
           text)
         (throw (ex-info "Ollama API request failed"
                         {:status status :body (.body response)})))))
+  (call-llm-tool [_ _] (throw (ex-info "call-llm-tool not supported by OllamaProvider" {})))
   (supports-prefill [_] true))
 
 (defn ollama-provider
@@ -833,6 +907,7 @@
           text)
         (throw (ex-info "OpenAI API request failed"
                         {:status status :body (.body response)})))))
+  (call-llm-tool [_ _] (throw (ex-info "call-llm-tool not supported by OpenAIProvider" {})))
   (supports-prefill [_] false))
 
 (defn openai-provider
@@ -1070,6 +1145,7 @@
           text)
         (throw (ex-info "ChatGPT Codex Responses request failed"
                         {:status status :body (.body response)})))))
+  (call-llm-tool [_ _] (throw (ex-info "call-llm-tool not supported by CodexMsgProvider" {})))
   (supports-prefill [_] false))
 
 (defrecord CodexTcProvider [api-key account-id base-url model max-tokens http-client costs]
@@ -1090,6 +1166,7 @@
           text)
         (throw (ex-info "ChatGPT Codex mandatory tool-call request failed"
                         {:status status :body (.body response)})))))
+  (call-llm-tool [_ _] (throw (ex-info "call-llm-tool not supported by CodexTcProvider" {})))
   (supports-prefill [_] false))
 
 (defn codex-msg-provider
@@ -1181,6 +1258,7 @@
           text)
         (throw (ex-info "Kimi API request failed"
                         {:status status :body (.body response)})))))
+  (call-llm-tool [_ _] (throw (ex-info "call-llm-tool not supported by KimiProvider" {})))
   (supports-prefill [_] true))
 
 (defn kimi-provider
@@ -1342,6 +1420,7 @@
           text)
         (throw (ex-info "Fireworks completions request failed"
                         {:status status :body (.body response)})))))
+  (call-llm-tool [_ _] (throw (ex-info "call-llm-tool not supported by FireworksProvider" {})))
   (supports-prefill [_] true))
 
 (defn fireworks-provider
@@ -1405,6 +1484,7 @@
         (when (and latency (pos? latency))
           (Thread/sleep (long latency)))
         response)))
+  (call-llm-tool [_ _] (throw (ex-info "call-llm-tool not supported by TestProvider" {})))
   (supports-prefill [_] (if (some? prefill?) prefill? true)))
 
 (defn test-provider
@@ -1485,7 +1565,8 @@
               (str/trimr (.toString sb))
               (do (.append sb line)
                   (.append sb "\n")
-                  (recur)))))))))
+                  (recur))))))))
+  (call-llm-tool [_ _] (throw (ex-info "call-llm-tool not supported by UserProvider" {}))))
 (defn user-provider
   "Create an interactive user provider for simulation/debugging.
    Displays the full LLM context (system prompt, user message, prefix)

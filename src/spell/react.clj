@@ -18,26 +18,26 @@ Mirrors DefaultAgent from github.com/SWE-agent/mini-swe-agent.
 
 Use (!describe react :run) for detailed docs.
 
-run: mini-swe-agent style bash loop. LM produces THOUGHT + ```mswea_bash_command blocks.
+run: mini-swe-agent v2 style bash loop. Uses native bash tool calling via leaf-llm-tool.
 Commands execute via io/sh. Loop terminates on COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT or max-steps.
   (react/run \"Fix the failing test in test_foo.py\")
   (react/run {:task \"...\" :max-steps 20})
   Returns {:exit_status \"submitted\"|\"LimitsExceeded\" :submission str}
 "
           :detail
-          {:run "(react/run task-or-opts) - mini-swe-agent style bash agent loop.
+          {:run "(react/run task-or-opts) - mini-swe-agent v2 style bash agent loop.
 opts:
   string           - task text
   :task            - task text (required if opts map)
   :max-steps       - max steps before LimitsExceeded (default: 30, 0 = unlimited)
   :verbose         - print each step (default: false)
 
-Execution model (matches DefaultAgent from github.com/SWE-agent/mini-swe-agent):
-1. system_template: THOUGHT + ```mswea_bash_command instructs model format
+Execution model (matches DefaultAgent from github.com/SWE-agent/mini-swe-agent v2):
+1. system_template: minimal — just 'You are a helpful assistant'
 2. instance_template: task + workflow + submit instructions
-3. loop: leaf-llm messages -> extract ```mswea_bash_command block
-4. If no command: feed format_error_template back as next user message
-5. Execute command via io/sh, format as <returncode>/<output>, loop
+3. loop: leaf-llm-tool messages -> {:command :tool_call_id :assistant-message}
+4. Execute command via io/sh, format as JSON observation
+5. Append assistant-message + tool result {:role tool :tool_use_id id} to messages
 6. Terminate when output contains COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT or max-steps
 
 Returns: {:exit_status \"submitted\"|\"LimitsExceeded\" :submission str}

@@ -1,102 +1,51 @@
-;; React pattern — mini-swe-agent style bash agent loop.
-;; Matches DefaultAgent from github.com/SWE-agent/mini-swe-agent exactly:
-;; - system_template: fenced ```mswea_bash_command blocks
-;; - instance_template: task + workflow instructions
-;; - observation_template: <returncode>/<output> format
-;; - format_error_template: sent back when command not found
-;; - termination: echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT
-;; Uses proper multi-turn messages (system/user/assistant/user/...).
+;; React pattern — mini-swe-agent v2 style: native bash tool calling.
+;; Matches DefaultAgent from github.com/SWE-agent/mini-swe-agent (v2).
+;; Uses leaf-llm-tool which sends a bash tool definition and extracts tool calls.
+;; Loaded as react/ namespace via src/spell/react.clj.
 ;;
 ;; Usage: (react/run "Fix the failing test in test_foo.py")
 ;; Returns: {:exit_status "submitted"|"LimitsExceeded" :submission str}
 
-;; react-system-prompt: matches mini-swe default.yaml system_template
+;; react-system-prompt: matches mini-swe mini.yaml system_template
 (defn react-system-prompt []
-  (cat
-    "You are a helpful assistant that can interact with a computer.\n\n"
-    "Your response must contain exactly ONE bash code block with ONE command "
-    "(or commands connected with && or ||).\n"
-    "Include a THOUGHT section before your command where you explain your reasoning process.\n"
-    "Format your response as shown in <format_example>.\n\n"
-    "<format_example>\n"
-    "Your reasoning and analysis here. Explain why you want to perform the action.\n\n"
-    "```mswea_bash_command\n"
-    "your_command_here\n"
-    "```\n"
-    "</format_example>\n\n"
-    "Failure to follow these rules will cause your response to be rejected."))
+  "You are a helpful assistant that can interact with a computer.")
 
-;; react-instance-template: matches mini-swe default.yaml instance_template
+;; react-instance-template: matches mini-swe mini.yaml instance_template
 (defn react-instance-template [task]
   (cat
     "Please solve this task: " task "\n\n"
-    "You can execute bash commands to investigate and implement changes.\n\n"
-    "## Workflow\n\n"
+    "You can execute bash commands and edit files to implement the necessary changes.\n\n"
+    "## Recommended Workflow\n\n"
     "1. Analyze and find relevant files\n"
     "2. Implement the necessary changes\n"
     "3. Verify your solution works\n"
     "4. Submit by running: echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n"
     "   Do not combine it with any other command.\n\n"
     "## Rules\n\n"
-    "1. Every response must contain exactly one bash code block\n"
-    "2. The action must be enclosed in ```mswea_bash_command``` triple backticks\n"
-    "3. Directory or environment variable changes are not persistent across steps\n\n"
-    "## Example response\n\n"
-    "THOUGHT: I need to list files first.\n\n"
-    "```mswea_bash_command\n"
-    "ls -la\n"
-    "```"))
+    "- Every response must include at least one bash tool call\n"
+    "- Directory or environment variable changes are not persistent across steps\n\n"
+    "Example: to list files, call the bash tool with {\"command\": \"ls -la\"}"))
 
-;; react-extract-command: extract bash command from ```mswea_bash_command ... ``` block
-(defn react-extract-command [response]
-  (let [fence "```mswea_bash_command"
-        open  (strings/index-of response fence)]
-    (if (nil? open)
-      nil
-      (let [after (subs response (+ open (count fence)))
-            close (strings/index-of after "```")]
-        (if (nil? close)
-          nil
-          (strings/trim (subs after 0 close)))))))
-
-;; react-format-observation: io/sh result -> <returncode>/<output> format
+;; react-format-observation: io/sh result -> JSON string (matches mini-swe observation_template)
 (defn react-format-observation [result]
   (let [exit     (:exit result)
         out      (or (:out result) "")
         err      (or (:err result) "")
-        combined (if (strings/blank? err) out (cat out "\n" err))
-        body     (if (> (count combined) 10000)
-                   (cat "<output_head>\n"
-                        (subs combined 0 5000)
-                        "\n</output_head>\n"
-                        "<elided_chars>\n"
-                        (str (- (count combined) 10000))
-                        " characters elided\n</elided_chars>\n"
-                        "<output_tail>\n"
-                        (subs combined (- (count combined) 5000))
-                        "\n</output_tail>")
-                   (cat "<output>\n" combined "\n</output>"))]
-    (cat "<returncode>" (str exit) "</returncode>\n" body)))
-
-;; react-format-error: sent back when no command block found
-(defn react-format-error [response]
-  (cat "Format error:\n\n"
-       "<error>\n"
-       "Response did not contain a ```mswea_bash_command block.\n"
-       "</error>\n\n"
-       "Please always provide EXACTLY ONE action in triple backticks.\n"
-       "If you want to end the task, issue: echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n"
-       "Otherwise format your response exactly as:\n\n"
-       "THOUGHT: reasoning here.\n\n"
-       "```mswea_bash_command\n"
-       "<action>\n"
-       "```"))
+        combined (if (strings/blank? err) out (cat out "\n" err))]
+    (if (> (count combined) 10000)
+      (cat "{\"returncode\": " (str exit)
+           ", \"output_head\": " (pr-str (subs combined 0 5000))
+           ", \"output_tail\": " (pr-str (subs combined (- (count combined) 5000)))
+           ", \"elided_chars\": " (str (- (count combined) 10000))
+           ", \"warning\": \"Output too long.\"}")
+      (cat "{\"returncode\": " (str exit)
+           ", \"output\": " (pr-str combined) "}"))))
 
 ;; react-submitted?: check if command output signals task completion
 (defn react-submitted? [obs]
   (not (nil? (strings/index-of obs "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"))))
 
-;; run: mini-swe-agent style ReAct loop with multi-turn messages.
+;; run: mini-swe-agent v2 style ReAct loop with native bash tool calling.
 ;; opts:
 ;;   string       - task text
 ;;   :task        - task text (required if opts map)
@@ -114,25 +63,24 @@
     (loop [step 1 messages init-msgs]
       (if (and (> max-steps 0) (>= step max-steps))
         {:exit_status "LimitsExceeded" :submission ""}
-        (let [raw     (leaf-llm messages)
-              command (react/react-extract-command raw)]
+        (let [result    (leaf-llm-tool messages)
+              command   (:command result)
+              tool-id   (:tool_call_id result)
+              asst-msg  (:assistant-message result)]
           (if verbose
-            (println (cat "\n=== Step " (str step) " ===\n" raw)))
-          (if (nil? command)
-            ;; Format error — send error message back as next user turn
-            (let [err-msg (react/react-format-error raw)
-                  msgs'   (conj messages
-                                {:role "assistant" :content raw}
-                                {:role "user"      :content err-msg})]
-              (if verbose (println (cat "[format error]\n" err-msg)))
-              (recur (+ step 1) msgs'))
-            ;; Execute command
-            (let [result  (io/sh command)
-                  obs     (react/react-format-observation result)
-                  msgs'   (conj messages
-                                {:role "assistant" :content raw}
-                                {:role "user"      :content obs})]
-              (if verbose (println (cat "[observation]\n" obs)))
-              (if (react/react-submitted? obs)
-                {:exit_status "submitted" :submission command}
-                (recur (+ step 1) msgs')))))))))
+            (do
+              (println (cat "\n=== Step " (str step) " ==="))
+              (println (cat "Command: " command))))
+          ;; Execute command
+          (let [sh-result (io/sh command)
+                obs       (react/react-format-observation sh-result)
+                msgs'     (conj messages
+                                asst-msg
+                                {:role        "user"
+                                 :content     [{:type         "tool_result"
+                                                :tool_use_id  tool-id
+                                                :content      obs}]})]
+            (if verbose (println (cat "Observation: " obs)))
+            (if (react/react-submitted? obs)
+              {:exit_status "submitted" :submission command}
+              (recur (+ step 1) msgs'))))))))
