@@ -439,7 +439,7 @@
      (->AnthropicPfProvider key model max-tokens (make-http-client) costs))))
 
 (defn- anthropic-tc-request
-  [api-key model prompt system-prompt max-tokens stream? thinking cache-prefix messages]
+  [api-key model prompt system-prompt max-tokens stream? thinking cache-prefix messages temperature]
   (let [min-chars (cache-min-chars model)
         ;; When a messages vector is passed it's a plain leaf call — no tool forcing.
         ;; Hoist any leading {:role "system"} message to the top-level system param.
@@ -483,7 +483,8 @@
                stream? (assoc :stream true)
                thinking (assoc :thinking (if (number? thinking)
                                           {:type "enabled" :budget_tokens thinking}
-                                          {:type "enabled" :budget_tokens 10000})))
+                                          {:type "enabled" :budget_tokens 10000}))
+               temperature (assoc :temperature temperature))
         request (-> (HttpRequest/newBuilder)
                     (.uri (URI/create "https://api.anthropic.com/v1/messages"))
                     (.header "Content-Type" "application/json")
@@ -620,7 +621,7 @@
                          :body (subs response-body 0 (min 1000 (count response-body)))})))
       {:text suffix :usage @usage})))
 
-(defrecord AnthropicTcProvider [api-key model max-tokens http-client costs]
+(defrecord AnthropicTcProvider [api-key model max-tokens http-client costs temperature]
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt opts]
@@ -632,7 +633,8 @@
           cache-prefix (:cache-prefix opts)
           plain? (some? (:messages opts))
           request (anthropic-tc-request api-key effective-model prompt (:system opts)
-                                        effective-max-tokens stream? thinking cache-prefix (:messages opts))
+                                        effective-max-tokens stream? thinking cache-prefix (:messages opts)
+                                        (or (:temperature opts) temperature))
           response (.send http-client request (HttpResponse$BodyHandlers/ofString))
           status (.statusCode response)]
       (if (<= 200 status 299)
@@ -659,7 +661,8 @@
                         :messages       effective-messages
                         :tools          [bash-tool]
                         :tool_choice    {:type "any"}}
-                 cached-system (assoc :system cached-system))
+                 cached-system (assoc :system cached-system)
+                 temperature   (assoc :temperature temperature))
           request (-> (HttpRequest/newBuilder)
                       (.uri (URI/create "https://api.anthropic.com/v1/messages"))
                       (.header "Content-Type" "application/json")
@@ -689,13 +692,13 @@
    - :max-tokens - Max tokens per response (default: 16384)
    - :costs - Cost table {model-prefix [input-per-M output-per-M]}"
   ([] (anthropic-tc-provider {}))
-  ([{:keys [api-key model max-tokens costs]
+  ([{:keys [api-key model max-tokens costs temperature]
      :or {model "claude-sonnet-4-5-20250929"}}]
    (let [key (or api-key (System/getenv "ANTHROPIC_API_KEY"))]
      (when-not key
        (throw (ex-info "No API key provided. Set ANTHROPIC_API_KEY or pass :api-key"
                        {:env "ANTHROPIC_API_KEY"})))
-     (->AnthropicTcProvider key model max-tokens (make-http-client) costs))))
+     (->AnthropicTcProvider key model max-tokens (make-http-client) costs temperature))))
 
 ;; ---------------------------------------------------------------------------
 ;; Ollama Provider
@@ -1628,7 +1631,7 @@
   [path]
   (let [{:keys [type api-key-env base-url model max-tokens costs use-responses-api auth-file account-id
                 responses response-rules response prefill? chat-template convert-think?
-                force-tool-call cache-read-ratio]}
+                force-tool-call cache-read-ratio temperature]}
         (edn/read-string (slurp path))
         api-key (when api-key-env (System/getenv api-key-env))
         opts (cond-> {:costs (cond-> (or costs {})
@@ -1642,7 +1645,8 @@
                auth-file (assoc :auth-file auth-file)
                account-id (assoc :account-id account-id)
                chat-template (assoc :chat-template chat-template)
-               (some? convert-think?) (assoc :convert-think? convert-think?))]
+               (some? convert-think?) (assoc :convert-think? convert-think?)
+               (some? temperature) (assoc :temperature temperature))]
     (case type
       :anthropic-pf (anthropic-pf-provider opts)
       :anthropic-tc (anthropic-tc-provider opts)
@@ -1670,7 +1674,7 @@
   "Create a provider from an inline config map (same keys as .provider.edn)."
   [{:keys [type api-key-env base-url model max-tokens costs use-responses-api auth-file account-id
            responses response-rules response prefill? chat-template convert-think?
-           force-tool-call cache-read-ratio] :as spec}]
+           force-tool-call cache-read-ratio temperature] :as spec}]
   (let [api-key (when api-key-env (System/getenv api-key-env))
         opts (cond-> {:costs (cond-> (or costs {})
                                cache-read-ratio (assoc :cache-read-ratio cache-read-ratio))}
@@ -1683,7 +1687,8 @@
                auth-file (assoc :auth-file auth-file)
                account-id (assoc :account-id account-id)
                chat-template (assoc :chat-template chat-template)
-               (some? convert-think?) (assoc :convert-think? convert-think?))]
+               (some? convert-think?) (assoc :convert-think? convert-think?)
+               (some? temperature) (assoc :temperature temperature))]
     (case type
       :anthropic-pf (anthropic-pf-provider opts)
       :anthropic-tc (anthropic-tc-provider opts)
