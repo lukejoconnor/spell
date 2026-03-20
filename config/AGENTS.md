@@ -66,6 +66,7 @@ Rules:
 - Keep explicit `:cache-read-input` values aligned with providers that expose cached prompt token pricing.
 - Keep API key env var names accurate (`:api-key-env`).
 - Use toolcall provider only where mandatory tool output is intended.
+- OpenAI toolcall configs still use `:type :openai`; set `:force-tool-call true` and a tc base agent instead of inventing a separate provider type.
 
 ### Prompt Files (`config/prompts/*.txt`)
 

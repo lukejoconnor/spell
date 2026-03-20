@@ -27,3 +27,14 @@
           output (with-out-str ((var cli/print-usage) usage-atom))]
       (is (str/includes? output "[context: mean 225 / max 260]"))
       (is (str/includes? output "[context: mean 170 / max 260]")))))
+
+(deftest validate-args-accepts-new-openai-reasoning-levels
+  (testing "xhigh reasoning effort is accepted"
+    (let [result (cli/validate-args ["--reasoning-effort" "xhigh" "Return 42"])]
+      (is (= "Return 42" (:prompt result)))
+      (is (= "xhigh" (get-in result [:options :reasoning-effort])))))
+
+  (testing "none reasoning effort is accepted"
+    (let [result (cli/validate-args ["--reasoning-effort" "none" "Return 42"])]
+      (is (= "Return 42" (:prompt result)))
+      (is (= "none" (get-in result [:options :reasoning-effort]))))))

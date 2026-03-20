@@ -83,6 +83,7 @@
    "gpt-5.3-codex"     [1.75 14.00]
    "gpt-5.3"           [1.75 14.00]
    "gpt-5.4"           [2.50 15.00]
+   "gpt-5.4-pro"       [30.00 180.00]
    ;; Fireworks hosted open models
    "accounts/fireworks/models/glm-5"
    {:input 1.00 :cache-read-input 0.20 :output 3.20}
@@ -110,14 +111,15 @@
 (defn- lookup-cost
   "Find cost for a model ID by prefix matching in a cost table."
   [model-id cost-table]
-  (letfn [(normalize-cost-spec [costs]
+  (let [cache-read-ratio (or (:cache-read-ratio cost-table) 0.10)]
+    (letfn [(normalize-cost-spec [costs]
             (cond
               (and (vector? costs) (= 2 (count costs)))
               (let [[input-cost output-cost] costs]
                 {:input input-cost
                  :output output-cost
                  :cache-write-input (* input-cost 1.25)
-                 :cache-read-input (* input-cost 0.10)})
+                 :cache-read-input (* input-cost cache-read-ratio)})
 
               (map? costs)
               (let [input-cost (:input costs)
@@ -126,15 +128,16 @@
                   {:input input-cost
                    :output output-cost
                    :cache-write-input (or (:cache-write-input costs)
-                                          (* input-cost 1.25))
+                                         (* input-cost 1.25))
                    :cache-read-input (or (:cache-read-input costs)
-                                         (* input-cost 0.10))}))
+                                         (* input-cost cache-read-ratio))}))
 
               :else nil))]
-    (some (fn [[prefix costs]]
-            (when (.startsWith ^String model-id prefix)
-              (normalize-cost-spec costs)))
-          cost-table)))
+      (some (fn [[prefix costs]]
+              (when (and (string? prefix)
+                         (.startsWith ^String model-id prefix))
+                (normalize-cost-spec costs)))
+            cost-table))))
 
 (defn current-cost
   "Compute total cost in dollars from accumulated usage data.
@@ -661,21 +664,50 @@
   [model]
   (some #(str/includes? model %) ["codex"]))
 
+(defn- parse-openai-responses-usage
+  "Normalize OpenAI Responses-style usage, splitting cached tokens out of input."
+  [usage]
+  (let [cached-tokens (get-in usage [:input_tokens_details :cached_tokens] 0)
+        reasoning-tokens (get-in usage [:output_tokens_details :reasoning_tokens])]
+    (cond-> {:input_tokens (max 0 (- (:input_tokens usage 0) cached-tokens))
+             :output_tokens (:output_tokens usage 0)
+             :cache_read_input_tokens cached-tokens}
+      reasoning-tokens (assoc :reasoning_tokens reasoning-tokens))))
+
 (defn- openai-responses-request
-  [api-key base-url model prompt system-prompt max-tokens reasoning-effort verbosity grammar-format]
+  [api-key base-url model prompt system-prompt max-tokens reasoning-effort verbosity
+   grammar-format force-tool-call]
   (let [reasoning (when reasoning-effort
                     {:effort reasoning-effort})
+        force-tool-instructions
+        (when force-tool-call
+          (str "\n\nCustom tool call output mode:\n"
+               "Return the full Spell suffix as the input of exactly one custom tool call named spell_suffix.\n"
+               "Do not send assistant message text, markdown, or wrapper JSON."))
+        instructions (cond
+                       force-tool-call
+                       (str (if (str/blank? system-prompt)
+                              "You are a helpful assistant."
+                              system-prompt)
+                            force-tool-instructions)
+
+                       (str/blank? system-prompt) nil
+                       :else system-prompt)
+        tool-mode? (or force-tool-call grammar-format)
+        tool (cond-> {:type "custom"
+                      :name "spell_suffix"
+                      :description (if grammar-format
+                                     "Spell suffix constrained by grammar"
+                                     "Spell suffix emitted as custom tool input")}
+               grammar-format (assoc :format grammar-format))
         body (cond-> {:model model
                       :input prompt}
-               system-prompt (assoc :instructions system-prompt)
+               instructions (assoc :instructions instructions)
                max-tokens (assoc :max_output_tokens max-tokens)
                reasoning (assoc :reasoning reasoning)
                verbosity (assoc :verbosity verbosity)
-               grammar-format (assoc :tools [{:type "custom"
-                                              :name "spell_suffix"
-                                              :description "Spell suffix constrained by grammar"
-                                              :format grammar-format}]
-                                     :tool_choice "required"))
+               tool-mode? (assoc :tools [tool]
+                                 :tool_choice "required"))
         request (-> (HttpRequest/newBuilder)
                     (.uri (URI/create (str base-url "/responses")))
                     (.header "Content-Type" "application/json")
@@ -684,7 +716,9 @@
                     (.build))]
     request))
 
-(defn- parse-openai-responses-response [response-body]
+(defn- parse-openai-responses-response
+  ([response-body] (parse-openai-responses-response response-body false))
+  ([response-body require-tool-call]
   (let [parsed (json/read-str response-body :key-fn keyword)]
     (if-let [error (:error parsed)]
       (throw (ex-info "OpenAI Responses API error" {:error error}))
@@ -697,17 +731,24 @@
                               (map :text)
                               (str/join ""))
             tool-input (some (fn [item]
-                               (when (= "custom_tool_call" (:type item))
+                               (when (and (= "custom_tool_call" (:type item))
+                                          (= "spell_suffix" (:name item)))
                                  (:input item)))
                              (:output parsed))
-            reasoning-tokens (get-in usage [:output_tokens_details :reasoning_tokens])]
-        {:text (or (not-empty output-text)
-                   (not-empty message-text)
-                   (not-empty tool-input)
-                   "")
-         :usage (cond-> {:input_tokens (get-in parsed [:usage :input_tokens] 0)
-                         :output_tokens (get-in parsed [:usage :output_tokens] 0)}
-                  reasoning-tokens (assoc :reasoning_tokens reasoning-tokens))}))))
+            text (if require-tool-call
+                   (do
+                     (when-not tool-input
+                       (throw (ex-info "OpenAI mandatory tool-call response missing custom_tool_call"
+                                       {:type :missing-tool-call
+                                        :provider :openai-tc
+                                        :output (:output parsed)})))
+                     tool-input)
+                   (or (not-empty output-text)
+                       (not-empty message-text)
+                       (not-empty tool-input)
+                       ""))]
+        {:text text
+         :usage (parse-openai-responses-usage usage)})))))
 
 (defn- openai-request [api-key base-url model prompt system-prompt _prefix max-tokens reasoning-effort verbosity]
   (let [messages (cond-> []
@@ -737,25 +778,27 @@
                          :output_tokens (:completion_tokens usage 0)}
                   reasoning-tokens (assoc :reasoning_tokens reasoning-tokens))}))))
 
-(defrecord OpenAIProvider [api-key base-url model max-tokens http-client use-responses-api costs]
+(defrecord OpenAIProvider [api-key base-url model max-tokens http-client use-responses-api force-tool-call costs]
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt opts]
     (let [effective-model (or (:model opts) model)
           grammar-format (:grammar-format opts)
-          responses? (or use-responses-api (responses-model? effective-model) grammar-format)
+          responses? (or use-responses-api force-tool-call
+                         (responses-model? effective-model) grammar-format)
           reasoning-effort (:reasoning-effort opts)
           verbosity (:verbosity opts)
           request (if responses?
                     (openai-responses-request api-key base-url effective-model prompt (:system opts)
-                                             max-tokens reasoning-effort verbosity grammar-format)
+                                             max-tokens reasoning-effort verbosity
+                                             grammar-format force-tool-call)
                     (openai-request api-key base-url effective-model prompt (:system opts) (:prefix opts)
                                    max-tokens reasoning-effort verbosity))
           response (.send http-client request (HttpResponse$BodyHandlers/ofString))
           status (.statusCode response)]
       (if (<= 200 status 299)
         (let [{:keys [text usage]} (if responses?
-                                     (parse-openai-responses-response (.body response))
+                                     (parse-openai-responses-response (.body response) force-tool-call)
                                      (parse-openai-response (.body response)))]
           (track-usage! effective-model usage costs)
           text)
@@ -772,6 +815,7 @@
    - :model                - Model name (default: gpt-4o)
    - :max-tokens           - Max tokens per response (default: 16384)
    - :use-responses-api    - Force Responses API instead of Chat Completions (default: false)
+   - :force-tool-call      - Require spell_suffix custom tool output via Responses API
    - :costs                - Cost table {model-prefix [input-per-M output-per-M]}
 
    Call opts supported by this provider:
@@ -780,12 +824,12 @@
                              When present, request is routed to Responses API with
                              tool_choice \"required\" and custom_tool_call output parsing."
   ([] (openai-provider {}))
-  ([{:keys [api-key base-url model max-tokens use-responses-api costs]
+  ([{:keys [api-key base-url model max-tokens use-responses-api force-tool-call costs]
      :or {model "gpt-4o"
           base-url "https://api.openai.com/v1"}}]
    (let [key (or api-key (System/getenv "OPENAI_API_KEY"))
          url (str/replace (or base-url "https://api.openai.com/v1") #"/$" "")]
-     (when-not key
+       (when-not key
        (throw (ex-info "No API key provided. Set OPENAI_API_KEY or pass :api-key"
                        {:env "OPENAI_API_KEY"})))
      (let [local? (or (str/starts-with? url "http://127.0.0.1")
@@ -793,7 +837,8 @@
            client (if local?
                     (make-http-client {:http-version HttpClient$Version/HTTP_1_1})
                     (make-http-client))]
-       (->OpenAIProvider key url model max-tokens client use-responses-api costs)))))
+       (->OpenAIProvider key url model max-tokens client use-responses-api
+                         force-tool-call costs)))))
 
 ;; ---------------------------------------------------------------------------
 ;; ChatGPT Codex Provider (subscription-backed Responses API)
@@ -945,8 +990,7 @@
                        :provider :codex-tc
                        :output (:output completed)})))
     {:text tool-input
-     :usage (cond-> {:input_tokens (get-in usage [:input_tokens] 0)
-                     :output_tokens (get-in usage [:output_tokens] 0)}
+     :usage (cond-> (parse-openai-responses-usage usage)
               reasoning-tokens (assoc :reasoning_tokens reasoning-tokens))}))
 
 
@@ -1473,15 +1517,18 @@
   "Load provider from a .provider.edn file path."
   [path]
   (let [{:keys [type api-key-env base-url model max-tokens costs use-responses-api auth-file account-id
-                responses response-rules response prefill? chat-template convert-think?]}
+                responses response-rules response prefill? chat-template convert-think?
+                force-tool-call cache-read-ratio]}
         (edn/read-string (slurp path))
         api-key (when api-key-env (System/getenv api-key-env))
-        opts (cond-> {:costs (or costs {})}
+        opts (cond-> {:costs (cond-> (or costs {})
+                               cache-read-ratio (assoc :cache-read-ratio cache-read-ratio))}
                api-key (assoc :api-key api-key)
                base-url (assoc :base-url base-url)
                model (assoc :model model)
                max-tokens (assoc :max-tokens max-tokens)
                use-responses-api (assoc :use-responses-api true)
+               force-tool-call (assoc :force-tool-call true)
                auth-file (assoc :auth-file auth-file)
                account-id (assoc :account-id account-id)
                chat-template (assoc :chat-template chat-template)
@@ -1512,14 +1559,17 @@
 (defn- load-provider-from-map
   "Create a provider from an inline config map (same keys as .provider.edn)."
   [{:keys [type api-key-env base-url model max-tokens costs use-responses-api auth-file account-id
-           responses response-rules response prefill? chat-template convert-think?] :as spec}]
+           responses response-rules response prefill? chat-template convert-think?
+           force-tool-call cache-read-ratio] :as spec}]
   (let [api-key (when api-key-env (System/getenv api-key-env))
-        opts (cond-> {:costs (or costs {})}
+        opts (cond-> {:costs (cond-> (or costs {})
+                               cache-read-ratio (assoc :cache-read-ratio cache-read-ratio))}
                api-key (assoc :api-key api-key)
                base-url (assoc :base-url base-url)
                model (assoc :model model)
                max-tokens (assoc :max-tokens max-tokens)
                use-responses-api (assoc :use-responses-api true)
+               force-tool-call (assoc :force-tool-call true)
                auth-file (assoc :auth-file auth-file)
                account-id (assoc :account-id account-id)
                chat-template (assoc :chat-template chat-template)

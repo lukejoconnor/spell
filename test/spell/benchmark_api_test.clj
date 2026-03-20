@@ -1,5 +1,6 @@
 (ns spell.benchmark-api-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest is testing]]
             [spell.benchmark-api :as benchmark-api]))
 
 (deftest normalize-format-spec-test
@@ -44,3 +45,15 @@
   (testing "default-agent resolution uses the fireworks provider config"
     (is (= "config/providers/fireworks.provider.edn"
            (get benchmark-api/provider-edn-by-prefix "fireworks")))))
+
+(deftest openai-tc-model-spec-and-default-agent-test
+  (testing "parse-model-spec accepts openai-tc prefix"
+    (is (= {:provider "openai-tc" :model "gpt-5.4"}
+           ((var benchmark-api/parse-model-spec) "openai-tc:gpt-5.4"))))
+
+  (testing "default-agent resolution uses the openai-tc provider config"
+    (is (= "config/providers/openai-tc.provider.edn"
+           (get benchmark-api/provider-edn-by-prefix "openai-tc")))
+    (is (str/ends-with? ((var benchmark-api/default-agent-from-request)
+                         {:model "openai-tc:gpt-5.4"})
+                        "config/providers/../agents/base-tc.agent.edn"))))

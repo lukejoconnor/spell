@@ -15,10 +15,11 @@
    "o3"      "o3"
    "o4-mini" "o4-mini"
    "gpt52"   "gpt-5.2"
-   "gpt53"   "gpt-5.3"})
+   "gpt53"   "gpt-5.3"
+   "gpt54"   "gpt-5.4"})
 
 (def provider-prefixes
-  #{"ollama" "codex-msg" "codex-tc" "openclaw" "openai"
+  #{"ollama" "codex-msg" "codex-tc" "openai-tc" "openclaw" "openai"
     "anthropic-pf" "anthropic-tc" "fireworks" "kimi" "moonshot" "test"})
 
 (defn parse-model-spec
@@ -82,7 +83,7 @@
   [["-t" "--test" "Use dummy LLM provider (returns 'hello world')"]
    ["-e" "--example NAME" "Run a named example from examples/"]
    ["-a" "--agent FILE" "Use agent definition from .agent.edn file"]
-   ["-m" "--model MODEL" "Model spec: haiku, sonnet, opus, opus45, ollama:<model>, codex-tc:<model>, codex-msg:<model>, anthropic-pf:<model>, anthropic-tc:<model>, fireworks:<model>, openai:<model>, openclaw:<model>, user (default: codex-tc:gpt-5.3)"]
+   ["-m" "--model MODEL" "Model spec: haiku, sonnet, opus, opus45, ollama:<model>, codex-tc:<model>, codex-msg:<model>, openai-tc:<model>, anthropic-pf:<model>, anthropic-tc:<model>, fireworks:<model>, openai:<model>, openclaw:<model>, user (default: codex-tc:gpt-5.3)"]
    ["-d" "--depth DEPTH" "Max recursion depth (default: unlimited, 0 = unlimited)"
     :parse-fn #(Integer/parseInt %)
     :validate [#(>= % 0) "Must be non-negative"]]
@@ -95,8 +96,9 @@
    ["-K" "--thinking BUDGET" "Enable Anthropic adaptive thinking (budget_tokens, e.g. 10000)"
     :parse-fn #(Integer/parseInt %)
     :validate [pos? "Must be positive"]]
-   ["-R" "--reasoning-effort EFFORT" "OpenAI reasoning effort (low, medium, high)"
-    :validate [#(contains? #{"low" "medium" "high"} %) "Must be low, medium, or high"]]
+   ["-R" "--reasoning-effort EFFORT" "OpenAI reasoning effort (none, low, medium, high, xhigh)"
+    :validate [#(contains? #{"none" "low" "medium" "high" "xhigh"} %)
+               "Must be none, low, medium, high, or xhigh"]]
    [nil "--verbosity LEVEL" "OpenAI verbosity (low, auto)"
     :validate [#(contains? #{"low" "auto"} %) "Must be low or auto"]]
    [nil "--suffix-grammar" "Enable prefix-aware OpenAI suffix grammar constraints"]
@@ -132,6 +134,7 @@
           "  spell -m haiku 'Add 1 and 2'"
           "  spell -m ollama:llama3.2 'Return 42'"
           "  spell -m codex-msg:gpt-5.3-codex 'Return 42'"
+          "  spell -m openai-tc:gpt-5.4 'Return 42'"
           "  spell -m fireworks:glm-5 'Return 42'"
           "  spell -m openai:gpt-4o 'Return 42'"
           "  spell examples/hello-world.spl"
@@ -209,6 +212,11 @@
 
         "codex-tc"
         (provider/codex-tc-provider base-opts)
+
+        "openai-tc"
+        (provider/openai-provider (assoc base-opts
+                                         :use-responses-api true
+                                         :force-tool-call true))
 
         "openai"
         (provider/openai-provider (cond-> base-opts
