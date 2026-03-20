@@ -10,8 +10,18 @@
 (defn react-system-prompt []
   "You are a helpful assistant that can interact with a computer.")
 
+;; react-system-info: get OS info matching mini-swe {{system}} {{release}} {{version}} {{machine}}
+(defn react-system-info []
+  (let [s (:out (io/sh "uname -s"))
+        r (:out (io/sh "uname -r"))
+        v (:out (io/sh "uname -v"))
+        m (:out (io/sh "uname -m"))]
+    (cat (strings/trim s) " " (strings/trim r) " " (strings/trim v) " " (strings/trim m))))
+
 ;; react-instance-template: matches mini-swe mini.yaml instance_template exactly
 (defn react-instance-template [task]
+  (let [sys-info (react/react-system-info)
+        darwin?  (strings/starts-with? sys-info "Darwin")]
   (cat
     "Please solve this issue: " task "\n\n"
     "You can execute bash commands and edit files to implement the necessary changes.\n\n"
@@ -46,7 +56,7 @@
     "[Makes bash tool call with {\"command\": \"ls -la\"} as arguments]\n"
     "</example_response>\n\n"
     "<system_information>\n"
-    "Darwin 23.2.0 Darwin Kernel Version 23.2.0: Wed Nov 15 21:59:33 PST 2023; root:xnu-10002.61.3~2/RELEASE_ARM64_T8112 arm64\n"
+    sys-info "\n"
     "</system_information>\n\n"
     "## Useful command examples\n\n"
     "### Create a new file:\n\n"
@@ -58,19 +68,9 @@
     "EOF\n"
     "```\n\n"
     "### Edit files with sed:\n\n"
-    "<important>\n"
-    "You are on MacOS. For all the below examples, you need to use `sed -i ''` instead of `sed -i`.\n"
-    "</important>\n\n"
-    "```bash\n"
-    "# Replace all occurrences\n"
-    "sed -i '' 's/old_string/new_string/g' filename.py\n\n"
-    "# Replace only first occurrence\n"
-    "sed -i '' 's/old_string/new_string/' filename.py\n\n"
-    "# Replace first occurrence on line 1\n"
-    "sed -i '' '1s/old_string/new_string/' filename.py\n\n"
-    "# Replace all occurrences in lines 1-10\n"
-    "sed -i '' '1,10s/old_string/new_string/g' filename.py\n"
-    "```\n\n"
+    (if darwin?
+      "<important>\nYou are on MacOS. For all the below examples, you need to use `sed -i ''` instead of `sed -i`.\n</important>\n\n```bash\n# Replace all occurrences\nsed -i '' 's/old_string/new_string/g' filename.py\n\n# Replace only first occurrence\nsed -i '' 's/old_string/new_string/' filename.py\n\n# Replace first occurrence on line 1\nsed -i '' '1s/old_string/new_string/' filename.py\n\n# Replace all occurrences in lines 1-10\nsed -i '' '1,10s/old_string/new_string/g' filename.py\n```\n\n"
+      "```bash\n# Replace all occurrences\nsed -i 's/old_string/new_string/g' filename.py\n\n# Replace only first occurrence\nsed -i 's/old_string/new_string/' filename.py\n\n# Replace first occurrence on line 1\nsed -i '1s/old_string/new_string/' filename.py\n\n# Replace all occurrences in lines 1-10\nsed -i '1,10s/old_string/new_string/g' filename.py\n```\n\n")
     "### View file content:\n\n"
     "```bash\n"
     "# View specific lines with numbers\n"
@@ -79,7 +79,7 @@
     "### Any other command you want to run\n\n"
     "```bash\n"
     "anything\n"
-    "```"))
+    "```")))
 
 ;; react-format-observation: io/sh result -> JSON string (matches mini-swe observation_template)
 (defn react-format-observation [result]
