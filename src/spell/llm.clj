@@ -509,41 +509,49 @@
 ;; ---------------------------------------------------------------------------
 
 (defn make-leaf-llm
-  "Factory: create a plain text-in/text-out LLM function.
+  "Factory: create a text-in/text-out LLM function.
+   Accepts a string prompt or a vector of {:role :content} message maps.
    No Spell parsing, evaluation, tools, or sub-agents.
 
    Options:
    - :provider - LLM provider instance
-   - :system   - system prompt string (default: generic assistant)
+   - :system   - system prompt string (default: generic assistant; ignored for message vectors)
    - :model    - optional model name override (nil uses provider default)
 
-   Returns (fn [prompt] response-string)."
+   Returns (fn [prompt-or-messages] response-string)."
   ([] (make-leaf-llm {}))
   ([{:keys [provider system model]
      :or {system "You are a helpful assistant. Respond concisely."}}]
    (with-meta
-     (fn [prompt]
-       (let [prompt-str (str prompt)
-             node-id  (when trace/*trace*
+     (fn [prompt-or-messages]
+       (let [messages? (vector? prompt-or-messages)
+             prompt-str (when-not messages? (str prompt-or-messages))
+             node-id  (when (and trace/*trace* (not messages?))
                         (trace/begin-node! trace/*trace-node-id*
                                            eval/*llm-depth* :leaf prompt-str))
              indent   (apply str (repeat eval/*llm-depth* "  "))
              _        (when eval/*verbose*
                         (Thread/sleep (rand-int 500))
                         (eval/vlog (str indent "=== Leaf LLM Call (depth " eval/*llm-depth* ") ==="))
-                        (eval/vlog (str indent "Prompt: " (pr-str prompt))))
-             opts     (cond-> {:system system}
-                        model (assoc :model model))
+                        (eval/vlog (str indent "Prompt: " (pr-str prompt-or-messages))))
+             opts     (if messages?
+                        (cond-> {:messages prompt-or-messages}
+                          model (assoc :model model))
+                        (cond-> {:system system}
+                          model (assoc :model model)))
              max-tok  (:max-tokens provider)
              response (provider/call-with-retries
                         (fn [err]
-                          (let [msg (if (and err (= :missing-tool-call (:type (ex-data err))))
-                                     (str prompt-str
-                                          "\n;; system: retrying — previous response was truncated or empty"
-                                          (when max-tok (str ", max output tokens " max-tok)))
-                                     prompt-str)]
+                          (if messages?
                             (provider/strip-code-fences
-                              (provider/call-llm provider msg opts))))
+                              (provider/call-llm provider nil opts))
+                            (let [msg (if (and err (= :missing-tool-call (:type (ex-data err))))
+                                        (str prompt-str
+                                             "\n;; system: retrying — previous response was truncated or empty"
+                                             (when max-tok (str ", max output tokens " max-tok)))
+                                        prompt-str)]
+                              (provider/strip-code-fences
+                                (provider/call-llm provider msg opts)))))
                         provider/*retries*)
              _        (eval/vlog (str indent "Response: " response))
              _        (when node-id

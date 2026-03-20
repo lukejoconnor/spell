@@ -434,36 +434,46 @@
      (->AnthropicPfProvider key model max-tokens (make-http-client) costs))))
 
 (defn- anthropic-tc-request
-  [api-key model prompt system-prompt max-tokens stream? thinking cache-prefix]
+  [api-key model prompt system-prompt max-tokens stream? thinking cache-prefix messages]
   (let [min-chars (cache-min-chars model)
-        ;; Split user message for caching: stable prefix + new content
-        user-content (if (and cache-prefix
-                              (not (str/blank? cache-prefix))
-                              (str/starts-with? prompt cache-prefix)
-                              (>= (count cache-prefix) min-chars))
-                       (let [new-content (subs prompt (count cache-prefix))]
-                         (if (str/blank? new-content)
-                           [{:type "text" :text prompt :cache_control {:type "ephemeral"}}]
-                           [{:type "text" :text cache-prefix :cache_control {:type "ephemeral"}}
-                            {:type "text" :text new-content :cache_control {:type "ephemeral"}}]))
-                       prompt)
-        cached-system (when system-prompt
-                        [(cond-> {:type "text" :text system-prompt}
-                           (>= (count system-prompt) min-chars)
+        ;; When a messages vector is passed it's a plain leaf call — no tool forcing.
+        ;; Hoist any leading {:role "system"} message to the top-level system param.
+        plain? (some? messages)
+        effective-system (or (when (and plain? (= "system" (:role (first messages))))
+                               (:content (first messages)))
+                             system-prompt)
+        effective-messages (if (and plain? (= "system" (:role (first messages))))
+                             (vec (rest messages))
+                             messages)
+        ;; Standard single-user-message path
+        user-content (when-not plain?
+                       (if (and cache-prefix
+                                (not (str/blank? cache-prefix))
+                                (str/starts-with? prompt cache-prefix)
+                                (>= (count cache-prefix) min-chars))
+                         (let [new-content (subs prompt (count cache-prefix))]
+                           (if (str/blank? new-content)
+                             [{:type "text" :text prompt :cache_control {:type "ephemeral"}}]
+                             [{:type "text" :text cache-prefix :cache_control {:type "ephemeral"}}
+                              {:type "text" :text new-content :cache_control {:type "ephemeral"}}]))
+                         prompt))
+        cached-system (when effective-system
+                        [(cond-> {:type "text" :text effective-system}
+                           (>= (count effective-system) min-chars)
                            (assoc :cache_control {:type "ephemeral"}))])
         body (cond-> {:model model
                       :max_tokens (if thinking
                                     (or max-tokens 32768)
                                     (or max-tokens 16384))
-                      :messages [{:role "user" :content user-content}]
-                      :tools [{:name "spell_suffix"
-                               :description "Return the full Spell suffix in input.suffix"
-                               :input_schema {:type "object"
-                                              :properties {:suffix {:type "string"}}
-                                              :required ["suffix"]
-                                              :additionalProperties false}}]
-                      ;; thinking forbids forced tool use; use "auto" instead of "any"
-                      :tool_choice {:type (if thinking "auto" "any")}}
+                      :messages (or effective-messages [{:role "user" :content user-content}])}
+               ;; Only add spell_suffix tool for normal Spell self-calls, not plain leaf calls
+               (not plain?) (assoc :tools [{:name "spell_suffix"
+                                            :description "Return the full Spell suffix in input.suffix"
+                                            :input_schema {:type "object"
+                                                           :properties {:suffix {:type "string"}}
+                                                           :required ["suffix"]
+                                                           :additionalProperties false}}]
+                                   :tool_choice {:type (if thinking "auto" "any")})
                cached-system (assoc :system cached-system)
                stream? (assoc :stream true)
                thinking (assoc :thinking (if (number? thinking)
@@ -581,14 +591,16 @@
           ;; Use streaming for large max_tokens (API requires it for >16384) or thinking
           stream? (or thinking (> effective-max-tokens 16384))
           cache-prefix (:cache-prefix opts)
+          plain? (some? (:messages opts))
           request (anthropic-tc-request api-key effective-model prompt (:system opts)
-                                        effective-max-tokens stream? thinking cache-prefix)
+                                        effective-max-tokens stream? thinking cache-prefix (:messages opts))
           response (.send http-client request (HttpResponse$BodyHandlers/ofString))
           status (.statusCode response)]
       (if (<= 200 status 299)
-        (let [{:keys [text usage]} (if stream?
-                                     (parse-anthropic-tc-stream (.body response))
-                                     (parse-anthropic-tc-response (.body response)))]
+        (let [{:keys [text usage]} (cond
+                                     plain?  (parse-anthropic-pf-response (.body response))
+                                     stream? (parse-anthropic-tc-stream (.body response))
+                                     :else   (parse-anthropic-tc-response (.body response)))]
           (track-usage! effective-model usage costs)
           text)
         (throw (ex-info "Anthropic mandatory tool-call request failed"
