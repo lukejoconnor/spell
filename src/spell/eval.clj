@@ -532,7 +532,6 @@
                ([value] (serialize-for-continuation value))
                ([value limit] (serialize-for-continuation value limit))),
    'deep-truncate (fn [value limit] (deep-truncate value (int limit))),
-   'println println,
    'ok?     ok?,
    'err?    err?,
    ;; Eval directly in the caller env.
