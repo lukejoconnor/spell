@@ -366,7 +366,7 @@
    The returned function is the root/new-handle startup path. Same-handle
    prefix completion remains internal via !llm-self only."
   [{:keys [namespaces provider model system llm-var recover format prefill? thinking reasoning-effort verbosity
-           suffix-grammar? grammar-max-chars]
+           suffix-grammar? grammar-max-chars temperature]
     :or {namespaces {} model nil recover true prefill? true suffix-grammar? false grammar-max-chars 2000}}]
   (let [core-ns-names (set (keys core-namespaces))
         ns-builtins (into {} (map (fn [[sym ns-map]] [sym ns-map]) namespaces))
@@ -430,7 +430,8 @@
                                                            provider (assoc :provider provider)
                                                            model (assoc :model model)))
                                 'leaf-llm-tool (make-leaf-llm-tool (cond-> {}
-                                                                      provider (assoc :provider provider)))}
+                                                                      provider (assoc :provider provider)
+                                                                      temperature (assoc :temperature temperature)))}
                                effect-ns-builtins
                                (when llm-var {'llm llm-var}))
         future-only-builtins {'blocking runtime/blocking-namespace}
@@ -510,27 +511,38 @@
 ;; Leaf LLM
 ;; ---------------------------------------------------------------------------
 
+(defn- call-leaf-llm-tool [provider temperature messages]
+  (let [effective-provider (if (some? temperature)
+                             (assoc provider :temperature temperature)
+                             provider)
+        indent (apply str (repeat eval/*llm-depth* "  "))
+        _      (when eval/*verbose*
+                 (eval/vlog (str indent "=== Leaf LLM Tool Call (depth " eval/*llm-depth* ") ===")))
+        result (provider/call-with-retries
+                 (fn [_] (provider/call-llm-tool effective-provider messages))
+                 provider/*retries*)
+        _      (eval/vlog (str indent "Command: " (:command result)))]
+    result))
+
 (defn make-leaf-llm-tool
   "Factory: create a messages-in/tool-map-out LLM function.
    Sends messages vector with a bash tool, returns tool invocation map.
 
    Options:
-   - :provider - LLM provider instance
-   - :model    - optional model name override (nil uses provider default)
+   - :provider    - LLM provider instance
+   - :temperature - optional factory-time temperature override
+
+   The returned fn also accepts an optional second arg to override temperature per-call:
+     (leaf-llm-tool messages)                  ; use factory temperature
+     (leaf-llm-tool messages 0)                ; override to 0 for this call
 
    Returns (fn [messages] {:command str :tool_call_id str :assistant-message map})."
   ([] (make-leaf-llm-tool {}))
-  ([{:keys [provider]}]
+  ([{:keys [provider temperature]}]
    (with-meta
-     (fn [messages]
-       (let [indent   (apply str (repeat eval/*llm-depth* "  "))
-             _        (when eval/*verbose*
-                        (eval/vlog (str indent "=== Leaf LLM Tool Call (depth " eval/*llm-depth* ") ===")))
-             result   (provider/call-with-retries
-                        (fn [_] (provider/call-llm-tool provider messages))
-                        provider/*retries*)
-             _        (eval/vlog (str indent "Command: " (:command result)))]
-         result))
+     (fn
+       ([messages] (call-leaf-llm-tool provider temperature messages))
+       ([messages call-temperature] (call-leaf-llm-tool provider call-temperature messages)))
      {:spell/leaf-tool true})))
 
 (defn make-leaf-llm

@@ -106,11 +106,13 @@
 ;;   :task        - task text (required if opts map)
 ;;   :max-steps   - max steps before LimitsExceeded (default: 30, 0 = unlimited)
 ;;   :verbose     - print each step (default: false)
+;;   :temperature - LLM temperature (default: nil = provider default; 0 = deterministic)
 (defn run [opts]
   (let [opts      (if (string? opts) {:task opts} opts)
         task      (or (:task opts) (throw "react/run: :task required"))
         max-steps (or (:max-steps opts) 30)
         verbose   (or (:verbose opts) false)
+        temp      (:temperature opts)
         system    (react/react-system-prompt)
         instance  (react/react-instance-template task)
         init-msgs [{:role "system" :content system}
@@ -118,7 +120,7 @@
     (loop [step 1 messages init-msgs]
       (if (and (> max-steps 0) (>= step max-steps))
         {:exit_status "LimitsExceeded" :submission ""}
-        (let [result    (leaf-llm-tool messages)
+        (let [result    (if (nil? temp) (leaf-llm-tool messages) (leaf-llm-tool messages temp))
               command   (:command result)
               tool-id   (:tool_call_id result)
               asst-msg  (:assistant-message result)]
