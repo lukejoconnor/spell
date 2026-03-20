@@ -242,9 +242,20 @@
                                         :max_total_tokens 1700000}}
                             :cost-table {"accounts/fireworks/models/glm-5"
                                          {:input 1.00
-                                          :cache-read-input 0.20
-                                          :output 3.20}}})]
+                                         :cache-read-input 0.20
+                                         :output 3.20}}})]
       (is (= 2.64 (double (provider/current-cost usage-atom)))))))
+
+(deftest current-cost-prices-gpt-5-4-pro-at-pro-rate-test
+  (testing "current-cost prices gpt-5.4-pro before the overlapping gpt-5.4 prefix"
+    (let [usage-atom (atom {:by-model {"gpt-5.4-pro"
+                                       {:input_tokens 1000000
+                                        :output_tokens 0
+                                        :cache_creation_input_tokens 0
+                                        :cache_read_input_tokens 0
+                                        :calls 1
+                                        :max_total_tokens 1000000}}})]
+      (is (= 30.0 (double (provider/current-cost usage-atom)))))))
 
 ;; =============================================================================
 ;; compile-agent factory tests

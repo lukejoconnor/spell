@@ -5,5 +5,5 @@
  :force-tool-call true
  :max-tokens 32768
  :default-agent "../agents/base-tc.agent.edn"
- :costs {"gpt-5.4"     [2.50 15.00]
-         "gpt-5.4-pro" [30.00 180.00]}}
+ :costs {"gpt-5.4-pro" [30.00 180.00]
+         "gpt-5.4"     [2.50 15.00]}}

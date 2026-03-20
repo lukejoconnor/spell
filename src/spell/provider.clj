@@ -82,8 +82,8 @@
    "gpt-5.2"           [1.75 14.00]
    "gpt-5.3-codex"     [1.75 14.00]
    "gpt-5.3"           [1.75 14.00]
-   "gpt-5.4"           [2.50 15.00]
    "gpt-5.4-pro"       [30.00 180.00]
+   "gpt-5.4"           [2.50 15.00]
    ;; Fireworks hosted open models
    "accounts/fireworks/models/glm-5"
    {:input 1.00 :cache-read-input 0.20 :output 3.20}
@@ -109,7 +109,7 @@
    "moonshot-v1-128k"  [2.00 5.00]})
 
 (defn- lookup-cost
-  "Find cost for a model ID by prefix matching in a cost table."
+  "Find cost for a model ID by longest-prefix matching in a cost table."
   [model-id cost-table]
   (let [cache-read-ratio (or (:cache-read-ratio cost-table) 0.10)]
     (letfn [(normalize-cost-spec [costs]
@@ -133,11 +133,17 @@
                                          (* input-cost cache-read-ratio))}))
 
               :else nil))]
-      (some (fn [[prefix costs]]
-              (when (and (string? prefix)
-                         (.startsWith ^String model-id prefix))
-                (normalize-cost-spec costs)))
-            cost-table))))
+      (when-let [[_ costs]
+                 (reduce (fn [best [prefix costs]]
+                           (if (and (string? prefix)
+                                    (.startsWith ^String model-id prefix)
+                                    (or (nil? best)
+                                        (> (count prefix) (count (first best)))))
+                             [prefix costs]
+                             best))
+                         nil
+                         cost-table)]
+        (normalize-cost-spec costs)))))
 
 (defn current-cost
   "Compute total cost in dollars from accumulated usage data.
