@@ -145,11 +145,11 @@
       (binding [provider/*usage* usage-atom]
         (provider/track-usage! "claude-sonnet-4-20250514"
                           {:input_tokens 100 :output_tokens 50})
-        (is (= {:by-model {"claude-sonnet-4-20250514"
-                           {:input_tokens 100 :output_tokens 50 :calls 1
-                            :cache_creation_input_tokens 0 :cache_read_input_tokens 0
-                            :max_total_tokens 150}}}
-               @usage-atom))))))
+        (is (= 100 (get-in @usage-atom [:by-model "claude-sonnet-4-20250514" :input_tokens])))
+        (is (= 50 (get-in @usage-atom [:by-model "claude-sonnet-4-20250514" :output_tokens])))
+        (is (= 1 (get-in @usage-atom [:by-model "claude-sonnet-4-20250514" :calls])))
+        (is (= 150 (get-in @usage-atom [:by-model "claude-sonnet-4-20250514" :max_total_tokens])))
+        (is (== 0.0010500000000000002 (get-in @usage-atom [:by-model "claude-sonnet-4-20250514" :cost])))))))
 
 (deftest track-usage-accumulates-test
   (testing "track-usage! accumulates across multiple calls"
@@ -164,10 +164,11 @@
         (let [stats (get-in @usage-atom [:by-model "claude-sonnet-4-20250514"])]
           (is (= 300 (:input_tokens stats)))
           (is (= 125 (:output_tokens stats)))
-          (is (= 10 (:cache_creation_input_tokens stats)))
-          (is (= 5 (:cache_read_input_tokens stats)))
-          (is (= 2 (:calls stats)))
-          (is (= 290 (:max_total_tokens stats))))))))
+        (is (= 10 (:cache_creation_input_tokens stats)))
+        (is (= 5 (:cache_read_input_tokens stats)))
+        (is (= 2 (:calls stats)))
+        (is (= 290 (:max_total_tokens stats)))
+        (is (== 0.0028140000000000005 (:cost stats))))))))
 
 (deftest track-usage-multi-model-test
   (testing "track-usage! tracks per-model"
@@ -179,7 +180,9 @@
                           {:input_tokens 200 :output_tokens 75})
         (is (= 2 (count (:by-model @usage-atom))))
         (is (= 100 (get-in @usage-atom [:by-model "claude-sonnet-4-20250514" :input_tokens])))
-        (is (= 200 (get-in @usage-atom [:by-model "claude-3-5-haiku-20241022" :input_tokens])))))))
+        (is (= 200 (get-in @usage-atom [:by-model "claude-3-5-haiku-20241022" :input_tokens])))
+        (is (== 0.0010500000000000002 (get-in @usage-atom [:by-model "claude-sonnet-4-20250514" :cost])))
+        (is (== 0.00046 (get-in @usage-atom [:by-model "claude-3-5-haiku-20241022" :cost])))))))
 
 (deftest track-usage-noop-when-unbound-test
   (testing "track-usage! is a no-op when *usage* is nil"
@@ -205,10 +208,13 @@
             haiku (get by-model "claude-3-5-haiku-20241022")]
         (is (== 220.0 (:mean_total_tokens sonnet)))
         (is (= 290 (:max_total_tokens sonnet)))
+        (is (== 0.0028140000000000005 (:cost sonnet)))
         (is (== 130.0 (:mean_total_tokens haiku)))
         (is (= 130 (:max_total_tokens haiku)))
+        (is (== 0.0001464 (:cost haiku)))
         (is (== 190.0 (:mean_total_tokens total)))
-        (is (= 290 (:max_total_tokens total))))))
+        (is (= 290 (:max_total_tokens total)))
+        (is (== 0.0029604000000000006 (:cost total))))))
 
   (testing "usage-summary defaults missing max_total_tokens to zero for prepopulated atoms"
     (let [usage-atom (atom {:by-model {"legacy-model" {:input_tokens 150
@@ -229,32 +235,59 @@
         (provider/track-usage! "legacy-model" {:input_tokens 100 :output_tokens 0}))
       (let [stats (get-in @usage-atom [:by-model "legacy-model"])]
         (is (= 3 (:calls stats)))
-        (is (= 1000 (:max_total_tokens stats)))))))
+        (is (= 1000 (:max_total_tokens stats))))))
+
+  (testing "track-usage! derives accumulated cost when resuming a preseeded bucket"
+    (let [usage-atom (atom {:by-model {"legacy-model" {:input_tokens 1000000
+                                                       :output_tokens 500000
+                                                       :calls 1}}
+                            :cost-table {"legacy-model" {:input 1.0
+                                                         :output 2.0}}})]
+      (binding [provider/*usage* usage-atom
+                provider/*budget* nil]
+        (provider/track-usage! "legacy-model"
+                               {:input_tokens 2000000
+                                :output_tokens 1000000}
+                               {"legacy-model" {:input 1.0
+                                                :output 2.0}}))
+      (let [stats (get-in @usage-atom [:by-model "legacy-model"])]
+        (is (= 6.0 (:cost stats)))
+        (is (= 6.0 (double (provider/current-cost usage-atom)))))
+      (let [{:keys [by-model total]} (provider/usage-summary usage-atom)]
+        (is (= 6.0 (get-in by-model ["legacy-model" :cost])))
+        (is (= 6.0 (:cost total)))))))
 
 (deftest current-cost-supports-explicit-cache-read-price-test
   (testing "current-cost uses model-specific cache read pricing when provided"
     (let [usage-atom (atom {:by-model {"accounts/fireworks/models/glm-5"
-                                       {:input_tokens 1000000
-                                        :output_tokens 500000
-                                        :cache_read_input_tokens 200000
-                                        :calls 1
+                                       {:input_tokens 0
+                                        :output_tokens 0
+                                        :cache_read_input_tokens 0
+                                        :calls 0
                                         :cache_creation_input_tokens 0
-                                        :max_total_tokens 1700000}}
-                            :cost-table {"accounts/fireworks/models/glm-5"
-                                         {:input 1.00
-                                         :cache-read-input 0.20
-                                         :output 3.20}}})]
+                                        :max_total_tokens 0}}})]
+      (binding [provider/*usage* usage-atom
+                provider/*budget* nil]
+        (provider/track-usage! "accounts/fireworks/models/glm-5"
+                          {:input_tokens 1000000
+                           :output_tokens 500000
+                           :cache_read_input_tokens 200000}
+                          {"accounts/fireworks/models/glm-5"
+                           {:input 1.00
+                            :cache-read-input 0.20
+                            :output 3.20}}))
       (is (= 2.64 (double (provider/current-cost usage-atom)))))))
 
 (deftest current-cost-prices-gpt-5-4-pro-at-pro-rate-test
   (testing "current-cost prices gpt-5.4-pro before the overlapping gpt-5.4 prefix"
-    (let [usage-atom (atom {:by-model {"gpt-5.4-pro"
-                                       {:input_tokens 1000000
-                                        :output_tokens 0
-                                        :cache_creation_input_tokens 0
-                                        :cache_read_input_tokens 0
-                                        :calls 1
-                                        :max_total_tokens 1000000}}})]
+    (let [usage-atom (atom {:by-model {}})]
+      (binding [provider/*usage* usage-atom
+                provider/*budget* nil]
+        (provider/track-usage! "gpt-5.4-pro"
+                          {:input_tokens 1000000
+                           :output_tokens 0
+                           :cache_creation_input_tokens 0
+                           :cache_read_input_tokens 0}))
       (is (= 30.0 (double (provider/current-cost usage-atom)))))))
 
 ;; =============================================================================
@@ -492,14 +525,14 @@
                                      :costs {"gpt-5.4" [2.50 15.00]}
                                      :cache-read-ratio 0.25}))
         (let [p (provider/load-provider (.getAbsolutePath provider-file))
-              usage-atom (atom {:by-model {"gpt-5.4"
-                                           {:input_tokens 1000000
-                                            :output_tokens 0
-                                            :cache_read_input_tokens 1000000
-                                            :calls 1
-                                            :cache_creation_input_tokens 0
-                                            :max_total_tokens 2000000}}
-                                :cost-table (:costs p)})]
+              usage-atom (atom {:by-model {}})]
+          (binding [provider/*usage* usage-atom
+                    provider/*budget* nil]
+            (provider/track-usage! "gpt-5.4"
+                              {:input_tokens 1000000
+                               :output_tokens 0
+                               :cache_read_input_tokens 1000000}
+                              (:costs p)))
           (is (instance? spell.provider.OpenAIProvider p))
           (is (true? (:force-tool-call p)))
           (is (= 3.125 (double (provider/current-cost usage-atom)))))
@@ -1002,10 +1035,12 @@
     (let [usage-atom (atom {:by-model {}})]
       (binding [provider/*usage* usage-atom
                 provider/*budget* 0.001]
-        ;; Unknown model — current-cost returns nil, so no budget check
+        ;; Unknown model — track-usage! records nil cost, so the budget check stays quiet
         (provider/track-usage! "unknown-model-xyz"
                           {:input_tokens 99999999 :output_tokens 99999999})
-        (is (= 1 (get-in @usage-atom [:by-model "unknown-model-xyz" :calls])))))))
+        (is (= 1 (get-in @usage-atom [:by-model "unknown-model-xyz" :calls])))
+        (is (contains? (get-in @usage-atom [:by-model "unknown-model-xyz"]) :cost))
+        (is (nil? (get-in @usage-atom [:by-model "unknown-model-xyz" :cost])))))))
 
 ;; =============================================================================
 ;; Error recovery tests

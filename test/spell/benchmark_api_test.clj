@@ -1,5 +1,6 @@
 (ns spell.benchmark-api-test
-  (:require [clojure.string :as str]
+  (:require [clojure.data.json :as json]
+            [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [spell.benchmark-api :as benchmark-api]))
 
@@ -29,13 +30,27 @@
                                                   :output_tokens 120
                                                   :cache_creation_input_tokens 10
                                                   :cache_read_input_tokens 20
+                                                  :cost 0.123
                                                   :calls 2
                                                   :max_total_tokens 260}}})
           out ((var benchmark-api/response-ok) "spell" start {:usage usage-atom})]
       (is (== 225.0 (get-in out [:usage :by-model "model-a" :mean_total_tokens])))
       (is (= 260 (get-in out [:usage :by-model "model-a" :max_total_tokens])))
+      (is (= 0.123 (get-in out [:usage :by-model "model-a" :cost])))
       (is (== 225.0 (get-in out [:usage :total :mean_total_tokens])))
-      (is (= 260 (get-in out [:usage :total :max_total_tokens]))))))
+      (is (= 260 (get-in out [:usage :total :max_total_tokens])))
+      (is (= 0.123 (get-in out [:usage :total :cost])))))
+
+  (testing "unpriced usage serializes with nil cost instead of NaN"
+    (let [start (System/nanoTime)
+          usage-atom (atom {:by-model {"unknown-model" {:input_tokens 300
+                                                        :output_tokens 120
+                                                        :calls 1
+                                                        :cost nil}}})
+          out ((var benchmark-api/response-ok) "spell" start {:usage usage-atom})]
+      (is (nil? (get-in out [:usage :by-model "unknown-model" :cost])))
+      (is (nil? (get-in out [:usage :total :cost])))
+      (is (string? (json/write-str out))))))
 
 (deftest fireworks-model-spec-and-default-agent-test
   (testing "parse-model-spec accepts fireworks prefix"
