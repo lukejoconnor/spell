@@ -29,13 +29,16 @@
                                                   :output_tokens 120
                                                   :cache_creation_input_tokens 10
                                                   :cache_read_input_tokens 20
+                                                  :cost 0.123
                                                   :calls 2
                                                   :max_total_tokens 260}}})
           out ((var benchmark-api/response-ok) "spell" start {:usage usage-atom})]
       (is (== 225.0 (get-in out [:usage :by-model "model-a" :mean_total_tokens])))
       (is (= 260 (get-in out [:usage :by-model "model-a" :max_total_tokens])))
+      (is (= 0.123 (get-in out [:usage :by-model "model-a" :cost])))
       (is (== 225.0 (get-in out [:usage :total :mean_total_tokens])))
-      (is (= 260 (get-in out [:usage :total :max_total_tokens]))))))
+      (is (= 260 (get-in out [:usage :total :max_total_tokens])))
+      (is (= 0.123 (get-in out [:usage :total :cost]))))))
 
 (deftest fireworks-model-spec-and-default-agent-test
   (testing "parse-model-spec accepts fireworks prefix"

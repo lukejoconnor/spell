@@ -145,30 +145,32 @@
                          cost-table)]
         (normalize-cost-spec costs)))))
 
+(defn- usage-cost
+  "Compute the dollar cost for one usage record from a cost table."
+  [model usage cost-table]
+  (if-let [{:keys [input output cache-write-input cache-read-input]}
+           (lookup-cost model (or cost-table default-costs))]
+    (let [base-input (* (:input_tokens usage 0) (/ input 1000000.0))
+          cache-write (* (:cache_creation_input_tokens usage 0)
+                         (/ cache-write-input 1000000.0))
+          cache-read (* (:cache_read_input_tokens usage 0)
+                        (/ cache-read-input 1000000.0))
+          output (* (:output_tokens usage 0) (/ output 1000000.0))]
+      (+ base-input cache-write cache-read output))
+    ##NaN))
+
 (defn current-cost
   "Compute total cost in dollars from accumulated usage data.
-   Returns nil if no models have known pricing.
-   Accounts for cache pricing: cache writes 1.25x, cache reads 0.1x normal input."
+   Returns nil if no models have cost entries. Unknown pricing propagates NaN.
+   Expects per-call costs to already be frozen into each model bucket."
   [usage-atom]
-  (let [{:keys [by-model cost-table]} @usage-atom
-        effective-costs (or cost-table default-costs)
-        costs (keep (fn [[model stats]]
-                      (when-let [{:keys [input output cache-write-input cache-read-input]}
-                                 (lookup-cost model effective-costs)]
-                        (let [base-input (* (:input_tokens stats 0) (/ input 1000000.0))
-                              cache-write (* (:cache_creation_input_tokens stats 0)
-                                             (/ cache-write-input 1000000.0))
-                              cache-read (* (:cache_read_input_tokens stats 0)
-                                            (/ cache-read-input 1000000.0))
-                              output (* (:output_tokens stats 0) (/ output 1000000.0))]
-                          (+ base-input cache-write cache-read output))))
-                    by-model)]
+  (let [costs (keep :cost (vals (:by-model @usage-atom)))]
     (when (seq costs)
       (reduce + 0.0 costs))))
 
 (defn track-usage!
   "Add usage data to the *usage* atom if bound.
-   Optional cost-table merges into the atom for current-cost to use.
+   Optional cost-table is used to freeze the per-call cost at tracking time.
    Throws ex-info with {:type :budget-exceeded} if *budget* is set and cumulative cost exceeds it."
   ([model usage] (track-usage! model usage nil))
   ([model usage cost-table]
@@ -176,24 +178,27 @@
      (let [turn-total-tokens (+ (:input_tokens usage 0)
                                 (:output_tokens usage 0)
                                 (:cache_creation_input_tokens usage 0)
-                                (:cache_read_input_tokens usage 0))]
+                                (:cache_read_input_tokens usage 0))
+           turn-cost (usage-cost model usage cost-table)]
        (swap! *usage*
               (fn [u]
-                (cond-> (update-in u [:by-model model]
-                                   (fn [existing]
-                                     (cond-> {:input_tokens (+ (:input_tokens existing 0) (:input_tokens usage 0))
-                                              :output_tokens (+ (:output_tokens existing 0) (:output_tokens usage 0))
-                                              :cache_creation_input_tokens (+ (:cache_creation_input_tokens existing 0)
-                                                                              (:cache_creation_input_tokens usage 0))
-                                              :cache_read_input_tokens (+ (:cache_read_input_tokens existing 0)
-                                                                          (:cache_read_input_tokens usage 0))
-                                              :calls (inc (:calls existing 0))
-                                              :max_total_tokens (max (:max_total_tokens existing 0)
-                                                                     turn-total-tokens)}
-                                       (:reasoning_tokens usage)
-                                       (assoc :reasoning_tokens (+ (:reasoning_tokens existing 0)
-                                                                   (:reasoning_tokens usage 0))))))
-                  cost-table (update :cost-table merge cost-table)))))
+                (update-in u [:by-model model]
+                           (fn [existing]
+                             (cond-> {:input_tokens (+ (:input_tokens existing 0) (:input_tokens usage 0))
+                                      :output_tokens (+ (:output_tokens existing 0) (:output_tokens usage 0))
+                                      :cache_creation_input_tokens (+ (:cache_creation_input_tokens existing 0)
+                                                                      (:cache_creation_input_tokens usage 0))
+                                      :cache_read_input_tokens (+ (:cache_read_input_tokens existing 0)
+                                                                  (:cache_read_input_tokens usage 0))
+                                      :calls (inc (:calls existing 0))
+                                      :max_total_tokens (max (:max_total_tokens existing 0)
+                                                             turn-total-tokens)
+                                      :cost (if (contains? existing :cost)
+                                              (+ (:cost existing 0.0) (or turn-cost 0.0))
+                                              turn-cost)}
+                               (:reasoning_tokens usage)
+                               (assoc :reasoning_tokens (+ (:reasoning_tokens existing 0)
+                                                           (:reasoning_tokens usage 0)))))))))
      (when *budget*
        (when-let [cost (current-cost *usage*)]
          (when (> cost *budget*)
@@ -209,8 +214,7 @@
                     :mean_total_tokens F :max_total_tokens N
                     :cache_creation_input_tokens N :cache_read_input_tokens N}}"
   [usage-atom]
-  (let [{:keys [by-model cost-table]} @usage-atom
-        effective-costs (or cost-table default-costs)
+  (let [{:keys [by-model]} @usage-atom
         summarize-context (fn [stats]
                             (let [input-tokens (:input_tokens stats 0)
                                   output-tokens (:output_tokens stats 0)
@@ -227,18 +231,8 @@
                                        :max_total_tokens (:max_total_tokens stats 0)))))
         with-costs (into {}
                      (map (fn [[model stats]]
-                            (let [{:keys [input output cache-write-input cache-read-input]}
-                                  (lookup-cost model effective-costs)
-                                  cost (when (and input output)
-                                         (let [base-input (* (:input_tokens stats 0) (/ input 1000000.0))
-                                               cache-write (* (:cache_creation_input_tokens stats 0)
-                                                              (/ cache-write-input 1000000.0))
-                                               cache-read (* (:cache_read_input_tokens stats 0)
-                                                             (/ cache-read-input 1000000.0))
-                                               output (* (:output_tokens stats 0) (/ output 1000000.0))]
-                                           (+ base-input cache-write cache-read output)))]
-                              [model (cond-> (summarize-context stats)
-                                       cost (assoc :cost cost))]))
+                            [model (cond-> (summarize-context stats)
+                                     (contains? stats :cost) (assoc :cost (:cost stats)))])
                           by-model))
         reasoning-total (reduce + 0 (keep :reasoning_tokens (vals by-model)))
         total-input (reduce + 0 (map #(:input_tokens % 0) (vals by-model)))
