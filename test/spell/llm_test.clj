@@ -235,7 +235,27 @@
         (provider/track-usage! "legacy-model" {:input_tokens 100 :output_tokens 0}))
       (let [stats (get-in @usage-atom [:by-model "legacy-model"])]
         (is (= 3 (:calls stats)))
-        (is (= 1000 (:max_total_tokens stats)))))))
+        (is (= 1000 (:max_total_tokens stats))))))
+
+  (testing "track-usage! derives accumulated cost when resuming a preseeded bucket"
+    (let [usage-atom (atom {:by-model {"legacy-model" {:input_tokens 1000000
+                                                       :output_tokens 500000
+                                                       :calls 1}}
+                            :cost-table {"legacy-model" {:input 1.0
+                                                         :output 2.0}}})]
+      (binding [provider/*usage* usage-atom
+                provider/*budget* nil]
+        (provider/track-usage! "legacy-model"
+                               {:input_tokens 2000000
+                                :output_tokens 1000000}
+                               {"legacy-model" {:input 1.0
+                                                :output 2.0}}))
+      (let [stats (get-in @usage-atom [:by-model "legacy-model"])]
+        (is (= 6.0 (:cost stats)))
+        (is (= 6.0 (double (provider/current-cost usage-atom)))))
+      (let [{:keys [by-model total]} (provider/usage-summary usage-atom)]
+        (is (= 6.0 (get-in by-model ["legacy-model" :cost])))
+        (is (= 6.0 (:cost total)))))))
 
 (deftest current-cost-supports-explicit-cache-read-price-test
   (testing "current-cost uses model-specific cache read pricing when provided"
@@ -1015,10 +1035,12 @@
     (let [usage-atom (atom {:by-model {}})]
       (binding [provider/*usage* usage-atom
                 provider/*budget* 0.001]
-        ;; Unknown model — track-usage! records NaN cost, so the budget check stays quiet
+        ;; Unknown model — track-usage! records nil cost, so the budget check stays quiet
         (provider/track-usage! "unknown-model-xyz"
                           {:input_tokens 99999999 :output_tokens 99999999})
-        (is (= 1 (get-in @usage-atom [:by-model "unknown-model-xyz" :calls])))))))
+        (is (= 1 (get-in @usage-atom [:by-model "unknown-model-xyz" :calls])))
+        (is (contains? (get-in @usage-atom [:by-model "unknown-model-xyz"]) :cost))
+        (is (nil? (get-in @usage-atom [:by-model "unknown-model-xyz" :cost])))))))
 
 ;; =============================================================================
 ;; Error recovery tests
