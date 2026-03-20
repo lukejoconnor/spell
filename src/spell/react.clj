@@ -18,25 +18,27 @@ Mirrors DefaultAgent from github.com/SWE-agent/mini-swe-agent.
 
 Use (!describe react :run) for detailed docs.
 
-run: ReAct loop. LM produces Thought N: + Action N: Bash[cmd] or Finish[answer].
-Commands execute via io/sh. Loop terminates on Finish[answer] or max-steps.
+run: mini-swe-agent style bash loop. LM produces THOUGHT + ```mswea_bash_command blocks.
+Commands execute via io/sh. Loop terminates on COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT or max-steps.
   (react/run \"Fix the failing test in test_foo.py\")
   (react/run {:task \"...\" :max-steps 20})
   Returns {:exit_status \"submitted\"|\"LimitsExceeded\" :submission str}
 "
           :detail
-          {:run "(react/run task-or-opts) - ReAct loop with bash actions.
+          {:run "(react/run task-or-opts) - mini-swe-agent style bash agent loop.
 opts:
   string           - task text
   :task            - task text (required if opts map)
   :max-steps       - max steps before LimitsExceeded (default: 30, 0 = unlimited)
   :verbose         - print each step (default: false)
 
-Execution model (Yao et al. 2022 structure, bash variant):
-1. Build few-shot prompt ending with \"Thought N:\" — model continues naturally
-2. Parse Action N: Bash[command] or Finish[answer] from response
-3. Execute Bash[command] via io/sh, format observation, loop
-4. Terminate on Finish[answer] or max-steps
+Execution model (matches DefaultAgent from github.com/SWE-agent/mini-swe-agent):
+1. system_template: THOUGHT + ```mswea_bash_command instructs model format
+2. instance_template: task + workflow + submit instructions
+3. loop: leaf-llm messages -> extract ```mswea_bash_command block
+4. If no command: feed format_error_template back as next user message
+5. Execute command via io/sh, format as <returncode>/<output>, loop
+6. Terminate when output contains COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT or max-steps
 
 Returns: {:exit_status \"submitted\"|\"LimitsExceeded\" :submission str}
 
