@@ -137,10 +137,8 @@
                                                 :content      obs}]})]
             (if verbose (println (cat "Observation: " obs)))
             (if (react/react-submitted? obs)
-              ;; Exit process to prevent Spell runtime orphan box from re-running.
-              ;; TODO: fix make-root-fn to support one-shot mode without System/exit.
-              ;; See: runtime/make-root-fn always spawns orphan after inside-fn returns,
-              ;; causing the program to re-execute indefinitely.
+              ;; Throw SpellCleanExitError to prevent orphan re-runs.
+              ;; Error (not Exception) bypasses make-root-fn's catch, so no orphan is spawned.
               (do (println (str "{:exit_status \"submitted\", :submission " (pr-str command) "}"))
-                  (System/exit 0))
+                  (spell-clean-exit! (str "{:exit_status \"submitted\", :submission " (pr-str command) "}")))
               (recur (+ step 1) msgs'))))))))

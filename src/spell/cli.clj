@@ -378,5 +378,5 @@
                 (println "Error:" error))
               (System/exit 1))
             (do
-              (println result)
+              (when (some? result) (println result))
               (System/exit 0))))))))

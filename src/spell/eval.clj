@@ -17,6 +17,14 @@
 (def namespace-lookup-prefix "Namespace lookup failed: ")
 (def fn-call-prefix "Function call failed: ")
 
+;; SpellCleanExitError: thrown by Spell programs to signal intentional clean exit.
+;; Extends Error (not Exception) so runtime/make-root-fn's `catch Exception`
+;; does NOT intercept it — no orphan box is spawned.
+(defn spell-clean-exit!
+  "Throw SpellCleanExitError with optional message. Bypasses Spell recovery system."
+  ([] (spell-clean-exit! "clean exit"))
+  ([msg] (throw (proxy [Error] [msg]))))
+
 ;; =============================================================================
 ;; Dynamic vars
 ;; =============================================================================
@@ -534,6 +542,7 @@
    'deep-truncate (fn [value limit] (deep-truncate value (int limit))),
    'ok?     ok?,
    'err?    err?,
+   'spell-clean-exit! spell-clean-exit!,
    ;; Eval directly in the caller env.
    'spell-eval (fn [expr]
                  (let [r (spell-eval expr (or *spell-env* {}))]

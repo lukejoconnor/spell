@@ -124,6 +124,11 @@
                        (catch Exception e
                          {:error (.getMessage e)
                           :error-data (ex-data e)
+                          :usage usage-atom})
+                       (catch Error e
+                         ;; SpellCleanExitError (and other Errors) — treat as clean exit.
+                         ;; Program already printed its output; return nil to avoid double-printing.
+                         {:result nil
                           :usage usage-atom}))]
           (when trace-atom
             (write-trace-once! true))
