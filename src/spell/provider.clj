@@ -501,8 +501,7 @@
    :input_schema {:type "object"
                   :properties {:command {:type "string"
                                          :description "The bash command to execute"}}
-                  :required ["command"]
-                  :additionalProperties false}})
+                  :required ["command"]}})
 
 (defn- parse-anthropic-bash-tool-response
   "Parse Anthropic response for bash tool call.
