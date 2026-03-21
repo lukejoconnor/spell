@@ -50,6 +50,13 @@
 ;; Helpers
 ;; =============================================================================
 
+(defn- append-forms-macro [& forms]
+  (#'runtime/append-forms-macro forms))
+
+(defn- apply-inbox-macros
+  [raw inbox-macros]
+  (#'runtime/materialize-inbox-raw raw (eval/compose-macros inbox-macros)))
+
 (defn- blocking-reader
   "Create a BufferedReader backed by a blocking queue.
    Call (.put q line) to feed lines. Blocks on readLine until a line is available.
@@ -322,7 +329,7 @@
 
       ;; Send first message — this wakes the agent, eval-fn throws,
       ;; triggering the double-orphan path in run-root-box
-      (runtime/-send! handle (fn [raw] (str raw "(def msg1 :hello) ")))
+      (runtime/-send! handle (append-forms-macro '(def msg1 :hello)))
       ;; Wait for the exception path to complete and both orphans to settle
       (Thread/sleep 500)
 
@@ -330,7 +337,7 @@
       (reset! call-log [])
       (let [pre-count @eval-count]
         ;; Send second message — if double orphans exist, both will wake
-        (runtime/-send! handle (fn [raw] (str raw "(def msg2 :world) ")))
+        (runtime/-send! handle (append-forms-macro '(def msg2 :world)))
         ;; Wait for processing
         (Thread/sleep 500)
 
@@ -365,7 +372,7 @@
       (Thread/sleep 200)
 
       ;; Send first message — triggers initial double-orphan creation
-      (runtime/-send! handle (fn [raw] (str raw "(def msg1 :a) ")))
+      (runtime/-send! handle (append-forms-macro '(def msg1 :a)))
       (Thread/sleep 500)
 
       ;; Reset count to measure just the second message
@@ -373,7 +380,7 @@
 
       ;; Send second message — if double orphans exist, both wake, both
       ;; throw, each creating another orphan. Orphan count grows.
-      (runtime/-send! handle (fn [raw] (str raw "(def msg2 :b) ")))
+      (runtime/-send! handle (append-forms-macro '(def msg2 :b)))
       (Thread/sleep 500)
 
       (let [count-after-msg2 @eval-count]
@@ -381,7 +388,7 @@
         (reset! eval-count 0)
 
         ;; Send third message — with growing orphans, even more eval-fn calls
-        (runtime/-send! handle (fn [raw] (str raw "(def msg3 :c) ")))
+        (runtime/-send! handle (append-forms-macro '(def msg3 :c)))
         (Thread/sleep 500)
 
         (let [count-after-msg3 @eval-count]
@@ -444,21 +451,18 @@
             "-send! delivered the signal")
 
         ;; Step 3: Parent wakes, box drains inbox (atomic reset of state)
-        (let [{:keys [inbox-fn]} (first (reset-vals! state-atom {:inbox-fn identity, :signal (promise)}))]
-          (is (not= identity inbox-fn)
-              "inbox had the explicit-reply transform")
-          (is (.contains ^String (inbox-fn "BASE") "EXPLICIT-REPLY")
-              "drained transform is the explicit reply"))
+        (let [{:keys [inbox-macros]} (first (reset-vals! state-atom {:inbox-macros [] :signal (promise)}))]
+          (is (= 1 (count inbox-macros))
+              "inbox had the explicit-reply macro queued"))
 
         ;; Step 4: Notifier calls deliver-msg-fn with the OLD signal.
         ;; With the combined atom, deliver-msg-fn sees that signal-p1 is no
         ;; longer identical to the current signal in the atom, so it no-ops.
         (runtime/deliver-msg-fn handle signal-p1 phantom-fn)
 
-        ;; THE FIX: inbox is still identity — no phantom transform
-        (let [inbox-fn (:inbox-fn @state-atom)]
-          (is (= identity inbox-fn)
-              "FIX: no phantom transform — deliver-msg-fn detected stale signal via CAS"))))))
+        ;; THE FIX: inbox is still empty — no phantom transform
+        (is (= [] (:inbox-macros @state-atom))
+            "FIX: no phantom transform — deliver-msg-fn detected stale signal via CAS")))))
 
 (deftest phantom-transform-full-lifecycle-test
   (testing "Phantom transform from notifier surfaces in next box entry as stale message"
@@ -481,8 +485,8 @@
           (fn [raw] (str raw " (def reply-msg {:from :agent-c :body :hello})")))
 
         ;; Parent wakes and enters box — drain inbox (atomic reset)
-        (let [{:keys [inbox-fn]} (first (reset-vals! state-atom {:inbox-fn identity, :signal (promise)}))]
-          (swap! box-results conj (inbox-fn base-raw)))
+        (let [{:keys [inbox-macros]} (first (reset-vals! state-atom {:inbox-macros [] :signal (promise)}))]
+          (swap! box-results conj (count inbox-macros)))
 
         ;; Notifier calls deliver-msg-fn with old signal — CAS detects stale signal, no-ops
         (runtime/deliver-msg-fn handle signal-p1 notifier-msg-fn)
@@ -492,21 +496,21 @@
           (fn [raw] (str raw " (def real-msg {:from :agent-d :body :world})")))
 
         ;; Parent wakes again, enters box, drains inbox
-        (let [{:keys [inbox-fn]} (first (reset-vals! state-atom {:inbox-fn identity, :signal (promise)}))]
-          (swap! box-results conj (inbox-fn base-raw)))
+        (let [{:keys [inbox-macros]} (first (reset-vals! state-atom {:inbox-macros [] :signal (promise)}))]
+          (swap! box-results conj (count inbox-macros)))
 
         ;; First box entry: got only the explicit reply (correct)
         (let [first-result (nth @box-results 0)]
-          (is (.contains ^String first-result "agent-c")
-              "first wake: got explicit reply from agent-c")
-          (is (not (.contains ^String first-result "notifier-result"))
-              "first wake: did NOT get notifier message (correct)"))
+          (is (= 1 first-result)
+              "first wake: got explicit reply macro")
+          (is (not= 2 first-result)
+              "first wake: did NOT get notifier macro (correct)"))
 
         ;; Second box entry: got ONLY the real message — no phantom!
         (let [second-result (nth @box-results 1)]
-          (is (.contains ^String second-result "agent-d")
-              "second wake: got real message from agent-d")
-          (is (not (.contains ^String second-result "notifier-result"))
+          (is (= 1 second-result)
+              "second wake: got real message macro")
+          (is (not= 2 second-result)
               "FIX: no phantom notifier message — deliver-msg-fn detected stale signal"))))))
 
 (deftest phantom-transform-stress-test
@@ -550,15 +554,13 @@
             (Thread/sleep 1)
 
             ;; Drain inbox via atomic reset
-            (let [{:keys [inbox-fn]} (first (reset-vals! state-atom {:inbox-fn identity, :signal (promise)}))
-                  result (inbox-fn "BASE")]
+            (let [{:keys [inbox-macros]} (first (reset-vals! state-atom {:inbox-macros [] :signal (promise)}))]
               ;; With the combined atom, deliver-msg-fn uses identical? on the
               ;; signal inside the CAS — if -send! already reset the signal via
               ;; make-awake-fn's drain, deliver-msg-fn's CAS sees a different
               ;; signal object and no-ops. Both transforms should only compose
               ;; when both happen before any drain.
-              (when (and (.contains ^String result send-marker)
-                         (.contains ^String result notifier-marker))
+              (when (= 2 (count inbox-macros))
                 (swap! both-composed-count inc))))))
 
       (println (str "  Both-composed (both before drain): "
@@ -585,11 +587,11 @@
 ;;    (quine completion (eval (do )) (eval (do '(agents/send :target "data")
 ;;      (think "[preempted or awakened by msg-X]")
 ;;      (def msg-X {:from :intruder :body "interrupt"})
-;;      '(!llm-self (prune-and-reopen completion)) )))
+;;      '(!extend) )))
 ;;
 ;; 3. The quine evaluates only the LAST arg. Inside the do block, the outer eval
 ;;    double-evaluates only the last expression's value. Since the last expression
-;;    is now '(!llm-self ...) instead of '(agents/send ...), the original send
+;;    is now '(!extend) instead of '(agents/send ...), the original send
 ;;    becomes dead code — it evaluates to a quoted list whose value is discarded.
 
 (deftest create-msg-preempts-trailing-expression-test
@@ -597,8 +599,8 @@
     (let [;; A completion with a trailing '(agents/send :main "hello")
           completion "(quine completion (eval (do )) (eval (do '(agents/send :main \"hello\") )))"
           ;; Apply create-msg (the preemption transform)
-          create-msg-fn (#'runtime/create-msg 'msg-99 {:from :intruder :body "interrupt"})
-          preempted (create-msg-fn completion)]
+          create-msg-macro (#'runtime/create-msg 'msg-99 {:from :intruder :body "interrupt"})
+          preempted (apply-inbox-macros completion [create-msg-macro])]
 
       ;; After preemption, the original send expression is still present
       ;; but NOT as the last expression in the do block
@@ -608,7 +610,8 @@
           "think annotation should be present")
       (is (.contains ^String preempted ":from :intruder")
           "incoming message def should be present")
-      (is (.contains ^String preempted "'(!llm-self (prune-and-reopen completion))")
+      (is (or (.contains ^String preempted "'(!extend)")
+              (.contains ^String preempted "(quote (!extend))"))
           "new extension should be the trailing expression")
 
       ;; Parse and verify the trailing send is NOT the last expression
@@ -619,9 +622,9 @@
             body-exprs (rest do-form)
             last-body-expr (last body-exprs)]
         ;; The last expression should be the new extension, not the send
-        (is (= (list 'quote '(!llm-self (prune-and-reopen completion)))
+        (is (= (list 'quote '(!extend))
                last-body-expr)
-            "last expression in do block should be the new !llm-self extension")
+            "last expression in do block should be the new !extend continuation")
         ;; The original send should be in the body but not last
         (is (some #(and (seq? %) (= 'quote (first %))
                         (seq? (second %))
@@ -666,7 +669,7 @@
     ;; After create-msg transforms the completion:
     ;; - The original '(agents/send ...) is still in the do block
     ;; - But it is NOT the last expression (its quoted value is discarded)
-    ;; - The last expression is the new '(!llm-self ...) extension
+    ;; - The last expression is the new '(!extend) continuation
     (let [transformed-raw (atom nil)
           inside-fn (fn [raw]
                       (reset! transformed-raw raw)
@@ -703,11 +706,11 @@
                       (= 'agents/send (first (second last-expr)))))
             "agents/send should NOT be the last expression after preemption")
 
-        ;; The last expression should be the new !llm-self extension
+        ;; The last expression should be the new !extend continuation
         (is (and (seq? last-expr) (= 'quote (first last-expr))
                  (seq? (second last-expr))
-                 (= '!llm-self (first (second last-expr))))
-            "last expression should be the new !llm-self extension")
+                 (= '!extend (first (second last-expr))))
+            "last expression should be the new !extend continuation")
 
         ;; The original send should exist earlier in the body
         (is (some #(and (seq? %) (= 'quote (first %))
@@ -807,7 +810,7 @@
       (try
         (runtime/box :victim completion (runtime/make-awake-fn :victim inbox-fn))
         (catch Exception _
-          ;; The !llm-self in the preempted extension will fail because our mock
+          ;; The !extend continuation in the preempted turn will fail because our mock
           ;; returns nil (not a valid completion). That's fine — the point is
           ;; that the original send did not fire before the preemption happened.
           nil))
@@ -961,7 +964,7 @@
       (deliver p "hello")
       (runtime/run-root-box handle p inside-fn eval-fn)
       ;; Send a message to wake the orphan
-      (runtime/send-msg-fn identity handle)
+      (runtime/send-msg-fn (eval/compose-macros []) handle)
       ;; The orphan should be able to enter box and reach eval-fn
       (is (= true (deref orphan-entered 3000 :timeout))
           "orphan should successfully enter box after inside-fn returns"))))
@@ -974,9 +977,10 @@
   (testing "message sent while inside-fn runs is properly consumed by orphan"
     (let [handle :test-msg-during
           message-processed (promise)
+          raw "(quine completion (eval (do )))"
           eval-fn (fn [raw]
                     ;; If raw contains the message marker, we processed it
-                    (when (.contains ^String raw "injected-msg")
+                    (when (.contains ^String raw "(def injected-msg true)")
                       (deliver message-processed true))
                     raw)
           inside-fn-started (promise)
@@ -987,14 +991,14 @@
                       (str "done:" raw))
           p (promise)]
       (runtime/register! handle)
-      (deliver p "hello")
+      (deliver p raw)
       ;; Start root box in a future since we need to send mid-execution
       (let [f (future (runtime/run-root-box handle p inside-fn eval-fn))]
         ;; Wait for inside-fn to start
         (deref inside-fn-started 2000 :timeout)
         ;; Send a message while inside-fn is running.
         ;; The message goes into inbox; signal is delivered but nobody is sleeping.
-        (runtime/-send! handle (fn [raw] (str raw " injected-msg")))
+        (runtime/-send! handle (append-forms-macro '(def injected-msg true)))
         ;; Wait for inside-fn to finish
         (deref f 5000 :timeout)
         ;; The orphan should process the message
@@ -1062,6 +1066,8 @@
     (let [handle :test-inbox-loss
           results (atom [])
           gate (promise)
+          raw1 "(quine completion (eval (do (def base :msg1))))"
+          raw2 "(quine completion (eval (do (def base :msg2))))"
           inside-fn (fn [raw]
                       (swap! results conj raw)
                       ;; Block to ensure overlap
@@ -1071,9 +1077,9 @@
           p2 (promise)]
       (runtime/register! handle)
       ;; Compose a transform into inbox
-      (runtime/-send! handle (fn [raw] (str "transformed:" raw)))
-      (deliver p1 "msg1")
-      (deliver p2 "msg2")
+      (runtime/-send! handle (append-forms-macro '(def transformed true)))
+      (deliver p1 raw1)
+      (deliver p2 raw2)
       ;; First box call drains inbox via make-awake-fn (gets the transform)
       (let [awake-fn (runtime/make-awake-fn handle inside-fn)
             f1 (future (runtime/box handle p1 awake-fn))]
@@ -1085,9 +1091,9 @@
           (deref f1 3000 :timeout)
           (deref f2 3000 :timeout)
           ;; First box saw the transform; second box saw identity
-          (is (some #(= "transformed:msg1" %) @results)
+          (is (some #(.contains ^String % "(def transformed true)") @results)
               "first box should see the inbox transform")
-          (is (some #(= "msg2" %) @results)
+          (is (some #(= raw2 %) @results)
               "second box sees raw without transform — transform lost to first drain"))))))
 
 ;; =============================================================================
@@ -1104,6 +1110,7 @@
           active-count (atom 0)
           max-concurrent (atom 0)
           inside-fn-started (promise)
+          raw "(quine completion (eval (do )))"
           eval-fn (fn [raw]
                     (let [n (swap! active-count inc)]
                       (swap! max-concurrent max n)
@@ -1120,16 +1127,16 @@
                         (str "done:" raw)))
           p (promise)]
       (runtime/register! handle)
-      (deliver p "hello")
+      (deliver p raw)
       ;; Run root box in a future so we can send mid-execution
       (let [f (future (runtime/run-root-box handle p inside-fn eval-fn))]
         ;; Wait for inside-fn to start
         (deref inside-fn-started 2000 :timeout)
         ;; Send a message while inside-fn is running — consumed by orphan later
-        (runtime/-send! handle (fn [raw] (str raw " orphan-msg")))
+        (runtime/-send! handle (append-forms-macro '(def orphan-msg true)))
         ;; Wait for primary box to complete
         (let [result (deref f 5000 :timeout)]
-          (is (= "done:hello" result)))
+          (is (= (str "done:" raw) result)))
         ;; Give orphan time to process the message
         (Thread/sleep 500)
         ;; Max concurrent should never exceed 1

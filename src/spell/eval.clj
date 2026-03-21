@@ -300,7 +300,7 @@
 ;; Builtins
 ;; =============================================================================
 
-(declare spell-eval prune-substitute reopen serialize-quine-prefix)
+(declare spell-eval prune-substitute reopen serialize-quine-prefix destructure-bind)
 
 (defn spell-fn?
   "Returns true if v is a Spell function (dynamic-scoping function map)."
@@ -311,6 +311,43 @@
   "Returns true if v is a Spell macro (user-defined, env-based)."
   [v]
   (and (map? v) (:spell/macro v)))
+
+(defn apply-spell-macro
+  "Apply a Spell macro value to unevaluated arg forms in env.
+   Returns {:ok expanded-form} or {:err message}."
+  [macro-val arg-forms env]
+  (if-not (spell-macro? macro-val)
+    {:err (str "Not a Spell macro: " (pr-str macro-val))}
+    (let [expander (:expander macro-val)
+          macro-env (into env (destructure-bind (:params expander) arg-forms))
+          r (spell-eval (cons 'do (:body expander)) macro-env)]
+      (if (ok? r)
+        {:ok (:ok r)}
+        {:err (:err r)}))))
+
+(defn compose-macros
+  "Compose Spell macro values left-to-right into one macro value."
+  [macros]
+  (let [macros (vec (remove nil? macros))]
+    (cond
+      (empty? macros)
+      {:spell/macro true
+       :expander {:spell/fn true
+                  :params ['q]
+                  :body ['q]}}
+
+      (= 1 (count macros))
+      (first macros)
+
+      :else
+      {:spell/macro true
+       :expander {:spell/fn true
+                  :params ['q]
+                  :body [(list 'reduce
+                               (list 'fn ['acc 'm]
+                                     (list 'apply-macro 'm 'acc))
+                               'q
+                               macros)]}})))
 
 (defn destructure-bind
   "Given a param pattern and a value, return a flat sequence of [symbol value] pairs.
@@ -497,6 +534,15 @@
                       r (spell-eval (cons 'do (:body f)) local-env)]
                   (if (ok? r) (:ok r) (throw (ex-info (:err r) {:result r}))))
                 (clojure.core/apply f all-args)))),
+   'apply-macro (fn [m & args]
+                  (let [r (apply-spell-macro m args *spell-env*)]
+                    (if-let [ok (:ok r)]
+                      ok
+                      (throw (ex-info (:err r) {:macro m :args args})))))
+   'compmacro (fn
+                ([] (compose-macros []))
+                ([macros] (compose-macros macros))
+                ([m1 m2 & more] (compose-macros (cons m1 (cons m2 more)))))
    ;; Core higher-order functions (spell-fn aware)
    'map (fn [f coll] (mapv #(invoke-fn f [%]) coll)),
    'map-indexed (fn [f coll] (vec (map-indexed #(invoke-fn f [%1 %2]) coll))),
@@ -856,133 +902,128 @@
                        (get outer-env head))]
         (if (spell-macro? head-val)
           ;; User macro: invoke expander, then continue expanding result
-          (let [expander (:expander head-val)
-                macro-env (into outer-env (destructure-bind (:params expander) (vec (rest expr))))
-                r (spell-eval (cons 'do (:body expander)) macro-env)]
-            (if (ok? r)
-              (-expand-expr (:ok r) outer-env inner)
+          (let [r (apply-spell-macro head-val (vec (rest expr)) outer-env)]
+            (if-let [expanded (:ok r)]
+              (-expand-expr expanded outer-env inner)
               (throw (ex-info (str "Macro expansion failed during expand: " (:err r))
                               {:form expr}))))
-      (let [expand1 #(first (-expand-expr % outer-env inner))]
-      (case (first expr)
-        nil   [expr inner]
-        quote [expr inner]
+          (let [expand1 #(first (-expand-expr % outer-env inner))]
+            (case (first expr)
+              nil   [expr inner]
+              quote [expr inner]
 
-        def (let [sym (second expr)
-                  [val-expanded _] (-expand-expr (nth expr 2) outer-env inner)]
-              [(list 'def sym val-expanded) (conj inner sym)])
-
-        persist (if (= 2 (count expr))
-                  [(list 'persist (second expr)) (conj inner (second expr))]
-                  (let [sym (second expr)
+              def (let [sym (second expr)
                         [val-expanded _] (-expand-expr (nth expr 2) outer-env inner)]
-                    [(list 'persist sym val-expanded) (conj inner sym)]))
+                    [(list 'def sym val-expanded) (conj inner sym)])
 
-        do (let [[forms final-inner]
-                 (reduce (fn [[acc i] sub-expr]
-                           (let [[expanded new-i] (-expand-expr sub-expr outer-env i)]
-                             [(conj acc expanded) new-i]))
-                         [[] inner]
-                         (rest expr))]
-             [(list* 'do forms) final-inner])
+              persist (if (= 2 (count expr))
+                        [(list 'persist (second expr)) (conj inner (second expr))]
+                        (let [sym (second expr)
+                              [val-expanded _] (-expand-expr (nth expr 2) outer-env inner)]
+                          [(list 'persist sym val-expanded) (conj inner sym)]))
 
-        if [(list* 'if (map expand1 (rest expr))) inner]
+              do (let [[forms final-inner]
+                       (reduce (fn [[acc i] sub-expr]
+                                 (let [[expanded new-i] (-expand-expr sub-expr outer-env i)]
+                                   [(conj acc expanded) new-i]))
+                               [[] inner]
+                               (rest expr))]
+                   [(list* 'do forms) final-inner])
 
+              if [(list* 'if (map expand1 (rest expr))) inner]
 
-        let (let [pairs (partition 2 (second expr))
-                  [expanded-bindings final-inner]
-                  (reduce (fn [[acc i] [pattern val-expr]]
-                            [(conj acc pattern (first (-expand-expr val-expr outer-env i)))
-                             (into i (param-symbols pattern))])
-                          [[] inner] pairs)
-                  expanded-body (map #(first (-expand-expr % outer-env final-inner)) (drop 2 expr))]
-              [(list* 'let (vec expanded-bindings) expanded-body) inner])
+              let (let [pairs (partition 2 (second expr))
+                        [expanded-bindings final-inner]
+                        (reduce (fn [[acc i] [pattern val-expr]]
+                                  [(conj acc pattern (first (-expand-expr val-expr outer-env i)))
+                                   (into i (param-symbols pattern))])
+                                [[] inner] pairs)
+                        expanded-body (map #(first (-expand-expr % outer-env final-inner)) (drop 2 expr))]
+                    [(list* 'let (vec expanded-bindings) expanded-body) inner])
 
-        (fn fn*) (let [all-syms (set (mapcat param-symbols (second expr)))
-                       body-inner (into inner all-syms)]
-                   [(list* 'fn (second expr) (map #(first (-expand-expr % outer-env body-inner)) (drop 2 expr))) inner])
+              (fn fn*) (let [all-syms (set (mapcat param-symbols (second expr)))
+                             body-inner (into inner all-syms)]
+                         [(list* 'fn (second expr) (map #(first (-expand-expr % outer-env body-inner)) (drop 2 expr))) inner])
 
+              quine (let [name-sym (second expr)
+                          inner' (conj inner name-sym)
+                          args (drop 2 expr)
+                          expanded-args (map #(first (-expand-expr % outer-env inner')) args)]
+                      [(apply list 'quine name-sym expanded-args) inner'])
 
+              loop (let [pairs (partition 2 (second expr))
+                         [expanded-bindings final-inner]
+                         (reduce (fn [[acc i] [pattern val-expr]]
+                                   [(conj acc pattern (first (-expand-expr val-expr outer-env i)))
+                                    (into i (param-symbols pattern))])
+                                 [[] inner] pairs)
+                         expanded-body (map #(first (-expand-expr % outer-env final-inner)) (drop 2 expr))]
+                     [(list* 'loop (vec expanded-bindings) expanded-body) inner])
 
-        quine (let [name-sym (second expr)
-                    inner' (conj inner name-sym)
-                    args (drop 2 expr)
-                    expanded-args (map #(first (-expand-expr % outer-env inner')) args)]
-                [(apply list 'quine name-sym expanded-args) inner'])
+              recur [(list* 'recur (map expand1 (rest expr))) inner]
 
-        loop (let [pairs (partition 2 (second expr))
-                   [expanded-bindings final-inner]
-                   (reduce (fn [[acc i] [pattern val-expr]]
-                             [(conj acc pattern (first (-expand-expr val-expr outer-env i)))
-                              (into i (param-symbols pattern))])
-                           [[] inner] pairs)
-                   expanded-body (map #(first (-expand-expr % outer-env final-inner)) (drop 2 expr))]
-               [(list* 'loop (vec expanded-bindings) expanded-body) inner])
+              ;; for: (for [x coll :when pred :let [y expr]] body)
+              for (let [bindings (second expr)
+                        body (nth expr 2)
+                        ;; Parse bindings into segments, tracking bound symbols
+                        [expanded-bindings final-inner]
+                        (loop [remaining (seq bindings)
+                               acc []
+                               bound inner]
+                          (if (empty? remaining)
+                            [acc bound]
+                            (let [item (first remaining)]
+                              (cond
+                                ;; :when pred
+                                (= item :when)
+                                (let [[pred-expanded _] (-expand-expr (second remaining) outer-env bound)]
+                                  (recur (drop 2 remaining)
+                                         (conj acc :when pred-expanded)
+                                         bound))
+                                ;; :let [bindings...]
+                                (= item :let)
+                                (let [let-pairs (partition 2 (second remaining))
+                                      [let-expanded let-bound]
+                                      (reduce (fn [[lacc lbound] [pattern val-expr]]
+                                                [(conj lacc pattern (first (-expand-expr val-expr outer-env lbound)))
+                                                 (into lbound (param-symbols pattern))])
+                                              [[] bound] let-pairs)]
+                                  (recur (drop 2 remaining)
+                                         (conj acc :let (vec let-expanded))
+                                         let-bound))
+                                ;; Normal binding: pattern coll
+                                :else
+                                (let [pattern item
+                                      coll-expr (second remaining)
+                                      [coll-expanded _] (-expand-expr coll-expr outer-env bound)]
+                                  (recur (drop 2 remaining)
+                                         (conj acc pattern coll-expanded)
+                                         (into bound (param-symbols pattern))))))))]
+                    [(list 'for (vec expanded-bindings) (first (-expand-expr body outer-env final-inner))) inner])
 
-        recur [(list* 'recur (map expand1 (rest expr))) inner]
+              try (let [forms (rest expr)
+                        catch-form (when (and (seq forms) (seq? (last forms))
+                                              (= 'catch (first (last forms))))
+                                     (last forms))
+                        body-forms (if catch-form (butlast forms) forms)
+                        [expanded-body final-inner]
+                        (reduce (fn [[acc i] sub-expr]
+                                  (let [[expanded new-i] (-expand-expr sub-expr outer-env i)]
+                                    [(conj acc expanded) new-i]))
+                                [[] inner] body-forms)
+                        expanded-catch (when catch-form
+                                         (let [catch-sym (second catch-form)
+                                               catch-inner (conj final-inner catch-sym)
+                                               expanded-catch-body (map #(first (-expand-expr % outer-env catch-inner))
+                                                                        (drop 2 catch-form))]
+                                           (list* 'catch catch-sym expanded-catch-body)))]
+                    [(if expanded-catch
+                       (list* 'try (concat expanded-body [expanded-catch]))
+                       (list* 'try expanded-body))
+                     inner])
 
-        ;; for: (for [x coll :when pred :let [y expr]] body)
-        for (let [bindings (second expr)
-                  body (nth expr 2)
-                  ;; Parse bindings into segments, tracking bound symbols
-                  [expanded-bindings final-inner]
-                  (loop [remaining (seq bindings)
-                         acc []
-                         bound inner]
-                    (if (empty? remaining)
-                      [acc bound]
-                      (let [item (first remaining)]
-                        (cond
-                          ;; :when pred
-                          (= item :when)
-                          (let [[pred-expanded _] (-expand-expr (second remaining) outer-env bound)]
-                            (recur (drop 2 remaining)
-                                   (conj acc :when pred-expanded)
-                                   bound))
-                          ;; :let [bindings...]
-                          (= item :let)
-                          (let [let-pairs (partition 2 (second remaining))
-                                [let-expanded let-bound]
-                                (reduce (fn [[lacc lbound] [pattern val-expr]]
-                                          [(conj lacc pattern (first (-expand-expr val-expr outer-env lbound)))
-                                           (into lbound (param-symbols pattern))])
-                                        [[] bound] let-pairs)]
-                            (recur (drop 2 remaining)
-                                   (conj acc :let (vec let-expanded))
-                                   let-bound))
-                          ;; Normal binding: pattern coll
-                          :else
-                          (let [pattern item
-                                coll-expr (second remaining)
-                                [coll-expanded _] (-expand-expr coll-expr outer-env bound)]
-                            (recur (drop 2 remaining)
-                                   (conj acc pattern coll-expanded)
-                                   (into bound (param-symbols pattern))))))))]
-              [(list 'for (vec expanded-bindings) (first (-expand-expr body outer-env final-inner))) inner])
-
-        try (let [forms (rest expr)
-                  catch-form (when (and (seq forms) (seq? (last forms))
-                                        (= 'catch (first (last forms))))
-                               (last forms))
-                  body-forms (if catch-form (butlast forms) forms)
-                  [expanded-body final-inner]
-                  (reduce (fn [[acc i] sub-expr]
-                            (let [[expanded new-i] (-expand-expr sub-expr outer-env i)]
-                              [(conj acc expanded) new-i]))
-                          [[] inner] body-forms)
-                  expanded-catch (when catch-form
-                                   (let [catch-sym (second catch-form)
-                                         catch-inner (conj final-inner catch-sym)
-                                         expanded-catch-body (map #(first (-expand-expr % outer-env catch-inner))
-                                                                  (drop 2 catch-form))]
-                                     (list* 'catch catch-sym expanded-catch-body)))]
-              [(if expanded-catch
-                 (list* 'try (concat expanded-body [expanded-catch]))
-                 (list* 'try expanded-body))
-               inner])
-
-        ;; Default: recurse into all sub-expressions
-        [(apply list (map expand1 expr)) inner])))))
+              ;; Default: recurse into all sub-expressions
+              [(apply list (map expand1 expr)) inner])))))
 
     :else [expr inner]))
 
@@ -1124,13 +1165,11 @@
             head-val (when (and (symbol? head) (not (special-forms head)))
                        (or (get env head) (get (or *builtins* core-builtins) head)))]
         (if (spell-macro? head-val)
-          (let [expander (:expander head-val)
-                macro-env (into env (destructure-bind (:params expander) (vec (rest expr))))
-                r (spell-eval (cons 'do (:body expander)) macro-env)]
-            (if (ok? r)
-              (spell-eval (:ok r) env)
+          (let [r (apply-spell-macro head-val (vec (rest expr)) env)]
+            (if-let [expanded (:ok r)]
+              (spell-eval expanded env)
               (err (str "Macro expansion of " head " failed: " (:err r)) env expr)))
-      (case (first expr)
+          (case (first expr)
       nil   (ok nil env)
       quote (ok (second expr) env)
 

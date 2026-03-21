@@ -637,9 +637,9 @@
       (io/watch-send dir :ws-test-timeout 100)
       ;; Wait for the watcher to time out
       (Thread/sleep 200)
-      ;; Inbox should still be identity (no message sent)
+      ;; Inbox should still be empty (no message sent)
       (let [state (:state (get @runtime/registry :ws-test-timeout))]
-        (is (= identity (:inbox-fn @state)))))))
+        (is (= [] (:inbox-macros @state)))))))
 
 ;; =============================================================================
 ;; io-namespace tests
@@ -778,7 +778,7 @@
       (try
         (io/event-send (fn [] {:timeout true}) handle :test-event)
         (Thread/sleep 50)
-        (is (= identity (:inbox-fn @(:state (get @runtime/registry handle)))))
+        (is (= [] (:inbox-macros @(:state (get @runtime/registry handle)))))
         (finally (swap! runtime/registry dissoc handle))))))
 
 (deftest event-send-notifies-on-exception-test
@@ -804,5 +804,5 @@
       (try
         (io/event-send (fn [] {:abort :reason}) handle :test-event)
         (Thread/sleep 50)
-        (is (= identity (:inbox-fn @(:state (get @runtime/registry handle)))))
+        (is (= [] (:inbox-macros @(:state (get @runtime/registry handle)))))
         (finally (swap! runtime/registry dissoc handle))))))

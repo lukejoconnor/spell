@@ -3038,3 +3038,32 @@
       (is (eval/ok? r2))
       (is (eval/spell-macro? (:ok r2)))
       (is (= (:expander macro-val) (:expander (:ok r2)))))))
+
+(deftest apply-macro-and-compmacro-test
+  (testing "apply-macro expands a macro value against quoted forms"
+    (is (= '(if (= 1 2) nil (+ 40 2))
+           (run-spell '(do (defmacro unless [test body]
+                             (list 'if test nil body))
+                           (apply-macro unless '(= 1 2) '(+ 40 2)))))))
+
+  (testing "compmacro composes unary transformer macros left-to-right"
+    (is (= '(* 2 (inc (+ 1 2)))
+           (run-spell '(do (defmacro wrap-inc [q]
+                             (list 'inc q))
+                           (defmacro wrap-double [q]
+                             (list '* 2 q))
+                           (apply-macro (compmacro [wrap-inc wrap-double])
+                                        '(+ 1 2)))))))
+
+  (testing "composed macro expansions can be evaluated explicitly"
+    (is (= 8
+           (run-spell '(do (defmacro wrap-inc [q]
+                             (list 'inc q))
+                           (defmacro wrap-double [q]
+                             (list '* 2 q))
+                           (spell-eval (apply-macro (compmacro [wrap-inc wrap-double])
+                                                    '(+ 1 2))))))))
+
+  (testing "empty compmacro is the identity macro"
+    (is (= '(+ 1 2)
+           (run-spell '(apply-macro (compmacro) '(+ 1 2)))))))
