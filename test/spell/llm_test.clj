@@ -22,6 +22,10 @@
     (f)
     (reset! runtime/registry {})))
 
+(defn- append-forms-macro
+  [& forms]
+  (#'runtime/append-forms-macro forms))
+
 (deftest llm-basic-test
   (testing "llm evaluates response and extracts return"
     ;; Prompt: "(do " -> Response: "(def return 42))"
@@ -121,6 +125,35 @@
     (is (= (parse/read-first expected)
            (parse/read-first @(:last-raw (get @runtime/registry handle))))
         "stored raw should remain parseable for later inbox macro application paths")))
+
+(deftest inbox-preserves-split-top-level-raw-for-reopen-test
+  (let [variant-builtins (merge eval/core-builtins
+                                {'describe-fn stdlib/describe}
+                                llm/core-namespaces)
+        eval-builtin (llm/make-eval variant-builtins {})
+        inbox-fn (llm/make-inbox-fn {:variant-builtins variant-builtins
+                                     :eval-builtin eval-builtin
+                                     :allow-multiple-top-level? true
+                                     :recover-fn nil}
+                                    (atom nil))
+        handle :split-top-level-agent
+        first-form '(quine completion (eval (do (def first-msg "kept") nil)))
+        last-form '(quine completion (eval (do (def second-msg "open-me"))))
+        raw (str (pr-str first-form) " " (pr-str last-form))
+        p (promise)]
+    (runtime/register! handle)
+    (runtime/-send! handle (append-forms-macro '(def injected :yes)))
+    (deliver p raw)
+    (runtime/box handle p (runtime/make-awake-fn handle inbox-fn))
+    (let [stored @(:last-raw (get @runtime/registry handle))
+          forms (vec (parse/read-all stored))
+          reopened-form (last forms)
+          body-exprs (rest (second (last reopened-form)))]
+      (is (= 2 (count forms))
+          "stored raw should preserve the split top-level shape")
+      (is (= 'quine (first reopened-form)))
+      (is (some #(= '(def second-msg "open-me") %) body-exprs))
+      (is (some #(= '(def injected :yes) %) body-exprs)))))
 
 ;; =============================================================================
 ;; File I/O task tests

@@ -64,7 +64,7 @@
   [eval-fn]
   (true? (:spell/inbox-aware (meta eval-fn))))
 
-(defn- materialize-inbox-raw
+(defn materialize-inbox-raw
   "Apply inbox-macro to the last parsed top-level form and serialize it back to raw.
    Earlier top-level forms are preserved as inert context ahead of the transformed form."
   [raw inbox-macro]

@@ -223,8 +223,21 @@
                    (try-reader-recovery raw parse-err inbox-macros variant-builtins
                                         eval-builtin eval/*gated-ns-hints*)
                    (throw parse-err))
-                 (let [program' (apply-inbox-macros program inbox-macros eval-builtin)
-                       continuation-raw (if (some? program') (pr-str program') raw)
+                 (let [inbox-macro (when (seq inbox-macros)
+                                     (eval/compose-macros inbox-macros))
+                       continuation-raw (if allow-multiple-top-level?
+                                          (if inbox-macro
+                                            (runtime/materialize-inbox-raw raw inbox-macro)
+                                            raw)
+                                          raw)
+                       program' (if allow-multiple-top-level?
+                                  (let [forms (vec (parse/read-all continuation-raw))
+                                        cnt   (count forms)]
+                                    (if (> cnt 1) (list* 'do forms) (first forms)))
+                                  (apply-inbox-macros program inbox-macros eval-builtin))
+                       continuation-raw (if allow-multiple-top-level?
+                                          continuation-raw
+                                          (if (some? program') (pr-str program') raw))
                        indent (apply str (repeat eval/*llm-depth* "  "))
                        _ (when-let [handle runtime/*current-handle*]
                            (when-let [last-raw (:last-raw (get @runtime/registry handle))]
