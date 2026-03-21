@@ -16,7 +16,7 @@
 ;; =============================================================================
 
 (def registry
-  "Global registry: handle -> {:state (atom {:inbox-fn identity, :signal (promise)}),
+  "Global registry: handle -> {:state (atom {:inbox-macros [], :signal (promise)}),
                                 :has-box (atom false),
                                 :completed (atom (promise)),
                                 :last-raw (atom nil),
@@ -32,7 +32,7 @@
    (when (contains? @registry handle)
      (throw (ex-info "Handle already registered" {:handle handle})))
    (swap! registry assoc handle
-          {:state             (atom {:inbox-fn identity, :signal (promise)})
+          {:state             (atom {:inbox-macros [], :signal (promise)})
            :has-box           (atom false)
            :parent-handle     parent-handle
            :completed         (atom (promise))
@@ -59,6 +59,29 @@
   "Default compiled agent function used by prompt-only spawn/spawn-ask forms.
    Bound by eval to the current agent."
   nil)
+
+(defn- inbox-aware-eval-fn?
+  [eval-fn]
+  (true? (:spell/inbox-aware (meta eval-fn))))
+
+(defn- materialize-inbox-raw
+  "Apply inbox-macro to the last parsed top-level form and serialize it back to raw.
+   Earlier top-level forms are preserved as inert context ahead of the transformed form."
+  [raw inbox-macro]
+  (let [balanced (parse/balance-parens raw)
+        forms (vec (parse/read-all balanced))]
+    (if (empty? forms)
+      balanced
+      (let [prior-forms (butlast forms)
+            form (last forms)
+            r (binding [eval/*builtins* eval/core-builtins]
+                (eval/apply-spell-macro inbox-macro [form] {}))]
+        (if-let [expanded (:ok r)]
+          (str (when (seq prior-forms)
+                 (str (str/join " " (map pr-str prior-forms)) " "))
+               (pr-str expanded))
+          (throw (ex-info (str "Inbox macro materialization failed: " (:err r))
+                          {:raw raw :macro inbox-macro})))))))
 
 ;; =============================================================================
 ;; Forward declarations
@@ -108,10 +131,18 @@
   [handle eval-fn]
   (fn [raw]
     (let [state (:state (get @registry handle))
-          [{:keys [inbox-fn]} _] (reset-vals! state {:inbox-fn identity, :signal (promise)})
-          transformed (inbox-fn raw)]
+          [{:keys [inbox-macros]} _] (reset-vals! state {:inbox-macros [], :signal (promise)})
+          inbox-macro (when (seq inbox-macros)
+                        (eval/compose-macros inbox-macros))
+          transformed-raw (if (and inbox-macro (not (inbox-aware-eval-fn? eval-fn)))
+                            (materialize-inbox-raw raw inbox-macro)
+                            raw)]
+      (when-let [last-raw (:last-raw (get @registry handle))]
+        (reset! last-raw transformed-raw))
       (binding [*current-eval-fn* eval-fn]
-        (eval-fn transformed)))))
+        (if (inbox-aware-eval-fn? eval-fn)
+          (eval-fn raw inbox-macros)
+          (eval-fn transformed-raw))))))
 
 (defn- make-asleep-fn
   "Create an inside-fn that blocks on signal, then re-enters box awake.
@@ -200,24 +231,24 @@
 ;; =============================================================================
 
 (defn -send!
-  "Low-level send: compose transform-fn into inbox with FIFO ordering,
+  "Low-level send: queue msg-macro into the inbox with FIFO ordering,
    then deliver signal. Both operations happen atomically via swap-vals!
    on the combined :state atom."
-  [handle transform-fn]
+  [handle msg-macro]
   (let [state (:state (get @registry handle))]
     (when-not state
       (throw (ex-info "Handle not registered" {:handle handle})))
     (let [[old _] (swap-vals! state
-                    (fn [{:keys [inbox-fn] :as s}]
-                      (assoc s :inbox-fn (comp transform-fn inbox-fn))))]
+                    (fn [{:keys [inbox-macros] :as s}]
+                      (assoc s :inbox-macros (conj inbox-macros msg-macro))))]
       (deliver (:signal old) :wake))))
 
 (defn send-msg-fn
-  "Send function f to agent at handle.
-   f takes a raw completion string and returns a modified raw string.
+  "Queue a Spell macro value to run against the target's parsed completion.
+   Most callers should prefer send/ask/reply over this low-level primitive.
    Returns nil."
-  [f handle]
-  (-send! handle f)
+  [msg-macro handle]
+  (-send! handle msg-macro)
   nil)
 
 (defn deliver-msg-fn
@@ -225,13 +256,13 @@
    No-op if the signal has been replaced OR already delivered (agent woke
    from something else). Uses swap-vals! so staleness/realization check and
    inbox composition happen in one atomic state transition."
-  [handle captured-signal msg-fn]
+  [handle captured-signal msg-macro]
   (let [state (:state (get @registry handle))
         [old new] (swap-vals! state
-                    (fn [{:keys [inbox-fn signal] :as s}]
+                    (fn [{:keys [inbox-macros signal] :as s}]
                       (if (and (identical? signal captured-signal)
                                (not (realized? signal)))
-                        (assoc s :inbox-fn (comp msg-fn inbox-fn))
+                        (assoc s :inbox-macros (conj inbox-macros msg-macro))
                         s)))]
     (when-not (identical? old new)
       (deliver captured-signal :wake))))
@@ -240,34 +271,29 @@
 ;; Create-msg helper
 ;; =============================================================================
 
-(defn- reopen-completion
-  "Reopen a completion wrapper by parsing to AST, pruning rethink-marked
-   expressions, and rebuilding an open prefix.
-   If multiple top-level forms are present, reopens the LAST form and keeps
-   earlier top-level forms as inert context.
-   Handles excess trailing parens safely (the LLM may write too many closers).
-   Falls back to string-level strip-3 for non-quine forms."
-  [s]
-  (let [balanced (parse/balance-parens s)
-        forms    (parse/read-all balanced)
-        form     (last forms)]
-    (if (and (seq? form) (= 'quine (first form)))
-      (let [prior-forms (butlast forms)
-            processed (eval/prune-substitute form nil)]
-        (str (when (seq prior-forms)
-               (str (str/join " " (map pr-str prior-forms)) " "))
-             (eval/serialize-quine-prefix processed)))
-      (parse/strip-trailing-parens 3 s))))
+(defn- identity-msg-macro
+  []
+  (eval/compose-macros []))
+
+(defn- append-forms-macro
+  [forms]
+  {:spell/macro true
+   :expander {:spell/fn true
+              :params ['q]
+              :body [(list* 'reopen 'q forms)]}})
 
 (defn- create-msg
-  "Create a function that reopens a completion, appends (def name value),
-   and appends an !llm-self extension so the recipient continues thinking.
+  "Create a Spell macro that reopens a parsed completion, appends (def name value),
+   and appends an !extend continuation so the recipient continues thinking.
    Injects a think annotation so the agent knows the message preempted its
    trailing expression (if active) or awakened it (if sleeping).
    Internal plumbing for signaling (waiting-for, spawn-result)."
   [name value]
-  (fn [raw]
-    (str (reopen-completion raw) "(think \"[preempted or awakened by " name "]\") (def " name " " (eval/serialize-for-continuation value) ") '(!llm-self (prune-and-reopen completion)) ")))
+  (let [value-form (parse/read-first (eval/serialize-for-continuation value))]
+    (append-forms-macro
+      [(list 'think (str "[preempted or awakened by " name "]"))
+       (list 'def name value-form)
+       (list 'quote (list '!extend))])))
 
 (defn send
   "Send a message to target with auto-tagged sender handle.

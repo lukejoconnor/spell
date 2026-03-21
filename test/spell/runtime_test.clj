@@ -1,5 +1,6 @@
 (ns spell.runtime-test
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
+            [spell.parse :as parse]
             [spell.runtime :as runtime]
             [spell.core :as spell]
             [spell.eval :as eval]
@@ -13,6 +14,29 @@
     (reset! runtime/registry {})
     (f)
     (reset! runtime/registry {})))
+
+(defn- identity-msg-macro []
+  (#'runtime/identity-msg-macro))
+
+(defn- append-forms-macro [& forms]
+  (#'runtime/append-forms-macro forms))
+
+(defn- inbox-aware
+  [f]
+  (with-meta f {:spell/inbox-aware true}))
+
+(defn- materialize-inbox-raw
+  [raw inbox-macros]
+  (if (seq inbox-macros)
+    (#'runtime/materialize-inbox-raw raw (eval/compose-macros inbox-macros))
+    (parse/balance-parens raw)))
+
+(defn- apply-inbox-macros
+  [raw inbox-macros]
+  (-> (materialize-inbox-raw raw inbox-macros)
+      parse/read-all
+      vec
+      last))
 
 ;; =============================================================================
 ;; Unit tests (no LLM)
@@ -42,36 +66,48 @@
 (deftest box-with-inbox-transform-test
   (testing "make-awake-fn drains inbox transform before calling eval-fn"
     (let [handle :test-transform
-          eval-fn (fn [raw] (str "eval:" raw))
+          raw "(quine completion (eval (do )))"
+          eval-fn (inbox-aware
+                    (fn [incoming inbox-macros]
+                      (pr-str (apply-inbox-macros incoming inbox-macros))))
           p (promise)]
       (runtime/register! handle)
-      ;; Pre-load inbox with a transform
-      (runtime/-send! handle (fn [raw] (str "pre:" raw)))
-      (deliver p "hello")
-      ;; make-awake-fn drains inbox: transform("hello") = "pre:hello"
-      ;; then eval-fn("pre:hello") = "eval:pre:hello"
-      (is (= "eval:pre:hello" (runtime/box handle p (runtime/make-awake-fn handle eval-fn)))))))
+      (runtime/-send! handle (append-forms-macro '(def pre :loaded)))
+      (deliver p raw)
+      (is (.contains ^String (runtime/box handle p (runtime/make-awake-fn handle eval-fn))
+                     "(def pre :loaded)")))))
 
 (deftest box-no-transform-identity-test
   (testing "box with empty inbox passes raw through unchanged"
     (let [handle :test-identity
-          eval-fn (fn [raw] (str "got:" raw))
+          raw "(quine completion (eval (do )))"
+          eval-fn (inbox-aware
+                    (fn [incoming inbox-macros]
+                      (pr-str (apply-inbox-macros incoming inbox-macros))))
           p (promise)]
       (runtime/register! handle)
-      (deliver p "hello")
-      ;; make-awake-fn drains empty inbox (identity), so raw passes through
-      (is (= "got:hello" (runtime/box handle p (runtime/make-awake-fn handle eval-fn)))))))
+      (deliver p raw)
+      (is (= (pr-str (parse/read-first raw))
+             (runtime/box handle p (runtime/make-awake-fn handle eval-fn)))))))
 
-(deftest reopen-last-top-level-form-test
-  (testing "reopen targets the last top-level quine and preserves prior forms"
-    (let [raw "(quine completion (eval (do (def first-msg \"kept\") nil ))) (quine completion (eval (do (def second-msg \"open-me\") )))"
-          reopened (#'runtime/reopen-completion raw)]
-      (is (.contains ^String reopened "(def first-msg \"kept\")"))
-      (is (.contains ^String reopened "(def second-msg \"open-me\")"))
-      (is (.endsWith ^String reopened "(def second-msg \"open-me\") "))
-      (is (.contains ^String reopened "nil))) (quine completion (eval (do"))
-      (is (not (.endsWith ^String reopened "nil "))
-          "reopen should leave the first form closed and reopen the last one"))))
+(deftest append-forms-macro-reopens-last-top-level-quine-test
+  (testing "queued macros target the parsed completion form and leave earlier top-level forms inert"
+    (let [first-form '(quine completion (eval (do (def first-msg "kept") nil)))
+          last-form '(quine completion (eval (do (def second-msg "open-me"))))
+          raw (str (pr-str first-form) " " (pr-str last-form))
+          transformed-raw (materialize-inbox-raw raw [(append-forms-macro '(def injected :yes))])
+          transformed (apply-inbox-macros raw [(append-forms-macro '(def injected :yes))])]
+      (is (= 'quine (first transformed)))
+      (is (= 'completion (second transformed)))
+      (is (.contains ^String transformed-raw (pr-str first-form))
+          "the earlier top-level quine remains inert input ahead of the transformed form")
+      (is (some #(= '(def second-msg "open-me") %)
+                (drop 1 (second (last transformed)))))
+      (is (some #(= '(def injected :yes) %)
+                (drop 1 (second (last transformed)))))
+      (is (= '(def first-msg "kept")
+             (nth (second (nth first-form 2)) 1))
+          "the earlier top-level quine remains inert input, not the transformation target"))))
 
 (deftest has-box-invariant-test
   (testing "has-box is false after box completes"
@@ -83,30 +119,34 @@
       (is (false? @(:has-box (get @runtime/registry handle)))))))
 
 (deftest send-msg-fn-composes-correctly-test
-  (testing "send-msg-fn composes f into inbox transform"
+  (testing "send-msg-fn queues a macro into inbox state"
     (let [handle :test-compose
-          eval-fn (fn [raw] (.toUpperCase ^String raw))
+          raw "(quine completion (eval (do )))"
+          eval-fn (inbox-aware
+                    (fn [incoming inbox-macros]
+                      (pr-str (apply-inbox-macros incoming inbox-macros))))
           p (promise)]
       (runtime/register! handle)
-      ;; Send f that prepends "pre:" — transform applied before eval-fn
-      (runtime/send-msg-fn (fn [raw] (str "pre:" raw)) handle)
-      (deliver p "hello")
-      ;; make-awake-fn drains: transform("hello") = "pre:hello"
-      ;; eval-fn("pre:hello") = "PRE:HELLO"
-      (is (= "PRE:HELLO" (runtime/box handle p (runtime/make-awake-fn handle eval-fn)))))))
+      (runtime/send-msg-fn (append-forms-macro '(def pre :hello)) handle)
+      (deliver p raw)
+      (is (.contains ^String (runtime/box handle p (runtime/make-awake-fn handle eval-fn))
+                     "(def pre :hello)")))))
 
 (deftest multiple-sends-compose-test
   (testing "multiple sends compose in FIFO order"
     (let [handle :test-multi
-          eval-fn (fn [raw] (.toUpperCase ^String raw))
+          raw "(quine completion (eval (do )))"
+          eval-fn (inbox-aware
+                    (fn [incoming inbox-macros]
+                      (apply-inbox-macros incoming inbox-macros)))
           p (promise)]
       (runtime/register! handle)
-      ;; Send two transforms: first adds "A:", then second adds "B:"
-      (runtime/send-msg-fn (fn [raw] (str "A:" raw)) handle)
-      (runtime/send-msg-fn (fn [raw] (str "B:" raw)) handle)
-      ;; FIFO: B(A(raw)) = "B:A:HELLO" -> uppercase = "B:A:HELLO"
-      (deliver p "hello")
-      (is (= "B:A:HELLO" (runtime/box handle p (runtime/make-awake-fn handle eval-fn)))))))
+      (runtime/send-msg-fn (append-forms-macro '(def a :first)) handle)
+      (runtime/send-msg-fn (append-forms-macro '(def b :second)) handle)
+      (deliver p raw)
+      (let [body-forms (drop 1 (second (last (runtime/box handle p (runtime/make-awake-fn handle eval-fn)))))]
+        (is (= '(def a :first) (nth body-forms 0)))
+        (is (= '(def b :second) (nth body-forms 1)))))))
 
 (deftest ask-asserts-outside-context-test
   (testing "ask with msg throws when not in agent context"
@@ -194,12 +234,14 @@
 (deftest orphan-box-captures-innermost-raw-test
   (testing "orphan box uses the innermost extension's raw, not the root box's raw"
     (let [handle :test-orphan-raw
-          ;; eval-fn simulates an extension chain: when called, it enters a nested
-          ;; box with a different raw, simulating what !llm-self does.
           inner-raw "inner-extension-raw"
+          call-count (atom 0)
+          orphan-received (promise)
           eval-fn (fn [raw]
-                    ;; Simulate an extension: enter a nested box with new raw
-                    (runtime/box handle inner-raw (fn [r] (str "result:" r))))
+                    (case (swap! call-count inc)
+                      1 (runtime/box handle inner-raw (fn [r] (str "result:" r)))
+                      2 (do (deliver orphan-received raw)
+                            (str "orphan:" raw))))
           p (promise)]
       (runtime/register! handle)
       (deliver p "outer-root-raw")
@@ -208,18 +250,11 @@
         (runtime/run-root-box handle p (runtime/make-awake-fn handle eval-fn) eval-fn)
         ;; Wait for orphan box to start and sleep
         (Thread/sleep 100)
-        ;; Now send a message to the orphan and check what raw it uses
-        (let [orphan-received (promise)
-              orphan-eval-fn-raw (atom nil)]
-          ;; Peek at what raw the orphan has by sending a transform that captures it
-          (runtime/send-msg-fn
-            (fn [raw]
-              (deliver orphan-received raw)
-              raw)
-            handle)
-          (let [received (deref orphan-received 2000 :timeout)]
-            (is (= "inner-extension-raw" received)
-                "orphan should have the innermost extension raw, not outer-root-raw")))))))
+        ;; Wake the orphan and confirm it reuses the innermost raw.
+        (runtime/send-msg-fn (identity-msg-macro) handle)
+        (let [received (deref orphan-received 2000 :timeout)]
+          (is (= "inner-extension-raw" received)
+              "orphan should have the innermost extension raw, not outer-root-raw"))))))
 
 (deftest box-handles-exception-promise-test
   (testing "box rethrows exception delivered to promise"
@@ -246,7 +281,7 @@
         (is (= nil (deref cp 100 :timeout)))
         ;; Pre-entry failure should still spawn the sleeping orphan for next turn.
         (Thread/sleep 100)
-        (runtime/-send! handle identity)
+        (runtime/-send! handle (identity-msg-macro))
         (Thread/sleep 200)
         (is (= 1 @eval-count))))))
 
@@ -293,7 +328,7 @@
         (deref a-started 2000 :timeout)
         (Thread/sleep 50)
         ;; Send a message transform to A
-        (runtime/-send! h-a (fn [raw] (str raw "extra ")))
+        (runtime/-send! h-a (append-forms-macro '(def extra true)))
         (is (string? (deref fa 5000 :timeout)))))))
 
 (deftest start-box-responds-to-send-test
@@ -305,7 +340,7 @@
       ;; Give the root box time to start and block on signal
       (Thread/sleep 100)
       ;; Send to the sleeping agent
-      (runtime/send-msg-fn identity handle)
+      (runtime/send-msg-fn (eval/compose-macros []) handle)
       ;; Give time to process
       (Thread/sleep 200)
       ;; The agent ran; we can verify no exceptions and handle still valid
@@ -326,16 +361,16 @@
       (Thread/sleep 100)
       ;; Agent should be registered and sleeping
       (is (contains? @runtime/registry handle))
-      ;; Send a transform that appends to the stored raw
-      (runtime/send-msg-fn (fn [raw] (str raw "extra")) handle)
+      ;; Send a macro that appends to the stored completion
+      (runtime/send-msg-fn (append-forms-macro '(def extra true)) handle)
       ;; Give time to process
       (Thread/sleep 200)
       ;; eval-fn saw the stored completion with the appended message
       (is (some? @received))
       (is (.contains ^String @received "quine completion")
           "stored completion is the base for message composition")
-      (is (.contains ^String @received "extra")
-          "sent transform was applied to stored completion"))))
+      (is (.contains ^String @received "(def extra true)")
+          "sent macro was applied to stored completion"))))
 
 (deftest start-box-no-initial-eval-test
   (testing "start-box does not evaluate the stored completion"
@@ -644,7 +679,7 @@
       (Thread/sleep 100)
       (let [token (runtime/completion-promise handle)]
         (is (= true (:spell/future token)))
-        (runtime/send-msg-fn identity handle)
+        (runtime/send-msg-fn (eval/compose-macros []) handle)
         (is (= :child-finished (deref (:ref token) 5000 :timeout)))))))
 
 (deftest completion-promise-missing-handle-test
@@ -662,7 +697,7 @@
       (let [result (deref
                      (future
                        (let [token (runtime/completion-promise handle)]
-                         (runtime/send-msg-fn identity handle)
+                         (runtime/send-msg-fn (eval/compose-macros []) handle)
                          (deref (:ref token) 5000 :timeout)))
                      5000 :timeout)]
         (is (= :race-result result))))))
@@ -755,7 +790,7 @@
           b-eval-fn (fn [raw]
                       (reset! b-received raw)
                       ;; Reply to A via send-msg-fn
-                      (runtime/send-msg-fn (fn [raw] (str raw "(def reply-from-b true) ")) h-a)
+                      (runtime/send-msg-fn (append-forms-macro '(def reply-from-b true)) h-a)
                       "b-done")
           pa (promise)]
       (runtime/register! h-a)
@@ -792,7 +827,7 @@
           ;; B's eval-fn: captures the poke, then replies to A
           b-eval-fn (fn [raw]
                       (reset! b-received raw)
-                      (runtime/send-msg-fn (fn [raw] (str raw "(def reply-from-b true) ")) h-a)
+                      (runtime/send-msg-fn (append-forms-macro '(def reply-from-b true)) h-a)
                       "b-done")
           pa (promise)]
       (runtime/register! h-a)
@@ -959,31 +994,35 @@
 (deftest pending-transforms-survive-test
   (testing "pending inbox transforms survive when box+awake-fn is entered"
     (let [handle :test-cas
-          eval-fn (fn [raw] (str "evaluated:" raw))
-          sent-fn (fn [raw] (str "sent:" raw))
+          eval-fn identity
+          sent-macro (append-forms-macro '(def sent :hello))
+          raw "(quine completion (eval (do )))"
           p (promise)]
       (runtime/register! handle)
       ;; Simulate: a send happened before box entry
-      (runtime/send-msg-fn sent-fn handle)
-      ;; inbox should have the sent function
-      (let [inbox-before (:inbox-fn @(:state (get @runtime/registry handle)))]
-        (is (some? inbox-before) "inbox should have the sent function"))
-      ;; make-awake-fn drains inbox: sent-fn("hello") = "sent:hello"
-      ;; eval-fn("sent:hello") = "evaluated:sent:hello"
-      (deliver p "hello")
-      (is (= "evaluated:sent:hello" (runtime/box handle p (runtime/make-awake-fn handle eval-fn)))
-            "awake-fn should drain the preserved transform then call eval-fn")))
+      (runtime/send-msg-fn sent-macro handle)
+      ;; inbox should have the queued macro value
+      (let [inbox-before (:inbox-macros @(:state (get @runtime/registry handle)))]
+        (is (= 1 (count inbox-before)) "inbox should have one queued macro"))
+      ;; make-awake-fn drains inbox: macro applied to the parsed program,
+      ;; then eval-fn sees the transformed completion
+      (deliver p raw)
+      (is (.contains ^String
+                      (runtime/box handle p (runtime/make-awake-fn handle eval-fn))
+                      "(def sent :hello)")
+          "awake-fn should drain the preserved transform then call eval-fn")))
 
   (testing "box with no transforms uses identity for raw"
     (let [handle :test-cas-empty
-          eval-fn (fn [raw] (str "evaluated:" raw))
+          eval-fn identity
+          raw "(quine completion (eval (do )))"
           p (promise)]
       (runtime/register! handle)
-      ;; inbox is identity (no pending sends)
-      (is (= identity (:inbox-fn @(:state (get @runtime/registry handle)))))
-      ;; make-awake-fn drains empty inbox (identity), raw passes through
-      (deliver p "hello")
-      (is (= "evaluated:hello" (runtime/box handle p (runtime/make-awake-fn handle eval-fn)))))))
+      ;; inbox is empty (no pending sends)
+      (is (= [] (:inbox-macros @(:state (get @runtime/registry handle)))))
+      ;; make-awake-fn drains empty inbox (identity macro), raw passes through
+      (deliver p raw)
+      (is (= raw (runtime/box handle p (runtime/make-awake-fn handle eval-fn)))))))
 
 (deftest inbox-cas-seeds-when-empty-test
   (testing "inherited -llm seeds inbox when it's empty (no pending sends)"
@@ -1075,11 +1114,11 @@
     (let [handle :dmf-unrealized]
       (runtime/register! handle)
       (let [sig (:signal @(:state (get @runtime/registry handle)))]
-        (runtime/deliver-msg-fn handle sig (fn [raw] (str "msg:" raw)))
+        (runtime/deliver-msg-fn handle sig (append-forms-macro '(def msg :queued)))
         ;; Signal should be delivered
         (is (realized? sig))
-        ;; Inbox should have the transform
-        (is (some? (:inbox-fn @(:state (get @runtime/registry handle)))))))))
+        ;; Inbox should have the queued macro value
+        (is (= 1 (count (:inbox-macros @(:state (get @runtime/registry handle))))))))))
 
 (deftest deliver-msg-fn-replaced-signal-noop-test
   (testing "deliver-msg-fn no-ops on replaced signal"
@@ -1090,9 +1129,9 @@
         (swap! (:state (get @runtime/registry handle))
           assoc :signal (promise))
         ;; Now deliver-msg-fn should be a no-op (signal is no longer identical)
-        (runtime/deliver-msg-fn handle sig (fn [raw] (str "msg:" raw)))
-        ;; Inbox should still be identity (no transform composed)
-        (is (= identity (:inbox-fn @(:state (get @runtime/registry handle)))))))))
+        (runtime/deliver-msg-fn handle sig (append-forms-macro '(def msg :queued)))
+        ;; Inbox should still be empty (no macro queued)
+        (is (= [] (:inbox-macros @(:state (get @runtime/registry handle)))))))))
 
 (deftest deliver-msg-fn-realized-signal-noop-test
   (testing "deliver-msg-fn no-ops on already-realized captured signal"
@@ -1101,9 +1140,9 @@
       (let [sig (:signal @(:state (get @runtime/registry handle)))]
         ;; Simulate wake happened before notifier callback runs.
         (deliver sig :wake)
-        ;; deliver-msg-fn should not compose stale payload into inbox.
-        (runtime/deliver-msg-fn handle sig (fn [raw] (str raw "(def stale true) ")))
-        (is (= identity (:inbox-fn @(:state (get @runtime/registry handle)))))
+        ;; deliver-msg-fn should not queue stale payload into inbox.
+        (runtime/deliver-msg-fn handle sig (append-forms-macro '(def stale true)))
+        (is (= [] (:inbox-macros @(:state (get @runtime/registry handle)))))
         ;; And should remain no-op when the handle wakes again later.
         (let [p (promise)]
           (deliver p "(quine completion (eval (do )))")
@@ -1266,7 +1305,7 @@
       (runtime/register! handle)
       ;; Simulate: message arrives while waiting for completion.
       ;; -send! composes into inbox AND delivers signal.
-      (runtime/-send! handle (fn [r] (str r "(def x 1) ")))
+      (runtime/-send! handle (append-forms-macro '(def x 1)))
       ;; Deliver the completion (simulating LLM response arriving).
       (deliver completion raw)
       ;; Start box in a future — it will drain inbox (picking up the message)
@@ -1281,7 +1320,7 @@
       (is (not (realized? block-result))
           "block-for-message should not have returned (stale signal)")
       ;; Now send a real message to wake it
-      (runtime/-send! handle (fn [r] (str r "(def y 2) ")))
+      (runtime/-send! handle (append-forms-macro '(def y 2)))
       ;; Agent should wake from the real message
       (let [result (deref block-result 2000 :timeout)]
         (is (not= :timeout result)

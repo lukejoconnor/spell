@@ -98,6 +98,19 @@
 ;; LLM Engine
 ;; ---------------------------------------------------------------------------
 
+(defn- apply-inbox-macros
+  [program inbox-macros eval-builtin]
+  ;; Each inbox macro sees the same caller env; expander-local defs should not
+  ;; leak across composition.
+  (reduce (fn [current msg-macro]
+            (let [r (eval/apply-spell-macro msg-macro [current] {'eval eval-builtin})]
+              (if-let [expanded (:ok r)]
+                expanded
+                (throw (ex-info (str "Inbox macro expansion failed: " (:err r))
+                                {:macro msg-macro :program current})))))
+          program
+          inbox-macros))
+
 (defn- try-quine-recovery
   "Attempt quine-extension recovery: append error info to the quine and reopen it.
    Returns eval result (ok or err). Throws on non-quine or shared recovery limit.
@@ -145,7 +158,7 @@
    as a string in a fresh recovery quine. The LLM sees its broken output
    and the error message, then gets a fresh chance via !extend.
    Shares the same retry budget as eval recovery."
-  [raw parse-error variant-builtins eval-builtin gated-ns-hints]
+  [raw parse-error inbox-macros variant-builtins eval-builtin gated-ns-hints]
   (let [error-msg (or (.getMessage parse-error) "Unknown reader error")
         indent    (apply str (repeat eval/*llm-depth* "  "))
         _         (throw-if-recovery-exhausted! :reader error-msg)
@@ -162,12 +175,13 @@
                              (list 'def '_previous_program raw)
                              (list 'def '_error error-map)
                              (list 'quote (list '!extend 'completion)))))
+        recovery-program (apply-inbox-macros recovery-quine inbox-macros eval-builtin)
         result    (binding [eval/*llm-depth*           (inc eval/*llm-depth*)
                             eval/*raw-text*            nil
                             eval/*builtins*            variant-builtins
                             eval/*gated-ns-hints*      gated-ns-hints
                             *recovery-depth*           (inc *recovery-depth*)]
-                    (eval/spell-eval recovery-quine {'eval eval-builtin}))]
+                    (eval/spell-eval recovery-program {'eval eval-builtin}))]
     (if (eval/ok? result)
       (:ok result)
       (throw (ex-info (or (:err result)
@@ -175,75 +189,77 @@
                       {:parse-error error-msg :result result})))))
 
 (defn make-inbox-fn
-  "Create inbox function: [raw] -> value.
+  "Create inbox function: [raw] -> value or [raw inbox-macros] -> value.
    Closes over eval-builtin from config. Calls balance-parens because
-   send transforms can produce unbalanced strings (serialized prefixes omit closers).
+   completions may arrive with mismatched trailing parens.
    trace-data-atom, when non-nil, receives {:program} for tracing."
   [{:keys [variant-builtins eval-builtin recover-fn allow-multiple-top-level? gated-ns-hints]} trace-data-atom]
-  (fn [raw]
-    (binding [eval/*gated-ns-hints* (or gated-ns-hints {})]
-      (let [raw       (parse/balance-parens raw)
-            [program parse-err]
-            (if allow-multiple-top-level?
-              ;; REPL mode: read all forms, wrap in do
-              (try (let [forms (vec (parse/read-all raw))
-                         cnt   (count forms)]
-                     [(if (> cnt 1) (list* 'do forms) (first forms)) nil])
-                   (catch Exception e [nil e]))
-              ;; Normal mode: read first form only, ignore trailing garbage
-              (try [(parse/read-first raw) nil]
-                   (catch Exception e [nil e])))
-            continuation-raw
-            (if allow-multiple-top-level?
-              raw
-              (if (some? program)
-                ;; Persist only the form we actually evaluated so later reopen/send
-                ;; paths never reparse ignored suffix garbage.
-                (pr-str program)
-                raw))]
-        (if parse-err
-          ;; Reader error: embed raw text as string in recovery quine
-          (if recover-fn
-            (try-reader-recovery raw parse-err variant-builtins eval-builtin
-                                 eval/*gated-ns-hints*)
-            (throw parse-err))
-          ;; Normal path: eval and recovery
-          (let [
-                indent    (apply str (repeat eval/*llm-depth* "  "))
-                _         (when-let [handle runtime/*current-handle*]
-                            (when-let [last-raw (:last-raw (get @runtime/registry handle))]
-                              (reset! last-raw continuation-raw)))
-                result    (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
-                                    eval/*raw-text*       continuation-raw
-                                    eval/*builtins*       variant-builtins
-                                    runtime/*current-raw* continuation-raw]
-                            (eval/spell-eval program {'eval eval-builtin}))
-                final-result
-                (if (and (eval/err? result) recover-fn)
-                  (let [_        (do (eval/vlog (str indent "=== Error Recovery ==="))
+  (let [f
+        (fn
+          ([raw]
+           ((make-inbox-fn {:variant-builtins variant-builtins
+                            :eval-builtin eval-builtin
+                            :recover-fn recover-fn
+                            :allow-multiple-top-level? allow-multiple-top-level?
+                            :gated-ns-hints gated-ns-hints}
+                           trace-data-atom)
+            raw
+            []))
+          ([raw inbox-macros]
+           (binding [eval/*gated-ns-hints* (or gated-ns-hints {})]
+             (let [raw (parse/balance-parens raw)
+                   [program parse-err]
+                   (if allow-multiple-top-level?
+                     (try
+                       (let [forms (vec (parse/read-all raw))
+                             cnt   (count forms)]
+                         [(if (> cnt 1) (list* 'do forms) (first forms)) nil])
+                       (catch Exception e [nil e]))
+                     (try
+                       [(parse/read-first raw) nil]
+                       (catch Exception e [nil e])))]
+               (if parse-err
+                 (if recover-fn
+                   (try-reader-recovery raw parse-err inbox-macros variant-builtins
+                                        eval-builtin eval/*gated-ns-hints*)
+                   (throw parse-err))
+                 (let [program' (apply-inbox-macros program inbox-macros eval-builtin)
+                       continuation-raw (if (some? program') (pr-str program') raw)
+                       indent (apply str (repeat eval/*llm-depth* "  "))
+                       _ (when-let [handle runtime/*current-handle*]
+                           (when-let [last-raw (:last-raw (get @runtime/registry handle))]
+                             (reset! last-raw continuation-raw)))
+                       result (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
+                                        eval/*raw-text*       continuation-raw
+                                        eval/*builtins*       variant-builtins
+                                        runtime/*current-raw* continuation-raw]
+                                (eval/spell-eval program' {'eval eval-builtin}))
+                       final-result
+                       (if (and (eval/err? result) recover-fn)
+                         (let [_ (do (eval/vlog (str indent "=== Error Recovery ==="))
                                      (eval/vlog (str indent "Error: " (:err result))))
-                        result-with-program (assoc result :program program)]
-                    ;; Try namespace recovery first (fast, deterministic)
-                    (if-let [fix-expr (recover-fn result-with-program)]
-                      (let [_     (eval/vlog (str indent "Namespace recovery: " (pr-str fix-expr)))
-                            retry (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
-                                            eval/*raw-text*       nil
-                                            eval/*builtins*       variant-builtins]
-                                    (eval/spell-eval fix-expr (merge (:env result) {'eval eval-builtin})))]
-                        (if (eval/ok? retry)
-                          retry
-                          ;; Namespace fix didn't work, try quine-extension
-                          (try-quine-recovery program result variant-builtins eval-builtin
-                                              eval/*gated-ns-hints*)))
-                      ;; No namespace fix, try quine-extension
-                      (try-quine-recovery program result variant-builtins eval-builtin
-                                          eval/*gated-ns-hints*)))
-                  result)]
-            (when trace-data-atom
-              (reset! trace-data-atom {:program program}))
-            (if (eval/ok? final-result)
-              (:ok final-result)
-              (throw (ex-info (:err final-result) {:result final-result})))))))))
+                               result-with-program (assoc result :program program')]
+                           (if-let [fix-expr (recover-fn result-with-program)]
+                             (let [_ (eval/vlog (str indent "Namespace recovery: " (pr-str fix-expr)))
+                                   retry (binding [eval/*llm-depth* (inc eval/*llm-depth*)
+                                                   eval/*raw-text* nil
+                                                   eval/*builtins* variant-builtins]
+                                           (eval/spell-eval fix-expr
+                                                            (merge (:env result) {'eval eval-builtin})))]
+                               (if (eval/ok? retry)
+                                 retry
+                                 (try-quine-recovery program' result variant-builtins
+                                                     eval-builtin eval/*gated-ns-hints*)))
+                             (try-quine-recovery program' result variant-builtins
+                                                 eval-builtin eval/*gated-ns-hints*)))
+                         result)]
+                   (when trace-data-atom
+                     (reset! trace-data-atom {:program program'
+                                              :source-program program}))
+                   (if (eval/ok? final-result)
+                     (:ok final-result)
+                     (throw (ex-info (:err final-result) {:result final-result})))))))))]
+    (with-meta f {:spell/inbox-aware true})))
 
 (defn- register-agent
   "Register a dormant agent with stored completion as context.

@@ -13,7 +13,8 @@
             [clojure.string :as str]
             [spell.eval :as eval]
             [spell.prompt :as prompt]
-            [spell.stdlib :as stdlib]))
+            [spell.stdlib :as stdlib]
+            [spell.parse :as parse]))
 
 (use-fixtures :each
   (fn [f]
@@ -117,8 +118,9 @@
         "evaluation should see the reopenable completion, not the ignored suffix")
     (is (= expected @(:last-raw (get @runtime/registry handle)))
         "stored raw should drop ignored suffixes so later wakeups can reopen it")
-    (is (string? (#'runtime/reopen-completion @(:last-raw (get @runtime/registry handle))))
-        "stored raw should remain reopenable for message/preemption paths")))
+    (is (= (parse/read-first expected)
+           (parse/read-first @(:last-raw (get @runtime/registry handle))))
+        "stored raw should remain parseable for later inbox macro application paths")))
 
 ;; =============================================================================
 ;; File I/O task tests
