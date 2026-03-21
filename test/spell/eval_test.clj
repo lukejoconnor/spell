@@ -1904,6 +1904,14 @@
     (is (= [3 4 5] (run-spell '(subvec [1 2 3 4 5] 2)))))
   (testing "subvec 3-arg"
     (is (= [2 3] (run-spell '(subvec [1 2 3 4 5] 1 3)))))
+  (testing "subvec preserves line-offset metadata (2-arg)"
+    (is (= {:spell/line-offset 6}
+           (meta (run-spell '(subvec (line-offset 4 ["a" "b" "c" "d" "e"]) 2))))))
+  (testing "subvec preserves line-offset metadata (3-arg)"
+    (is (= {:spell/line-offset 5}
+           (meta (run-spell '(subvec (line-offset 4 ["a" "b" "c" "d" "e"]) 1 3))))))
+  (testing "subvec without line-offset unchanged"
+    (is (nil? (meta (run-spell '(subvec [1 2 3 4 5] 2))))))
   (testing "vec"
     (is (= [1 2 3] (run-spell '(vec '(1 2 3))))))
   (testing "not-empty on non-empty"

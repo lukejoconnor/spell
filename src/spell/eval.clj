@@ -458,6 +458,18 @@
       (if (ok? r) (:ok r) (throw (ex-info (:err r) {:result r}))))
     (apply f args)))
 
+(defn- subvec-preserving-line-offset
+  ([v start]
+   (subvec-preserving-line-offset v start nil))
+  ([v start end]
+   (let [result (if (some? end)
+                  (subvec v start end)
+                  (subvec v start))
+         metadata (meta v)]
+     (if-let [line-offset (:spell/line-offset metadata)]
+       (with-meta result (assoc metadata :spell/line-offset (+ line-offset start)))
+       result))))
+
 (def core-builtins
   "Language primitives - always available in every llm variant.
    Extended functions are in stdlib registries (strings, seqs, fns)."
@@ -513,8 +525,8 @@
    ;; Collection access/mutation
    'peek peek, 'pop pop, 'butlast butlast,
    'subvec (fn
-             ([v start] (subvec v start))
-             ([v start end] (subvec v start end))),
+             ([v start] (subvec-preserving-line-offset v start))
+             ([v start end] (subvec-preserving-line-offset v start end))),
    'vec vec, 'not-empty not-empty,
    ;; Map operations
    'merge (fn [& maps] (apply merge maps)),
