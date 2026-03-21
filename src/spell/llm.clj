@@ -3,13 +3,14 @@
 
    Core loop: call LLM, concatenate prefix+response, parse, eval."
   (:require [clojure.string :as str]
-            [spell.runtime :as runtime]
             [spell.eval :as eval]
             [spell.grammar :as grammar]
+            [spell.inbox :as inbox]
             [spell.parse :as parse]
             [spell.prompt :as prompt]
             [spell.provider :as provider]
             [spell.recovery :as recovery]
+            [spell.runtime :as runtime]
             [spell.stdlib :as stdlib]
             [spell.trace :as trace]))
 
@@ -98,19 +99,6 @@
 ;; LLM Engine
 ;; ---------------------------------------------------------------------------
 
-(defn- apply-inbox-macros
-  [program inbox-macros eval-builtin]
-  ;; Each inbox macro sees the same caller env; expander-local defs should not
-  ;; leak across composition.
-  (reduce (fn [current msg-macro]
-            (let [r (eval/apply-spell-macro msg-macro [current] {'eval eval-builtin})]
-              (if-let [expanded (:ok r)]
-                expanded
-                (throw (ex-info (str "Inbox macro expansion failed: " (:err r))
-                                {:macro msg-macro :program current})))))
-          program
-          inbox-macros))
-
 (defn- try-quine-recovery
   "Attempt quine-extension recovery: append error info to the quine and reopen it.
    Returns eval result (ok or err). Throws on non-quine or shared recovery limit.
@@ -175,7 +163,8 @@
                              (list 'def '_previous_program raw)
                              (list 'def '_error error-map)
                              (list 'quote (list '!extend 'completion)))))
-        recovery-program (apply-inbox-macros recovery-quine inbox-macros eval-builtin)
+        recovery-program (inbox/apply-inbox-macros recovery-quine inbox-macros
+                                                   {:env {'eval eval-builtin}})
         result    (binding [eval/*llm-depth*           (inc eval/*llm-depth*)
                             eval/*raw-text*            nil
                             eval/*builtins*            variant-builtins
@@ -223,18 +212,18 @@
                    (try-reader-recovery raw parse-err inbox-macros variant-builtins
                                         eval-builtin eval/*gated-ns-hints*)
                    (throw parse-err))
-                 (let [inbox-macro (when (seq inbox-macros)
-                                     (eval/compose-macros inbox-macros))
-                       continuation-raw (if allow-multiple-top-level?
-                                          (if inbox-macro
-                                            (runtime/materialize-inbox-raw raw inbox-macro)
+                 (let [continuation-raw (if allow-multiple-top-level?
+                                          (if (seq inbox-macros)
+                                            (inbox/materialize-inbox-raw raw inbox-macros
+                                                                         {:env {'eval eval-builtin}})
                                             raw)
                                           raw)
                        program' (if allow-multiple-top-level?
                                   (let [forms (vec (parse/read-all continuation-raw))
                                         cnt   (count forms)]
                                     (if (> cnt 1) (list* 'do forms) (first forms)))
-                                  (apply-inbox-macros program inbox-macros eval-builtin))
+                                  (inbox/apply-inbox-macros program inbox-macros
+                                                            {:env {'eval eval-builtin}}))
                        continuation-raw (if allow-multiple-top-level?
                                           continuation-raw
                                           (if (some? program') (pr-str program') raw))
