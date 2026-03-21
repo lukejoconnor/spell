@@ -9,6 +9,7 @@
   (:refer-clojure :exclude [send])
   (:require [clojure.string :as str]
             [spell.eval :as eval]
+            [spell.inbox :as inbox]
             [spell.parse :as parse]))
 
 ;; =============================================================================
@@ -64,25 +65,6 @@
   [eval-fn]
   (true? (:spell/inbox-aware (meta eval-fn))))
 
-(defn materialize-inbox-raw
-  "Apply inbox-macro to the last parsed top-level form and serialize it back to raw.
-   Earlier top-level forms are preserved as inert context ahead of the transformed form."
-  [raw inbox-macro]
-  (let [balanced (parse/balance-parens raw)
-        forms (vec (parse/read-all balanced))]
-    (if (empty? forms)
-      balanced
-      (let [prior-forms (butlast forms)
-            form (last forms)
-            r (binding [eval/*builtins* eval/core-builtins]
-                (eval/apply-spell-macro inbox-macro [form] {}))]
-        (if-let [expanded (:ok r)]
-          (str (when (seq prior-forms)
-                 (str (str/join " " (map pr-str prior-forms)) " "))
-               (pr-str expanded))
-          (throw (ex-info (str "Inbox macro materialization failed: " (:err r))
-                          {:raw raw :macro inbox-macro})))))))
-
 ;; =============================================================================
 ;; Forward declarations
 ;; =============================================================================
@@ -132,10 +114,8 @@
   (fn [raw]
     (let [state (:state (get @registry handle))
           [{:keys [inbox-macros]} _] (reset-vals! state {:inbox-macros [], :signal (promise)})
-          inbox-macro (when (seq inbox-macros)
-                        (eval/compose-macros inbox-macros))
-          transformed-raw (if (and inbox-macro (not (inbox-aware-eval-fn? eval-fn)))
-                            (materialize-inbox-raw raw inbox-macro)
+          transformed-raw (if (and (seq inbox-macros) (not (inbox-aware-eval-fn? eval-fn)))
+                            (inbox/materialize-inbox-raw raw inbox-macros {:builtins eval/core-builtins})
                             raw)]
       (when-let [last-raw (:last-raw (get @registry handle))]
         (reset! last-raw transformed-raw))

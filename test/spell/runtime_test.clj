@@ -1,6 +1,7 @@
 (ns spell.runtime-test
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [spell.parse :as parse]
+            [spell.inbox :as inbox]
             [spell.runtime :as runtime]
             [spell.core :as spell]
             [spell.eval :as eval]
@@ -27,9 +28,7 @@
 
 (defn- materialize-inbox-raw
   [raw inbox-macros]
-  (if (seq inbox-macros)
-    (#'runtime/materialize-inbox-raw raw (eval/compose-macros inbox-macros))
-    (parse/balance-parens raw)))
+  (inbox/materialize-inbox-raw raw inbox-macros {:builtins eval/core-builtins}))
 
 (defn- apply-inbox-macros
   [raw inbox-macros]

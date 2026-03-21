@@ -28,10 +28,11 @@
    incorrectly creates orphan-2. Both orphans sleep on the same signal, and when
    a message arrives both can process it — a zombie continuation."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
-            [spell.runtime :as runtime]
             [spell.eval :as eval]
+            [spell.inbox :as inbox]
             [spell.llm :as llm]
             [spell.parse :as parse]
+            [spell.runtime :as runtime]
             [spell.user :as user])
   (:import [java.io BufferedReader]
            [java.util.concurrent LinkedBlockingQueue CountDownLatch TimeUnit
@@ -55,7 +56,7 @@
 
 (defn- apply-inbox-macros
   [raw inbox-macros]
-  (#'runtime/materialize-inbox-raw raw (eval/compose-macros inbox-macros)))
+  (inbox/materialize-inbox-raw raw inbox-macros {:builtins eval/core-builtins}))
 
 (defn- blocking-reader
   "Create a BufferedReader backed by a blocking queue.
