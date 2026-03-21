@@ -35,6 +35,7 @@ opts:
   :max-steps          - main loop limit (default: 5)
   :max-branch-steps   - sub-loop limit per branch (default: 7)
   :verbose            - print each step (default: false)
+  :temperature        - LLM temperature (default: nil = provider default; 0 = deterministic)
 
 Execution model (matches FoldAgent from arxiv 2510.11967):
 1. Main loop: plain-text prompt completion via leaf-llm

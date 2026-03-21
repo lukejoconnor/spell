@@ -1,7 +1,7 @@
 ;; Context Folding agent (arxiv 2510.11967).
 ;; Orchestrating planner with Search/Lookup branch sub-loops.
 
-{:base base-msg.agent.edn
+{:base base-tc.agent.edn
  :name context-folding
  :doc "Context Folding agent — reduces LLM context with branching (arxiv 2510.11967)"
 
