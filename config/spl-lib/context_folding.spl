@@ -133,6 +133,67 @@
             (subs l (count prefix))
             (recur (rest ls))))))))
 
+;; ── Bash branch sub-loop ──────────────────────────────────────────────────────
+;; Runs a bash tool-call loop for the given branch-task (SWE-bench style).
+;; Mirrors react/run but returns a result string to the main orchestrator.
+;; Signal completion with: echo 'BRANCH_COMPLETE: <result>'
+(defn cf-format-bash-observation [result]
+  (let [exit     (:exit result)
+        out      (or (:out result) "")
+        err      (or (:err result) "")
+        combined (if (strings/blank? err) out (cat out "\n" err))]
+    (if (> (count combined) 10000)
+      (cat "{\"returncode\": " (str exit)
+           ", \"output_head\": " (pr-str (subs combined 0 5000))
+           ", \"output_tail\": " (pr-str (subs combined (- (count combined) 5000)))
+           ", \"elided_chars\": " (str (- (count combined) 10000))
+           ", \"warning\": \"Output too long.\"}")
+      (cat "{\"returncode\": " (str exit)
+           ", \"output\": " (pr-str combined) "}"))))
+
+(defn cf-bash-branch-complete? [obs]
+  (not (nil? (strings/index-of obs "BRANCH_COMPLETE:"))))
+
+(defn cf-extract-bash-result [obs]
+  (let [idx (strings/index-of obs "BRANCH_COMPLETE:")]
+    (if idx
+      (strings/trim (subs obs (+ idx 16)))
+      obs)))
+
+(defn run-branch-bash [branch-task max-branch-steps verbose temp]
+  (let [system   "You are a helpful assistant that can interact with a computer to complete a specific sub-task."
+        instance (cat "Complete this specific sub-task: " branch-task "\n\n"
+                      "When you have fully completed the task, signal completion with:\n"
+                      "  echo 'BRANCH_COMPLETE: <concise result summary>'\n"
+                      "The result will be returned to an orchestrator — be concise but informative.")
+        init-msgs [{:role "system" :content system}
+                   {:role "user"   :content instance}]]
+    (loop [step 1 messages init-msgs]
+      (if (>= step max-branch-steps)
+        "Branch reached step limit without completing."
+        (let [result   (if (nil? temp) (leaf-llm-tool messages) (leaf-llm-tool messages temp))
+              command  (:command result)
+              tool-id  (:tool_call_id result)
+              asst-msg (:assistant-message result)]
+          (if verbose
+            (do
+              (println (cat "  [Branch-Bash] Step " (str step)))
+              (println (cat "  [Branch-Bash] Command: " command))))
+          (let [sh-result (io/sh command)
+                obs       (context-folding/cf-format-bash-observation sh-result)
+                msgs'     (conj messages
+                                asst-msg
+                                {:role    "user"
+                                 :content [{:type        "tool_result"
+                                            :tool_use_id tool-id
+                                            :content     obs}]})]
+            (if verbose (println (cat "  [Branch-Bash] Output: " obs)))
+            (if (context-folding/cf-bash-branch-complete? obs)
+              (do
+                (if verbose (println (cat "  [Branch-Bash] Complete: " (context-folding/cf-extract-bash-result obs))))
+                (context-folding/cf-extract-bash-result obs))
+              (recur (+ step 1) msgs'))))))))
+
 ;; ── Branch sub-loop ───────────────────────────────────────────────────────────
 ;; Runs a full ReAct loop for the given branch-task.
 ;; All intermediate steps are invisible to the main thread — folded by definition.
@@ -195,13 +256,18 @@
 ;;   :max-branch-steps   - sub-loop limit per branch (default: 7)
 ;;   :verbose            - print each step (default: false)
 ;;   :temperature        - LLM temperature (default: nil = provider default; 0 = deterministic)
+;;   :mode               - :search (default) or :bash (branches use bash tool-calling)
 (defn run [opts]
   (let [opts             (if (string? opts) {:task opts} opts)
         task             (or (:task opts) (throw "context-folding/run: :task required"))
         max-steps        (or (:max-steps opts) 5)
         max-branch-steps (or (:max-branch-steps opts) 7)
         verbose          (or (:verbose opts) false)
-        temp             (:temperature opts)]
+        temp             (:temperature opts)
+        mode             (or (:mode opts) :search)
+        branch-fn        (if (= mode :bash)
+                           context-folding/run-branch-bash
+                           context-folding/run-branch)]
     (loop [step 1 history []]
       (let [history-str (context-folding/cf-format-history history)
             prompt      (cat (context-folding/planning-few-shot)
@@ -223,7 +289,7 @@
           (:payload action)
 
           (= (:type action) :branch)
-          (let [branch-result (context-folding/run-branch (:prompt action) max-branch-steps verbose temp)
+          (let [branch-result (branch-fn (:prompt action) max-branch-steps verbose temp)
                 obs           (cat "[Branch result: " (or branch-result "no result") "]")
                 entry         {:step step :thought thought :action act-line :observation obs}]
             (if verbose (println (cat "Observation " (str step) ": " obs)))

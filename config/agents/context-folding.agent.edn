@@ -1,11 +1,12 @@
 ;; Context Folding agent (arxiv 2510.11967).
-;; Orchestrating planner with Search/Lookup branch sub-loops.
+;; Orchestrating planner with Search/Lookup/OpenPage or Bash branch sub-loops.
 
 {:base base-tc.agent.edn
  :name context-folding
  :doc "Context Folding agent — reduces LLM context with branching (arxiv 2510.11967)"
 
  :namespaces
- {web      stdlib/web
+ {io       stdlib/io
+  web      stdlib/web
   strings  stdlib/strings
   context-folding stdlib/context-folding}}

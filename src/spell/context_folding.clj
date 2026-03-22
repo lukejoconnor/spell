@@ -36,6 +36,7 @@ opts:
   :max-branch-steps   - sub-loop limit per branch (default: 7)
   :verbose            - print each step (default: false)
   :temperature        - LLM temperature (default: nil = provider default; 0 = deterministic)
+  :mode               - :search (default) or :bash (branches use bash tool-calling via io/sh)
 
 Execution model (matches FoldAgent from arxiv 2510.11967):
 1. Main loop: plain-text prompt completion via leaf-llm
@@ -49,10 +50,14 @@ Returns: the final answer string.
 Requires agent profile with web/ support."}}})
 
 (def ^:private context-folding-requires
-  {:run        ['strings 'web]
-   :run-branch ['strings 'web]
-   :cf-web-search ['web]
-   :cf-web-lookup ['strings]})
+  {:run                    ['strings 'web]
+   :run-branch             ['strings 'web]
+   :run-branch-bash        ['io]
+   :cf-web-search          ['web]
+   :cf-web-lookup          ['strings]
+   :cf-format-bash-observation []
+   :cf-bash-branch-complete?   ['strings]
+   :cf-extract-bash-result     ['strings]})
 
 (defn- defn-form? [form]
   (and (seq? form) (= 'defn (first form))))
