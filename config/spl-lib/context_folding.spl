@@ -161,38 +161,43 @@
       obs)))
 
 (defn run-branch-bash [branch-task max-branch-steps verbose temp]
-  (let [system   "You are a helpful assistant that can interact with a computer to complete a specific sub-task."
-        instance (cat "Complete this specific sub-task: " branch-task "\n\n"
-                      "When you have fully completed the task, signal completion with:\n"
+  (let [system   (react/react-system-prompt)
+        instance (cat (react/react-instance-template branch-task)
+                      "\n\nWhen the sub-task is complete, signal it with:\n"
                       "  echo 'BRANCH_COMPLETE: <concise result summary>'\n"
-                      "The result will be returned to an orchestrator — be concise but informative.")
+                      "instead of the usual COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT.\n"
+                      "The result summary will be returned to an orchestrator — be informative but concise.")
         init-msgs [{:role "system" :content system}
                    {:role "user"   :content instance}]]
     (loop [step 1 messages init-msgs]
-      (if (>= step max-branch-steps)
-        "Branch reached step limit without completing."
-        (let [result   (if (nil? temp) (leaf-llm-tool messages) (leaf-llm-tool messages temp))
-              command  (:command result)
-              tool-id  (:tool_call_id result)
-              asst-msg (:assistant-message result)]
-          (if verbose
+      (let [result   (if (nil? temp) (leaf-llm-tool messages) (leaf-llm-tool messages temp))
+            command  (:command result)
+            tool-id  (:tool_call_id result)
+            asst-msg (:assistant-message result)]
+        (if verbose
+          (do
+            (println (cat "  [Branch-Bash] Step " (str step)))
+            (println (cat "  [Branch-Bash] Command: " command))))
+        (let [sh-result (io/sh command)
+              obs       (context-folding/cf-format-bash-observation sh-result)
+              msgs'     (conj messages
+                              asst-msg
+                              {:role    "user"
+                               :content [{:type        "tool_result"
+                                          :tool_use_id tool-id
+                                          :content     obs}]})]
+          (if verbose (println (cat "  [Branch-Bash] Output: " obs)))
+          (cond
+            (context-folding/cf-bash-branch-complete? obs)
             (do
-              (println (cat "  [Branch-Bash] Step " (str step)))
-              (println (cat "  [Branch-Bash] Command: " command))))
-          (let [sh-result (io/sh command)
-                obs       (context-folding/cf-format-bash-observation sh-result)
-                msgs'     (conj messages
-                                asst-msg
-                                {:role    "user"
-                                 :content [{:type        "tool_result"
-                                            :tool_use_id tool-id
-                                            :content     obs}]})]
-            (if verbose (println (cat "  [Branch-Bash] Output: " obs)))
-            (if (context-folding/cf-bash-branch-complete? obs)
-              (do
-                (if verbose (println (cat "  [Branch-Bash] Complete: " (context-folding/cf-extract-bash-result obs))))
-                (context-folding/cf-extract-bash-result obs))
-              (recur (+ step 1) msgs'))))))))
+              (if verbose (println (cat "  [Branch-Bash] Complete: " (context-folding/cf-extract-bash-result obs))))
+              (context-folding/cf-extract-bash-result obs))
+
+            (>= step max-branch-steps)
+            "Branch reached step limit without completing."
+
+            :else
+            (recur (+ step 1) msgs'))))))
 
 ;; ── Branch sub-loop ───────────────────────────────────────────────────────────
 ;; Runs a full ReAct loop for the given branch-task.
@@ -286,7 +291,9 @@
             (println (cat "Action "  (str step) ": " act-line))))
         (cond
           (or (= (:type action) :finish) (>= step max-steps))
-          (:payload action)
+          (do
+            (println (:payload action))
+            (spell-clean-exit! (:payload action)))
 
           (= (:type action) :branch)
           (let [branch-result (branch-fn (:prompt action) max-branch-steps verbose temp)

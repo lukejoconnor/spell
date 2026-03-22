@@ -9,4 +9,5 @@
  {io       stdlib/io
   web      stdlib/web
   strings  stdlib/strings
+  react    stdlib/react
   context-folding stdlib/context-folding}}

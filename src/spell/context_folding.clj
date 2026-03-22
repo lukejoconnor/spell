@@ -52,7 +52,7 @@ Requires agent profile with web/ support."}}})
 (def ^:private context-folding-requires
   {:run                    ['strings 'web]
    :run-branch             ['strings 'web]
-   :run-branch-bash        ['io]
+   :run-branch-bash        ['io 'react]
    :cf-web-search          ['web]
    :cf-web-lookup          ['strings]
    :cf-format-bash-observation []
