@@ -340,14 +340,12 @@
           errors [(ex-info "error-1" {:status 500})
                   (ex-info "error-2" {:status 500})
                   (ex-info "error-3" {:status 500})]]
-      (try
-        (provider/call-with-retries
-          (fn [_]
-            (let [n @call-count]
-              (swap! call-count inc)
-              (throw (nth errors n))))
-          [0 0])
-        (catch Exception e
-          (is (= "error-3" (.getMessage e))
-              "should throw the last error, not the first")))
+      (is (thrown-with-msg? Exception #"error-3"
+            (provider/call-with-retries
+              (fn [_]
+                (let [n @call-count]
+                  (swap! call-count inc)
+                  (throw (nth errors n))))
+              [0 0]))
+          "should rethrow the last error when retries are exhausted")
       (is (= 3 @call-count) "should have attempted 1 initial + 2 retries"))))
