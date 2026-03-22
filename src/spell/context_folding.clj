@@ -33,7 +33,7 @@ opts:
   string              - task text
   :task               - task text (required if opts map)
   :max-steps          - main loop limit (default: 5)
-  :max-branch-steps   - sub-loop limit per branch (default: 7)
+  :max-branch-steps   - sub-loop limit per branch (default: 64, matching FoldAgent max_turn)
   :verbose            - print each step (default: false)
   :temperature        - LLM temperature (default: nil = provider default; 0 = deterministic)
   :mode               - :search (default) or :bash (branches use bash tool-calling via io/sh)
