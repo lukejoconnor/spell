@@ -21,7 +21,8 @@
                                    "-n" "spell.agent-test"
                                    "-n" "spell.web-test"
                                    "-n" "spell.api-test"
-                                   "-n" "spell.trace-test"]}
+                                   "-n" "spell.trace-test"
+                                   "-n" "spell.provider-test"]}
            ;; Slow tests — concurrency, I/O, filesystem watchers (~12s)
            :test-slow {:extra-paths ["test"]
                        :extra-deps {io.github.cognitect-labs/test-runner
