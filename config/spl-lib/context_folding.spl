@@ -94,7 +94,7 @@
                        (cat title " [" url "]: " snippet)))
                    (if (> (count results) 3)
                      (subvec (vec results) 0 3)
-                     results)))))))))))
+                     results)))))))))
 
 (defn cf-web-lookup [keyword passage from-idx]
   (let [sentences (vec (strings/split passage "\\. "))
@@ -218,7 +218,7 @@
             "Branch reached step limit without completing."
 
             :else
-            (recur (+ step 1) msgs'))))))
+            (recur (+ step 1) msgs')))))))
 
 ;; ── Branch sub-loop ───────────────────────────────────────────────────────────
 ;; Runs a full ReAct loop for the given branch-task.
