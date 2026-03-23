@@ -201,8 +201,8 @@ For example:
   (defn f [x] ...) ...
 
 You can also use rethink to delete a tool call result from context:
-    ...'(!call-now file (io/sh "ls big-dir"))
-    (def file-list "list of 1000 files")
+    ...'(!call-now file (io/ls "big-dir"))
+    (def file [{:name "file1.txt" :size 230} {:name "file2.txt" :size 481} {:name "subdir/" :size 4096} ...])
     (rethink "big-dir has 1000 files. The one I was looking for is big-dir/my-file.txt")
     '(!call-now file-text (io/read-lines "big-dir/my-file.txt"))
     ;; prunes the list of 1000 files from your context window!
@@ -214,9 +214,9 @@ You can also use rethink to delete a tool call result from context:
     ;; next turn: both the !peek-now call and file-lines are gone
 
 `persist` retains a computed value across prune/rethink pruning:
-    ...'(!call-now data (io/sh "ls big-dir"))
-    (def data "list of 1000 files")
-    (persist target (nth (strings/split data "\n") 42))
+    ...'(!call-now data (io/ls "big-dir"))
+    (def data [{:name "file1.txt" :size 230} {:name "file2.txt" :size 481} {:name "subdir/" :size 4096} ...])
+    (persist target (:name (nth data 42)))
     (prune 2)
     '(!extend)
     ;; next turn: data is pruned, target survives as a literal value

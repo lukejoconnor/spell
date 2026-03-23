@@ -283,12 +283,20 @@
   (.isDirectory (File. ^String path)))
 
 (defn ls
-  "List directory contents. Returns vector of filenames or {:error msg}."
+  "List directory contents. Returns vector of {:name :size} maps or {:error msg}."
   [path]
   (try
     (let [dir (File. ^String path)]
       (if (.isDirectory dir)
-        (vec (.list dir))
+        (if-let [entries (.listFiles dir)]
+          (->> entries
+               (map (fn [^File entry]
+                      {:name (str (.getName entry)
+                                  (when (.isDirectory entry) "/"))
+                       :size (.length entry)}))
+               (sort-by :name)
+               vec)
+          {:error (str "Could not list directory: " path)})
         {:error (str "Not a directory: " path)}))
     (catch Exception e
       {:error (str "Error listing directory: " (.getMessage e))})))
@@ -683,7 +691,8 @@
   (io/exec [cmd arg1 ...])                   — execute command directly (no shell)
   (io/watch-send path handle)                — watch directory, send events as message to handle
 
-Functions identical to Clojure: slurp, spit, write-file, ls, exists?, directory?, stat, delete, copy, move, mkdir, mkdirs, cwd, env, temp-file.
+Functions identical to Clojure: slurp, spit, write-file, exists?, directory?, stat, delete, copy, move, mkdir, mkdirs, cwd, env, temp-file.
+`ls` returns structured entries with `:name` and `:size`; directory names end with `/`.
 
 Use (!describe io :fn-name) for detailed docs on any function.
 All io/ calls are effect functions — quote them in the trailing expression.
@@ -742,7 +751,7 @@ Recommended usage pattern: Grep through large files.
     :write-file "Write content to file. Creates parent dirs. Returns {:ok path} or {:error msg}."
     :exists? "Check if path exists."
     :directory? "Check if path is a directory."
-    :ls "List directory contents. Returns vector of names or {:error msg}."
+    :ls "List directory contents. Returns vector of {:name :size} maps or {:error msg}."
     :mkdir "Create directory. Returns {:ok path} or {:error msg}."
     :mkdirs "Create directory tree. Returns {:ok path} or {:error msg}."
     :cwd "Get current working directory."
@@ -982,7 +991,7 @@ The content is the raw file contents. For numbered lines, use io/read-file."}
   (io/git \"status\")               — run an allowlisted read-only git subcommand
   (io/exists? path)                — check whether a path exists
   (io/directory? path)             — check whether a path is a directory
-  (io/ls path)                     — list directory contents
+  (io/ls path)                     — list directory contents as [{:name :size} ...]
   (io/cwd)                         — print current working directory
   (io/stat path)                   — inspect file metadata
   (io/env) / (io/env \"NAME\")      — read env vars
@@ -998,7 +1007,7 @@ running arbitrary commands. For process execution, add io-exec separately."
     :git "Run an allowlisted read-only git subcommand."
     :exists? "Check whether a path exists."
     :directory? "Check whether a path is a directory."
-    :ls "List directory contents."
+    :ls "List directory contents as [{:name :size} ...]."
     :cwd "Get the current working directory."
     :stat "Inspect file metadata."
     :env "Read one env var or all env vars."}

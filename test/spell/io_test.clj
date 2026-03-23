@@ -431,10 +431,14 @@
 (deftest ls-test
   (spit (str test-dir "/a.txt") "a")
   (spit (str test-dir "/b.txt") "b")
+  (.mkdirs (jio/file test-dir "subdir"))
   (let [files (io/ls test-dir)]
     (is (vector? files))
-    (is (contains? (set files) "a.txt"))
-    (is (contains? (set files) "b.txt"))))
+    (is (= ["a.txt" "b.txt" "subdir/"] (mapv :name files)))
+    (is (= 1 (:size (first files))))
+    (is (= 1 (:size (second files))))
+    (is (integer? (:size (nth files 2))))
+    (is (every? #(and (contains? % :name) (contains? % :size)) files))))
 
 (deftest mkdir-test
   (let [path (str test-dir "/new-dir")]

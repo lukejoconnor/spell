@@ -47,7 +47,7 @@
          "Usage:\n"
          "  '(!describe io)                 — first turn for unfamiliar effect namespace\n"
          "  '(!describe io :sh)             — detailed doc for one function\n"
-         "  '(!call-now files (io/sh \"ls\")) — one effect call in trailing expression\n"
+         "  '(!call-now files (io/ls \".\"))  — one effect call in trailing expression\n"
          "  '(do (io/cwd) (io/ls \".\"))      — chain effect calls in one trailing expression\n"
          "  '(!describe agents globals)     — multiple namespaces in one !describe call\n"
          "\n"
