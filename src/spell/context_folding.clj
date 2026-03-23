@@ -50,10 +50,10 @@ Returns: the final answer string.
 Requires agent profile with web/ support."}}})
 
 (def ^:private context-folding-requires
-  {:run                    ['strings 'web]
-   :run-branch             ['strings 'web]
+  {:run                    ['strings 'web 'io]
+   :run-branch             ['strings 'web 'io]
    :run-branch-bash        ['io 'react]
-   :cf-web-search          ['web]
+   :cf-web-search          ['web 'io 'strings]
    :cf-web-lookup          ['strings]
    :cf-format-bash-observation []
    :cf-bash-branch-complete?   ['strings]

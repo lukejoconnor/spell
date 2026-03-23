@@ -1,0 +1,9 @@
+;; Context Folding agent for Seed-OSS-36B via vLLM (message transport, no prefill).
+{:base base-msg.agent.edn
+ :name context-folding-seed36b
+ :namespaces
+ {io       stdlib/io
+  web      stdlib/web
+  strings  stdlib/strings
+  react    stdlib/react
+  context-folding stdlib/context-folding}}

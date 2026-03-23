@@ -64,16 +64,37 @@
 
 ;; ── Shared utilities ──────────────────────────────────────────────────────────
 
-(defn cf-web-search [query]
-  (let [resp    (web/search query)
-        results (if (map? resp) (:ok resp) resp)]
-    (if (or (nil? results) (empty? results))
-      (cat "No results found for: " query)
-      (strings/join " | "
-        (map (fn [r] (cat (:title r) " [" (:url r) "]: " (:snippet r)))
-             (if (> (count results) 3)
-               (subvec (vec results) 0 3)
-               results))))))
+(defn cf-web-search [query search-url]
+  (if (nil? search-url)
+    (let [resp    (web/search query)
+          results (if (map? resp) (:ok resp) resp)]
+      (if (or (nil? results) (empty? results))
+        (cat "No results found for: " query)
+        (strings/join " | "
+          (map (fn [r] (cat (:title r) " [" (:url r) "]: " (:snippet r)))
+               (if (> (count results) 3)
+                 (subvec (vec results) 0 3)
+                 results)))))
+    (let [escaped  (strings/replace (strings/replace query "\\" "\\\\") "\"" "\\\"")
+          body     (cat "{\"query\":\"" escaped "\",\"k\":20}")
+          cmd      (cat "curl -s -X POST -H 'Content-Type: application/json' -d '" body "' " search-url "/search")
+          result   (io/sh cmd)
+          raw      (or (:out result) "")]
+      (if (strings/blank? raw)
+        (cat "No results from local search server for: " query)
+        (let [parsed  (read-string raw)
+              results (or (:results parsed) (get parsed "results") [])]
+          (if (empty? results)
+            (cat "No results found for: " query)
+            (strings/join " | "
+              (map (fn [r]
+                     (let [title   (or (:title r) (get r "title") "")
+                           url     (or (:url r) (get r "url") "")
+                           snippet (or (:snippet r) (get r "snippet") (or (:text r) (get r "text") ""))]
+                       (cat title " [" url "]: " snippet)))
+                   (if (> (count results) 3)
+                     (subvec (vec results) 0 3)
+                     results)))))))))))
 
 (defn cf-web-lookup [keyword passage from-idx]
   (let [sentences (vec (strings/split passage "\\. "))
@@ -202,7 +223,7 @@
 ;; ── Branch sub-loop ───────────────────────────────────────────────────────────
 ;; Runs a full ReAct loop for the given branch-task.
 ;; All intermediate steps are invisible to the main thread — folded by definition.
-(defn run-branch [branch-task max-branch-steps verbose temp]
+(defn run-branch [branch-task max-branch-steps verbose temp search-url]
   (loop [step 1 history [] passage "" lookup-pos 0]
     (let [history-str (context-folding/cf-format-history history)
           prompt      (cat (context-folding/branch-few-shot)
@@ -226,7 +247,7 @@
           (:payload action))
 
         (= (:type action) :search)
-        (let [obs   (context-folding/cf-web-search (:payload action))
+        (let [obs   (context-folding/cf-web-search (:payload action) search-url)
               entry {:step step :thought thought :action act-line :observation obs}]
           (if verbose (println (cat "  [Branch] Observation " (str step) ": " obs)))
           (recur (+ step 1) (conj history entry) obs 0))
@@ -269,6 +290,7 @@
         max-branch-steps (or (:max-branch-steps opts) 64)
         verbose          (or (:verbose opts) false)
         temp             (:temperature opts)
+        search-url       (:search-url opts)
         mode             (or (:mode opts) :search)
         branch-fn        (if (= mode :bash)
                            context-folding/run-branch-bash
@@ -296,7 +318,7 @@
             (spell-clean-exit! (:payload action)))
 
           (= (:type action) :branch)
-          (let [branch-result (branch-fn (:prompt action) max-branch-steps verbose temp)
+          (let [branch-result (branch-fn (:prompt action) max-branch-steps verbose temp search-url)
                 obs           (cat "[Branch result: " (or branch-result "no result") "]")
                 entry         {:step step :thought thought :action act-line :observation obs}]
             (if verbose (println (cat "Observation " (str step) ": " obs)))
