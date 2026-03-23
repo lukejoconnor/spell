@@ -35,6 +35,16 @@
       (is (runtime/compiled-agent? (:summarizer llms-ns)))
       (is (= "leaf response" (th/run-agent-prefix (:summarizer llms-ns) "(do "))))))
 
+(deftest resolve-llms-1-arity-test
+  (testing "llms function accepts 1-arity (auto-generates handle)"
+    (let [prov (provider/test-provider {:response "\"one-arg\")"})
+          llms-map {'helper {:doc "Helper agent"}}
+          llms-ns (agent/resolve-llms llms-map llm/compile-agent agent/compile-agent-spec nil prov nil)
+          helper-fn (:helper llms-ns)]
+      (is (runtime/compiled-agent? helper-fn))
+      ;; 1-arity call should work (auto-generated handle)
+      (is (= "one-arg" (th/run-agent-prefix helper-fn "(do "))))))
+
 (deftest resolve-llms-inline-eval-test
   (testing "inline eval spec resolves to a compiled agent returning evaluated result"
     (let [prov (provider/test-provider {:response "42)"})

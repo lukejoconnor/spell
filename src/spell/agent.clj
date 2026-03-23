@@ -434,8 +434,9 @@
                          (into {} (map (fn [[k _]]
                                          [(keyword k)
                                           (with-meta
-                                            (fn [prompt handle]
-                                              (@(get agent-atoms k) prompt handle))
+                                            (fn
+                                              ([prompt] (@(get agent-atoms k) prompt (keyword (gensym (str (name k) "-")))))
+                                              ([prompt handle] (@(get agent-atoms k) prompt handle)))
                                             {:spell/compiled-agent true})])
                                        llms-map)))]
       ;; Phase 2: resolve each spec and fill atoms
