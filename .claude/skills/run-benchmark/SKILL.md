@@ -63,13 +63,50 @@ cd benchmarking && uv run python bench.py general --dataset gsm8k --condition sp
 cd benchmarking && uv run python bench.py swebench --dataset mini --condition spell
 ```
 
+### 4b. Init programs and trailing expressions
+
+When the user specifies an init program or trailing expression (e.g., "use init program with `!describe io`"), you need to pass it via the `--trailing` flag.
+
+**How it works:** The harness wraps the benchmark prompt into a Spell init program using `build_spell_init(prompt, trailing)`. The trailing expression controls what the agent does after the prompt is loaded into context. Default trailing is `'(!extend)` (just continue with an LLM call). For math benchmarks, the default is `'(!describe math)` (load math namespace docs first).
+
+**Common trailing patterns:**
+
+| Trailing | Effect |
+|----------|--------|
+| `'(!extend)` | Default — just continue with an LLM call |
+| `'(!describe math)` | Load math namespace docs, then respond |
+| `'(!describe io)` | Load io namespace docs, then respond |
+| `'(do (!describe io) (!extend))` | Load io docs, then continue with a fresh call |
+| `'(!describe io web)` | Load multiple namespace docs |
+
+**Shell quoting — critical:** The trailing expression contains `!` which triggers zsh history expansion inside double quotes. Either:
+- Disable history expansion: `set +H` before the command
+- Or use single quotes around the entire argument (but then the inner `'` quote char needs careful handling)
+
+The safest pattern is:
+```bash
+set +H && cd benchmarking && uv run python bench.py swebench \
+  --dataset lite --condition spell --model anthropic-tc \
+  --trailing "'(do (!describe io) (!extend))"
+```
+
+**Always dry-run first** when using a custom trailing to verify the init program is correct:
+```bash
+set +H && cd benchmarking && uv run python bench.py swebench \
+  --dataset lite --condition spell --model anthropic-tc \
+  --trailing "'(do (!describe io) (!extend))" \
+  --items task_id_1 --dry-run --n 1
+```
+
+Check the dry-run output for `"trailing":` — it should show the expression with unescaped `!`, e.g. `"trailing": "'(do (!describe io) (!extend))"`. If you see `\!` or `'\'(...)` the quoting is wrong.
+
 ### 5. Investigate traces — 100% coverage, comprehensive detail
 
 **The user CONSTANTLY requests more detail from trace analysis. Do not give terse summaries. Every trace must be analyzed, and every analysis must be comprehensive.**
 
 **100% trace coverage is MANDATORY.** Dispatch a `trace-checker` subagent for EVERY item in the run — not just errors, not just interesting ones, ALL of them. P5 (both right) traces are just as important as P1 (errors) because they reveal technique differences, cost patterns, and Spell feature usage. Skipping "boring" traces means missing the full picture.
 
-**Summary-first triage:** Before dispatching trace investigation subagents, run `spell.trace-tool --summary` on the trace root for a quick overview of tracked forms, namespace usage, errors, and investigation flags:
+**Summary-first triage:** Before dispatching trace investigation subagents, run `spell.trace-tool --summary` on the trace root for a quick overview of tracked forms, namespace usage, errors, and investigation flags. Also run `--context-trajectory` on the trace root for per-trace character trajectories:
 
 ```bash
 # Human-readable batch summary
@@ -77,6 +114,9 @@ clj -M -m spell.trace-tool --trace-root traces/2026-03-08T10-00-00 --summary
 
 # TSV for sorting/filtering many traces
 clj -M -m spell.trace-tool --trace-root traces/2026-03-08T10-00-00 --summary --tsv
+
+# Context trajectories across all traces
+clj -M -m spell.trace-tool --trace-root traces/2026-03-08T10-00-00 --context-trajectory
 ```
 
 Use investigation flags and the priority table below to decide investigation order (NOT which to skip — you skip NONE).
@@ -112,11 +152,13 @@ Investigation priority (determines ORDER, not coverage):
 
 Every item in your results must have been individually examined by a subagent that returned real findings to you. If you catch yourself writing investigation results without having dispatched subagents, STOP and go do the actual work.
 
-**Note:** `spell.trace-tool` has additional modes beyond `--summary` (skeletonize nodes, count function calls, rethink reports). The `trace-checker` subagent has full documentation. If you need the tool directly in the main conversation, refer to `.claude/agents/trace-checker.md` for usage.
+**Note:** `spell.trace-tool` has additional modes beyond `--summary` (skeletonize nodes, count function calls, rethink reports, context trajectory). The `trace-checker` subagent has full documentation. If you need the tool directly in the main conversation, refer to `.claude/agents/trace-checker.md` for usage.
 
 ### 6. Scoring and reporting
 
-**Source of truth:** Always score from the benchmark harness's own output, never from agent self-reports. Spell's `ok: true` means "runtime didn't crash" — only the harness `is_resolved: true` means "tests passed." These diverge often.
+**Source of truth for SWE-bench:** Use `same_container_resolved` from the unified JSONL as the default scoring source. This runs the harness tests inside the same container where the agent made changes, immediately after generation — no separate eval step needed. Only run standalone `bench.py swebench-eval` (fresh-container evaluation) when the user explicitly requests it, or when same-container results look suspicious (e.g., patches that modify test files). Report results from `same_container_resolved` as soon as generation completes; do not wait for or run a separate eval pass unless asked.
+
+**Source of truth (non-SWE-bench):** Always score from the benchmark harness's own output, never from agent self-reports. Spell's `ok: true` means "runtime didn't crash" — only the harness `is_resolved: true` means "tests passed." These diverge often.
 
 **Win/loss definition:** A "Spell win" means Spell solved a task that the baseline (same model) did not. Comparisons are always same-model: Spell/Opus vs CC/Opus, or Spell/Codex vs Codex/Codex. A "Spell loss" is the reverse — baseline solved it, Spell didn't.
 
@@ -169,6 +211,9 @@ Include error categorization when there are failures:
 Summary of Spell feature usage across ALL traces in the run:
 - Which features were commonly used vs rarely used vs never used
 - Patterns in how features were employed (e.g., "rethink used in 8/10 traces, always to prune tool output")
+- **Prune/peek patterns:** How often was prune used, and was it paired with !peek? What was typically pruned? Total characters pruned across the run.
+- **Character trajectory patterns:** Typical context growth patterns across the run (stable, growing, sawtooth). Median start/peak/final context sizes.
+- **IO breakdown:** io/sh usage vs structured io/ functions (read-file, write-file, list-dir). Is the agent shelling out or using native capabilities?
 - Any surprising usage patterns or absences
 
 #### Per-Item Analysis
@@ -242,6 +287,7 @@ Method keys: `spell_opus`, `cc_opus`, `oneshot_opus`, `spell_codex`, `codex_cli`
 
 ## Best Practices
 
+- **Model names must be exact.** Always check `config/providers/*.provider.edn` for the correct model ID string before running. Common pitfall: `gpt-5.4-codex` does not exist — the correct ID is `gpt-5.4` (routed via `codex-tc:gpt-5.4`). Using an incorrect model ID causes "mandatory tool-call request failed" errors that waste the entire run.
 - **Always evaluate.** Never use `--no-evaluate`. The user wants to see evaluation results as soon as possible. SWE-bench evaluates by default after generation; do not disable this.
 - **Use `--trace` on every run.** Tracing is on by default for `general` and `swebench`. Without traces, post-hoc investigation is impossible.
 - **Use `--dry-run`** (Python harness) to verify config before committing to a run.
@@ -250,3 +296,45 @@ Method keys: `spell_opus`, `cc_opus`, `oneshot_opus`, `spell_codex`, `codex_cli`
 - **Multiple runs: latest is canonical.** When a task has been run multiple times, report the result from the latest run unless explicitly directed otherwise.
 - **Never fabricate.** If you haven't read a trace, you don't know what's in it. Dispatch subagents. Wait for results. Report what they found.
 - **Use `uv` for all Python work.** Always use `uv run` (not `python3`) to invoke Python scripts.
+
+## SWE-bench Container Setup (ARM/Colima)
+
+SWE-bench generation now runs inside official per-instance Docker containers (PR #19). This requires setup on ARM Macs with Colima:
+
+### DOCKER_HOST
+
+The Python Docker SDK (`docker.from_env()`) needs `DOCKER_HOST` set. Colima doesn't use `/var/run/docker.sock`:
+
+```bash
+export DOCKER_HOST="unix://$HOME/.colima/default/docker.sock"
+```
+
+Set this **before** running any `bench.py swebench` command. The eval path has an auto-fallback; the generation path does not.
+
+### SWE-bench Environment Images
+
+Generation requires pre-built `sweb.env.*` and `sweb.base.*` Docker images (x86_64, emulated on ARM). These are built once per unique environment and cached. First-time build takes ~5-15 min per env image.
+
+**Build images for a set of items before running:**
+
+```python
+export DOCKER_HOST="unix://$HOME/.colima/default/docker.sock"
+cd benchmarking && uv run python -c "
+import docker
+from swebench.harness.test_spec.test_spec import make_test_spec
+from swebench.harness.docker_build import build_env_images
+from src.datasets import load_swebench_lite
+import random
+
+client = docker.from_env()
+items = load_swebench_lite()  # or load_swebench_verified, etc.
+random.seed(19)
+sampled = random.sample(items, 32)
+specs = [make_test_spec(i.raw_instance, namespace=None, env_image_tag='latest', instance_image_tag='latest', arch='x86_64') for i in sampled]
+build_env_images(client, specs, max_workers=2)
+"
+```
+
+**Stale base image gotcha:** If `sweb.base.py.x86_64:latest` was built with an older Docker/Colima version, env image builds fail with `no match for platform in manifest`. Fix: `docker rmi sweb.base.py.x86_64:latest` and rebuild.
+
+**Disk pressure:** Each env image is 1-4 GB. For large runs (32+ items), monitor Colima VM disk. Use `docker system prune` between batches if needed, but be aware this removes cached env images that take time to rebuild.
