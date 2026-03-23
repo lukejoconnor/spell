@@ -162,8 +162,8 @@ For example:
   (defn f [x] ...) ...
 
 You can also use rethink to delete a tool call result from context:
-    ...'(!call-now file (io/bash "ls big-dir"))
-    (def file-list "list of 1000 files")
+    ...'(!call-now file (io/ls "big-dir"))
+    (def file [{:name "file1.txt" :size 230} {:name "file2.txt" :size 481} {:name "subdir/" :size 4096} ...])
     (rethink "big-dir has 1000 files. The one I was looking for is big-dir/my-file.txt")
     '(!call-now file-text (io/read-lines "big-dir/my-file.txt"))
     ;; prunes the list of 1000 files from your context window!
@@ -175,9 +175,9 @@ You can also use rethink to delete a tool call result from context:
     ;; next turn: both the !peek-now call and file-lines are gone
 
 `persist` retains a computed value across prune/rethink pruning:
-    ...'(!call-now data (io/bash "ls big-dir"))
-    (def data "list of 1000 files")
-    (persist target (nth (strings/split data "\n") 42))
+    ...'(!call-now data (io/ls "big-dir"))
+    (def data [{:name "file1.txt" :size 230} {:name "file2.txt" :size 481} {:name "subdir/" :size 4096} ...])
+    (persist target (:name (nth data 42)))
     (prune 2)
     '(!extend)
     ;; next turn: data is pruned, target survives as a literal value
@@ -199,6 +199,8 @@ Core namespaces (always available, usable anywhere):
 
 Effect namespaces (configurable, only usable in the quoted trailing expression):
   These are listed below if available to you. They include things like io and inter-agent communication.
+
+Prefer dedicated io/ functions (io/read-file, io/read-lines, io/grep, io/glob, io/str-replace, io/replace-lines) over io/sh with shell equivalents. Reserve io/sh for commands with no io/ counterpart (running tests, installing packages, git write operations).
 
 On first use of an unfamiliar effect namespace, consider using '(!describe ns) to check available functions. '(!describe ns1 ns2) also works. '(!describe ns :function-name) describes one function within a namespace. These can be mixed: '(!describe ns1 ns2 :key) describes ns1 in full and one item from ns2. Skip !describe when the prompt or context already provides the calls you need.
 
