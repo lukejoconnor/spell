@@ -128,8 +128,9 @@
                           :usage usage-atom})
                        (catch Error e
                          ;; SpellCleanExitError (and other Errors) — treat as clean exit.
-                         ;; Program already printed its output; return nil to avoid double-printing.
-                         {:result nil
+                         ;; Use the Error message as the result (it carries the answer).
+                         {:result (let [msg (.getMessage e)]
+                                    (when-not (= msg "clean exit") msg))
                           :usage usage-atom}))]
           (when trace-atom
             (write-trace-once! true))
