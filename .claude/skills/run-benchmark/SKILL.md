@@ -52,6 +52,7 @@ Guidelines:
 - Always use `--trace` to capture traces and track costs + latency.
 - After a pilot or first batch, estimate total cost for the full run. If estimated total cost exceeds $50, consult the user before continuing.
 - Detect anomalous results and pause further analyses: for example, if a batch completes immediately with 0/5 score.
+- **Disk check before each batch (SWE-bench/container runs):** Before dispatching a batch, check Colima VM disk and prune if needed. Each SWE-bench item generates ~5-6 GB of Docker artifacts (instance images + containers). Run `DOCKER_HOST="unix://$HOME/.colima/default/docker.sock" docker system df` and if reclaimable space exceeds 20 GB or free space is below 50 GB, run `docker container prune -f && docker image prune -f` to reclaim stopped containers and dangling images. Do NOT prune env images (`sweb.env.*`) — they are shared and expensive to rebuild.
 
 **Default trace location:** `traces/YYYY-MM-DD'T'HH-mm-ss/` relative to the project root.
 
@@ -184,13 +185,19 @@ When manual scoring applies, dispatch `trace-checker` subagents to verify each d
 X% (correct/total) — N errors, M wrong
 ```
 
+**Result ordering.** Always present results in a consistent order to reduce cognitive load:
+1. Spell before comparator (e.g., Spell row above CC row)
+2. If multiple models, alphabetical by model name (e.g., GPT before Opus)
+
+**Method naming.** Use `[harness]/[model]` shorthand consistently in tables and prose: e.g., Spell/Opus, CC/Opus, Spell/GPT-5.4, Codex/GPT-5.4, Codex/Codex (the last = gpt-5.3-codex).
+
 For comparison runs, use a table:
 
 ```markdown
 | Runner | Accuracy | Errors | Wrong | Cost | Median Latency |
 |--------|----------|--------|-------|------|----------------|
-| Spell  | 90% (27/30) | 1 | 2 | $20.14 | 31s |
-| CC     | 100% (30/30) | 0 | 0 | $7.44 | 37s |
+| Spell/Opus  | 90% (27/30) | 1 | 2 | $20.14 | 31s |
+| CC/Opus     | 100% (30/30) | 0 | 0 | $7.44 | 37s |
 ```
 
 Include error categorization when there are failures:

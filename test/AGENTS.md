@@ -37,14 +37,14 @@ Spell uses prompt-as-prefix semantics: the prompt IS the beginning of the progra
 
 For a prompt `"(do "`, the response `"42)"` produces the full program `(do 42)`.
 
-For a prompt `"(eval (do '"`, the response `"(io/bash \"ls\")))"`produces `(eval (do '(io/bash "ls")))` — the quote + double-eval pattern gives access to effect namespaces.
+For a prompt `"(eval (do '"`, the response `"(io/sh \"ls\")))"`produces `(eval (do '(io/sh "ls")))` — the quote + double-eval pattern gives access to effect namespaces.
 
 Common prompt/response patterns in tests:
 
 | Prompt | Response | Full program | Notes |
 |--------|----------|-------------|-------|
 | `(do ` | `42)` | `(do 42)` | Simplest case |
-| `(eval (do '` | `(io/bash "ls")))` | `(eval (do '(io/bash "ls")))` | Effect namespace access |
+| `(eval (do '` | `(io/sh "ls")))` | `(eval (do '(io/sh "ls")))` | Effect namespace access |
 | `(eval '(do ` | `(globals/get :x))` | `(eval '(do (globals/get :x)))` | Effect via eval |
 | `(quine completion (eval (do ` | `42))` | `(quine completion (eval (do 42)))` | With quine wrapper |
 

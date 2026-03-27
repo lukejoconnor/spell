@@ -51,6 +51,9 @@ clj -M -m spell.trace-tool --trace-dir <TASK_DIR> --fn think --fn '!print' --fn 
 # Rethink report: each rethink + preceding expression
 clj -M -m spell.trace-tool --trace-dir <TASK_DIR> --rethinks
 
+# Context trajectory: per-node character count with pruning markers
+clj -M -m spell.trace-tool --trace-dir <TASK_DIR> --context-trajectory
+
 # Aggregate call counts across all nodes for whole-trace stats
 clj -M -m spell.trace-tool --trace-dir <TASK_DIR> --count-all-nodes --fn think --fn rethink --fn '!print' --fn defn --fn '!call-now' --fn '!extend'
 ```
@@ -59,8 +62,9 @@ For every Spell trace, you MUST report on ALL of these feature categories (stati
 
 | Category | What to look for |
 |----------|-----------------|
-| **Context management** | `rethink`, `peek`, `persist`, `!compact` — how many rethinks? What was pruned? Was pruning strategic or mechanical? |
+| **Context management** | `rethink`, `prune`, `peek`/`!peek`/`!peek-now`, `persist`, `!compact` — how many prune/rethink markers? What was pruned and how many characters? Was pruning strategic or mechanical? Note: `prune` is normally paired with `!peek` (peek at context, then prune it). Report character count trajectory over turns using `--context-trajectory` output: where did context grow, where was it pruned back? Report total characters pruned/rethought/peeked. |
 | **Self-calls** | `!llm-self`, `!call-now`, `!print`, `!extend` — how many LLM calls? What was the call chain structure? |
+| **IO usage** | `io/sh` vs other `io/` functions (`io/read-file`, `io/write-file`, `io/list-dir`, etc.) — is the agent using structured file operations or shelling out for everything? High `io/sh` relative to other `io/` functions suggests the agent is treating Spell as a shell wrapper rather than using its native capabilities. Report the breakdown. |
 | **In-language computation** | `math/`, `strings/`, `defn`, `fn` — did the agent compute inline or delegate to tools? |
 | **Orchestration** | `agents/spawn`, `agents/!ask`, `globals/`, `patterns/team` — any multi-agent patterns? |
 | **Concurrency** | `future`, `blocking/await`, `!ask-await`, `pmap` — any parallel work? |
@@ -167,7 +171,8 @@ For CC: read `agent.log` or `stream-json/` output for the actual error.
 ## Investigation Checklist
 
 Use this as a reference for what to look for in Spell traces:
-- **Context management:** rethink/peek/persist patterns, large pruned regions, `!compact`
+- **Context management:** prune/rethink/peek patterns (prune is normally paired with !peek), total chars pruned, character trajectory over turns, `!compact`
+- **IO usage:** io/sh vs structured io/ functions (read-file, write-file, list-dir) — is the agent shelling out or using native capabilities?
 - **Inter-agent communication:** `agents/` usage, `spawn`/`!ask` coordination, `globals/` reads/writes
 - **Emergent patterns:** `patterns/` usage not directly scaffolded by the prompt
 - **In-language computation:** nontrivial `math/` or `strings/` usage, helper definitions via `defn`/`fn`
@@ -189,8 +194,10 @@ Return your findings in EXACTLY this format. **Every section must be substantive
 **Narrative:** [3-5 sentence description of what the agent did, structured as a narrative arc: what was the initial plan? How did execution unfold? Where were the critical decision points? What was the final state?]
 
 **Feature usage inventory:**
-- Context management: [used/not used — if used: how many rethinks, what was pruned, was it strategic, to what effect]
+- Context management: [used/not used — how many prune/rethink markers, total chars pruned, was prune paired with peek (!peek), was pruning strategic, to what effect]
+- Character trajectory: [from `--context-trajectory`: starting size, peak size, final size, total chars pruned/rethought/peeked. Where did context grow and where was it pruned back? Was the trajectory stable, growing, or sawtooth?]
 - Self-calls: [call chain structure, number of LLM calls, what each major call accomplished]
+- IO usage: [io/sh count vs other io/ functions (read-file, write-file, list-dir, etc.). Is the agent shelling out or using structured operations?]
 - In-language computation: [any defn/fn definitions, math/string operations, inline computation vs tool delegation]
 - Orchestration: [spawn/ask patterns, multi-agent coordination, or "not used"]
 - Concurrency: [future/await usage, parallel work, or "not used"]

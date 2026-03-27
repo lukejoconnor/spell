@@ -9,6 +9,10 @@ This directory contains runtime configuration used by Spell execution and benchm
 - `providers/`: declarative provider specs (`.provider.edn`).
 - `spl-lib/`: reusable Spell library files (`patterns.spl`).
 
+## Providers
+
+Primary providers: Anthropic tool-call (`anthropic-tc`) and Codex tool-call (`codex-tc`). Test provider for unit tests. See `config/providers/` for all `.provider.edn` files.
+
 ## How Config Is Loaded
 
 ### Agent Files (`config/agents/*.agent.edn`)

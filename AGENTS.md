@@ -24,11 +24,7 @@ See `writeup/language-design-v2.md` for full semantics. Key concepts:
 
 ## Providers and Agents
 
-Primary providers: Anthropic tool-call (`anthropic-tc`) and Codex tool-call (`codex-tc`). Test provider for unit tests. See `config/providers/` for all `.provider.edn` files and `config/CLAUDE.md` for loading semantics.
-
-Three base agents (prefill, message, tool-call) in `config/agents/base-*.agent.edn`, plus `base-glm` for GLM-5 (experimental; currently unreliable — see `glm5-failure-modes`). Specialized agents inherit and add namespaces. See `config/agents/` for full listing and `config/CLAUDE.md` for inheritance rules.
-
-Agents with `:llms` in their `.agent.edn` get a dynamically generated `llms/` namespace with named sub-LLM variants.
+See `config/CLAUDE.md` for provider/agent details. Base agents: `base-pf`, `base-msg`, `base-tc`, `base-glm` (GLM-5, experimental — see `glm5-failure-modes`). Agents with `:llms` get a dynamic `llms/` namespace.
 
 ## CLI and API
 
@@ -52,10 +48,12 @@ Agents with `:llms` in their `.agent.edn` get a dynamically generated `llms/` na
 | `src/spell/cli.clj` | CLI implementation. |
 | `src/spell/benchmark_api.clj` | JSON benchmark API bridge. |
 | `config/prompts/minimal.txt`, `config/prompts/minimal-no-prefill.txt`, `config/prompts/minimal-no-prefill-toolcall.txt` | Base prompt variants; provider-agnostic behavior changes should be applied consistently to all three unless intentionally variant-specific. |
+| `notebook/ERROR_WATCHLIST.md` | Low-frequency observed errors not yet warranting runtime intervention. |
 
 ## Rules
 
 - **No backwards compatibility.** This is a nascent project with effectively zero users. Do not add compatibility shims, legacy placeholders, migration paths, reopen support for prior serialized shapes, or deprecated aliases unless the user explicitly asks for them. Prefer replacing old paths outright when that simplifies the system.
+- **Redesign means replace, not accumulate.** When switching from approach A to approach B, the plan must include deleting approach A. Do not leave the old approach in the codebase "for now" or "for compatibility." We want fewer options, not more; one approach, not two. If the plan doesn't explicitly include removing the old code/config/files, the plan is incomplete.
 - **Model names must be exact.** Never guess or extrapolate model identifiers (e.g., don't assume `gpt-5.4-codex` exists because `gpt-5.3-codex` does). Always consult the provider's API docs or web search to confirm the exact model ID string and pricing before adding models or making API calls.
 - When the user asks for a plan, always enter plan mode (using the EnterPlanMode tool). After the plan is created, tell the user the filesystem path where the plan file is located.
 - When planning any change, consider whether this doc (CLAUDE.md) should be updated; if so, add that to the plan.

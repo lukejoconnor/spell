@@ -702,9 +702,24 @@ Common mistakes:
 
 1. calling io/* outside the quoted trailing expression
 2. forgetting !call-now when you need the result: '(io/read-file \"x\") evaluates but the result is lost
-3. using io/sh for everything
+3. using io/sh for everything — use io/str-replace to patch files, io/read-file to read them, io/grep to search them
 
 In examples, ▌ marks cursor position in a completion.
+
+Recommended usage pattern: Patch a file with io/str-replace.
+
+Use io/str-replace when you know the exact text to change. It avoids shell escaping issues entirely.
+  ...▌'(!call-now _ (io/str-replace \"/testbed/module.py\"
+        \"        for t in diophantine(eq, param)}\"
+        \"        for t in diophantine(eq, param, permute=permute)}\"))
+
+Recommended usage pattern: Write a script to a temp file and run it in one turn.
+
+When you need to run a multi-line Python script, write it to a file first to avoid shell heredoc escaping errors.
+  ...(def verify-script \"import sys\\nfrom pathlib import Path\\n...\")
+  ▌'(!call-now _ (io/write-file \"/tmp/verify.py\" verify-script) result (io/sh \"python /tmp/verify.py\"))
+
+Do NOT embed multi-line Python in io/sh heredocs — nested quoting between Spell strings, shell heredocs, and Python strings is fragile and causes SyntaxError.
 
 Recommended usage pattern: Read and replace by line number.
 

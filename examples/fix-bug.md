@@ -16,7 +16,7 @@ spell examples/fix-bug.spl
 
 This example demonstrates **data-returning delegation**:
 
-1. **Outer LLM** runs tests via `!call-now` + `io/bash` -> sees `FAIL: average([1, 2, 3, 4, 5]) = 2.0, expected 3.0`
+1. **Outer LLM** runs tests via `!call-now` + `io/sh` -> sees `FAIL: average([1, 2, 3, 4, 5]) = 2.0, expected 3.0`
 2. **Outer LLM** reads the file content via `!call-now` + `io/read-file`
 3. **Outer LLM** delegates to **child LLM** via `(!llm-self (wrap-cat "Test failure: " test-output "\n\nSource:\n" file-source "\n\n..."))`
 4. **Child LLM** analyzes the failure and returns a **data structure**: `{:old "..." :new "..."}`
