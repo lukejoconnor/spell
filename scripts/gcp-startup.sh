@@ -99,16 +99,18 @@ clone_repo() {
   local dest_dir="$2"
   local ref="$3"
   local github_token="$4"
-  local auth_url="$repo_url"
+  local git_args=()
 
   if [[ -n "$github_token" && "$repo_url" == https://github.com/* ]]; then
-    auth_url="https://x-access-token:${github_token}@${repo_url#https://}"
+    local auth_header
+    auth_header="$(printf 'x-access-token:%s' "$github_token" | base64 | tr -d '\n')"
+    git_args=(-c "http.extraheader=AUTHORIZATION: basic ${auth_header}")
   fi
 
-  git clone "$auth_url" "$dest_dir"
+  git "${git_args[@]}" clone "$repo_url" "$dest_dir"
   git -C "$dest_dir" remote set-url origin "$repo_url"
   if [[ -n "$ref" && "$ref" != "HEAD" ]]; then
-    git -C "$dest_dir" fetch origin "$ref" --depth 1
+    git -C "$dest_dir" "${git_args[@]}" fetch origin "$ref" --depth 1
     git -C "$dest_dir" checkout FETCH_HEAD
   fi
 }
@@ -148,6 +150,7 @@ apt-get install -y -qq \
   openjdk-17-jdk \
   python3 \
   python3-venv \
+  rlwrap \
   tmux \
   unzip >/dev/null
 
@@ -186,6 +189,13 @@ if [[ -f "$HOME/.config/spell-benchmark/env.sh" ]]; then
 fi'
 append_once "$USER_HOME/.profile" "# spell-benchmark env" \
   '# spell-benchmark env
+export PATH="$HOME/.local/bin:$PATH"
+if [[ -s "$HOME/.nvm/nvm.sh" ]]; then
+  source "$HOME/.nvm/nvm.sh"
+fi
+if [[ -f "$HOME/.config/spell-benchmark/env.sh" ]]; then
+  source "$HOME/.config/spell-benchmark/env.sh"
+fi
 if [[ -f "$HOME/.bashrc" ]]; then
   source "$HOME/.bashrc"
 fi'
@@ -217,8 +227,7 @@ run_as_benchmark_user '
 echo "[spell-benchmark] creating tmux session"
 run_as_benchmark_user '
   set -euo pipefail
-  source "$HOME/.bashrc"
-  tmux new-session -d -s benchmark -c "$HOME/spell/benchmarking" 2>/dev/null || true
+  tmux new-session -d -s benchmark -c "$HOME/spell/benchmarking" "bash -lc '\''cd \"$HOME/spell/benchmarking\" && exec bash'\''" 2>/dev/null || true
 '
 
 echo "$STARTUP_OK_MARKER"

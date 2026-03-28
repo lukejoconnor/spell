@@ -16,6 +16,8 @@ BOOT_DISK_SIZE_GB="${SPELL_GCP_BOOT_DISK_SIZE_GB:-100}"
 BOOT_DISK_TYPE="${SPELL_GCP_BOOT_DISK_TYPE:-pd-balanced}"
 IMAGE_FAMILY="${SPELL_GCP_IMAGE_FAMILY:-debian-12}"
 IMAGE_PROJECT="${SPELL_GCP_IMAGE_PROJECT:-debian-cloud}"
+NETWORK="${SPELL_GCP_NETWORK:-default}"
+SUBNET="${SPELL_GCP_SUBNET:-}"
 MAX_RUN_DURATION="${SPELL_GCP_MAX_RUN_DURATION:-24h}"
 STARTUP_TIMEOUT_SECONDS="${SPELL_GCP_STARTUP_TIMEOUT_SECONDS:-1800}"
 REMOTE_USER="${SPELL_GCP_REMOTE_USER:-spell}"
@@ -52,6 +54,8 @@ Options:
   --disk-type TYPE                Boot disk type (default: pd-balanced)
   --image-family FAMILY           Image family (default: debian-12)
   --image-project PROJECT         Image project (default: debian-cloud)
+  --network NAME                  VPC network name (default: default)
+  --subnet NAME                   Optional subnetwork name
   --max-run-duration DURATION     Auto-delete window, e.g. 24h (default: 24h)
   --startup-timeout SECONDS       Wait time for startup (default: 1800)
   --remote-user USER              SSH user created on the VM (default: spell)
@@ -139,6 +143,14 @@ parse_args() {
         ;;
       --image-project)
         IMAGE_PROJECT="$2"
+        shift 2
+        ;;
+      --network)
+        NETWORK="$2"
+        shift 2
+        ;;
+      --subnet)
+        SUBNET="$2"
         shift 2
         ;;
       --max-run-duration)
@@ -237,7 +249,7 @@ ssh_into_vm() {
     --project "$PROJECT" \
     --zone "$ZONE" \
     --ssh-flag="-t" \
-    --command="tmux new -A -s benchmark -c ~/spell/benchmarking"
+    --command="tmux new -A -s benchmark -c ~/spell/benchmarking \"bash -lc 'cd ~/spell/benchmarking && exec bash'\""
 }
 
 copy_remote_dir() {
@@ -267,6 +279,11 @@ start_instance() {
   [[ -f "$STARTUP_SCRIPT" ]] || die "missing startup script: $STARTUP_SCRIPT"
   resolve_project
 
+  local network_flags=(--network "$NETWORK")
+  if [[ -n "$SUBNET" ]]; then
+    network_flags+=(--subnet "$SUBNET")
+  fi
+
   log "creating ${INSTANCE_NAME} in ${PROJECT}/${ZONE}"
   gcloud compute instances create "$INSTANCE_NAME" \
     --project "$PROJECT" \
@@ -276,6 +293,7 @@ start_instance() {
     --boot-disk-type "$BOOT_DISK_TYPE" \
     --image-family "$IMAGE_FAMILY" \
     --image-project "$IMAGE_PROJECT" \
+    "${network_flags[@]}" \
     --scopes cloud-platform \
     --max-run-duration "$MAX_RUN_DURATION" \
     --instance-termination-action DELETE \

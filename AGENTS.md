@@ -84,5 +84,6 @@ One-time setup on your Mac:
 - Enable `compute.googleapis.com` and `secretmanager.googleapis.com`
 - Store `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and a read-only `GITHUB_TOKEN` in Secret Manager
 - Grant the default Compute Engine service account `roles/secretmanager.secretAccessor` on those secrets
+- Ensure the project has a usable VPC network. If it has no `default` VPC, create one or pass `--network <name>` to the launcher.
 
 The launcher uses Compute Engine's built-in `--max-run-duration` with `--instance-termination-action=DELETE` so benchmark VMs auto-delete instead of lingering after long unattended runs.
