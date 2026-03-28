@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+LOG_FILE=/var/log/spell-benchmark-startup.log
+STARTUP_OK_MARKER="[spell-benchmark] startup complete"
+STARTUP_FAIL_MARKER="[spell-benchmark] startup failed"
+
+mkdir -p "$(dirname "$LOG_FILE")"
+exec > >(tee -a "$LOG_FILE" /dev/ttyS0) 2>&1
+
+trap 'status=$?; if (( status != 0 )); then echo "$STARTUP_FAIL_MARKER (exit ${status})"; fi; exit "$status"' EXIT
+
+METADATA_ROOT="http://metadata.google.internal/computeMetadata/v1"
+
+metadata_get() {
+  curl -fsSL -H "Metadata-Flavor: Google" "${METADATA_ROOT}/$1"
+}
+
+metadata_attr() {
+  metadata_get "instance/attributes/$1"
+}
+
+project_id() {
+  metadata_get "project/project-id"
+}
+
+access_token() {
+  metadata_get "instance/service-accounts/default/token" | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])'
+}
+
+fetch_secret() {
+  local project="$1"
+  local secret_name="$2"
+  local token
+  token="$(access_token)"
+  curl -fsSL \
+    -H "Authorization: Bearer ${token}" \
+    "https://secretmanager.googleapis.com/v1/projects/${project}/secrets/${secret_name}/versions/latest:access" \
+    | python3 -c 'import base64, json, sys; print(base64.b64decode(json.load(sys.stdin)["payload"]["data"]).decode())'
+}
+
+run_as_benchmark_user() {
+  local command="$1"
+  runuser -u "$BENCHMARK_USER" -- bash -lc "$command"
+}
+
+append_once() {
+  local file="$1"
+  local marker="$2"
+  local content="$3"
+  if [[ -f "$file" ]] && grep -Fq "$marker" "$file"; then
+    return 0
+  fi
+  printf '\n%s\n' "$content" >>"$file"
+}
+
+install_clojure_cli() {
+  if command -v clojure >/dev/null 2>&1 && clojure -Sdescribe >/dev/null 2>&1; then
+    return 0
+  fi
+  if command -v clj >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  curl -fsSL https://download.clojure.org/install/linux-install-1.11.1.1413.sh -o "${tmpdir}/install-clojure.sh"
+  chmod +x "${tmpdir}/install-clojure.sh"
+  "${tmpdir}/install-clojure.sh"
+  rm -rf "$tmpdir"
+}
+
+install_node_tooling() {
+  run_as_benchmark_user '
+    set -euo pipefail
+    if [[ ! -s "$HOME/.nvm/nvm.sh" ]]; then
+      curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash
+    fi
+    source "$HOME/.nvm/nvm.sh"
+    nvm install 22
+    npm install -g @anthropic-ai/claude-code@latest @openai/codex@latest
+  '
+}
+
+install_uv_and_python() {
+  run_as_benchmark_user '
+    set -euo pipefail
+    export PATH="$HOME/.local/bin:$PATH"
+    if ! command -v uv >/dev/null 2>&1; then
+      curl -LsSf https://astral.sh/uv/install.sh | sh
+    fi
+    export PATH="$HOME/.local/bin:$PATH"
+    uv python install 3.13
+  '
+}
+
+clone_repo() {
+  local repo_url="$1"
+  local dest_dir="$2"
+  local ref="$3"
+  local github_token="$4"
+  local auth_url="$repo_url"
+
+  if [[ -n "$github_token" && "$repo_url" == https://github.com/* ]]; then
+    auth_url="https://x-access-token:${github_token}@${repo_url#https://}"
+  fi
+
+  git clone "$auth_url" "$dest_dir"
+  git -C "$dest_dir" remote set-url origin "$repo_url"
+  if [[ -n "$ref" && "$ref" != "HEAD" ]]; then
+    git -C "$dest_dir" fetch origin "$ref" --depth 1
+    git -C "$dest_dir" checkout FETCH_HEAD
+  fi
+}
+
+wait_for_docker() {
+  local attempts=0
+  until docker info >/dev/null 2>&1; do
+    attempts=$((attempts + 1))
+    if (( attempts >= 30 )); then
+      echo "docker did not become ready in time" >&2
+      return 1
+    fi
+    sleep 2
+  done
+}
+
+BENCHMARK_USER="$(metadata_attr benchmark-user)"
+SPELL_REPO_URL="$(metadata_attr spell-repo-url)"
+SPELL_REF="$(metadata_attr spell-ref)"
+BENCHMARKING_REPO_URL="$(metadata_attr benchmarking-repo-url)"
+BENCHMARKING_REF="$(metadata_attr benchmarking-ref)"
+ANTHROPIC_SECRET="$(metadata_attr anthropic-secret)"
+OPENAI_SECRET="$(metadata_attr openai-secret)"
+GITHUB_TOKEN_SECRET="$(metadata_attr github-token-secret)"
+PROJECT_ID="$(project_id)"
+USER_HOME="/home/${BENCHMARK_USER}"
+
+echo "[spell-benchmark] installing base packages"
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y -qq \
+  ca-certificates \
+  curl \
+  docker.io \
+  git \
+  jq \
+  openjdk-17-jdk \
+  python3 \
+  python3-venv \
+  tmux \
+  unzip >/dev/null
+
+if ! id "$BENCHMARK_USER" >/dev/null 2>&1; then
+  useradd --create-home --shell /bin/bash "$BENCHMARK_USER"
+fi
+
+usermod -aG docker "$BENCHMARK_USER"
+install_clojure_cli
+
+systemctl enable --now docker
+wait_for_docker
+
+echo "[spell-benchmark] fetching secrets from Secret Manager"
+ANTHROPIC_API_KEY="$(fetch_secret "$PROJECT_ID" "$ANTHROPIC_SECRET")"
+OPENAI_API_KEY="$(fetch_secret "$PROJECT_ID" "$OPENAI_SECRET")"
+GITHUB_TOKEN="$(fetch_secret "$PROJECT_ID" "$GITHUB_TOKEN_SECRET")"
+
+mkdir -p "$USER_HOME/.config/spell-benchmark"
+cat >"$USER_HOME/.config/spell-benchmark/env.sh" <<EOF
+export SPELL_ROOT="$USER_HOME/spell"
+export ANTHROPIC_API_KEY=$(printf '%q' "$ANTHROPIC_API_KEY")
+export OPENAI_API_KEY=$(printf '%q' "$OPENAI_API_KEY")
+EOF
+chmod 600 "$USER_HOME/.config/spell-benchmark/env.sh"
+chown -R "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/.config"
+
+append_once "$USER_HOME/.bashrc" "# spell-benchmark env" \
+  '# spell-benchmark env
+export PATH="$HOME/.local/bin:$PATH"
+if [[ -s "$HOME/.nvm/nvm.sh" ]]; then
+  source "$HOME/.nvm/nvm.sh"
+fi
+if [[ -f "$HOME/.config/spell-benchmark/env.sh" ]]; then
+  source "$HOME/.config/spell-benchmark/env.sh"
+fi'
+append_once "$USER_HOME/.profile" "# spell-benchmark env" \
+  '# spell-benchmark env
+if [[ -f "$HOME/.bashrc" ]]; then
+  source "$HOME/.bashrc"
+fi'
+chown "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/.bashrc" "$USER_HOME/.profile"
+
+echo "[spell-benchmark] installing uv, Python 3.13, Node, Codex, and Claude Code"
+install_uv_and_python
+install_node_tooling
+
+echo "[spell-benchmark] cloning spell and spell-benchmarking"
+rm -rf "$USER_HOME/spell"
+clone_repo "$SPELL_REPO_URL" "$USER_HOME/spell" "$SPELL_REF" "$GITHUB_TOKEN"
+mkdir -p "$USER_HOME/spell"
+rm -rf "$USER_HOME/spell/benchmarking"
+clone_repo "$BENCHMARKING_REPO_URL" "$USER_HOME/spell/benchmarking" "$BENCHMARKING_REF" "$GITHUB_TOKEN"
+chown -R "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/spell"
+unset GITHUB_TOKEN
+
+echo "[spell-benchmark] warming benchmark dependencies"
+run_as_benchmark_user '
+  set -euo pipefail
+  source "$HOME/.bashrc"
+  cd "$HOME/spell/benchmarking"
+  uv sync --python 3.13
+  cd "$HOME/spell"
+  clojure -P
+'
+
+echo "[spell-benchmark] creating tmux session"
+run_as_benchmark_user '
+  set -euo pipefail
+  source "$HOME/.bashrc"
+  tmux new-session -d -s benchmark -c "$HOME/spell/benchmarking" 2>/dev/null || true
+'
+
+echo "$STARTUP_OK_MARKER"

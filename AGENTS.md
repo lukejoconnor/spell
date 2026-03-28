@@ -66,3 +66,23 @@ See `config/CLAUDE.md` for provider/agent details. Base agents: `base-pf`, `base
 `benchmarking/` is a separate nested git repository (`benchmarking/.git`).
 See `benchmarking/AGENTS.md` for benchmark commands, datasets, and reporting expectations.
 Use `uv run` for Python benchmark tooling.
+
+### GCP Benchmark VM
+
+Use `scripts/gcp-benchmark.sh` to run long benchmark jobs on a GCP VM:
+
+```bash
+./scripts/gcp-benchmark.sh start
+./scripts/gcp-benchmark.sh pull
+./scripts/gcp-benchmark.sh stop
+```
+
+The VM bootstrap lives in `scripts/gcp-startup.sh`. It clones the main `spell` repo and then separately clones `spell-benchmarking` into `spell/benchmarking`, because `benchmarking/` is an ignored nested repo rather than part of the main checkout.
+
+One-time setup on your Mac:
+- Install and authenticate `gcloud` (`brew install --cask gcloud-cli`, then `gcloud init`)
+- Enable `compute.googleapis.com` and `secretmanager.googleapis.com`
+- Store `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and a read-only `GITHUB_TOKEN` in Secret Manager
+- Grant the default Compute Engine service account `roles/secretmanager.secretAccessor` on those secrets
+
+The launcher uses Compute Engine's built-in `--max-run-duration` with `--instance-termination-action=DELETE` so benchmark VMs auto-delete instead of lingering after long unattended runs.
