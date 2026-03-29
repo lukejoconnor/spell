@@ -337,14 +337,10 @@ For unattended Docker-backed evals, launch from the main repo root with `run` an
 Monitor the batch with project-level fleet discovery:
 
 ```bash
-./scripts/gcp-benchmark.sh status-all --run-group <group>
+./scripts/gcp-benchmark.sh wait --run-group <group> --finish
 ```
 
-When the run finishes, pull artifacts and tear down terminal VMs together:
-
-```bash
-./scripts/gcp-benchmark.sh finish-all --run-group <group>
-```
+For Codex/Claude background monitoring, prefer launching that `wait --finish` command as the long-running process. It keeps the polling loop in bash instead of spending LLM turns on repeated `status-all` checks, and it returns only once artifacts are already pulled locally.
 
 For non-destructive checkpoints, use:
 
@@ -369,15 +365,22 @@ If you need to inspect or clean up one VM directly:
 
 ### Notes
 
-- Pass the same `--run-group` across related VMs; it is the primary fleet-scoping mechanism for `status-all`, `pull-all`, and `finish-all`.
+- Pass the same `--run-group` across related VMs; it is the primary fleet-scoping mechanism for `wait`, `status-all`, `pull-all`, and `finish-all`.
 - Use `--all` only when you intentionally want every Spell-managed benchmark VM in the GCP project.
 - Use `--spell-ref` and `--benchmarking-ref` to point the VM at the exact branches under test.
-- The one-time GCP/Secret Manager setup lives in `AGENTS.md`; check it before first use.
+- The one-time GCP/Secret Manager setup lives in notebook entry `gcp-benchmark-setup-guide`. Key gotcha: each new Secret Manager secret needs an explicit `add-iam-policy-binding` for the Compute Engine service account — `gcloud secrets create` does NOT grant access automatically.
 - If a startup or initial attach step fails, the launcher now deletes the VM automatically rather than leaving it running.
 
 ### GCP Model Specs
 
 On GCP, `codex-tc:gpt-5.4` requires a `CODEX_AUTH_JSON_B64` secret in Secret Manager (base64-encoded `~/.codex/auth.json`). If this secret is not configured, use `openai-tc:gpt-5.4` instead — it routes through the standard OpenAI Responses API using `OPENAI_API_KEY`.
+
+Codex session tokens expire. After re-logging in locally with `codex`, update the secret:
+```bash
+gcloud secrets versions add CODEX_AUTH_JSON_B64 \
+  --project spellbenchmarking \
+  --data-file=<(base64 < ~/.codex/auth.json)
+```
 
 | Local | GCP (with Codex auth) | GCP (without Codex auth) |
 |-------|----------------------|--------------------------|

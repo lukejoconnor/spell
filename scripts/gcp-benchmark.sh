@@ -36,6 +36,9 @@ RUN_GROUP_LABEL=""
 RUN_COMMAND="${SPELL_GCP_RUN_COMMAND:-}"
 OPERATE_ALL=0
 FINISHED_ONLY=0
+WAIT_INTERVAL_SECONDS="${SPELL_GCP_WAIT_INTERVAL_SECONDS:-120}"
+WAIT_TIMEOUT_SECONDS="${SPELL_GCP_WAIT_TIMEOUT_SECONDS:-14400}"
+WAIT_AND_FINISH=0
 AUTO_SSH=1
 START_INSTANCE_CREATED=0
 START_INSTANCE_FINISHED=0
@@ -49,6 +52,7 @@ Usage:
   ./scripts/gcp-benchmark.sh ssh [options]
   ./scripts/gcp-benchmark.sh status [options]
   ./scripts/gcp-benchmark.sh status-all [--run-group GROUP | --all] [options]
+  ./scripts/gcp-benchmark.sh wait [--run-group GROUP | --all] [options]
   ./scripts/gcp-benchmark.sh pull [options]
   ./scripts/gcp-benchmark.sh pull-all [--run-group GROUP | --all] [--finished-only] [options]
   ./scripts/gcp-benchmark.sh finish [options]
@@ -61,6 +65,7 @@ Commands:
   ssh         Reconnect to the VM tmux session.
   status      Show one VM's GCP lifecycle state plus benchmark state.
   status-all  List Spell-managed benchmark VMs in the project.
+  wait        Poll matched benchmark VMs until they all reach a terminal state.
   pull        Copy remote benchmarking results, traces, and logs locally.
   pull-all    Pull artifacts for all matched Spell-managed benchmark VMs.
   finish      Pull artifacts for one VM, then delete it.
@@ -94,6 +99,9 @@ Options:
   --command CMD                   Benchmark command for run
   --all                           Target all Spell-managed benchmark VMs in the project
   --finished-only                 For pull-all, only pull finished/failed VMs
+  --interval SECONDS              Poll interval for wait (default: 120)
+  --timeout SECONDS               Timeout for wait (default: 14400)
+  --finish                        For wait, run finish-all before exiting
   --no-ssh                        Create the VM but do not auto-attach after startup
   -h, --help                      Show this help text
 EOF
@@ -110,6 +118,12 @@ die() {
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+require_positive_integer() {
+  local value="$1"
+  local name="$2"
+  [[ "$value" =~ ^[1-9][0-9]*$ ]] || die "${name} must be a positive integer"
 }
 
 join_by() {
@@ -272,6 +286,18 @@ parse_args() {
         FINISHED_ONLY=1
         shift
         ;;
+      --interval)
+        WAIT_INTERVAL_SECONDS="$2"
+        shift 2
+        ;;
+      --timeout)
+        WAIT_TIMEOUT_SECONDS="$2"
+        shift 2
+        ;;
+      --finish)
+        WAIT_AND_FINISH=1
+        shift
+        ;;
       --no-ssh)
         AUTO_SSH=0
         shift
@@ -295,7 +321,7 @@ validate_args() {
       [[ -n "$RUN_COMMAND" ]] || die "--command is required for run"
       AUTO_SSH=0
       ;;
-    status-all|pull-all|finish-all)
+    status-all|wait|pull-all|finish-all)
       if (( OPERATE_ALL == 0 )) && [[ -z "$RUN_GROUP" ]]; then
         die "${ACTION} requires --run-group GROUP or --all"
       fi
@@ -311,6 +337,13 @@ validate_args() {
   if (( FINISHED_ONLY == 1 )) && [[ "$ACTION" != "pull-all" ]]; then
     die "--finished-only is only supported by pull-all"
   fi
+
+  if (( WAIT_AND_FINISH == 1 )) && [[ "$ACTION" != "wait" ]]; then
+    die "--finish is only supported by wait"
+  fi
+
+  require_positive_integer "$WAIT_INTERVAL_SECONDS" "--interval"
+  require_positive_integer "$WAIT_TIMEOUT_SECONDS" "--timeout"
 
   case "$ACTION" in
     start|run|ssh|status|pull|finish|stop)
@@ -922,6 +955,87 @@ status_all_instances() {
   done <<<"$rows"
 }
 
+wait_for_completion() {
+  require_cmd gcloud
+  require_cmd python3
+  resolve_project
+
+  local deadline=$((SECONDS + WAIT_TIMEOUT_SECONDS))
+  local saw_matches=0
+
+  while true; do
+    local rows
+    rows="$(list_matching_instances)"
+
+    local total=0
+    local finished=0
+    local failed=0
+    local running=0
+    local startup=0
+    local unknown=0
+
+    if [[ -n "$rows" ]]; then
+      saw_matches=1
+      while IFS=$'\t' read -r instance_name zone gcp_state run_group spell_ref benchmarking_ref; do
+        [[ -n "$instance_name" ]] || continue
+        total=$((total + 1))
+
+        local benchmark_state
+        benchmark_state="$(read_benchmark_state "$instance_name" "$zone" "$gcp_state")"
+        case "$benchmark_state" in
+          finished)
+            finished=$((finished + 1))
+            ;;
+          failed)
+            failed=$((failed + 1))
+            ;;
+          running)
+            running=$((running + 1))
+            ;;
+          startup)
+            startup=$((startup + 1))
+            ;;
+          *)
+            unknown=$((unknown + 1))
+            ;;
+        esac
+      done <<<"$rows"
+    fi
+
+    local terminal=$((finished + failed))
+    local timestamp
+    timestamp="$(date -u +%H:%M:%S)"
+
+    if (( total == 0 )); then
+      if (( saw_matches == 0 )); then
+        die "wait found no matching Spell-managed benchmark VMs"
+      fi
+      log "0 matching VMs remain (${timestamp} UTC); treating wait as complete"
+      return 0
+    fi
+
+    log "${terminal}/${total} terminal, ${finished} finished, ${failed} failed, ${running} running, ${startup} startup, ${unknown} unknown (${timestamp} UTC)"
+
+    if (( terminal == total )); then
+      if (( WAIT_AND_FINISH == 1 )); then
+        finish_all_instances
+      fi
+      return 0
+    fi
+
+    local remaining=$((deadline - SECONDS))
+    if (( remaining <= 0 )); then
+      die "timed out after ${WAIT_TIMEOUT_SECONDS}s waiting for benchmark completion"
+    fi
+
+    local sleep_seconds="$WAIT_INTERVAL_SECONDS"
+    if (( remaining < sleep_seconds )); then
+      sleep_seconds="$remaining"
+    fi
+    sleep "$sleep_seconds"
+  done
+}
+
 pull_all_instances() {
   require_cmd gcloud
   require_cmd python3
@@ -1027,6 +1141,9 @@ main() {
       ;;
     status-all)
       status_all_instances
+      ;;
+    wait)
+      wait_for_completion
       ;;
     pull)
       pull_results_from_instance "$INSTANCE_NAME" "$ZONE"
