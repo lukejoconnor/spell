@@ -30,6 +30,8 @@ OPENAI_SECRET="${SPELL_GCP_OPENAI_SECRET:-OPENAI_API_KEY}"
 GITHUB_TOKEN_SECRET="${SPELL_GCP_GITHUB_TOKEN_SECRET:-GITHUB_TOKEN}"
 LOCAL_BENCHMARK_DIR="${SPELL_LOCAL_BENCHMARK_DIR:-$REPO_ROOT/benchmarking}"
 AUTO_SSH=1
+START_INSTANCE_CREATED=0
+START_INSTANCE_FINISHED=0
 
 usage() {
   cat <<'EOF'
@@ -252,6 +254,19 @@ ssh_into_vm() {
     --command="tmux new -A -s benchmark -c ~/spell/benchmarking \"bash -lc 'cd ~/spell/benchmarking && exec bash'\""
 }
 
+cleanup_failed_start() {
+  local status=$?
+  if (( status != 0 )) && (( START_INSTANCE_CREATED == 1 )) && (( START_INSTANCE_FINISHED == 0 )); then
+    log "start failed after VM creation; deleting ${INSTANCE_NAME}"
+    if ! gcloud compute instances delete "$INSTANCE_NAME" \
+        --project "$PROJECT" \
+        --zone "$ZONE" \
+        --quiet; then
+      log "warning: failed to delete ${INSTANCE_NAME}; clean up manually with ./scripts/gcp-benchmark.sh stop --project ${PROJECT} --name ${INSTANCE_NAME} --zone ${ZONE}"
+    fi
+  fi
+}
+
 copy_remote_dir() {
   local remote_name="$1"
   local local_base="$2"
@@ -278,6 +293,9 @@ start_instance() {
   require_cmd gcloud
   [[ -f "$STARTUP_SCRIPT" ]] || die "missing startup script: $STARTUP_SCRIPT"
   resolve_project
+  START_INSTANCE_CREATED=0
+  START_INSTANCE_FINISHED=0
+  trap cleanup_failed_start EXIT
 
   local network_flags=(--network "$NETWORK")
   if [[ -n "$SUBNET" ]]; then
@@ -299,6 +317,7 @@ start_instance() {
     --instance-termination-action DELETE \
     --metadata "benchmark-user=${REMOTE_USER},spell-repo-url=${SPELL_REPO_URL},spell-ref=${SPELL_REF},benchmarking-repo-url=${BENCHMARKING_REPO_URL},benchmarking-ref=${BENCHMARKING_REF},anthropic-secret=${ANTHROPIC_SECRET},openai-secret=${OPENAI_SECRET},github-token-secret=${GITHUB_TOKEN_SECRET}" \
     --metadata-from-file "startup-script=${STARTUP_SCRIPT}"
+  START_INSTANCE_CREATED=1
 
   wait_for_startup
 
@@ -307,6 +326,9 @@ start_instance() {
   else
     log "VM is ready; reconnect with: ./scripts/gcp-benchmark.sh ssh --project ${PROJECT} --name ${INSTANCE_NAME} --zone ${ZONE}"
   fi
+
+  START_INSTANCE_FINISHED=1
+  trap - EXIT
 }
 
 pull_results() {

@@ -13,7 +13,28 @@ trap 'status=$?; if (( status != 0 )); then echo "$STARTUP_FAIL_MARKER (exit ${s
 METADATA_ROOT="http://metadata.google.internal/computeMetadata/v1"
 
 metadata_get() {
-  curl -fsSL -H "Metadata-Flavor: Google" "${METADATA_ROOT}/$1"
+  local url="${METADATA_ROOT}/$1"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL -H "Metadata-Flavor: Google" "$url"
+    return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    METADATA_URL="$url" python3 - <<'PY'
+import os
+import sys
+import urllib.request
+
+request = urllib.request.Request(
+    os.environ["METADATA_URL"],
+    headers={"Metadata-Flavor": "Google"},
+)
+with urllib.request.urlopen(request) as response:
+    sys.stdout.write(response.read().decode())
+PY
+    return 0
+  fi
+  echo "curl or python3 is required to read GCP instance metadata" >&2
+  return 1
 }
 
 metadata_attr() {
