@@ -52,7 +52,7 @@ Guidelines:
 - Always use `--trace` to capture traces and track costs + latency.
 - After a pilot or first batch, estimate total cost for the full run. If estimated total cost exceeds $50, consult the user before continuing.
 - Detect anomalous results and pause further analyses: for example, if a batch completes immediately with 0/5 score.
-- **Disk check before each batch (SWE-bench/container runs):** Before dispatching a batch, check Colima VM disk and prune if needed. Each SWE-bench item generates ~5-6 GB of Docker artifacts (instance images + containers). Run `DOCKER_HOST="unix://$HOME/.colima/default/docker.sock" docker system df` and if reclaimable space exceeds 20 GB or free space is below 50 GB, run `docker container prune -f && docker image prune -f` to reclaim stopped containers and dangling images. Do NOT prune env images (`sweb.env.*`) — they are shared and expensive to rebuild.
+- **Disk check before each batch (Docker-backed runs):** On the GCP benchmark VM, run `docker system df` before dispatching a batch and prune if needed. Each SWE-bench item generates ~5-6 GB of Docker artifacts (instance images + containers). If reclaimable space exceeds 20 GB or free space is below 50 GB, run `docker container prune -f && docker image prune -f` to reclaim stopped containers and dangling images. Do NOT prune env images (`sweb.env.*`) — they are shared and expensive to rebuild.
 
 **Default trace location:** `traces/YYYY-MM-DD'T'HH-mm-ss/` relative to the project root.
 
@@ -80,22 +80,20 @@ When the user specifies an init program or trailing expression (e.g., "use init 
 | `'(do (!describe io) (!extend))` | Load io docs, then continue with a fresh call |
 | `'(!describe io web)` | Load multiple namespace docs |
 
-**Shell quoting — critical:** The trailing expression contains `!` which triggers zsh history expansion inside double quotes. Either:
-- Disable history expansion: `set +H` before the command
-- Or use single quotes around the entire argument (but then the inner `'` quote char needs careful handling)
+**Shell quoting — critical:** The trailing expression contains `!` which triggers zsh history expansion inside double quotes. `set +H` does NOT reliably fix this — zsh still backslash-escapes `!` inside double quotes even with history expansion disabled.
 
-The safest pattern is:
+The correct pattern uses `$'...'` quoting to embed the leading single-quote:
 ```bash
-set +H && cd benchmarking && uv run python bench.py swebench \
+cd benchmarking && uv run python bench.py swebench \
   --dataset lite --condition spell --model anthropic-tc \
-  --trailing "'(do (!describe io) (!extend))"
+  --trailing $'\'(do (!describe io) (!extend))'
 ```
 
 **Always dry-run first** when using a custom trailing to verify the init program is correct:
 ```bash
-set +H && cd benchmarking && uv run python bench.py swebench \
+cd benchmarking && uv run python bench.py swebench \
   --dataset lite --condition spell --model anthropic-tc \
-  --trailing "'(do (!describe io) (!extend))" \
+  --trailing $'\'(do (!describe io) (!extend))' \
   --items task_id_1 --dry-run --n 1
 ```
 
@@ -304,44 +302,47 @@ Method keys: `spell_opus`, `cc_opus`, `oneshot_opus`, `spell_codex`, `codex_cli`
 - **Never fabricate.** If you haven't read a trace, you don't know what's in it. Dispatch subagents. Wait for results. Report what they found.
 - **Use `uv` for all Python work.** Always use `uv run` (not `python3`) to invoke Python scripts.
 
-## SWE-bench Container Setup (ARM/Colima)
+## Docker-Based Evals: Use The GCP Benchmark VM
 
-SWE-bench generation now runs inside official per-instance Docker containers (PR #19). This requires setup on ARM Macs with Colima:
+For any Docker-backed benchmark or eval run, default to the GCP launcher in the main repo instead of local Colima/Docker. This is now the preferred path for SWE-bench and other container-heavy evals unless the user explicitly asks to run locally.
 
-### DOCKER_HOST
+Why this is the default:
+- Native Linux Docker instead of ARM-hosted x86 emulation on a laptop
+- Isolated disk for large instance/env images and container churn
+- Persistent tmux session for long runs
+- Built-in auto-delete via Compute Engine `--max-run-duration`
 
-The Python Docker SDK (`docker.from_env()`) needs `DOCKER_HOST` set. Colima doesn't use `/var/run/docker.sock`:
+### Standard Workflow
+
+Launch the VM from the main repo root:
 
 ```bash
-export DOCKER_HOST="unix://$HOME/.colima/default/docker.sock"
+./scripts/gcp-benchmark.sh start --name <run-name> --spell-ref <spell-ref> --benchmarking-ref <benchmarking-ref>
 ```
 
-Set this **before** running any `bench.py swebench` command. The eval path has an auto-fallback; the generation path does not.
+The launcher waits for `scripts/gcp-startup.sh`, then drops you into a tmux shell on the VM. Run Docker-backed evals there from `~/spell/benchmarking`, for example:
 
-### SWE-bench Environment Images
-
-Generation requires pre-built `sweb.env.*` and `sweb.base.*` Docker images (x86_64, emulated on ARM). These are built once per unique environment and cached. First-time build takes ~5-15 min per env image.
-
-**Build images for a set of items before running:**
-
-```python
-export DOCKER_HOST="unix://$HOME/.colima/default/docker.sock"
-cd benchmarking && uv run python -c "
-import docker
-from swebench.harness.test_spec.test_spec import make_test_spec
-from swebench.harness.docker_build import build_env_images
-from src.datasets import load_swebench_lite
-import random
-
-client = docker.from_env()
-items = load_swebench_lite()  # or load_swebench_verified, etc.
-random.seed(19)
-sampled = random.sample(items, 32)
-specs = [make_test_spec(i.raw_instance, namespace=None, env_image_tag='latest', instance_image_tag='latest', arch='x86_64') for i in sampled]
-build_env_images(client, specs, max_workers=2)
-"
+```bash
+cd ~/spell/benchmarking
+uv run python bench.py swebench --dataset lite --condition spell --trace
 ```
 
-**Stale base image gotcha:** If `sweb.base.py.x86_64:latest` was built with an older Docker/Colima version, env image builds fail with `no match for platform in manifest`. Fix: `docker rmi sweb.base.py.x86_64:latest` and rebuild.
+When the run finishes or you want intermediate artifacts, pull them back to the local nested benchmark checkout:
 
-**Disk pressure:** Each env image is 1-4 GB. For large runs (32+ items), monitor Colima VM disk. Use `docker system prune` between batches if needed, but be aware this removes cached env images that take time to rebuild.
+```bash
+./scripts/gcp-benchmark.sh pull --name <run-name>
+```
+
+This copies `results/`, `traces/`, and `logs/` into local `benchmarking/*/gcp/<run-name>/` directories.
+
+When you are done, delete the VM explicitly even though it also has an auto-delete timeout:
+
+```bash
+./scripts/gcp-benchmark.sh stop --name <run-name>
+```
+
+### Notes
+
+- Use `--spell-ref` and `--benchmarking-ref` to point the VM at the exact branches under test.
+- The one-time GCP/Secret Manager setup lives in `AGENTS.md`; check it before first use.
+- If a startup or initial attach step fails, the launcher now deletes the VM automatically rather than leaving it running.
