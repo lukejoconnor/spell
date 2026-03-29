@@ -65,6 +65,35 @@ run_as_benchmark_user() {
   runuser -u "$BENCHMARK_USER" -- bash -lc "$command"
 }
 
+write_run_status() {
+  local state="$1"
+  local exit_code="${2:-}"
+  local error_message="${3:-}"
+  mkdir -p "$USER_HOME/.config/spell-benchmark"
+  STATE="$state" EXIT_CODE="$exit_code" ERROR_MESSAGE="$error_message" \
+  RUN_GROUP="$RUN_GROUP" SPELL_REF="$SPELL_REF" BENCHMARKING_REF="$BENCHMARKING_REF" \
+  BENCHMARK_COMMAND="$BENCHMARK_COMMAND" LOG_FILE="$USER_HOME/spell/benchmarking/logs/spell-benchmark-run.log" \
+  python3 - <<'PY' >"$USER_HOME/.config/spell-benchmark/run-status.json"
+import json
+import os
+from datetime import datetime, timezone
+
+payload = {
+    "state": os.environ["STATE"],
+    "exit_code": int(os.environ["EXIT_CODE"]) if os.environ["EXIT_CODE"] else None,
+    "error_message": os.environ["ERROR_MESSAGE"] or None,
+    "run_group": os.environ["RUN_GROUP"],
+    "spell_ref": os.environ["SPELL_REF"],
+    "benchmarking_ref": os.environ["BENCHMARKING_REF"],
+    "command": os.environ["BENCHMARK_COMMAND"],
+    "log_file": os.environ["LOG_FILE"],
+    "updated_at": datetime.now(timezone.utc).isoformat(),
+}
+print(json.dumps(payload, indent=2, sort_keys=True))
+PY
+  chown -R "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/.config"
+}
+
 append_once() {
   local file="$1"
   local marker="$2"
@@ -156,8 +185,15 @@ BENCHMARKING_REF="$(metadata_attr benchmarking-ref)"
 ANTHROPIC_SECRET="$(metadata_attr anthropic-secret)"
 OPENAI_SECRET="$(metadata_attr openai-secret)"
 GITHUB_TOKEN_SECRET="$(metadata_attr github-token-secret)"
+RUN_GROUP="$(metadata_attr run-group || true)"
+BENCHMARK_COMMAND="$(metadata_attr benchmark-command || true)"
 PROJECT_ID="$(project_id)"
 USER_HOME="/home/${BENCHMARK_USER}"
+
+if ! id "$BENCHMARK_USER" >/dev/null 2>&1; then
+  useradd --create-home --shell /bin/bash "$BENCHMARK_USER"
+fi
+write_run_status startup
 
 echo "[spell-benchmark] installing base packages"
 export DEBIAN_FRONTEND=noninteractive
@@ -174,10 +210,6 @@ apt-get install -y -qq \
   rlwrap \
   tmux \
   unzip >/dev/null
-
-if ! id "$BENCHMARK_USER" >/dev/null 2>&1; then
-  useradd --create-home --shell /bin/bash "$BENCHMARK_USER"
-fi
 
 usermod -aG docker "$BENCHMARK_USER"
 install_clojure_cli
@@ -250,5 +282,7 @@ run_as_benchmark_user '
   set -euo pipefail
   tmux new-session -d -s benchmark -c "$HOME/spell/benchmarking" "bash -lc '\''cd \"$HOME/spell/benchmarking\" && exec bash'\''" 2>/dev/null || true
 '
+
+write_run_status idle
 
 echo "$STARTUP_OK_MARKER"

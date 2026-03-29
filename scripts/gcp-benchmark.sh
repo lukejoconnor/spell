@@ -7,6 +7,7 @@ STARTUP_SCRIPT="$SCRIPT_DIR/gcp-startup.sh"
 
 STARTUP_OK_MARKER="[spell-benchmark] startup complete"
 STARTUP_FAIL_MARKER="[spell-benchmark] startup failed"
+MANAGED_BY_LABEL="spell-benchmark"
 
 INSTANCE_NAME="${SPELL_GCP_INSTANCE:-spell-bench}"
 PROJECT="${SPELL_GCP_PROJECT:-}"
@@ -29,23 +30,41 @@ ANTHROPIC_SECRET="${SPELL_GCP_ANTHROPIC_SECRET:-ANTHROPIC_API_KEY}"
 OPENAI_SECRET="${SPELL_GCP_OPENAI_SECRET:-OPENAI_API_KEY}"
 GITHUB_TOKEN_SECRET="${SPELL_GCP_GITHUB_TOKEN_SECRET:-GITHUB_TOKEN}"
 LOCAL_BENCHMARK_DIR="${SPELL_LOCAL_BENCHMARK_DIR:-$REPO_ROOT/benchmarking}"
+RUN_GROUP="${SPELL_GCP_RUN_GROUP:-}"
+RUN_GROUP_LABEL=""
+RUN_COMMAND="${SPELL_GCP_RUN_COMMAND:-}"
+OPERATE_ALL=0
+FINISHED_ONLY=0
 AUTO_SSH=1
 START_INSTANCE_CREATED=0
 START_INSTANCE_FINISHED=0
+ACTION=""
 
 usage() {
   cat <<'EOF'
 Usage:
   ./scripts/gcp-benchmark.sh start [options]
+  ./scripts/gcp-benchmark.sh run [options] --command "..."
   ./scripts/gcp-benchmark.sh ssh [options]
+  ./scripts/gcp-benchmark.sh status [options]
+  ./scripts/gcp-benchmark.sh status-all [--run-group GROUP | --all] [options]
   ./scripts/gcp-benchmark.sh pull [options]
+  ./scripts/gcp-benchmark.sh pull-all [--run-group GROUP | --all] [--finished-only] [options]
+  ./scripts/gcp-benchmark.sh finish [options]
+  ./scripts/gcp-benchmark.sh finish-all [--run-group GROUP | --all] [options]
   ./scripts/gcp-benchmark.sh stop [options]
 
 Commands:
-  start   Create the VM, wait for startup, and attach to tmux.
-  ssh     Reconnect to the VM tmux session.
-  pull    Copy remote benchmarking results, traces, and logs locally.
-  stop    Delete the VM.
+  start       Create the VM, wait for startup, and attach to tmux.
+  run         Create the VM, wait for startup, and launch a benchmark command in tmux.
+  ssh         Reconnect to the VM tmux session.
+  status      Show one VM's GCP lifecycle state plus benchmark state.
+  status-all  List Spell-managed benchmark VMs in the project.
+  pull        Copy remote benchmarking results, traces, and logs locally.
+  pull-all    Pull artifacts for all matched Spell-managed benchmark VMs.
+  finish      Pull artifacts for one VM, then delete it.
+  finish-all  Pull and delete matched VMs whose benchmark state is terminal.
+  stop        Delete the VM.
 
 Options:
   --project PROJECT               GCP project ID (defaults to active gcloud project)
@@ -69,6 +88,10 @@ Options:
   --openai-secret NAME            Secret Manager secret name (default: OPENAI_API_KEY)
   --github-token-secret NAME      Secret Manager secret name (default: GITHUB_TOKEN)
   --local-benchmark-dir PATH      Local benchmarking checkout/path for pull (default: ./benchmarking)
+  --run-group GROUP               Logical fleet label for managed VMs (defaults to VM name for single-VM commands)
+  --command CMD                   Benchmark command for run
+  --all                           Target all Spell-managed benchmark VMs in the project
+  --finished-only                 For pull-all, only pull finished/failed VMs
   --no-ssh                        Create the VM but do not auto-attach after startup
   -h, --help                      Show this help text
 EOF
@@ -87,6 +110,34 @@ require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
 }
 
+join_by() {
+  local delimiter="$1"
+  shift
+  local first=1
+  local item
+  for item in "$@"; do
+    if (( first )); then
+      printf '%s' "$item"
+      first=0
+    else
+      printf '%s%s' "$delimiter" "$item"
+    fi
+  done
+}
+
+shell_quote() {
+  printf '%q' "$1"
+}
+
+slugify_label() {
+  local value="$1"
+  value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//; s/-+/-/g')"
+  value="${value:0:63}"
+  value="$(printf '%s' "$value" | sed -E 's/^-+//; s/-+$//')"
+  [[ -n "$value" ]] || value="group"
+  printf '%s\n' "$value"
+}
+
 resolve_project() {
   if [[ -n "$PROJECT" ]]; then
     return
@@ -102,12 +153,12 @@ resolve_project() {
 }
 
 parse_args() {
-  local command="${1:-}"
-  if [[ "$command" == "-h" || "$command" == "--help" || "$command" == "help" ]]; then
+  local action="${1:-}"
+  if [[ "$action" == "-h" || "$action" == "--help" || "$action" == "help" ]]; then
     usage
     exit 0
   fi
-  [[ -n "$command" ]] || {
+  [[ -n "$action" ]] || {
     usage
     exit 1
   }
@@ -199,6 +250,22 @@ parse_args() {
         LOCAL_BENCHMARK_DIR="$2"
         shift 2
         ;;
+      --run-group)
+        RUN_GROUP="$2"
+        shift 2
+        ;;
+      --command)
+        RUN_COMMAND="$2"
+        shift 2
+        ;;
+      --all)
+        OPERATE_ALL=1
+        shift
+        ;;
+      --finished-only)
+        FINISHED_ONLY=1
+        shift
+        ;;
       --no-ssh)
         AUTO_SSH=0
         shift
@@ -213,23 +280,61 @@ parse_args() {
     esac
   done
 
-  COMMAND="$command"
+  ACTION="$action"
+}
+
+validate_args() {
+  case "$ACTION" in
+    run)
+      [[ -n "$RUN_COMMAND" ]] || die "--command is required for run"
+      AUTO_SSH=0
+      ;;
+    status-all|pull-all|finish-all)
+      if (( OPERATE_ALL == 0 )) && [[ -z "$RUN_GROUP" ]]; then
+        die "${ACTION} requires --run-group GROUP or --all"
+      fi
+      ;;
+    start|ssh|status|pull|finish|stop)
+      :
+      ;;
+    *)
+      die "unknown command: $ACTION"
+      ;;
+  esac
+
+  if (( FINISHED_ONLY == 1 )) && [[ "$ACTION" != "pull-all" ]]; then
+    die "--finished-only is only supported by pull-all"
+  fi
+
+  case "$ACTION" in
+    start|run|ssh|status|pull|finish|stop)
+      [[ -n "$RUN_GROUP" ]] || RUN_GROUP="$INSTANCE_NAME"
+      ;;
+  esac
+
+  if [[ -n "$RUN_GROUP" ]]; then
+    RUN_GROUP_LABEL="$(slugify_label "$RUN_GROUP")"
+  fi
 }
 
 serial_output() {
-  gcloud compute instances get-serial-port-output "$INSTANCE_NAME" \
+  local instance_name="$1"
+  local zone="$2"
+  gcloud compute instances get-serial-port-output "$instance_name" \
     --project "$PROJECT" \
-    --zone "$ZONE" \
+    --zone "$zone" \
     --port 1 2>/dev/null || true
 }
 
 wait_for_startup() {
+  local instance_name="$1"
+  local zone="$2"
   local deadline=$((SECONDS + STARTUP_TIMEOUT_SECONDS))
   log "waiting for VM startup to finish"
 
   while (( SECONDS < deadline )); do
     local output
-    output="$(serial_output)"
+    output="$(serial_output "$instance_name" "$zone")"
     if grep -Fq "$STARTUP_OK_MARKER" <<<"$output"; then
       log "startup finished successfully"
       return 0
@@ -241,15 +346,17 @@ wait_for_startup() {
     sleep 10
   done
 
-  serial_output | tail -n 120 >&2
+  serial_output "$instance_name" "$zone" | tail -n 120 >&2
   die "timed out waiting for startup after ${STARTUP_TIMEOUT_SECONDS}s"
 }
 
 ssh_into_vm() {
-  log "attaching to tmux session on $INSTANCE_NAME"
-  gcloud compute ssh "${REMOTE_USER}@${INSTANCE_NAME}" \
+  local instance_name="$1"
+  local zone="$2"
+  log "attaching to tmux session on $instance_name"
+  gcloud compute ssh "${REMOTE_USER}@${instance_name}" \
     --project "$PROJECT" \
-    --zone "$ZONE" \
+    --zone "$zone" \
     --ssh-flag="-t" \
     --command="tmux new -A -s benchmark -c ~/spell/benchmarking \"bash -lc 'cd ~/spell/benchmarking && exec bash'\""
 }
@@ -267,40 +374,42 @@ cleanup_failed_start() {
   fi
 }
 
-copy_remote_dir() {
-  local remote_name="$1"
-  local local_base="$2"
-  local remote_path="~/spell/benchmarking/${remote_name}"
-
-  mkdir -p "$local_base"
-  if ! gcloud compute ssh "${REMOTE_USER}@${INSTANCE_NAME}" \
-      --project "$PROJECT" \
-      --zone "$ZONE" \
-      --command="test -d ${remote_path}"; then
-    log "skipping ${remote_name}; remote path not found"
-    return 0
-  fi
-
-  log "copying ${remote_name} into ${local_base}"
-  gcloud compute scp --recurse \
-    --project "$PROJECT" \
-    --zone "$ZONE" \
-    "${REMOTE_USER}@${INSTANCE_NAME}:${remote_path}" \
-    "$local_base"
+metadata_values() {
+  join_by "," \
+    "benchmark-user=${REMOTE_USER}" \
+    "spell-repo-url=${SPELL_REPO_URL}" \
+    "spell-ref=${SPELL_REF}" \
+    "benchmarking-repo-url=${BENCHMARKING_REPO_URL}" \
+    "benchmarking-ref=${BENCHMARKING_REF}" \
+    "anthropic-secret=${ANTHROPIC_SECRET}" \
+    "openai-secret=${OPENAI_SECRET}" \
+    "github-token-secret=${GITHUB_TOKEN_SECRET}" \
+    "run-group-label=${RUN_GROUP_LABEL}"
 }
 
-start_instance() {
+create_instance() {
   require_cmd gcloud
   [[ -f "$STARTUP_SCRIPT" ]] || die "missing startup script: $STARTUP_SCRIPT"
   resolve_project
-  START_INSTANCE_CREATED=0
-  START_INSTANCE_FINISHED=0
-  trap cleanup_failed_start EXIT
 
   local network_flags=(--network "$NETWORK")
   if [[ -n "$SUBNET" ]]; then
     network_flags+=(--subnet "$SUBNET")
   fi
+
+  local labels
+  labels="$(join_by "," "managed-by=${MANAGED_BY_LABEL}" "run-group=${RUN_GROUP_LABEL}")"
+
+  local metadata_dir
+  metadata_dir="$(mktemp -d)"
+  local run_group_file="$metadata_dir/run-group"
+  local command_file="$metadata_dir/benchmark-command"
+  printf '%s' "$RUN_GROUP" >"$run_group_file"
+  printf '%s' "$RUN_COMMAND" >"$command_file"
+
+  START_INSTANCE_CREATED=0
+  START_INSTANCE_FINISHED=0
+  trap cleanup_failed_start EXIT
 
   log "creating ${INSTANCE_NAME} in ${PROJECT}/${ZONE}"
   gcloud compute instances create "$INSTANCE_NAME" \
@@ -313,16 +422,175 @@ start_instance() {
     --image-project "$IMAGE_PROJECT" \
     "${network_flags[@]}" \
     --scopes cloud-platform \
+    --labels "$labels" \
     --max-run-duration "$MAX_RUN_DURATION" \
     --instance-termination-action DELETE \
-    --metadata "benchmark-user=${REMOTE_USER},spell-repo-url=${SPELL_REPO_URL},spell-ref=${SPELL_REF},benchmarking-repo-url=${BENCHMARKING_REPO_URL},benchmarking-ref=${BENCHMARKING_REF},anthropic-secret=${ANTHROPIC_SECRET},openai-secret=${OPENAI_SECRET},github-token-secret=${GITHUB_TOKEN_SECRET}" \
-    --metadata-from-file "startup-script=${STARTUP_SCRIPT}"
+    --metadata "$(metadata_values)" \
+    --metadata-from-file "startup-script=${STARTUP_SCRIPT},run-group=${run_group_file},benchmark-command=${command_file}"
+  rm -rf "$metadata_dir"
   START_INSTANCE_CREATED=1
+}
 
-  wait_for_startup
+render_run_command_script() {
+  cat <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+cd "\$HOME/spell/benchmarking"
+${RUN_COMMAND}
+EOF
+}
+
+render_run_wrapper_script() {
+  local run_group_q
+  local spell_ref_q
+  local benchmarking_ref_q
+  local benchmark_command_q
+  run_group_q="$(shell_quote "$RUN_GROUP")"
+  spell_ref_q="$(shell_quote "$SPELL_REF")"
+  benchmarking_ref_q="$(shell_quote "$BENCHMARKING_REF")"
+  benchmark_command_q="$(shell_quote "$RUN_COMMAND")"
+
+  cat <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+STATUS_FILE="\$HOME/.config/spell-benchmark/run-status.json"
+COMMAND_FILE="\$HOME/.config/spell-benchmark/run-command.sh"
+LOG_FILE="\$HOME/spell/benchmarking/logs/spell-benchmark-run.log"
+RUN_GROUP=${run_group_q}
+SPELL_REF=${spell_ref_q}
+BENCHMARKING_REF=${benchmarking_ref_q}
+BENCHMARK_COMMAND=${benchmark_command_q}
+CURRENT_STATE="starting"
+
+write_status() {
+  local state="\$1"
+  local exit_code="\${2:-}"
+  local error_message="\${3:-}"
+  CURRENT_STATE="\$state"
+  STATE="\$state" EXIT_CODE="\$exit_code" ERROR_MESSAGE="\$error_message" \\
+  RUN_GROUP="\$RUN_GROUP" SPELL_REF="\$SPELL_REF" BENCHMARKING_REF="\$BENCHMARKING_REF" \\
+  BENCHMARK_COMMAND="\$BENCHMARK_COMMAND" LOG_FILE="\$LOG_FILE" \\
+  python3 - <<'PY' >"\$STATUS_FILE"
+import json
+import os
+from datetime import datetime, timezone
+
+payload = {
+    "state": os.environ["STATE"],
+    "exit_code": int(os.environ["EXIT_CODE"]) if os.environ["EXIT_CODE"] else None,
+    "error_message": os.environ["ERROR_MESSAGE"] or None,
+    "run_group": os.environ["RUN_GROUP"],
+    "spell_ref": os.environ["SPELL_REF"],
+    "benchmarking_ref": os.environ["BENCHMARKING_REF"],
+    "command": os.environ["BENCHMARK_COMMAND"],
+    "log_file": os.environ["LOG_FILE"],
+    "updated_at": datetime.now(timezone.utc).isoformat(),
+}
+print(json.dumps(payload, indent=2, sort_keys=True))
+PY
+}
+
+on_exit() {
+  local status=\$?
+  if (( status != 0 )) && [[ "\$CURRENT_STATE" != "failed" && "\$CURRENT_STATE" != "finished" ]]; then
+    write_status failed "\$status" "wrapper aborted"
+  fi
+  exit "\$status"
+}
+trap on_exit EXIT
+
+mkdir -p "\$(dirname "\$STATUS_FILE")" "\$(dirname "\$LOG_FILE")"
+write_status starting
+exec >>"\$LOG_FILE" 2>&1
+
+printf '[spell-benchmark] run wrapper started at %s\n' "\$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+write_status running
+
+set +e
+bash "\$COMMAND_FILE"
+exit_code=\$?
+set -e
+
+if (( exit_code == 0 )); then
+  write_status finished "\$exit_code"
+else
+  write_status failed "\$exit_code"
+fi
+
+exit "\$exit_code"
+EOF
+}
+
+render_run_launch_script() {
+  cat <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+tmux has-session -t benchmark 2>/dev/null || \
+  tmux new-session -d -s benchmark -c "$HOME/spell/benchmarking" "bash -lc 'cd \"$HOME/spell/benchmarking\" && exec bash'"
+tmux kill-window -t benchmark:spell-run >/dev/null 2>&1 || true
+tmux new-window -d -t benchmark -n spell-run -c "$HOME/spell/benchmarking" "$HOME/.config/spell-benchmark/run-wrapper.sh"
+EOF
+}
+
+stage_remote_run_scripts() {
+  local instance_name="$1"
+  local zone="$2"
+  local remote_home="/home/${REMOTE_USER}"
+  local remote_config_dir="${remote_home}/.config/spell-benchmark"
+
+  local staging_dir
+  staging_dir="$(mktemp -d)"
+  local command_script="$staging_dir/run-command.sh"
+  local wrapper_script="$staging_dir/run-wrapper.sh"
+  local launch_script="$staging_dir/launch-run.sh"
+
+  render_run_command_script >"$command_script"
+  render_run_wrapper_script >"$wrapper_script"
+  render_run_launch_script >"$launch_script"
+  chmod 700 "$command_script" "$wrapper_script" "$launch_script"
+
+  gcloud compute ssh "${REMOTE_USER}@${instance_name}" \
+    --project "$PROJECT" \
+    --zone "$zone" \
+    --command="mkdir -p ${remote_config_dir} ${remote_home}/spell/benchmarking/logs"
+
+  gcloud compute scp \
+    --project "$PROJECT" \
+    --zone "$zone" \
+    "$command_script" \
+    "$wrapper_script" \
+    "$launch_script" \
+    "${REMOTE_USER}@${instance_name}:${remote_config_dir}/"
+
+  gcloud compute ssh "${REMOTE_USER}@${instance_name}" \
+    --project "$PROJECT" \
+    --zone "$zone" \
+    --command="chmod 700 ${remote_config_dir}/run-command.sh ${remote_config_dir}/run-wrapper.sh ${remote_config_dir}/launch-run.sh"
+
+  rm -rf "$staging_dir"
+}
+
+launch_benchmark_command() {
+  local instance_name="$1"
+  local zone="$2"
+
+  log "staging benchmark wrapper on ${instance_name}"
+  stage_remote_run_scripts "$instance_name" "$zone"
+  gcloud compute ssh "${REMOTE_USER}@${instance_name}" \
+    --project "$PROJECT" \
+    --zone "$zone" \
+    --command="bash /home/${REMOTE_USER}/.config/spell-benchmark/launch-run.sh"
+  log "benchmark launched on ${instance_name}; use ./scripts/gcp-benchmark.sh status --project ${PROJECT} --name ${instance_name} --zone ${zone}"
+}
+
+start_instance() {
+  create_instance
+  wait_for_startup "$INSTANCE_NAME" "$ZONE"
 
   if [[ "$AUTO_SSH" -eq 1 ]]; then
-    ssh_into_vm
+    ssh_into_vm "$INSTANCE_NAME" "$ZONE"
   else
     log "VM is ready; reconnect with: ./scripts/gcp-benchmark.sh ssh --project ${PROJECT} --name ${INSTANCE_NAME} --zone ${ZONE}"
   fi
@@ -331,44 +599,438 @@ start_instance() {
   trap - EXIT
 }
 
-pull_results() {
+run_instance() {
+  create_instance
+  wait_for_startup "$INSTANCE_NAME" "$ZONE"
+  launch_benchmark_command "$INSTANCE_NAME" "$ZONE"
+  START_INSTANCE_FINISHED=1
+  trap - EXIT
+}
+
+extract_tar_stream_into_dir() {
+  local local_base="$1"
+  mkdir -p "$local_base"
+  tar -xf - -C "$local_base"
+}
+
+remote_dir_presence() {
+  local instance_name="$1"
+  local zone="$2"
+  local remote_name="$3"
+
+  gcloud compute ssh "${REMOTE_USER}@${instance_name}" \
+    --project "$PROJECT" \
+    --zone "$zone" \
+    --command="bash -lc 'if [[ -d \$HOME/spell/benchmarking/${remote_name} ]]; then echo exists; else echo missing; fi'"
+}
+
+copy_remote_dir_from_instance() {
+  local instance_name="$1"
+  local zone="$2"
+  local remote_name="$3"
+  local local_base="$4"
+
+  mkdir -p "$local_base"
+  local presence
+  if ! presence="$(remote_dir_presence "$instance_name" "$zone" "$remote_name")"; then
+    log "failed to inspect ${remote_name} on ${instance_name}"
+    return 1
+  fi
+  if [[ "$presence" != "exists" ]]; then
+    log "skipping ${remote_name} for ${instance_name}; remote path not found"
+    return 0
+  fi
+
+  log "copying ${remote_name} from ${instance_name} into ${local_base}"
+  gcloud compute ssh "${REMOTE_USER}@${instance_name}" \
+    --project "$PROJECT" \
+    --zone "$zone" \
+    --command="bash -lc 'cd \$HOME/spell/benchmarking/${remote_name} && tar -cf - .'" \
+    | extract_tar_stream_into_dir "$local_base"
+}
+
+pull_results_from_instance() {
+  local instance_name="$1"
+  local zone="$2"
   require_cmd gcloud
   resolve_project
   mkdir -p "$LOCAL_BENCHMARK_DIR"
 
-  copy_remote_dir "results" "$LOCAL_BENCHMARK_DIR/results/gcp/$INSTANCE_NAME"
-  copy_remote_dir "traces" "$LOCAL_BENCHMARK_DIR/traces/gcp/$INSTANCE_NAME"
-  copy_remote_dir "logs" "$LOCAL_BENCHMARK_DIR/logs/gcp/$INSTANCE_NAME"
+  copy_remote_dir_from_instance "$instance_name" "$zone" "results" "$LOCAL_BENCHMARK_DIR/results/gcp/$instance_name"
+  copy_remote_dir_from_instance "$instance_name" "$zone" "traces" "$LOCAL_BENCHMARK_DIR/traces/gcp/$instance_name"
+  copy_remote_dir_from_instance "$instance_name" "$zone" "logs" "$LOCAL_BENCHMARK_DIR/logs/gcp/$instance_name"
 }
 
-stop_instance() {
+stop_instance_named() {
+  local instance_name="$1"
+  local zone="$2"
   require_cmd gcloud
   resolve_project
-  log "deleting ${INSTANCE_NAME}"
-  gcloud compute instances delete "$INSTANCE_NAME" \
+  log "deleting ${instance_name}"
+  gcloud compute instances delete "$instance_name" \
     --project "$PROJECT" \
-    --zone "$ZONE" \
+    --zone "$zone" \
     --quiet
 }
 
-parse_args "$@"
+finish_instance_named() {
+  local instance_name="$1"
+  local zone="$2"
+  pull_results_from_instance "$instance_name" "$zone"
+  stop_instance_named "$instance_name" "$zone"
+}
 
-case "$COMMAND" in
-  start)
-    start_instance
-    ;;
-  ssh)
-    require_cmd gcloud
-    resolve_project
-    ssh_into_vm
-    ;;
-  pull)
-    pull_results
-    ;;
-  stop)
-    stop_instance
-    ;;
-  *)
-    die "unknown command: $COMMAND"
-    ;;
-esac
+list_all_managed_instances_json() {
+  gcloud compute instances list \
+    --project "$PROJECT" \
+    --filter "labels.managed-by=${MANAGED_BY_LABEL}" \
+    --format=json
+}
+
+filter_instances_json_by_run_group() {
+  local run_group_label="${1:-}"
+  python3 -c '
+import json
+import sys
+
+run_group_label = sys.argv[1]
+operate_all = sys.argv[2] == "1"
+instances = json.load(sys.stdin)
+if operate_all:
+    filtered = instances
+else:
+    filtered = [
+        item for item in instances
+        if item.get("labels", {}).get("run-group") == run_group_label
+    ]
+print(json.dumps(filtered))
+' "$run_group_label" "$OPERATE_ALL"
+}
+
+instance_rows_from_json() {
+  python3 -c '
+import json
+import sys
+
+instances = json.load(sys.stdin)
+for item in instances:
+    metadata = {
+        entry.get("key"): entry.get("value", "")
+        for entry in item.get("metadata", {}).get("items", [])
+    }
+    zone = item.get("zone", "").rsplit("/", 1)[-1]
+    row = [
+        item.get("name", ""),
+        zone,
+        item.get("status", ""),
+        metadata.get("run-group", ""),
+        metadata.get("spell-ref", ""),
+        metadata.get("benchmarking-ref", ""),
+    ]
+    print("\t".join(field.replace("\t", " ") for field in row))
+'
+}
+
+list_matching_instances() {
+  local instances_json
+  local filtered_json
+  instances_json="$(list_all_managed_instances_json)"
+  filtered_json="$(printf '%s' "$instances_json" | filter_instances_json_by_run_group "$RUN_GROUP_LABEL")"
+  printf '%s' "$filtered_json" | instance_rows_from_json
+}
+
+describe_instance_json() {
+  local instance_name="$1"
+  local zone="$2"
+  gcloud compute instances describe "$instance_name" \
+    --project "$PROJECT" \
+    --zone "$zone" \
+    --format=json 2>/dev/null
+}
+
+instance_summary_row_from_json() {
+  python3 -c '
+import json
+import sys
+
+instance = json.load(sys.stdin)
+metadata = {
+    entry.get("key"): entry.get("value", "")
+    for entry in instance.get("metadata", {}).get("items", [])
+}
+command = metadata.get("benchmark-command", "").replace("\n", "\\n").replace("\t", " ")
+row = [
+    instance.get("zone", "").rsplit("/", 1)[-1],
+    instance.get("status", ""),
+    metadata.get("run-group", ""),
+    metadata.get("spell-ref", ""),
+    metadata.get("benchmarking-ref", ""),
+    command,
+]
+print("\t".join(row))
+'
+}
+
+read_remote_status_json() {
+  local instance_name="$1"
+  local zone="$2"
+  gcloud compute ssh "${REMOTE_USER}@${instance_name}" \
+    --project "$PROJECT" \
+    --zone "$zone" \
+    --command="bash -lc 'cat \$HOME/.config/spell-benchmark/run-status.json'" 2>/dev/null
+}
+
+status_row_from_json() {
+  python3 -c '
+import json
+import sys
+
+status = json.load(sys.stdin)
+row = [
+    status.get("state", ""),
+    "" if status.get("exit_code") is None else str(status.get("exit_code")),
+    (status.get("log_file") or "").replace("\t", " "),
+    (status.get("updated_at") or "").replace("\t", " "),
+    (status.get("command") or "").replace("\n", "\\n").replace("\t", " "),
+]
+print("\t".join(row))
+'
+}
+
+startup_complete_for_instance() {
+  local instance_name="$1"
+  local zone="$2"
+  local output
+  output="$(serial_output "$instance_name" "$zone")"
+  grep -Fq "$STARTUP_OK_MARKER" <<<"$output"
+}
+
+read_benchmark_state() {
+  local instance_name="$1"
+  local zone="$2"
+  local gcp_state="$3"
+
+  case "$gcp_state" in
+    PROVISIONING|STAGING)
+      printf '%s\n' "startup"
+      return 0
+      ;;
+    RUNNING)
+      :
+      ;;
+    *)
+      printf '%s\n' "unknown"
+      return 0
+      ;;
+  esac
+
+  local status_json
+  if status_json="$(read_remote_status_json "$instance_name" "$zone")" && [[ -n "$status_json" ]]; then
+    printf '%s' "$status_json" | python3 -c 'import json, sys; print(json.load(sys.stdin).get("state", "unknown"))'
+    return 0
+  fi
+
+  if startup_complete_for_instance "$instance_name" "$zone"; then
+    printf '%s\n' "unknown"
+  else
+    printf '%s\n' "startup"
+  fi
+}
+
+show_status() {
+  require_cmd gcloud
+  require_cmd python3
+  resolve_project
+
+  local instance_json
+  if ! instance_json="$(describe_instance_json "$INSTANCE_NAME" "$ZONE")"; then
+    printf 'Instance: %s\nZone: %s\nGCP: deleted\nBenchmark: unknown\n' "$INSTANCE_NAME" "$ZONE"
+    return 0
+  fi
+
+  local zone
+  local gcp_state
+  local run_group
+  local spell_ref
+  local benchmarking_ref
+  local command
+  IFS=$'\t' read -r zone gcp_state run_group spell_ref benchmarking_ref command <<<"$(printf '%s' "$instance_json" | instance_summary_row_from_json)"
+
+  local benchmark_state
+  benchmark_state="$(read_benchmark_state "$INSTANCE_NAME" "$zone" "$gcp_state")"
+
+  printf 'Instance: %s\n' "$INSTANCE_NAME"
+  printf 'Zone: %s\n' "$zone"
+  printf 'GCP: %s\n' "$gcp_state"
+  printf 'Benchmark: %s\n' "$benchmark_state"
+  [[ -n "$run_group" ]] && printf 'Run group: %s\n' "$run_group"
+  [[ -n "$spell_ref" ]] && printf 'Spell ref: %s\n' "$spell_ref"
+  [[ -n "$benchmarking_ref" ]] && printf 'Benchmarking ref: %s\n' "$benchmarking_ref"
+
+  local status_json
+  if status_json="$(read_remote_status_json "$INSTANCE_NAME" "$zone")" && [[ -n "$status_json" ]]; then
+    local state
+    local exit_code
+    local log_file
+    local updated_at
+    local command_from_status
+    IFS=$'\t' read -r state exit_code log_file updated_at command_from_status <<<"$(printf '%s' "$status_json" | status_row_from_json)"
+    [[ -n "$command_from_status" ]] && command="$command_from_status"
+    [[ -n "$exit_code" ]] && printf 'Exit code: %s\n' "$exit_code"
+    [[ -n "$log_file" ]] && printf 'Log file: %s\n' "$log_file"
+    [[ -n "$updated_at" ]] && printf 'Updated at: %s\n' "$updated_at"
+  fi
+
+  [[ -n "$command" ]] && printf 'Command: %s\n' "$command"
+}
+
+status_all_instances() {
+  require_cmd gcloud
+  require_cmd python3
+  resolve_project
+
+  local rows
+  rows="$(list_matching_instances)"
+  if [[ -z "$rows" ]]; then
+    log "no matching Spell-managed benchmark VMs found"
+    return 0
+  fi
+
+  printf '%-28s %-18s %-14s %-12s %s\n' "INSTANCE" "ZONE" "GCP" "BENCHMARK" "RUN GROUP"
+  while IFS=$'\t' read -r instance_name zone gcp_state run_group spell_ref benchmarking_ref; do
+    local benchmark_state
+    benchmark_state="$(read_benchmark_state "$instance_name" "$zone" "$gcp_state")"
+    printf '%-28s %-18s %-14s %-12s %s\n' "$instance_name" "$zone" "$gcp_state" "$benchmark_state" "$run_group"
+  done <<<"$rows"
+}
+
+pull_all_instances() {
+  require_cmd gcloud
+  require_cmd python3
+  resolve_project
+
+  local rows
+  rows="$(list_matching_instances)"
+  if [[ -z "$rows" ]]; then
+    log "no matching Spell-managed benchmark VMs found"
+    return 0
+  fi
+
+  local pulled=0
+  local failed=0
+  local skipped=0
+  local pulled_names=()
+  local failed_names=()
+  local skipped_names=()
+  while IFS=$'\t' read -r instance_name zone gcp_state run_group spell_ref benchmarking_ref; do
+    local benchmark_state
+    benchmark_state="$(read_benchmark_state "$instance_name" "$zone" "$gcp_state")"
+    if (( FINISHED_ONLY == 1 )) && [[ "$benchmark_state" != "finished" && "$benchmark_state" != "failed" ]]; then
+      skipped=$((skipped + 1))
+      skipped_names+=("$instance_name")
+      continue
+    fi
+    if pull_results_from_instance "$instance_name" "$zone"; then
+      pulled=$((pulled + 1))
+      pulled_names+=("$instance_name")
+    else
+      failed=$((failed + 1))
+      failed_names+=("$instance_name")
+    fi
+  done <<<"$rows"
+
+  log "pull-all summary: pulled=${pulled} failed=${failed} skipped=${skipped}"
+  (( ${#pulled_names[@]} > 0 )) && log "pulled: $(join_by ', ' "${pulled_names[@]}")"
+  (( ${#failed_names[@]} > 0 )) && log "pull failures: $(join_by ', ' "${failed_names[@]}")"
+  (( ${#skipped_names[@]} > 0 )) && log "skipped: $(join_by ', ' "${skipped_names[@]}")"
+  (( failed == 0 ))
+}
+
+finish_all_instances() {
+  require_cmd gcloud
+  require_cmd python3
+  resolve_project
+
+  local rows
+  rows="$(list_matching_instances)"
+  if [[ -z "$rows" ]]; then
+    log "no matching Spell-managed benchmark VMs found"
+    return 0
+  fi
+
+  local finished=0
+  local failed=0
+  local skipped=0
+  local finished_names=()
+  local failed_names=()
+  local skipped_names=()
+  while IFS=$'\t' read -r instance_name zone gcp_state run_group spell_ref benchmarking_ref; do
+    local benchmark_state
+    benchmark_state="$(read_benchmark_state "$instance_name" "$zone" "$gcp_state")"
+    if [[ "$benchmark_state" != "finished" && "$benchmark_state" != "failed" ]]; then
+      skipped=$((skipped + 1))
+      skipped_names+=("${instance_name}:${benchmark_state}")
+      continue
+    fi
+    if finish_instance_named "$instance_name" "$zone"; then
+      finished=$((finished + 1))
+      finished_names+=("$instance_name")
+    else
+      failed=$((failed + 1))
+      failed_names+=("$instance_name")
+    fi
+  done <<<"$rows"
+
+  log "finish-all summary: finished=${finished} failed=${failed} skipped=${skipped}"
+  (( ${#finished_names[@]} > 0 )) && log "finished: $(join_by ', ' "${finished_names[@]}")"
+  (( ${#failed_names[@]} > 0 )) && log "finish failures: $(join_by ', ' "${failed_names[@]}")"
+  (( ${#skipped_names[@]} > 0 )) && log "skipped active VMs: $(join_by ', ' "${skipped_names[@]}")"
+  (( failed == 0 ))
+}
+
+main() {
+  parse_args "$@"
+  validate_args
+
+  case "$ACTION" in
+    start)
+      start_instance
+      ;;
+    run)
+      run_instance
+      ;;
+    ssh)
+      require_cmd gcloud
+      resolve_project
+      ssh_into_vm "$INSTANCE_NAME" "$ZONE"
+      ;;
+    status)
+      show_status
+      ;;
+    status-all)
+      status_all_instances
+      ;;
+    pull)
+      pull_results_from_instance "$INSTANCE_NAME" "$ZONE"
+      ;;
+    pull-all)
+      pull_all_instances
+      ;;
+    finish)
+      finish_instance_named "$INSTANCE_NAME" "$ZONE"
+      ;;
+    finish-all)
+      finish_all_instances
+      ;;
+    stop)
+      stop_instance_named "$INSTANCE_NAME" "$ZONE"
+      ;;
+    *)
+      die "unknown command: $ACTION"
+      ;;
+  esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

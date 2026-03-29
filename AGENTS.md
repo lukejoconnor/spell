@@ -72,12 +72,25 @@ Use `uv run` for Python benchmark tooling.
 Use `scripts/gcp-benchmark.sh` to run long benchmark jobs on a GCP VM:
 
 ```bash
-./scripts/gcp-benchmark.sh start
-./scripts/gcp-benchmark.sh pull
-./scripts/gcp-benchmark.sh stop
+./scripts/gcp-benchmark.sh run --name <vm-name> --run-group <group> --command "<benchmark command>"
+./scripts/gcp-benchmark.sh status-all --run-group <group>
+./scripts/gcp-benchmark.sh finish-all --run-group <group>
 ```
 
+Recommended workflow:
+- `run` is the default path for unattended Docker-backed evals. It creates the VM, waits for startup, stages a benchmark wrapper into the tmux session, and returns without attaching.
+- `status-all --run-group <group>` is the standard way to monitor a batch. `--all` is the project-wide escape hatch when you intentionally want every Spell-managed VM.
+- `finish-all --run-group <group>` pulls artifacts from terminal VMs and then deletes them. Active VMs are skipped automatically.
+- `pull-all --run-group <group>` is available for non-destructive syncs, and `start`/`ssh` remain the manual debugging path.
+
+The launcher tags each managed VM with `managed-by=spell-benchmark` plus a run-group label for fleet discovery. The full run-group string and benchmark command are also stored in instance metadata for detailed reporting.
+
 The VM bootstrap lives in `scripts/gcp-startup.sh`. It clones the main `spell` repo and then separately clones `spell-benchmarking` into `spell/benchmarking`, because `benchmarking/` is an ignored nested repo rather than part of the main checkout.
+
+Pulled artifacts land directly under:
+- `benchmarking/results/gcp/<vm-name>/...`
+- `benchmarking/traces/gcp/<vm-name>/...`
+- `benchmarking/logs/gcp/<vm-name>/...`
 
 One-time setup on your Mac:
 - Install and authenticate `gcloud` (`brew install --cask gcloud-cli`, then `gcloud init`)

@@ -314,35 +314,54 @@ Why this is the default:
 
 ### Standard Workflow
 
-Launch the VM from the main repo root:
+For unattended Docker-backed evals, launch from the main repo root with `run` and a shared run-group:
 
 ```bash
-./scripts/gcp-benchmark.sh start --name <run-name> --spell-ref <spell-ref> --benchmarking-ref <benchmarking-ref>
+./scripts/gcp-benchmark.sh run \
+  --name <vm-name> \
+  --run-group <group> \
+  --spell-ref <spell-ref> \
+  --benchmarking-ref <benchmarking-ref> \
+  --command "<benchmark command>"
 ```
 
-The launcher waits for `scripts/gcp-startup.sh`, then drops you into a tmux shell on the VM. Run Docker-backed evals there from `~/spell/benchmarking`, for example:
+Monitor the batch with project-level fleet discovery:
 
 ```bash
-cd ~/spell/benchmarking
-uv run python bench.py swebench --dataset lite --condition spell --trace
+./scripts/gcp-benchmark.sh status-all --run-group <group>
 ```
 
-When the run finishes or you want intermediate artifacts, pull them back to the local nested benchmark checkout:
+When the run finishes, pull artifacts and tear down terminal VMs together:
 
 ```bash
-./scripts/gcp-benchmark.sh pull --name <run-name>
+./scripts/gcp-benchmark.sh finish-all --run-group <group>
 ```
 
-This copies `results/`, `traces/`, and `logs/` into local `benchmarking/*/gcp/<run-name>/` directories.
-
-When you are done, delete the VM explicitly even though it also has an auto-delete timeout:
+For non-destructive checkpoints, use:
 
 ```bash
-./scripts/gcp-benchmark.sh stop --name <run-name>
+./scripts/gcp-benchmark.sh pull-all --run-group <group>
+```
+
+Pulled artifacts land directly under:
+- `benchmarking/results/gcp/<vm-name>/...`
+- `benchmarking/traces/gcp/<vm-name>/...`
+- `benchmarking/logs/gcp/<vm-name>/...`
+
+`start` and `ssh` are still the manual debugging path when you want an interactive tmux shell on the VM.
+
+If you need to inspect or clean up one VM directly:
+
+```bash
+./scripts/gcp-benchmark.sh status --name <vm-name>
+./scripts/gcp-benchmark.sh pull --name <vm-name>
+./scripts/gcp-benchmark.sh finish --name <vm-name>
 ```
 
 ### Notes
 
+- Pass the same `--run-group` across related VMs; it is the primary fleet-scoping mechanism for `status-all`, `pull-all`, and `finish-all`.
+- Use `--all` only when you intentionally want every Spell-managed benchmark VM in the GCP project.
 - Use `--spell-ref` and `--benchmarking-ref` to point the VM at the exact branches under test.
 - The one-time GCP/Secret Manager setup lives in `AGENTS.md`; check it before first use.
 - If a startup or initial attach step fails, the launcher now deletes the VM automatically rather than leaving it running.
