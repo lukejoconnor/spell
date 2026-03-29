@@ -689,22 +689,32 @@ list_all_managed_instances_json() {
 
 filter_instances_json_by_run_group() {
   local run_group_label="${1:-}"
+  local run_group="${2:-}"
   python3 -c '
 import json
 import sys
 
 run_group_label = sys.argv[1]
-operate_all = sys.argv[2] == "1"
+run_group = sys.argv[2]
+operate_all = sys.argv[3] == "1"
 instances = json.load(sys.stdin)
+
+def metadata_value(instance, key):
+    for item in instance.get("metadata", {}).get("items", []):
+        if item.get("key") == key:
+            return item.get("value", "")
+    return ""
+
 if operate_all:
     filtered = instances
 else:
     filtered = [
         item for item in instances
         if item.get("labels", {}).get("run-group") == run_group_label
+        and metadata_value(item, "run-group") == run_group
     ]
 print(json.dumps(filtered))
-' "$run_group_label" "$OPERATE_ALL"
+' "$run_group_label" "$run_group" "$OPERATE_ALL"
 }
 
 instance_rows_from_json() {
@@ -735,7 +745,7 @@ list_matching_instances() {
   local instances_json
   local filtered_json
   instances_json="$(list_all_managed_instances_json)"
-  filtered_json="$(printf '%s' "$instances_json" | filter_instances_json_by_run_group "$RUN_GROUP_LABEL")"
+  filtered_json="$(printf '%s' "$instances_json" | filter_instances_json_by_run_group "$RUN_GROUP_LABEL" "$RUN_GROUP")"
   printf '%s' "$filtered_json" | instance_rows_from_json
 }
 
