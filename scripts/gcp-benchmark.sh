@@ -29,6 +29,7 @@ BENCHMARKING_REF="${SPELL_GCP_BENCHMARKING_REF:-main}"
 ANTHROPIC_SECRET="${SPELL_GCP_ANTHROPIC_SECRET:-ANTHROPIC_API_KEY}"
 OPENAI_SECRET="${SPELL_GCP_OPENAI_SECRET:-OPENAI_API_KEY}"
 GITHUB_TOKEN_SECRET="${SPELL_GCP_GITHUB_TOKEN_SECRET:-GITHUB_TOKEN}"
+CODEX_AUTH_SECRET="${SPELL_GCP_CODEX_AUTH_SECRET:-CODEX_AUTH_JSON_B64}"
 LOCAL_BENCHMARK_DIR="${SPELL_LOCAL_BENCHMARK_DIR:-$REPO_ROOT/benchmarking}"
 RUN_GROUP="${SPELL_GCP_RUN_GROUP:-}"
 RUN_GROUP_LABEL=""
@@ -87,6 +88,7 @@ Options:
   --anthropic-secret NAME         Secret Manager secret name (default: ANTHROPIC_API_KEY)
   --openai-secret NAME            Secret Manager secret name (default: OPENAI_API_KEY)
   --github-token-secret NAME      Secret Manager secret name (default: GITHUB_TOKEN)
+  --codex-auth-secret NAME        Secret Manager secret name for Codex auth (default: CODEX_AUTH_JSON_B64)
   --local-benchmark-dir PATH      Local benchmarking checkout/path for pull (default: ./benchmarking)
   --run-group GROUP               Logical fleet label for managed VMs (defaults to VM name for single-VM commands)
   --command CMD                   Benchmark command for run
@@ -246,6 +248,10 @@ parse_args() {
         GITHUB_TOKEN_SECRET="$2"
         shift 2
         ;;
+      --codex-auth-secret)
+        CODEX_AUTH_SECRET="$2"
+        shift 2
+        ;;
       --local-benchmark-dir)
         LOCAL_BENCHMARK_DIR="$2"
         shift 2
@@ -384,6 +390,7 @@ metadata_values() {
     "anthropic-secret=${ANTHROPIC_SECRET}" \
     "openai-secret=${OPENAI_SECRET}" \
     "github-token-secret=${GITHUB_TOKEN_SECRET}" \
+    "codex-auth-secret=${CODEX_AUTH_SECRET}" \
     "run-group-label=${RUN_GROUP_LABEL}"
 }
 
@@ -435,6 +442,7 @@ render_run_command_script() {
   cat <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
+source "\$HOME/.profile" 2>/dev/null || true
 cd "\$HOME/spell/benchmarking"
 ${RUN_COMMAND}
 EOF
@@ -621,7 +629,7 @@ remote_dir_presence() {
   gcloud compute ssh "${REMOTE_USER}@${instance_name}" \
     --project "$PROJECT" \
     --zone "$zone" \
-    --command="bash -lc 'if [[ -d \$HOME/spell/benchmarking/${remote_name} ]]; then echo exists; else echo missing; fi'"
+    --command="bash -lc 'if [[ -d \$HOME/spell/benchmarking/${remote_name} ]]; then echo exists; else echo missing; fi'" < /dev/null
 }
 
 copy_remote_dir_from_instance() {
@@ -645,7 +653,7 @@ copy_remote_dir_from_instance() {
   gcloud compute ssh "${REMOTE_USER}@${instance_name}" \
     --project "$PROJECT" \
     --zone "$zone" \
-    --command="bash -lc 'cd \$HOME/spell/benchmarking/${remote_name} && tar -cf - .'" \
+    --command="bash -lc 'cd \$HOME/spell/benchmarking/${remote_name} && tar -cf - .'" < /dev/null \
     | extract_tar_stream_into_dir "$local_base"
 }
 
@@ -787,7 +795,7 @@ read_remote_status_json() {
   gcloud compute ssh "${REMOTE_USER}@${instance_name}" \
     --project "$PROJECT" \
     --zone "$zone" \
-    --command="bash -lc 'cat \$HOME/.config/spell-benchmark/run-status.json'" 2>/dev/null
+    --command="bash -lc 'cat \$HOME/.config/spell-benchmark/run-status.json'" < /dev/null 2>/dev/null
 }
 
 status_row_from_json() {
@@ -797,11 +805,11 @@ import sys
 
 status = json.load(sys.stdin)
 row = [
-    status.get("state", ""),
-    "" if status.get("exit_code") is None else str(status.get("exit_code")),
-    (status.get("log_file") or "").replace("\t", " "),
-    (status.get("updated_at") or "").replace("\t", " "),
-    (status.get("command") or "").replace("\n", "\\n").replace("\t", " "),
+    status.get("state") or "-",
+    "-" if status.get("exit_code") is None else str(status.get("exit_code")),
+    (status.get("log_file") or "-").replace("\t", " "),
+    (status.get("updated_at") or "-").replace("\t", " "),
+    (status.get("command") or "-").replace("\n", "\\n").replace("\t", " "),
 ]
 print("\t".join(row))
 '
@@ -885,10 +893,10 @@ show_status() {
     local updated_at
     local command_from_status
     IFS=$'\t' read -r state exit_code log_file updated_at command_from_status <<<"$(printf '%s' "$status_json" | status_row_from_json)"
-    [[ -n "$command_from_status" ]] && command="$command_from_status"
-    [[ -n "$exit_code" ]] && printf 'Exit code: %s\n' "$exit_code"
-    [[ -n "$log_file" ]] && printf 'Log file: %s\n' "$log_file"
-    [[ -n "$updated_at" ]] && printf 'Updated at: %s\n' "$updated_at"
+    [[ "$command_from_status" != "-" && -n "$command_from_status" ]] && command="$command_from_status"
+    [[ "$exit_code" != "-" && -n "$exit_code" ]] && printf 'Exit code: %s\n' "$exit_code"
+    [[ "$log_file" != "-" && -n "$log_file" ]] && printf 'Log file: %s\n' "$log_file"
+    [[ "$updated_at" != "-" && -n "$updated_at" ]] && printf 'Updated at: %s\n' "$updated_at"
   fi
 
   [[ -n "$command" ]] && printf 'Command: %s\n' "$command"

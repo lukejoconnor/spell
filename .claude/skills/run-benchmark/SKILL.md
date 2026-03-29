@@ -82,11 +82,20 @@ When the user specifies an init program or trailing expression (e.g., "use init 
 
 **Shell quoting — critical:** The trailing expression contains `!` which triggers zsh history expansion inside double quotes. `set +H` does NOT reliably fix this — zsh still backslash-escapes `!` inside double quotes even with history expansion disabled.
 
+**Claude Code Bash tool gotcha:** The Bash tool pre-escapes `!` to `\!` in command strings regardless of quoting context. Even `'(!describe io)'` in single quotes becomes `'(\!describe io)'`. The ONLY reliable pattern is `$'...'` ANSI-C quoting, which bypasses this escaping:
+
 The correct pattern uses `$'...'` quoting to embed the leading single-quote:
 ```bash
 cd benchmarking && uv run python bench.py swebench \
   --dataset lite --condition spell --model anthropic-tc \
   --trailing $'\'(do (!describe io) (!extend))'
+```
+
+**For GCP `--command` flag:** The trailing expression must survive nested quoting through `gcp-benchmark.sh --command "..."`. Use `$'...'` for the entire `--command` value:
+```bash
+./scripts/gcp-benchmark.sh run \
+  --name my-vm --run-group my-group \
+  --command $'uv run python bench.py swebench --dataset lite --condition spell --model codex-tc:gpt-5.4 --trailing "\'(!describe io)" --items item1,item2 --name my-run'
 ```
 
 **Always dry-run first** when using a custom trailing to verify the init program is correct:
@@ -365,3 +374,16 @@ If you need to inspect or clean up one VM directly:
 - Use `--spell-ref` and `--benchmarking-ref` to point the VM at the exact branches under test.
 - The one-time GCP/Secret Manager setup lives in `AGENTS.md`; check it before first use.
 - If a startup or initial attach step fails, the launcher now deletes the VM automatically rather than leaving it running.
+
+### GCP Model Specs
+
+On GCP, `codex-tc:gpt-5.4` requires a `CODEX_AUTH_JSON_B64` secret in Secret Manager (base64-encoded `~/.codex/auth.json`). If this secret is not configured, use `openai-tc:gpt-5.4` instead — it routes through the standard OpenAI Responses API using `OPENAI_API_KEY`.
+
+| Local | GCP (with Codex auth) | GCP (without Codex auth) |
+|-------|----------------------|--------------------------|
+| `codex-tc:gpt-5.4` | `codex-tc:gpt-5.4` | `openai-tc:gpt-5.4` |
+| `anthropic-tc:claude-opus-4-6` | `anthropic-tc:claude-opus-4-6` | `anthropic-tc:claude-opus-4-6` |
+
+### SWE-bench on Fresh VMs
+
+The first SWE-bench run on a new VM requires building environment images from scratch (~10 min per unique env). These are Docker-cached for subsequent runs on the same VM. If the harness errors with `container_error` and empty messages on a fresh VM, this is the likely cause — the env images need to be built before `build_container` can succeed.

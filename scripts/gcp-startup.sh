@@ -185,6 +185,7 @@ BENCHMARKING_REF="$(metadata_attr benchmarking-ref)"
 ANTHROPIC_SECRET="$(metadata_attr anthropic-secret)"
 OPENAI_SECRET="$(metadata_attr openai-secret)"
 GITHUB_TOKEN_SECRET="$(metadata_attr github-token-secret)"
+CODEX_AUTH_SECRET="$(metadata_attr codex-auth-secret || true)"
 RUN_GROUP="$(metadata_attr run-group || true)"
 BENCHMARK_COMMAND="$(metadata_attr benchmark-command || true)"
 PROJECT_ID="$(project_id)"
@@ -221,6 +222,10 @@ echo "[spell-benchmark] fetching secrets from Secret Manager"
 ANTHROPIC_API_KEY="$(fetch_secret "$PROJECT_ID" "$ANTHROPIC_SECRET")"
 OPENAI_API_KEY="$(fetch_secret "$PROJECT_ID" "$OPENAI_SECRET")"
 GITHUB_TOKEN="$(fetch_secret "$PROJECT_ID" "$GITHUB_TOKEN_SECRET")"
+CODEX_AUTH_B64=""
+if [[ -n "$CODEX_AUTH_SECRET" ]]; then
+  CODEX_AUTH_B64="$(fetch_secret "$PROJECT_ID" "$CODEX_AUTH_SECRET" 2>/dev/null || true)"
+fi
 
 mkdir -p "$USER_HOME/.config/spell-benchmark"
 cat >"$USER_HOME/.config/spell-benchmark/env.sh" <<EOF
@@ -228,6 +233,13 @@ export SPELL_ROOT="$USER_HOME/spell"
 export ANTHROPIC_API_KEY=$(printf '%q' "$ANTHROPIC_API_KEY")
 export OPENAI_API_KEY=$(printf '%q' "$OPENAI_API_KEY")
 EOF
+if [[ -n "$CODEX_AUTH_B64" ]]; then
+  printf 'export CODEX_AUTH_JSON_B64=%q\n' "$CODEX_AUTH_B64" >>"$USER_HOME/.config/spell-benchmark/env.sh"
+  mkdir -p "$USER_HOME/.codex"
+  printf '%s' "$CODEX_AUTH_B64" | base64 -d >"$USER_HOME/.codex/auth.json"
+  chmod 600 "$USER_HOME/.codex/auth.json"
+  chown "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/.codex/auth.json"
+fi
 chmod 600 "$USER_HOME/.config/spell-benchmark/env.sh"
 chown -R "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/.config"
 

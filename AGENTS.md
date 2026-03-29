@@ -96,7 +96,10 @@ One-time setup on your Mac:
 - Install and authenticate `gcloud` (`brew install --cask gcloud-cli`, then `gcloud init`)
 - Enable `compute.googleapis.com` and `secretmanager.googleapis.com`
 - Store `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and a read-only `GITHUB_TOKEN` in Secret Manager
+- For `codex-tc` model runs: store `CODEX_AUTH_JSON_B64` in Secret Manager (base64-encode your local `~/.codex/auth.json`). Without this, use `openai-tc:gpt-5.4` instead (standard OpenAI API).
 - Grant the default Compute Engine service account `roles/secretmanager.secretAccessor` on those secrets
 - Ensure the project has a usable VPC network. If it has no `default` VPC, create one or pass `--network <name>` to the launcher.
+
+**SWE-bench on fresh VMs:** The first SWE-bench run on a new VM requires building environment images (~10 min per unique env). These are cached for subsequent runs. A full SWE-bench Lite run touches ~20 unique envs, so initial bootstrapping can take ~3 hours. Consider pre-building images or using a persistent disk cache.
 
 The launcher uses Compute Engine's built-in `--max-run-duration` with `--instance-termination-action=DELETE` so benchmark VMs auto-delete instead of lingering after long unattended runs.
