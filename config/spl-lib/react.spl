@@ -38,37 +38,45 @@
       (strings/trim (subs trimmed (+ thought-idx 8) action-idx))
       "")))
 
+(defn action-lines [response]
+  (loop [lines (strings/split-lines response)
+         matches []]
+    (if (empty? lines)
+      matches
+      (let [line (strings/trim (first lines))]
+        (recur (rest lines)
+               (if (strings/starts-with? line "Action: ")
+                 (conj matches line)
+                 matches))))))
+
 (defn parse-action [response]
   (let [trimmed (strings/trim response)
         command-marker "Action: Command["
         finish-marker "Action: Finish["
-        command-idx (strings/index-of trimmed command-marker)
-        finish-idx (strings/index-of trimmed finish-marker)
-        marker (cond
-                 (and command-idx finish-idx)
-                 (if (< command-idx finish-idx) command-marker finish-marker)
-                 command-idx command-marker
-                 finish-idx finish-marker
-                 :else nil)
-        action-idx (cond
-                     (= marker command-marker) command-idx
-                     (= marker finish-marker) finish-idx
-                     :else nil)]
-    (if (nil? marker)
+        matches (react/action-lines trimmed)]
+    (if (not= 1 (count matches))
       {:type :invalid
        :thought ""
        :raw trimmed}
-      (let [body-start (+ action-idx (count marker))
-            body-end (or (strings/last-index-of trimmed "]")
-                         (count trimmed))
-            body (if (>= body-end body-start)
-                   (strings/trim (subs trimmed body-start body-end))
-                   "")
-            thought (react/extract-thought trimmed action-idx)]
-        {:type (if (= marker command-marker) :command :finish)
-         :thought thought
-         :value body
-         :raw trimmed}))))
+      (let [action-line (first matches)
+            marker (cond
+                     (strings/starts-with? action-line command-marker) command-marker
+                     (strings/starts-with? action-line finish-marker) finish-marker
+                     :else nil)
+            action-idx (strings/index-of trimmed action-line)]
+        (if (or (nil? marker)
+                (not (strings/ends-with? action-line "]")))
+          {:type :invalid
+           :thought ""
+           :raw trimmed}
+          (let [body-start (count marker)
+                body-end (- (count action-line) 1)
+                body-text (subs action-line body-start body-end)
+                thought (react/extract-thought trimmed action-idx)]
+            {:type (if (= marker command-marker) :command :finish)
+             :thought thought
+             :value (strings/trim body-text)
+             :raw trimmed}))))))
 
 (defn format-observation [result]
   (let [out (react/truncate-middle (:out result) 5000)

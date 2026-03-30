@@ -271,7 +271,35 @@
                            :provider prov
                            :agent "config/agents/react.agent.edn"})]
       (is (= "React loop reached max steps without a final answer." (:result result)))
-      (is (= 1 @calls)))))
+      (is (= 1 @calls))))
+
+  (testing "react/run rejects malformed multi-action replies before shell execution"
+    (let [calls (atom 0)
+          prompts (atom [])
+          tmp-file (java.io.File/createTempFile "react-malformed" ".txt")
+          tmp-path (.getAbsolutePath tmp-file)
+          _ (.delete tmp-file)
+          prov (provider/test-provider
+                {:response-fn
+                 (fn [prompt]
+                   (swap! prompts conj prompt)
+                   (case (swap! calls inc)
+                     1 (str "Thought: Try the command.\n"
+                            "Action: Command[printf hacked > " tmp-path "\n"
+                            "Action: Finish[done]]")
+                     2 "Thought: Retry cleanly.\nAction: Finish[safe]"
+                     (throw (ex-info "Unexpected react leaf call" {:prompt prompt}))))})]
+      (try
+        (let [result (api/run {:init "(eval (do '(react/run \"Create a temp file, then finish.\")))"
+                               :provider prov
+                               :agent "config/agents/react.agent.edn"})]
+          (is (= "safe" (:result result)))
+          (is (= 2 @calls))
+          (is (= 2 (count @prompts)))
+          (is (not (.exists (java.io.File. tmp-path))))
+          (is (str/includes? (second @prompts) "Invalid response format.")))
+        (finally
+          (.delete (java.io.File. tmp-path)))))))
 
 ;; =============================================================================
 ;; load-agent-spec with :llms
