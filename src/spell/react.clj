@@ -11,7 +11,7 @@
   "config/spl-lib/react.spl")
 
 (def ^:private react-docs
-  {:short-docs "Hidden ReAct loop: plain-text command/finish transcript driven through leaf-llm."
+  {:short-docs "Hidden ReAct loop: plain-text command/finish transcript driven through leaf-llm's genuine plain-text transport."
    :docs {:guide "REACT - Hidden ReAct loop (effect namespace).
 
   (react/run prompt-or-opts) - run a plain-text command loop while hiding Spell from the inner model
@@ -29,7 +29,7 @@ Map form:
     '(react/run {:task \"Inspect the repo and summarize the failing test.\"
                  :max-steps 20})))
 
-react/run uses leaf-llm internally, but the inner model sees only a plain-text
+react/run uses leaf-llm internally, and the inner model sees only a genuine plain-text
 ReAct transcript: task text, prior thoughts/actions/observations, and the
 required output contract Action: Command[...] or Action: Finish[...].
 

@@ -105,7 +105,7 @@ Rules:
 Hidden ReAct loop loaded through namespace wiring (`stdlib/react`).
 
 Rules:
-- Keep the inner model prompt plain-text only; do not expose Spell syntax inside leaf-llm prompts.
+- Keep the inner model prompt plain-text only; do not expose Spell syntax inside leaf-llm prompts, and preserve the genuine plain-text leaf transport contract.
 - Preserve the public entrypoint as `react/run` from an `:init` trailing expression.
 
 ## Benchmarking Config Coupling

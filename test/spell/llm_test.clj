@@ -642,6 +642,40 @@
                                               :force-tool-call true})]
       (is (true? (:force-tool-call provider))))))
 
+(deftest plain-text-provider-mapping-test
+  (testing "anthropic tool-call resolves to prefill sibling with same model"
+    (let [prov (provider/->AnthropicTcProvider "k" "claude-sonnet-4-5-20250929" 16384 nil {"claude" [1 1]})
+          leaf (provider/plain-text-provider prov)]
+      (is (instance? spell.provider.AnthropicPfProvider leaf))
+      (is (= "claude-sonnet-4-5-20250929" (:model leaf)))
+      (is (= 16384 (:max-tokens leaf)))
+      (is (= {"claude" [1 1]} (:costs leaf)))))
+
+  (testing "codex tool-call resolves to message sibling with same model"
+    (let [prov (provider/->CodexTcProvider "tok" "acct" "https://chatgpt.com/backend-api/codex" "gpt-5.3-codex" 4096 nil nil)
+          leaf (provider/plain-text-provider prov)]
+      (is (instance? spell.provider.CodexMsgProvider leaf))
+      (is (= "gpt-5.3-codex" (:model leaf)))
+      (is (= "acct" (:account-id leaf)))
+      (is (= 4096 (:max-tokens leaf)))))
+
+  (testing "openai tool-call resolves to non-toolcall sibling with same routing fields"
+    (let [prov (provider/->OpenAIProvider "sk" "https://api.openai.com/v1" "gpt-5.4" 8192 nil true true {"gpt-5.4" [2.5 15]})
+          leaf (provider/plain-text-provider prov)]
+      (is (instance? spell.provider.OpenAIProvider leaf))
+      (is (= "gpt-5.4" (:model leaf)))
+      (is (true? (:use-responses-api leaf)))
+      (is (false? (:force-tool-call leaf)))
+      (is (= {"gpt-5.4" [2.5 15]} (:costs leaf)))))
+
+  (testing "openai plain-text providers stay identity-preserving"
+    (let [prov (provider/->OpenAIProvider "sk" "https://api.openai.com/v1" "gpt-5.4" 8192 nil true false {"gpt-5.4" [2.5 15]})]
+      (is (identical? prov (provider/plain-text-provider prov)))))
+
+  (testing "already plain-text providers return themselves"
+    (let [prov (provider/test-provider {:response "ok"})]
+      (is (identical? prov (provider/plain-text-provider prov))))))
+
 (deftest openai-parse-response-test
   (testing "parses successful chat completion"
     (let [response-body (json/write-str {:choices [{:message {:content "(def return 42))"}}]
@@ -1319,6 +1353,7 @@
   (testing "instant retry on 500 error succeeds on second attempt"
     (let [call-count (atom 0)
           prov (reify provider/LLMProvider
+                 (plain-text-provider [this] this)
                  (supports-prefill [_] true)
                  (call-llm [_ prompt] (provider/call-llm _ prompt {}))
                  (call-llm [_ prompt opts]
@@ -1335,6 +1370,7 @@
   (testing "non-retryable error throws immediately"
     (let [call-count (atom 0)
           prov (reify provider/LLMProvider
+                 (plain-text-provider [this] this)
                  (supports-prefill [_] true)
                  (call-llm [_ prompt] (provider/call-llm _ prompt {}))
                  (call-llm [_ prompt opts]
@@ -1349,6 +1385,7 @@
   (testing "exhausts all retries then throws"
     (let [call-count (atom 0)
           prov (reify provider/LLMProvider
+                 (plain-text-provider [this] this)
                  (supports-prefill [_] true)
                  (call-llm [_ prompt] (provider/call-llm _ prompt {}))
                  (call-llm [_ prompt opts]
@@ -1364,6 +1401,7 @@
   (testing "no retries when retries-seq is nil"
     (let [call-count (atom 0)
           prov (reify provider/LLMProvider
+                 (plain-text-provider [this] this)
                  (supports-prefill [_] true)
                  (call-llm [_ prompt] (provider/call-llm _ prompt {}))
                  (call-llm [_ prompt opts]
@@ -1414,6 +1452,7 @@
     (let [call-count (atom 0)
           received-prompts (atom [])
           prov (reify provider/LLMProvider
+                 (plain-text-provider [this] this)
                  (supports-prefill [_] true)
                  (call-llm [_ prompt] (provider/call-llm _ prompt {}))
                  (call-llm [_ prompt opts]
@@ -1441,6 +1480,7 @@
     (let [call-count (atom 0)
           received-prompts (atom [])
           prov (reify provider/LLMProvider
+                 (plain-text-provider [this] this)
                  (supports-prefill [_] false)
                  (call-llm [_ prompt] (provider/call-llm _ prompt {}))
                  (call-llm [_ prompt opts]
@@ -1458,7 +1498,43 @@
       (is (= "hi" (first @received-prompts)))
       ;; Second call: prompt with retry hint
       (is (clojure.string/includes? (second @received-prompts)
-                                     "retrying")))))
+                                     "retrying"))))
+
+  (testing "leaf-llm uses the provider's plain-text sibling instead of the parent transport"
+    (let [main-calls (atom 0)
+          leaf-calls (atom 0)
+          leaf-provider (reify provider/LLMProvider
+                          (plain-text-provider [this] this)
+                          (supports-prefill [_] false)
+                          (call-llm [_ prompt] (provider/call-llm _ prompt {}))
+                          (call-llm [_ prompt _opts]
+                            (swap! leaf-calls inc)
+                            (str "leaf:" prompt)))
+          prov (reify provider/LLMProvider
+                 (plain-text-provider [_] leaf-provider)
+                 (supports-prefill [_] true)
+                 (call-llm [_ prompt] (provider/call-llm _ prompt {}))
+                 (call-llm [_ _prompt _opts]
+                   (swap! main-calls inc)
+                   (throw (ex-info "parent transport should not handle leaf calls" {}))))]
+      (is (= "leaf:hello" ((llm/make-leaf-llm {:provider prov}) "hello")))
+      (is (= 0 @main-calls))
+      (is (= 1 @leaf-calls))))
+
+  (testing "compile-agent rejects providers without a plain-text leaf transport"
+    (let [prov (reify provider/LLMProvider
+                 (plain-text-provider [_]
+                   (throw (ex-info "no plain-text leaf transport"
+                                   {:type :leaf-llm-plain-text-unsupported
+                                    :provider :fake-tc})))
+                 (supports-prefill [_] true)
+                 (call-llm [_ prompt] (provider/call-llm _ prompt {}))
+                 (call-llm [_ _prompt _opts] "(def return 1))"))]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                            #"plain-text leaf transport"
+                            (llm/compile-agent {:namespaces {}
+                                                :provider prov
+                                                :recover false}))))))
 
 ;; =============================================================================
 ;; Kimi provider (#46)
@@ -1620,6 +1696,7 @@
   (testing "compile-agent passes generated grammar-format when enabled"
     (let [seen-opts (atom nil)
           prov (reify provider/LLMProvider
+                 (plain-text-provider [this] this)
                  (supports-prefill [_] true)
                  (call-llm [this prompt] (provider/call-llm this prompt {}))
                  (call-llm [_ _ opts]
@@ -1636,6 +1713,7 @@
   (testing "skips grammar-format when generated grammar exceeds max chars"
     (let [seen-opts (atom nil)
           prov (reify provider/LLMProvider
+                 (plain-text-provider [this] this)
                  (supports-prefill [_] true)
                  (call-llm [this prompt] (provider/call-llm this prompt {}))
                  (call-llm [_ _ opts]
