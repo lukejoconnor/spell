@@ -27,6 +27,9 @@
     "Send prompt to LLM, return response string.
      prompt is a string. opts may include :system for system prompt.
      Returns the assistant's text response.")
+  (plain-text-provider [this]
+    "Return the provider instance that should back leaf-llm.
+     Must be a genuine plain-text/no-tools transport.")
   (supports-prefill [this]
     "Returns true if this provider supports assistant prefill."))
 
@@ -412,6 +415,7 @@
           text)
         (throw (ex-info "Anthropic API request failed"
                         {:status status :body (.body response)})))))
+  (plain-text-provider [this] this)
   (supports-prefill [_]
     ;; Opus 4.6 does not support assistant prefill (returns 400 error)
     (not (str/includes? (str model) "opus-4-6"))))
@@ -593,6 +597,8 @@
           text)
         (throw (ex-info "Anthropic mandatory tool-call request failed"
                         {:status status :body (.body response)})))))
+  (plain-text-provider [_]
+    (->AnthropicPfProvider api-key model max-tokens http-client costs))
   (supports-prefill [_] false))
 
 (defn anthropic-tc-provider
@@ -653,6 +659,7 @@
           text)
         (throw (ex-info "Ollama API request failed"
                         {:status status :body (.body response)})))))
+  (plain-text-provider [this] this)
   (supports-prefill [_] true))
 
 (defn ollama-provider
@@ -821,6 +828,10 @@
           text)
         (throw (ex-info "OpenAI API request failed"
                         {:status status :body (.body response)})))))
+  (plain-text-provider [this]
+    (if force-tool-call
+      (->OpenAIProvider api-key base-url model max-tokens http-client use-responses-api false costs)
+      this))
   (supports-prefill [_] false))
 
 (defn openai-provider
@@ -1058,6 +1069,7 @@
           text)
         (throw (ex-info "ChatGPT Codex Responses request failed"
                         {:status status :body (.body response)})))))
+  (plain-text-provider [this] this)
   (supports-prefill [_] false))
 
 (defrecord CodexTcProvider [api-key account-id base-url model max-tokens http-client costs]
@@ -1078,6 +1090,8 @@
           text)
         (throw (ex-info "ChatGPT Codex mandatory tool-call request failed"
                         {:status status :body (.body response)})))))
+  (plain-text-provider [_]
+    (->CodexMsgProvider api-key account-id base-url model max-tokens http-client costs))
   (supports-prefill [_] false))
 
 (defn codex-msg-provider
@@ -1169,6 +1183,7 @@
           text)
         (throw (ex-info "Kimi API request failed"
                         {:status status :body (.body response)})))))
+  (plain-text-provider [this] this)
   (supports-prefill [_] true))
 
 (defn kimi-provider
@@ -1330,6 +1345,7 @@
           text)
         (throw (ex-info "Fireworks completions request failed"
                         {:status status :body (.body response)})))))
+  (plain-text-provider [this] this)
   (supports-prefill [_] true))
 
 (defn fireworks-provider
@@ -1393,6 +1409,7 @@
         (when (and latency (pos? latency))
           (Thread/sleep (long latency)))
         response)))
+  (plain-text-provider [this] this)
   (supports-prefill [_] (if (some? prefill?) prefill? true)))
 
 (defn test-provider
@@ -1441,6 +1458,7 @@
 (defrecord UserProvider []
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
+  (plain-text-provider [this] this)
   (supports-prefill [_] true)
   (call-llm [_ prompt opts]
     (let [system (:system opts)

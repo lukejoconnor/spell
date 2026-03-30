@@ -526,6 +526,18 @@
 ;; Leaf LLM
 ;; ---------------------------------------------------------------------------
 
+(defn- resolve-leaf-provider
+  [provider]
+  (when-not provider
+    (throw (ex-info "leaf-llm requires a provider with a plain-text transport"
+                    {:type :leaf-llm-provider-missing})))
+  (let [leaf-provider (provider/plain-text-provider provider)]
+    (when-not leaf-provider
+      (throw (ex-info "leaf-llm requires a provider that can supply a plain-text transport"
+                      {:type :leaf-llm-plain-text-unsupported
+                       :provider-class (class provider)})))
+    leaf-provider))
+
 (defn make-leaf-llm
   "Factory: create a plain text-in/text-out LLM function.
    No Spell parsing, evaluation, tools, or sub-agents.
@@ -539,33 +551,34 @@
   ([] (make-leaf-llm {}))
   ([{:keys [provider system model]
      :or {system "You are a helpful assistant. Respond concisely."}}]
-   (with-meta
-     (fn [prompt]
-       (let [prompt-str (str prompt)
-             node-id  (when trace/*trace*
-                        (trace/begin-node! trace/*trace-node-id*
-                                           eval/*llm-depth* :leaf prompt-str))
-             indent   (apply str (repeat eval/*llm-depth* "  "))
-             _        (when eval/*verbose*
-                        (Thread/sleep (rand-int 500))
-                        (eval/vlog (str indent "=== Leaf LLM Call (depth " eval/*llm-depth* ") ==="))
-                        (eval/vlog (str indent "Prompt: " (pr-str prompt))))
-             opts     (cond-> {:system system}
-                        model (assoc :model model))
-             max-tok  (:max-tokens provider)
-             response (provider/call-with-retries
-                        (fn [err]
-                          (let [msg (if (and err (= :missing-tool-call (:type (ex-data err))))
-                                     (str prompt-str
-                                          "\n;; system: retrying — previous response was truncated or empty"
-                                          (when max-tok (str ", max output tokens " max-tok)))
-                                     prompt-str)]
-                            (provider/strip-code-fences
-                              (provider/call-llm provider msg opts))))
-                        provider/*retries*)
-             _        (eval/vlog (str indent "Response: " response))
-             _        (when node-id
-                        (trace/complete-node! node-id
-                          {:response response :raw-text response :value response}))]
-         response))
-     {:spell/leaf true})))
+   (let [leaf-provider (resolve-leaf-provider provider)]
+     (with-meta
+       (fn [prompt]
+         (let [prompt-str (str prompt)
+               node-id  (when trace/*trace*
+                          (trace/begin-node! trace/*trace-node-id*
+                                             eval/*llm-depth* :leaf prompt-str))
+               indent   (apply str (repeat eval/*llm-depth* "  "))
+               _        (when eval/*verbose*
+                          (Thread/sleep (rand-int 500))
+                          (eval/vlog (str indent "=== Leaf LLM Call (depth " eval/*llm-depth* ") ==="))
+                          (eval/vlog (str indent "Prompt: " (pr-str prompt))))
+               opts     (cond-> {:system system}
+                          model (assoc :model model))
+               max-tok  (:max-tokens leaf-provider)
+               response (provider/call-with-retries
+                          (fn [err]
+                            (let [msg (if (and err (= :missing-tool-call (:type (ex-data err))))
+                                       (str prompt-str
+                                            "\n;; system: retrying — previous response was truncated or empty"
+                                            (when max-tok (str ", max output tokens " max-tok)))
+                                       prompt-str)]
+                              (provider/strip-code-fences
+                                (provider/call-llm leaf-provider msg opts))))
+                          provider/*retries*)
+               _        (eval/vlog (str indent "Response: " response))
+               _        (when node-id
+                          (trace/complete-node! node-id
+                            {:response response :raw-text response :value response}))]
+           response))
+       {:spell/leaf true}))))

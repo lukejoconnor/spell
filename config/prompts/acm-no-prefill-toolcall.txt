@@ -166,7 +166,7 @@ Extension-producing forms:
 
 LEAF-LLM
 
-You can also make plain-text LLM calls using leaf-llm. leaf-llm calls your same model but without the ability to write Spell code or use tools. leaf-llm is like a tool: use it with !call-now.
+You can also make plain-text LLM calls using leaf-llm. leaf-llm calls your same model through a genuine plain-text transport, without the ability to write Spell code or use tools. leaf-llm is like a tool: use it with !call-now.
 For example:
     ...▌'(!call-now poem (leaf-llm "Write a poem about spring."))
     ;; on your next turn:
