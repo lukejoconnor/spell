@@ -652,7 +652,7 @@
       (is (= {"claude" [1 1]} (:costs leaf)))))
 
   (testing "codex tool-call resolves to message sibling with same model"
-    (let [prov (provider/->CodexTcProvider "tok" "acct" "https://chatgpt.com/backend-api/codex" "gpt-5.3-codex" 4096 nil nil)
+    (let [prov (provider/->CodexTcProvider "tok" "acct" "https://chatgpt.com/backend-api/codex" "gpt-5.3-codex" 4096 "cache-key" nil nil)
           leaf (provider/plain-text-provider prov)]
       (is (instance? spell.provider.CodexMsgProvider leaf))
       (is (= "gpt-5.3-codex" (:model leaf)))
