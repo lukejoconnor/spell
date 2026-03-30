@@ -28,7 +28,10 @@
      prompt is a string. opts may include :system for system prompt.
      Returns the assistant's text response.")
   (supports-prefill [this]
-    "Returns true if this provider supports assistant prefill."))
+    "Returns true if this provider supports assistant prefill.")
+  (plain-text-provider [this]
+    "Return the provider instance that should back leaf-llm.
+     Must use a plain-text/no-tools transport."))
 
 ;; ---------------------------------------------------------------------------
 ;; Token usage tracking
@@ -414,7 +417,8 @@
                         {:status status :body (.body response)})))))
   (supports-prefill [_]
     ;; Opus 4.6 does not support assistant prefill (returns 400 error)
-    (not (str/includes? (str model) "opus-4-6"))))
+    (not (str/includes? (str model) "opus-4-6")))
+  (plain-text-provider [this] this))
 
 (defn anthropic-pf-provider
   "Create an Anthropic provider.
@@ -593,7 +597,9 @@
           text)
         (throw (ex-info "Anthropic mandatory tool-call request failed"
                         {:status status :body (.body response)})))))
-  (supports-prefill [_] false))
+  (supports-prefill [_] false)
+  (plain-text-provider [_]
+    (->AnthropicPfProvider api-key model max-tokens http-client costs)))
 
 (defn anthropic-tc-provider
   "Create an Anthropic provider with mandatory spell_suffix tool output.
@@ -653,7 +659,8 @@
           text)
         (throw (ex-info "Ollama API request failed"
                         {:status status :body (.body response)})))))
-  (supports-prefill [_] true))
+  (supports-prefill [_] true)
+  (plain-text-provider [this] this))
 
 (defn ollama-provider
   "Create an Ollama provider for local models.
@@ -821,7 +828,11 @@
           text)
         (throw (ex-info "OpenAI API request failed"
                         {:status status :body (.body response)})))))
-  (supports-prefill [_] false))
+  (supports-prefill [_] false)
+  (plain-text-provider [this]
+    (if force-tool-call
+      (->OpenAIProvider api-key base-url model max-tokens http-client use-responses-api false costs)
+      this)))
 
 (defn openai-provider
   "Create an OpenAI provider.
@@ -1058,7 +1069,8 @@
           text)
         (throw (ex-info "ChatGPT Codex Responses request failed"
                         {:status status :body (.body response)})))))
-  (supports-prefill [_] false))
+  (supports-prefill [_] false)
+  (plain-text-provider [this] this))
 
 (defrecord CodexTcProvider [api-key account-id base-url model max-tokens http-client costs]
   LLMProvider
@@ -1078,7 +1090,9 @@
           text)
         (throw (ex-info "ChatGPT Codex mandatory tool-call request failed"
                         {:status status :body (.body response)})))))
-  (supports-prefill [_] false))
+  (supports-prefill [_] false)
+  (plain-text-provider [_]
+    (->CodexMsgProvider api-key account-id base-url model max-tokens http-client costs)))
 
 (defn codex-msg-provider
   "Create a ChatGPT subscription-backed Codex provider (message transport).
@@ -1169,7 +1183,8 @@
           text)
         (throw (ex-info "Kimi API request failed"
                         {:status status :body (.body response)})))))
-  (supports-prefill [_] true))
+  (supports-prefill [_] true)
+  (plain-text-provider [this] this))
 
 (defn kimi-provider
   "Create a Moonshot Kimi provider.
@@ -1330,7 +1345,8 @@
           text)
         (throw (ex-info "Fireworks completions request failed"
                         {:status status :body (.body response)})))))
-  (supports-prefill [_] true))
+  (supports-prefill [_] true)
+  (plain-text-provider [this] this))
 
 (defn fireworks-provider
   "Create a Fireworks provider using the completions API for true prefill.
@@ -1393,7 +1409,8 @@
         (when (and latency (pos? latency))
           (Thread/sleep (long latency)))
         response)))
-  (supports-prefill [_] (if (some? prefill?) prefill? true)))
+  (supports-prefill [_] (if (some? prefill?) prefill? true))
+  (plain-text-provider [this] this))
 
 (defn test-provider
   "Create a declarative test provider.
@@ -1442,6 +1459,7 @@
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (supports-prefill [_] true)
+  (plain-text-provider [this] this)
   (call-llm [_ prompt opts]
     (let [system (:system opts)
           prefix (:prefix opts)]

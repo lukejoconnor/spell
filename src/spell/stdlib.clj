@@ -718,7 +718,9 @@ prompt: string
 Returns: string (the raw LLM response)
 
 Use when you need a natural-language answer, judgment, or text generation
-rather than code execution. The response is returned as a string value.
+rather than code execution. leaf-llm resolves to a plain-text transport even
+when the parent agent uses a tool-call provider. The response is returned as a
+string value.
 
 Example:
   '(!call-now answer (leaf-llm \"Is this a mammal? yes/no\"))

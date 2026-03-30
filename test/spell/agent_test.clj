@@ -579,6 +579,7 @@
   (testing "top-level compile path forwards :format into llm/compile-agent"
     (let [seen-opts (atom nil)
           prov (reify provider/LLMProvider
+                 (plain-text-provider [this] this)
                  (call-llm [_ prompt]
                    (provider/call-llm _ prompt {}))
                  (call-llm [_ _prompt opts]

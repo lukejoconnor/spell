@@ -29,9 +29,10 @@ Map form:
     '(react/run {:task \"Inspect the repo and summarize the failing test.\"
                  :max-steps 20})))
 
-react/run uses leaf-llm internally, but the inner model sees only a plain-text
-ReAct transcript: task text, prior thoughts/actions/observations, and the
-required output contract Action: Command[...] or Action: Finish[...].
+react/run uses leaf-llm internally, and leaf-llm resolves to a plain-text
+transport even for tool-call parent agents. The inner model therefore sees only
+a plain-text ReAct transcript: task text, prior thoughts/actions/observations,
+and the required output contract Action: Command[...] or Action: Finish[...].
 
    Requires an agent profile that exposes react/ plus shell execution
    capability (via io/sh)."}
