@@ -1,6 +1,10 @@
 (ns spell.agent-test
-  (:require [clojure.test :refer [deftest testing is use-fixtures]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest testing is use-fixtures]]
             [spell.agent :as agent]
+            [spell.api :as api]
+            [spell.parse :as parse]
+            [spell.react :as react]
             [spell.runtime :as runtime]
             [spell.llm :as llm]
             [spell.provider :as provider]
@@ -183,6 +187,91 @@
     (let [prov (provider/test-provider {:response "leaf-response"})
           result (llm/compile-agent {:model "test-model" :namespaces {} :provider prov})]
       (is (runtime/compiled-agent? result)))))
+
+;; =============================================================================
+;; react agent wiring
+;; =============================================================================
+
+(def ^:private react-doc-keys
+  #{:short-docs :docs :detail})
+
+(defn- react-defn-keys-from-spl
+  []
+  (->> (parse/read-all (slurp "config/spl-lib/react.spl"))
+       (keep (fn [form]
+               (when (and (seq? form)
+                          (= 'defn (first form))
+                          (symbol? (second form)))
+                 (keyword (name (second form))))))
+       set))
+
+(deftest react-loader-sync-test
+  (testing "react namespace exports every top-level defn in react.spl"
+    (let [expected (react-defn-keys-from-spl)
+          actual (->> (keys react/react)
+                      (remove react-doc-keys)
+                      set)]
+      (is (= expected actual))
+      (doseq [k expected]
+        (is (= true (get-in react/react [k :spell/fn])))
+        (is (vector? (get-in react/react [k :params])))
+        (is (seq (get-in react/react [k :body])))))))
+
+(deftest react-agent-namespace-test
+  (testing "react agent exposes describe docs for react/run"
+    (let [prov (provider/test-provider {:response "unused"})
+          result (api/run {:init "(eval (do '(describe-fn react :run)))"
+                           :provider prov
+                           :agent "config/agents/react.agent.edn"})]
+      (is (string? (:result result)))
+      (is (str/includes? (:result result) "react/run"))))
+
+  (testing "default cli agent remains unchanged"
+    (let [spec (agent/load-agent-spec "config/agents/cli.agent.edn")]
+      (is (not (contains? (:namespaces spec) 'react)))
+      (is (= 'stdlib/io-exec (get-in (agent/load-agent-spec "config/agents/react.agent.edn")
+                                     [:namespaces 'io]))))))
+
+(deftest react-hidden-loop-init-test
+  (testing "react/run drives a plain-text leaf loop from :init"
+    (let [prompts (atom [])
+          calls (atom 0)
+          prov (provider/test-provider
+                {:response-fn
+                 (fn [prompt]
+                   (swap! prompts conj prompt)
+                   (case (swap! calls inc)
+                     1 "Thought: Inspect the workspace.\nAction: Command[printf hello]"
+                     2 "Thought: The command succeeded.\nAction: Finish[done]"
+                     (throw (ex-info "Unexpected react leaf call" {:prompt prompt}))))})
+          result (api/run {:init "(eval (do (def prompt \"Say hello by running a shell command, then finish.\") '(react/run prompt)))"
+                           :provider prov
+                           :agent "config/agents/react.agent.edn"})]
+      (is (= "done" (:result result)))
+      (is (= 2 @calls))
+      (is (= 2 (count @prompts)))
+      (is (str/includes? (first @prompts) "Action: Command["))
+      (is (str/includes? (first @prompts) "Action: Finish["))
+      (is (some #(str/includes? % "Observation:") @prompts))
+      (is (some #(str/includes? % "hello") @prompts))
+      (doseq [prompt @prompts]
+        (is (not (str/includes? prompt "!call-now")))
+        (is (not (str/includes? prompt "!extend")))
+        (is (not (str/includes? prompt "Spell")))
+        (is (not (str/includes? prompt "react/run"))))))
+
+  (testing "react/run returns a plain failure string on step exhaustion"
+    (let [calls (atom 0)
+          prov (provider/test-provider
+                {:response-fn
+                 (fn [_]
+                   (swap! calls inc)
+                   "Thought: Still working.\nAction: Command[printf hello]")})
+          result (api/run {:init "(eval (do '(react/run {:task \"Say hello\" :max-steps 1})))"
+                           :provider prov
+                           :agent "config/agents/react.agent.edn"})]
+      (is (= "React loop reached max steps without a final answer." (:result result)))
+      (is (= 1 @calls)))))
 
 ;; =============================================================================
 ;; load-agent-spec with :llms

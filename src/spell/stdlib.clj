@@ -5,11 +5,13 @@
    Namespaces here match Clojure's namespace structure:
    - strings: matches clojure.string
    - math: matches Java's Math (since Clojure uses Math/ interop)
-   - patterns: Spell-specific orchestration patterns"
+   - patterns: Spell-specific orchestration patterns
+   - react: hidden ReAct loop"
   (:require [clojure.string :as str]
             [spell.eval :as eval]
             [spell.runtime :as runtime]
-            [spell.patterns :as patterns-lib]))
+            [spell.patterns :as patterns-lib]
+            [spell.react :as react-lib]))
 
 ;; =============================================================================
 ;; strings namespace (matches clojure.string)
@@ -184,6 +186,14 @@ Recommended usage pattern: Write a function, evaluate, inspect the result.
 (def patterns
   "Reusable orchestration patterns (Spell-specific)."
   patterns-lib/patterns)
+
+;; =============================================================================
+;; react namespace (Spell-specific)
+;; =============================================================================
+
+(def react
+  "Hidden ReAct loop (Spell-specific)."
+  react-lib/react)
 
 ;; =============================================================================
 ;; reminders namespace (docs-only, context reminder for LLM)

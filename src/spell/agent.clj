@@ -51,7 +51,8 @@
    'reminders stdlib/reminders-namespace
    'strings stdlib/strings
    'math stdlib/math
-   'patterns stdlib/patterns})
+   'patterns stdlib/patterns
+   'react stdlib/react})
 
 (defn- resolve-stdlib-path
   "Resolve a stdlib/X or stdlib/X/Y path.

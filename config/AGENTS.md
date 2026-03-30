@@ -7,7 +7,7 @@ This directory contains runtime configuration used by Spell execution and benchm
 - `agents/`: `.agent.edn` agent definitions (base + capability profiles).
 - `prompts/`: system prompt text variants.
 - `providers/`: declarative provider specs (`.provider.edn`).
-- `spl-lib/`: reusable Spell library files (`patterns.spl`).
+- `spl-lib/`: reusable Spell library files (`patterns.spl`, `react.spl`).
 
 ## Providers
 
@@ -35,6 +35,7 @@ Loaded by `src/spell/agent.clj`.
 - `io-tc.agent.edn` — benchmark/runtime I/O profile for mandatory toolcall providers
 - `io-msg-acm.agent.edn`, `io-acm-tc.agent.edn` — ACM prompt variants of the runtime I/O profiles
 - `explore.agent.edn` — read-only codebase exploration (io-read namespace only)
+- `react.agent.edn` — hidden ReAct loop profile (`react` + `io-exec`)
 - `math-tc.agent.edn`, `math-pf.agent.edn`, `math-msg.agent.edn`, `math-compute-tc.agent.edn` — math benchmark agents (no web namespace; `math-compute-tc` uses a computation-first tool-call prompt)
 
 Key semantics:
@@ -98,6 +99,14 @@ Reusable Spell patterns loaded through namespace wiring (`stdlib/patterns`).
 Rules:
 - Keep patterns pure unless a side effect is required by design.
 - Document expected return shape in comments for downstream agent usage.
+
+### React Library (`config/spl-lib/react.spl`)
+
+Hidden ReAct loop loaded through namespace wiring (`stdlib/react`).
+
+Rules:
+- Keep the inner model prompt plain-text only; do not expose Spell syntax inside leaf-llm prompts.
+- Preserve the public entrypoint as `react/run` from an `:init` trailing expression.
 
 ## Benchmarking Config Coupling
 
