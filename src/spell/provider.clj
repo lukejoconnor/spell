@@ -932,8 +932,8 @@
                     (.build))]
     request))
 
-(defn- codex-tc-request
-  [api-key account-id base-url model prompt system-prompt max-tokens reasoning-effort verbosity grammar-format]
+(defn- codex-tc-request-body
+  [model prompt system-prompt prompt-cache-key reasoning-effort verbosity grammar-format]
   (let [reasoning (when reasoning-effort
                     {:effort reasoning-effort})
         text-controls (when (= verbosity "low")
@@ -960,8 +960,15 @@
                       :store false
                       :stream true
                       :include []}
+               prompt-cache-key (assoc :prompt_cache_key prompt-cache-key)
                reasoning (assoc :reasoning reasoning)
-               text-controls (assoc :text text-controls))
+               text-controls (assoc :text text-controls))]
+    body))
+
+(defn- codex-tc-request
+  [api-key account-id base-url model prompt system-prompt prompt-cache-key max-tokens reasoning-effort verbosity grammar-format]
+  (let [body (codex-tc-request-body model prompt system-prompt prompt-cache-key
+                                    reasoning-effort verbosity grammar-format)
         request-builder (cond-> (-> (HttpRequest/newBuilder)
                                     (.uri (URI/create (str base-url "/responses")))
                                     (.header "Content-Type" "application/json")
@@ -1072,7 +1079,7 @@
   (plain-text-provider [this] this)
   (supports-prefill [_] false))
 
-(defrecord CodexTcProvider [api-key account-id base-url model max-tokens http-client costs]
+(defrecord CodexTcProvider [api-key account-id base-url model max-tokens prompt-cache-key http-client costs]
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt opts]
@@ -1080,8 +1087,11 @@
           grammar-format (:grammar-format opts)
           reasoning-effort (:reasoning-effort opts)
           verbosity (:verbosity opts)
+          cache-prefix (:cache-prefix opts)
           request (codex-tc-request api-key account-id base-url effective-model prompt
-                                    (:system opts) max-tokens reasoning-effort verbosity grammar-format)
+                                    (:system opts)
+                                    (when cache-prefix prompt-cache-key)
+                                    max-tokens reasoning-effort verbosity grammar-format)
           response (.send http-client request (HttpResponse$BodyHandlers/ofString))
           status (.statusCode response)]
       (if (<= 200 status 299)
@@ -1146,7 +1156,9 @@
      (when (str/blank? token)
        (throw (ex-info "No ChatGPT token available. Log in with codex or pass :api-key"
                        {:auth-file (expand-home auth-file)})))
-     (->CodexTcProvider token effective-account-id url model max-tokens (make-http-client) costs))))
+     (->CodexTcProvider token effective-account-id url model max-tokens
+                        (str (java.util.UUID/randomUUID))
+                        (make-http-client) costs))))
 
 ;; ---------------------------------------------------------------------------
 ;; Kimi Provider (Moonshot AI)

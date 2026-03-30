@@ -936,6 +936,47 @@
                                           :base-url "https://chatgpt.com/backend-api/codex/"})]
       (is (= "https://chatgpt.com/backend-api/codex" (:base-url p))))))
 
+(deftest codex-tc-prompt-cache-key-test
+  (testing "generates a stable prompt cache key per provider instance"
+    (let [p (provider/codex-tc-provider {:api-key "chatgpt-token"})]
+      (is (string? (:prompt-cache-key p)))
+      (is (not (str/blank? (:prompt-cache-key p))))))
+
+  (testing "threads the cache key into codex-tc calls when cache-prefix is present"
+    (let [p (provider/codex-tc-provider {:api-key "chatgpt-token"})
+          captured (atom nil)]
+      (with-redefs-fn {#'provider/codex-tc-request (fn [& args]
+                                                     (reset! captured args)
+                                                     (throw (ex-info "stop" {})))}
+        #(is (thrown? clojure.lang.ExceptionInfo
+              (provider/call-llm p "prompt" {:cache-prefix "previous prompt"
+                                             :system "system"}))))
+      (is (= (:prompt-cache-key p)
+             (nth @captured 6))))))
+
+(deftest codex-tc-request-body-test
+  (testing "includes prompt_cache_key when provided"
+      (let [body (#'provider/codex-tc-request-body "gpt-5.3-codex"
+                                                 "prompt"
+                                                 "system"
+                                                 "cache-key"
+                                                 nil
+                                                 nil
+                                                 nil)]
+      (is (= "gpt-5.3-codex" (:model body)))
+      (is (= "cache-key" (:prompt_cache_key body)))
+      (is (str/starts-with? (:instructions body) "system"))))
+
+  (testing "omits prompt_cache_key when not provided"
+    (let [body (#'provider/codex-tc-request-body "gpt-5.3-codex"
+                                                 "prompt"
+                                                 "system"
+                                                 nil
+                                                 nil
+                                                 nil
+                                                 nil)]
+      (is (nil? (:prompt_cache_key body))))))
+
 (deftest codex-msg-stream-parse-test
   (testing "parses response.completed with assistant message output"
     (let [sse (str "event: response.completed\n"
