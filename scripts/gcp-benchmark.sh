@@ -37,7 +37,7 @@ RUN_COMMAND="${SPELL_GCP_RUN_COMMAND:-}"
 OPERATE_ALL=0
 FINISHED_ONLY=0
 WAIT_INTERVAL_SECONDS="${SPELL_GCP_WAIT_INTERVAL_SECONDS:-120}"
-WAIT_TIMEOUT_SECONDS="${SPELL_GCP_WAIT_TIMEOUT_SECONDS:-14400}"
+WAIT_TIMEOUT_SECONDS="${SPELL_GCP_WAIT_TIMEOUT_SECONDS:-86400}"
 WAIT_AND_FINISH=0
 AUTO_SSH=1
 START_INSTANCE_CREATED=0
@@ -100,7 +100,7 @@ Options:
   --all                           Target all Spell-managed benchmark VMs in the project
   --finished-only                 For pull-all, only pull finished/failed VMs
   --interval SECONDS              Poll interval for wait (default: 120)
-  --timeout SECONDS               Timeout for wait (default: 14400)
+  --timeout SECONDS               Timeout for wait (default: 86400 / 24h)
   --finish                        For wait, run finish-all before exiting
   --no-ssh                        Create the VM but do not auto-attach after startup
   -h, --help                      Show this help text

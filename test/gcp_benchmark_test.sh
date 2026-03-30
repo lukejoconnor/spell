@@ -210,7 +210,9 @@ test_wait_for_completion_times_out() {
 }
 
 test_help_and_argument_parsing() {
-  bash "$REPO_ROOT/scripts/gcp-benchmark.sh" --help >/dev/null
+  local help_output
+  help_output="$(bash "$REPO_ROOT/scripts/gcp-benchmark.sh" --help)"
+  assert_contains "$help_output" "default: 86400 / 24h" "help should document the 24 hour wait default"
   bash "$REPO_ROOT/scripts/gcp-benchmark.sh" start --help >/dev/null
   bash "$REPO_ROOT/scripts/gcp-benchmark.sh" pull-all --help >/dev/null
   bash "$REPO_ROOT/scripts/gcp-benchmark.sh" wait --help >/dev/null
