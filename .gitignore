@@ -40,5 +40,14 @@ spell_benchmark_client.py
 __pycache__/
 *.pyc
 
-# Old/scratch files
-old/
+# Old/scratch files (root-level only; writeup/old/ is tracked)
+/old/
+
+# LaTeX build artifacts
+*.aux
+*.fdb_latexmk
+*.fls
+*.synctex.gz
+
+# OS junk
+.DS_Store
