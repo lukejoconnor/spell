@@ -80,33 +80,31 @@ When the user specifies an init program or trailing expression (e.g., "use init 
 | `'(do (!describe io) (!extend))` | Load io docs, then continue with a fresh call |
 | `'(!describe io web)` | Load multiple namespace docs |
 
-**Shell quoting — critical:** The trailing expression contains `!` which triggers zsh history expansion inside double quotes. `set +H` does NOT reliably fix this — zsh still backslash-escapes `!` inside double quotes even with history expansion disabled.
-
-**Claude Code Bash tool gotcha:** The Bash tool pre-escapes `!` to `\!` in command strings regardless of quoting context. Even `'(!describe io)'` in single quotes becomes `'(\!describe io)'`. The ONLY reliable pattern is `$'...'` ANSI-C quoting, which bypasses this escaping:
-
-The correct pattern uses `$'...'` quoting to embed the leading single-quote:
+**Quoting note:** The harness normalizes shell-escaped `\!` back to `!`, so no special ANSI-C quoting is needed. Use normal double quotes:
 ```bash
 cd benchmarking && uv run python bench.py swebench \
   --dataset lite --condition spell --model anthropic-tc \
-  --trailing $'\'(do (!describe io) (!extend))'
+  --trailing "'(do (!describe io) (!extend))"
 ```
 
-**For GCP `--command` flag:** The trailing expression must survive nested quoting through `gcp-benchmark.sh --command "..."`. Use `$'...'` for the entire `--command` value:
+Still do not backslash-escape the leading quote. `--trailing "'(...)"` is correct; `--trailing "\"'(...)"` is not.
+
+**For GCP `--command` flag:** Use the same plain double-quoted trailing expression inside the command string:
 ```bash
 ./scripts/gcp-benchmark.sh run \
   --name my-vm --run-group my-group \
-  --command $'uv run python bench.py swebench --dataset lite --condition spell --model codex-tc:gpt-5.4 --trailing "\'(!describe io)" --items item1,item2 --name my-run'
+  --command "uv run python bench.py swebench --dataset lite --condition spell --model codex-tc:gpt-5.4 --trailing \"'(!describe io)\" --items item1,item2 --name my-run"
 ```
 
 **Always dry-run first** when using a custom trailing to verify the init program is correct:
 ```bash
 cd benchmarking && uv run python bench.py swebench \
   --dataset lite --condition spell --model anthropic-tc \
-  --trailing $'\'(do (!describe io) (!extend))' \
+  --trailing "'(do (!describe io) (!extend))" \
   --items task_id_1 --dry-run --n 1
 ```
 
-Check the dry-run output for `"trailing":` — it should show the expression with unescaped `!`, e.g. `"trailing": "'(do (!describe io) (!extend))"`. If you see `\!` or `'\'(...)` the quoting is wrong.
+Use the dry-run to confirm the command shape and catch the separate `\'(...)` leading-quote mistake. The dry-run JSON echoes the raw CLI argument, so `\!` may still appear there; the harness normalizes it later when `build_spell_init()` constructs the Spell init.
 
 ### 5. Investigate traces — 100% coverage, comprehensive detail
 
@@ -164,7 +162,7 @@ Every item in your results must have been individually examined by a subagent th
 
 ### 6. Scoring and reporting
 
-**Source of truth for SWE-bench:** Use `same_container_resolved` from the unified JSONL as the default scoring source. This runs the harness tests inside the same container where the agent made changes, immediately after generation — no separate eval step needed. Only run standalone `bench.py swebench-eval` (fresh-container evaluation) when the user explicitly requests it, or when same-container results look suspicious (e.g., patches that modify test files). Report results from `same_container_resolved` as soon as generation completes; do not wait for or run a separate eval pass unless asked.
+**Source of truth for SWE-bench:** Use `metadata.same_container_resolved` from the unified JSONL as the default scoring source (`r.get('metadata', {}).get('same_container_resolved')`). **WARNING:** The top-level `same_container_resolved` field is always `None` — the actual result is nested inside `metadata`. This runs the harness tests inside the same container where the agent made changes, immediately after generation — no separate eval step needed. **NEVER score from eval log text patterns** (grepping for "OK"/"FAILED"/"passed") — this is unreliable because unrelated pre-existing test failures cause false negatives and partial test matches cause false positives. Only run standalone `bench.py swebench-eval` (fresh-container evaluation) when the user explicitly requests it, or when same-container results look suspicious (e.g., patches that modify test files). Report results from `metadata.same_container_resolved` as soon as generation completes; do not wait for or run a separate eval pass unless asked.
 
 **Source of truth (non-SWE-bench):** Always score from the benchmark harness's own output, never from agent self-reports. Spell's `ok: true` means "runtime didn't crash" — only the harness `is_resolved: true` means "tests passed." These diverge often.
 
