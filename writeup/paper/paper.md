@@ -33,7 +33,7 @@ where `call-self` invokes a new LM call and evaluates the resulting program. Thi
 
 Implementing self-programmed execution requires making just one high-level decision, which is the language in which the program is written. This paper proposes such a language, *Spell* (Self-Programmed Execution Language for LLMs). Spell is a dialect of Lisp embedded in Clojure. In Lisp, unlike most languages, it is idiomatic for programs to manipulate code as data (*homoiconicity*), and in particular, a program can manipulate its own source code (such programs are *quines*). Quining is a central mechanicism in Spell because LMs must constantly manipulate their own context window programmatically, and their context window is the source code of the program itself.
 
-Section 1 introduces Spell and its core semantics. Section 2 measures the effect of using Spell on performance in practice, with current LLMs; it tests Spell on a range of benchmarks and an analysis of what features of Spell are actually utilized. Section 3 formalizes self-programmed execution and states a completeness theorem.
+Section 1 introduces Spell and its core semantics. Section 2 measures the effect of using Spell on performance in practice, with current LLMs; it tests Spell on a range of benchmarks and an analysis of what features of Spell are actually utilized. Section 3 formalizes SPE and states a completeness theorem.
 
 ## Related work
 
@@ -51,7 +51,7 @@ A separate category includes systems like DSPy and the Huxley-Godel Machine whic
 ## Self-Programmed Execution Language for LLMs
 
 Implementing SPE requires specifying a language for execution. Although it may in principle be possible to use any interpreted language, most languages would be ill-suited for SPE in practice. 
-In SPE, the program which is executed doubles as the context window of the LM. Persisting context across turns requires the program to reference and manipulate its own source code. In an imperative language like Python, this kind of metaprogramming is technically possible but at best unidiomatic. The natural choice is to use Lisp. In Lisp, it is idiomatic to manipulate source code as data (this property is *homoiconicity*), and it is also idiomatic to create embedded dialects in support of special use cases, which is the approach taken here. Specifically, Spell is a List dialect embedded within Clojure. It adds features to Clojure which support the creation and manipulation of self-referencing programs. It also makes important modifications to rules related to variable scope and global side effects.
+In SPE, the program which is executed doubles as the context window of the LM. Persisting context across turns requires the program to reference and manipulate its own source code. In an imperative language like Python, this kind of metaprogramming is technically possible but at best unidiomatic; a more natural choice is to use Lisp. In Lisp, it is idiomatic to manipulate source code as data (this property is *homoiconicity*), and it is also idiomatic to create embedded dialects in support of special use cases, which is the approach taken here. Specifically, Spell is a List dialect embedded within Clojure. It adds features to Clojure which support the creation and manipulation of self-referencing programs. It also makes important modifications to rules related to variable scope and global side effects.
 
 A *completion* refers to the concatenation of a prefix, which is passed as the input to an LLM, and a response, which is the output. In Spell, the special function `!llm-self` accepts a prefix as its argument, passes it to the LLM, obtains a completion, and evaluates the completion as code. The reason that the prefix is included in the program, and the program is not written from scratch, is that the program will almost always need to reference data (usually string literals) from the prefix. The natural way to do this is to evaluate the prefix as a part of the program, with bindings for context items (like prompts) such that they can be referenced programmatically.
 
@@ -83,41 +83,51 @@ Several layers must be unpacked. First, the outer `quine` form binds the source 
 3. `!call-now` takes the quine form, `completion`, strips trailing parentheses, and concatenates the tool call expression
 4. `!call-now` invokes the LLM and passes it the concatenation. 
 
-Of course, the point is not to reproduce a ReAct loop but to generalize it in arbitrary ways. One direction in which to generalize is context window manipulation. The `!llm-self` function takes as input an arbitrary quoted expression, which will be the prefix of the subsequent turn. For example, it could perform a number of tool calls to gather information, then define a plan, and then perform a self-call with its plan together with other relavent data while excluding most prior chain of thought and tool call results. Spell also has a macro, `prune-substitute`, which pairs with the special functions `prune` and `persist` to make context management ergonomic. At runtime, `prune` is inert, and `persist` is equivalent to `def`. However, they act as signals to the `prune-substitute` macro, which walks the AST of its input expression and deletes any subexpression which preceeds the expression `(prune)`. When it encounters the expression `(persist name expr)`, it replaces `(expr)` with whatever value is currently bound to `name` in the program namespace. These combine as follows:
+Of course, the point is not to reproduce a ReAct loop but to generalize it. One direction in which to generalize is context window manipulation. The `!llm-self` function takes as input an arbitrary quoted expression, which will be the prefix of the subsequent turn. For example, it could perform a number of tool calls to gather information, then define a plan, and then perform a self-call with its plan together with other relavent data while excluding most prior chain of thought and tool call results. Spell also has a macro, `prune-substitute`, which pairs with the special functions `prune` and `persist` to make context management ergonomic. At runtime, `prune` is inert, and `persist` is equivalent to `def`. However, they act as signals to the `prune-substitute` macro, which walks the input expression and deletes any subexpression which preceeds the expression `(prune)`. When it encounters the expression `(persist name expr)`, it replaces `(expr)` with whatever value is currently bound to `name` in the program namespace. These combine as follows:
 
-(TODO: example with many-line tool call result, prune, and persist; ends with !llm-self prune-substitute completion)
+```clojure
+;; inside the do block of (quine completion (eval (do ...)))
+'(!call-now readme (io/read-file "README.md"))       ;; prior turn
+(def readme "# My Project\n...\n[200 lines]")
+(prune 2)
+(persist title (first (strings/split-lines readme)))
+'(!extend)
+```
 
-Here, (TODO: short explanation)
+On a prior turn, the agent read a file via `!call-now`, which inlined the 200-line result. The agent now marks the large binding for removal with `(prune 2)`, extracts the title with `persist`, and calls `!extend`. `!extend` applies `prune-substitute` to the completion. On the subsequent turn, the context window contains `(persist title "# My Project")` in place of the original 200 lines.
 
 A second direction in which to generalize is composition of the `!llm-self` function with arbitrary control flow. An agent could create a task list and self-dispatch using `map`; it could set up a worker-checker loop, from which the checker signals when to break; it could write a reusable orchestration function. The following program implements a worker-checker like pattern in which the "worker" is asked to guess a number:
 
-(TODO: example in which the worker guesses 1-100; each guess is appended to "history" with a hint about whether true number is smaller or larger, and history is sent back via llm-self; please try to make this short, ok if it isn't "robust")
+```clojure
+(quine completion (eval (do
+  (def secret 42)
+  (defn play [guess history]
+    (if (= guess secret)
+      (str "Correct!")
+      (let [hint (if (< guess secret) "higher" "lower")
+            history (conj history (str guess ": " hint))]
+        (play (!llm-self (str "Guess a number 1-100. " history))
+              history))))
+  '(play (!llm-self "Guess a number between 1 and 100") [])
+)))
+```
 
-Spell additionally supports agent parallelism and inter-agent communication (Appendix xy).
+The `play` function checks each guess against the secret, and if incorrect, appends a hint to the history and invokes a new LLM call via `!llm-self`, passing the updated history as the prompt. The subagent sees only the history and returns a number; the parent evaluates it and recurses. In this example, the subagent runs synchronously; Spell additionally supports agent parallelism and inter-agent communication (Appendix xy).
 
 Third, Spell can be used to perform computations or to compose tool calls, similar to programmatic tool calling. This functionality does exist by default in any agent with access to bash or Python. Spell augments ordinary programmatic tool calling by persisting programmatic bindings across turns: for example, it can perform a websearch to obtain a list of URLs, and on the following turn fetch one of those URLs by reference instead of regurgitating the (possibly lengthy) URL with output tokens. 
 
+The entrypoint to create a Spell agent involves running an *initial program*. This program usually contains one `!llm-self` call or similar, thereby producing the agent's first turn, and it contains any initial context the agent should have (in particular, a prompt). However, this program may execute arbitrary orchestration logic; Spell is compatible with custom, human-specified orchestration.
+
 ## Empirical Evaluation
 
-## Theory
+## Universality of SPE
 
+In Appendix A we prove a universality theorem for SPE. We model an agentic machine as X=(S,p,h), where the prompt function p maps states to prompts, and the harness function h maps a state/completion pair to the next state, halt, or divergence. We say that a machine (S,p,h) *embeds* (S',p',h') via the embedding e:S'->S if e is an injection which preserves the prompt function (i.e., pe=p') and commutes with the harness function (i.e., h(c,.)e=eh'(c,.)). We define the SPE machine as a particular agentic machine which wraps around a well-studied evaluator (the CEK machine []). Its states are the subset of evaluator states in which the next step of computation is to make an LM call. For some other machine, we say that it is *realizable* if its prompt and harness functions can be implemented by the underlying evaluator. For a state x of an agentic machine X, let S_x be the subset of S which is reachable in one step from x: S_x={h(c,x) for completions c}. We say that (X,x) *completion-generates* a machine X' if some X embeds X' via an embedding e such that Im(e)\subset S_x. We construct a state of the SPE machine, called an *SPE state*, which completion-generates any realizable machine. 
 
+Our formalism adopts the "perspective" of the LM itself. States of the agentic machine correspond one-to-one with model invocations. At each state, the prompt function determines what the LM observes. When one machine is embedded in another, the embedding preserves the prompt which is observed by the model, such that the LM cannot distinguish the embedded system from the original. Likewise, the term "self-programmed" takes on a formal meaning from the perspective of the LM: the successor state of an SPE state is fully determined (up to an embedding) by its own program.
 
-## Old text
+An SPE machine necessarily contains non-SPE states. Indeed, if (X,x) completion-generates a machine Y, then so does any embedding of x; an SPE machine which embeds a less expressive machine must contain similarly less expressive states. The distinction between SPE and non-SPE states is a possible definition for the distinction between "agents" and "subagents", or more precisely, "agent turns" and "subagent turns"; an agent turn corresponds to an SPE state.
 
-For example, Cursor's AI-written browser required two failed attempts before its human orchestrators devised a sucessful approach (with planners, workers and judges). 
-Orchestration and context management materially affect agent performance, and the strongest systems that exist emphasize autonomy. Yet, orchestration is mostly conducted by humans: by managing separate agents simultaneously; by specifying workflows (the approach taken by LangGraph and ...); by implementing patterns (like Kimi's swarms, or Claude Code's task lists) that can be invoked by agents semi-autonomously. Are human-designed orchestration patterns actually optimal for agentic systems?
-Spell also expresses ordinary programmatic control flow: for example, an agent can make a tool call, dispatch a subagent depending on its result, concatenate the subagent's output with its current context window, then pass this context to a new instance of itself, continuing its chain of thought. 
-We evaluate Spell on mathematical reasoning, long-context retrieval, and coding benchmarks. On mathematical reasoning, Spell agents consistently outperform Claude Code, a state-of-the-art coding agent, by 7--13 percentage points across AIME, HMMT, and Omni-MATH competition problems. On LongBench v2, Spell outperforms Claude Code by 27 percentage points. On coding tasks, Claude Code outperforms Spell. We find that the source of Spell's advantage on mathematical reasoning is primarily the seamless integration of deterministic computation with LLM reasoning---code execution eliminates arithmetic errors and enables exhaustive search---rather than the multi-agent orchestration features that motivate the language's design. We discuss the gap between Spell's theoretical expressiveness and the orchestration strategies that current LLMs actually deploy.
+Spell makes it idiomatic for the system to remain in SPE states continuously. Specifically, this  motivates the trailing expression pattern and the gating of turn-producing expressions. Suppose that the prefix passed to an LM already contained a turn-producing expression, and there was no mechanism to "cancel" this expression by appending additional expressions; then this would a non-SPE state, for example because the LM cannot cause the next state to be the halting state. With the trailing expression pattern, turn-producing expressions only fire when last and are cancelled by appending any expression at all.
 
-Spell is a Lisp dialect implemented in Clojure. It adds a function, `!llm-self`, which calls an LLM, evaluates the response as a Spell program, and returns the result. It also adds communication primitives for coordination between agents, or between agents and users, and it adds a quining primitive that allows programs to reference their own source code. Compared with Clojure, a major difference is that Spell programs are safe by default (having no interaction with with global state), and all unsafe effects (like tool calls and `!llm-self` calls) pass through a special evaluator function. Spell also modifies the scoping rules of Clojure.
-
-
-The visibility of agentic orchestration spiked in early 2026. In January, Moonshot AI introduced Kimi 2.5 with "agent swarms", orchestrated by agents themselves, who were trained to self-orchestrate via reinforcement learning ("parallel-agent reinforcement learning", PARL). Also in January, Cursor deployed an ensemble of agents to write a partially functional web browser, using a human-designed orchestration structure with planners, workers, and judges. In February, Anthropic introduced a new "Teams" feature in Claude Code, featuring a central task list and bilateral communication channels, and demonstrated the autonomous production of a C compiler.
-
-Another prominent theme in agentic systems has been context engineering, and in particular, the *progressive disclosure* pattern. With progressive disclosure, agents control what enters their context window via tool calls. Refinements of this strategy include programmatic tool calling, which allows agents to filter tool-call results using code, and delegation, where a subagent explores for relevant context and returns a digest. 
-
-The common theme among these innovations is that agentic systems perform best when they exercize control over context management and multi-agent orchestration autonomously. Yet, the autonomy of existing systems is partial. Agents exercize fine-grained control over the ingress of context (via progressive disclosure), but not over egress, which typically occurs automatically via compaction. They spawn subagents and coordinate using task lists, but only as specified by human-designed templates.
-
-
-I propose Spell (Self-Prompting Execution Language for LLMs), a domain-specific language for agentic self-orchestration and context management. Spell programs can make LLM calls; when an LLM writes code in Spell, it can call itself recursively. The LLM controls exactly what context it passes to itself, and this mechanism is used both to inject new context and to prune context which has gone stale. Spell programs can dispatch multiple LLMs asynchronously, exercizing the same control over subagent context, and agents running in parallel are able to communicate. Communication with users occurs via the same system as communication between agents. Spell programs can also perform ordinary computation, like arithmetic and control flow; they blend intelligent computation with deterministic computation seamlessly.
+## Discussion

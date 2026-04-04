@@ -49,6 +49,7 @@ usage() {
 Usage:
   ./scripts/gcp-benchmark.sh start [options]
   ./scripts/gcp-benchmark.sh run [options] --command "..."
+  ./scripts/gcp-benchmark.sh dispatch [options] --command "..."
   ./scripts/gcp-benchmark.sh ssh [options]
   ./scripts/gcp-benchmark.sh status [options]
   ./scripts/gcp-benchmark.sh status-all [--run-group GROUP | --all] [options]
@@ -62,6 +63,7 @@ Usage:
 Commands:
   start       Create the VM, wait for startup, and attach to tmux.
   run         Create the VM, wait for startup, and launch a benchmark command in tmux.
+  dispatch    Launch a benchmark command on an existing Spell benchmark VM.
   ssh         Reconnect to the VM tmux session.
   status      Show one VM's GCP lifecycle state plus benchmark state.
   status-all  List Spell-managed benchmark VMs in the project.
@@ -321,6 +323,9 @@ validate_args() {
       [[ -n "$RUN_COMMAND" ]] || die "--command is required for run"
       AUTO_SSH=0
       ;;
+    dispatch)
+      [[ -n "$RUN_COMMAND" ]] || die "--command is required for dispatch"
+      ;;
     status-all|wait|pull-all|finish-all)
       if (( OPERATE_ALL == 0 )) && [[ -z "$RUN_GROUP" ]]; then
         die "${ACTION} requires --run-group GROUP or --all"
@@ -346,7 +351,7 @@ validate_args() {
   require_positive_integer "$WAIT_TIMEOUT_SECONDS" "--timeout"
 
   case "$ACTION" in
-    start|run|ssh|status|pull|finish|stop)
+    start|run|dispatch|ssh|status|pull|finish|stop)
       [[ -n "$RUN_GROUP" ]] || RUN_GROUP="$INSTANCE_NAME"
       ;;
   esac
@@ -471,6 +476,33 @@ create_instance() {
   START_INSTANCE_CREATED=1
 }
 
+refresh_instance_metadata_for_run() {
+  local instance_name="$1"
+  local zone="$2"
+  local labels
+  labels="$(join_by "," "managed-by=${MANAGED_BY_LABEL}" "run-group=${RUN_GROUP_LABEL}")"
+
+  local metadata_dir
+  metadata_dir="$(mktemp -d)"
+  local run_group_file="$metadata_dir/run-group"
+  local command_file="$metadata_dir/benchmark-command"
+  printf '%s' "$RUN_GROUP" >"$run_group_file"
+  printf '%s' "$RUN_COMMAND" >"$command_file"
+
+  gcloud compute instances add-labels "$instance_name" \
+    --project "$PROJECT" \
+    --zone "$zone" \
+    --labels "$labels"
+
+  gcloud compute instances add-metadata "$instance_name" \
+    --project "$PROJECT" \
+    --zone "$zone" \
+    --metadata "$(metadata_values)" \
+    --metadata-from-file "run-group=${run_group_file},benchmark-command=${command_file}"
+
+  rm -rf "$metadata_dir"
+}
+
 render_run_command_script() {
   cat <<EOF
 #!/usr/bin/env bash
@@ -503,6 +535,7 @@ SPELL_REF=${spell_ref_q}
 BENCHMARKING_REF=${benchmarking_ref_q}
 BENCHMARK_COMMAND=${benchmark_command_q}
 CURRENT_STATE="starting"
+FETCHED_GITHUB_TOKEN=""
 
 write_status() {
   local state="\$1"
@@ -532,6 +565,95 @@ print(json.dumps(payload, indent=2, sort_keys=True))
 PY
 }
 
+metadata_get() {
+  local key="\$1"
+  local url="http://metadata.google.internal/computeMetadata/v1/\${key}"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL -H "Metadata-Flavor: Google" "\$url"
+    return 0
+  fi
+  python3 - <<'PY' "\$url"
+import sys
+import urllib.request
+
+request = urllib.request.Request(
+    sys.argv[1],
+    headers={"Metadata-Flavor": "Google"},
+)
+with urllib.request.urlopen(request) as response:
+    sys.stdout.write(response.read().decode())
+PY
+}
+
+metadata_attr() {
+  metadata_get "instance/attributes/\$1"
+}
+
+project_id() {
+  metadata_get "project/project-id"
+}
+
+access_token() {
+  metadata_get "instance/service-accounts/default/token" | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])'
+}
+
+fetch_secret() {
+  local project="\$1"
+  local secret_name="\$2"
+  local token
+  token="\$(access_token)"
+  curl -fsSL \\
+    -H "Authorization: Bearer \${token}" \\
+    "https://secretmanager.googleapis.com/v1/projects/\${project}/secrets/\${secret_name}/versions/latest:access" \\
+    | python3 -c 'import base64, json, sys; print(base64.b64decode(json.load(sys.stdin)["payload"]["data"]).decode())'
+}
+
+ensure_github_token() {
+  if [[ -n "\${GITHUB_TOKEN:-}" ]]; then
+    printf '%s' "\$GITHUB_TOKEN"
+    return 0
+  fi
+  if [[ -n "\$FETCHED_GITHUB_TOKEN" ]]; then
+    printf '%s' "\$FETCHED_GITHUB_TOKEN"
+    return 0
+  fi
+
+  local secret_name
+  secret_name="\$(metadata_attr github-token-secret 2>/dev/null || true)"
+  if [[ -z "\$secret_name" ]]; then
+    return 0
+  fi
+
+  FETCHED_GITHUB_TOKEN="\$(fetch_secret "\$(project_id)" "\$secret_name" 2>/dev/null || true)"
+  printf '%s' "\$FETCHED_GITHUB_TOKEN"
+}
+
+sync_repo_ref() {
+  local repo_dir="\$1"
+  local ref="\$2"
+  [[ -n "\$ref" && "\$ref" != "HEAD" ]] || return 0
+
+  local remote_url
+  remote_url="\$(git -C "\$repo_dir" remote get-url origin)"
+
+  local git_args=()
+  if [[ "\$remote_url" == https://github.com/* ]]; then
+    local github_token
+    github_token="\$(ensure_github_token)"
+    if [[ -n "\$github_token" ]]; then
+      local auth_header
+      auth_header="\$(printf 'x-access-token:%s' "\$github_token" | base64 | tr -d '\n')"
+      git_args=(-c "http.extraheader=AUTHORIZATION: basic \${auth_header}")
+    fi
+  fi
+
+  printf '[spell-benchmark] syncing %s to %s\n' "\$repo_dir" "\$ref"
+  git -C "\$repo_dir" "\${git_args[@]}" fetch origin "\$ref" --depth 1
+  git -C "\$repo_dir" checkout --force FETCH_HEAD
+  git -C "\$repo_dir" reset --hard FETCH_HEAD
+  git -C "\$repo_dir" clean -fd
+}
+
 on_exit() {
   local status=\$?
   if (( status != 0 )) && [[ "\$CURRENT_STATE" != "failed" && "\$CURRENT_STATE" != "finished" ]]; then
@@ -546,6 +668,8 @@ write_status starting
 exec >>"\$LOG_FILE" 2>&1
 
 printf '[spell-benchmark] run wrapper started at %s\n' "\$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+sync_repo_ref "\$HOME/spell" "\$SPELL_REF"
+sync_repo_ref "\$HOME/spell/benchmarking" "\$BENCHMARKING_REF"
 write_status running
 
 set +e
@@ -646,6 +770,47 @@ run_instance() {
   launch_benchmark_command "$INSTANCE_NAME" "$ZONE"
   START_INSTANCE_FINISHED=1
   trap - EXIT
+}
+
+dispatch_instance() {
+  require_cmd gcloud
+  require_cmd python3
+  resolve_project
+
+  local instance_json
+  if ! instance_json="$(describe_instance_json "$INSTANCE_NAME" "$ZONE")" || [[ -z "$instance_json" ]]; then
+    die "instance ${INSTANCE_NAME} not found in ${PROJECT}/${ZONE}; create it with start or run first"
+  fi
+
+  local zone
+  local gcp_state
+  local run_group
+  local spell_ref
+  local benchmarking_ref
+  local command
+  IFS=$'\t' read -r zone gcp_state run_group spell_ref benchmarking_ref command <<<"$(printf '%s' "$instance_json" | instance_summary_row_from_json)"
+
+  case "$gcp_state" in
+    PROVISIONING|STAGING|RUNNING)
+      :
+      ;;
+    *)
+      die "instance ${INSTANCE_NAME} is not dispatchable in GCP state ${gcp_state}"
+      ;;
+  esac
+
+  wait_for_startup "$INSTANCE_NAME" "$zone"
+
+  local benchmark_state
+  benchmark_state="$(read_benchmark_state "$INSTANCE_NAME" "$zone" "RUNNING")"
+  case "$benchmark_state" in
+    running|startup)
+      die "instance ${INSTANCE_NAME} already has an active benchmark (${benchmark_state}); wait or finish it first"
+      ;;
+  esac
+
+  refresh_instance_metadata_for_run "$INSTANCE_NAME" "$zone"
+  launch_benchmark_command "$INSTANCE_NAME" "$zone"
 }
 
 extract_tar_stream_into_dir() {
@@ -1130,6 +1295,9 @@ main() {
       ;;
     run)
       run_instance
+      ;;
+    dispatch)
+      dispatch_instance
       ;;
     ssh)
       require_cmd gcloud

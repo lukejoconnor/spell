@@ -1,0 +1,432 @@
+\documentclass[11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{tikz-cd}
+\hypersetup{colorlinks=true, linkcolor=blue!50!black, urlcolor=blue!50!black, citecolor=blue!50!black}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.65em}
+\setlist[itemize]{topsep=0.35em,itemsep=0.2em,leftmargin=1.5em}
+\setlist[enumerate]{topsep=0.35em,itemsep=0.2em,leftmargin=1.8em}
+
+\newtheorem{definition}{Definition}[section]
+\newtheorem{proposition}[definition]{Proposition}
+\newtheorem{theorem}[definition]{Theorem}
+\newtheorem{remark}[definition]{Remark}
+\newtheorem{corollary}[definition]{Corollary}
+\newtheorem{example}[definition]{Example}
+
+\newcommand{\SPE}{\mathsf{SPE}}
+\newcommand{\eval}{\operatorname{eval}}
+\newcommand{\quoteop}{\operatorname{quote}}
+\newcommand{\enc}{\operatorname{enc}}
+\newcommand{\llm}{\operatorname{llm}}
+
+\begin{document}
+
+\section*{Appendix A. Oracle-parametric machines and self-programmed execution}
+
+This appendix gives a self-contained formalization of oracle-parametric single-query machines and self-programmed execution (SPE). Relative to the classical literatures on abstract machines, oracle computation, and simulation/refinement, the main new ingredient is a \emph{completion-generated} embedding condition: the embedded machine must be reachable from a fixed seed state in one oracle-mediated hop.
+
+\setcounter{section}{0}
+\renewcommand{\thesection}{A.\arabic{section}}
+
+\section{Background}
+
+Machine-based semantics and implementation models are classical. Landin's SECD-style work, Plotkin's structural operational semantics, and Gurevich's abstract state machine thesis all study how to describe computation at the right semantic level rather than only at the level of hardware execution \cite{Landin64,Plotkin81,Gurevich00}. The present appendix follows that tradition: the object being formalized is not a particular runtime implementation detail, but one oracle-mediated transition of an evaluator-based system.
+
+The oracle side of the story is also classical. Turing's oracle machines and Soare's later interpretation of oracle computation as a framework for online computation provide a natural precedent for machines whose next move depends on an external response source \cite{Turing39,Soare09}. On the automata side, Lynch and Tuttle's input/output automata supply a standard model for systems that interact with an environment through explicit interface actions \cite{LynchTuttle89}. Our machines below are closest to these traditions, but specialized to the case where each transition contains exactly one oracle query.
+
+The embedding notion used below is likewise adapted from standard simulation and refinement techniques. Refinement mappings and forward/backward simulations formalize the idea that one machine implements another by means of a state encoding together with a commuting transition law \cite{AbadiLamport91,LynchVaandrager95}. For probabilistic systems, compare Segala and Lynch's probabilistic simulations \cite{SegalaLynch95}. The definitions below package the same idea in a simpler, injective, pointwise form appropriate to single-query oracle-parametric machines.
+
+Recent AI work has also begun to describe LLM systems in state-machine terms. StateFlow explicitly models LLM workflows as state machines, while recent preprints propose host/task lifecycle models or automata-theoretic classifications of agentic systems \cite{StateFlow24,Allegrini25,Koohestani25}. Those papers are useful for context, but they do not address the specific question studied here: when a model emits executable source that determines its own next prompt, what is the right machine model, and when can an entire target machine be generated from one seed state in one completion hop?
+
+What is specific to the present formulation is the \emph{completion-generated} condition below: every embedded state must be reachable from a single seed state in one oracle-mediated step. That one-hop condition is the part that is specific to self-programmed execution.
+
+
+\section{Oracle-parametric single-query machines}
+
+We fix an oracle interface $(P,C,\mathcal{M})$, where $P$ is a prompt space, $C$ is a completion space, and each
+\[
+M \in \mathcal{M}
+\]
+is a stochastic oracle
+\[
+M : P \to \Delta(C).
+\]
+Here $\Delta(A)$ denotes the set of probability measures on $A$. We suppress measurability hypotheses throughout.
+
+\begin{definition}[Single-query stochastic state machine]\label{def:ssm}
+A \emph{single-query stochastic state machine} (SSM) over $(P,C,\mathcal{M})$ is a triple
+\[
+X=(S,p,h)
+\]
+consisting of a state space $S$, a prompt function
+\[
+p:S\to P,
+\]
+and a harness function
+\[
+h:S\times C\to S\cup\{1,\uparrow\},
+\]
+where $1$ is a distinguished halting point and $\uparrow$ is a distinguished divergence point.
+
+For each oracle $M\in\mathcal{M}$, the induced transition kernel
+\[
+T_M^X:S\to\Delta(S\cup\{1,\uparrow\})
+\]
+is defined by
+\[
+T_M^X(s):=h(s,-)_*M(p(s)),
+\]
+where $h(s,-):C\to S\cup\{1,\uparrow\}$ denotes the map $c\mapsto h(s,c)$ and $h(s,-)_*$ denotes pushforward along that map.
+\end{definition}
+
+Thus each transition of an SSM records exactly one oracle invocation and one returned completion. This one-query-per-step regime is the same basic interface discipline that appears in Turing's oracle machines, in Soare's online reading of oracle computation, and in input/output automata with one external interaction per transition \cite{Turing39,Soare09,LynchTuttle89}.
+
+The extra outcome $\uparrow$ records deterministic divergence between one oracle response and the next boundary or halt. One could instead make $h$ partial and work with subprobability kernels, but for the present appendix it is cleaner to totalize by adjoining an explicit divergence point, in the same spirit as standard operational-semantics treatments that distinguish finite evaluation from divergence \cite{LeroyGrall09}.
+
+More elaborate orchestration data --- transcripts, tool results, summaries, scheduler metadata, mailboxes, or subagent descriptors --- can simply be stored in the machine state. As long as prompt construction and post-completion update are deterministic once the completion is known, the architecture already fits the form of an SSM.
+
+\section{Uniform and completion-generated embeddings}
+
+\begin{definition}[State embedding]
+Let $S'$ and $S$ be state spaces. A \emph{state embedding}
+\[
+e:S'\to S
+\]
+is an injection. By convention, the same symbol also denotes the unique extension
+\[
+e:S'\cup\{1,\uparrow\}\to S\cup\{1,\uparrow\}
+\]
+with $e(1)=1$ and $e(\uparrow)=\uparrow$.
+\end{definition}
+
+\begin{definition}[Uniform embedding]\label{def:uniform-embedding}
+Let
+\[
+X=(S,p,h),\qquad X'=(S',p',h')
+\]
+be SSMs over the same interface $(P,C,\mathcal{M})$. We say that $X$ \emph{uniformly embeds} $X'$ if there exists a state embedding
+\[
+e:S'\to S
+\]
+such that, for every $s'\in S'$,
+\[
+p(e(s'))=p'(s')
+\]
+and, for every $c\in C$,
+\[
+h(e(s'),c)=e(h'(s',c)).
+\]
+\end{definition}
+
+We use the term \emph{embedding} because the witness is an injective state map into the ambient machine. In the verification literature, this is the injective, pointwise special case of a strong simulation or refinement mapping \cite{AbadiLamport91,LynchVaandrager95,SegalaLynch95}. From the model's perspective, a prompt-preserving embedding is invisible: the model only sees the prompt presented at the current state, and the condition
+\[
+p(e(s'))=p'(s')
+\]
+says that the ambient machine queries the model exactly as the embedded machine would. Because the post-completion dynamics also commute with $e$, the model sees the same prompt sequence in the embedded run as in the original run.
+
+\begin{proposition}[Kernel form]\label{prop:kernel-form}
+If $X$ uniformly embeds $X'$, then for each $M\in\mathcal{M}$ the following diagram commutes:
+\[
+\begin{tikzcd}[column sep=3.6em,row sep=3.0em]
+S' \arrow[r,"T_M^{X'}"] \arrow[d,"e"'] & \Delta(S'\!\cup\!\{1,\uparrow\}) \arrow[d,"e_*"] \\
+S \arrow[r,"T_M^{X}"'] & \Delta(S\!\cup\!\{1,\uparrow\}).
+\end{tikzcd}
+\]
+\end{proposition}
+
+\begin{proof}
+For each $s'\in S'$,
+\begin{align*}
+T_M^X(e(s'))
+&=h(e(s'),-)_{*}M(p(e(s')))\\
+&=h(e(s'),-)_{*}M(p'(s'))\\
+&=(e\circ h'(s',-))_*M(p'(s'))\\
+&=e_*T_M^{X'}(s').
+\end{align*}
+\end{proof}
+
+\begin{definition}[Completion-generated embedding]
+Let $X=(S,p,h)$ and $X'=(S',p',h')$ be SSMs over the same interface. We say that $X'$ is \emph{completion-generated by a seed state $x_0\in S$ of $X$} if, for some uniform embedding witness
+\[
+e:S'\to S,
+\]
+one has
+\[
+\forall s'\in S'\ \exists c\in C\text{ such that } e(s')=h(x_0,c).
+\]
+If such $x_0$ exists, we say that $X$ \emph{completion-generates} $X'$.
+\end{definition}
+
+This one-hop requirement says that the embedded state is not merely present somewhere in the ambient machine, but reachable from one fixed seed state by a single oracle-mediated step. That is the formal analogue of loading a state through one completion.
+
+\begin{example}[Seed states and completion generation]\label{ex:seeds}
+Let $P=\{\star\}$ and let $S=C=\mathbb{F}_2$ with constant prompt map $p$. For each harness below, consider the SSM
+\[
+X=(S,p,h).
+\]
+Then:
+\begin{enumerate}[label=(\arabic*)]
+    \item If $h(a,b)=a+b$, then $X$ completion-generates itself from every seed state $x_0\in S$.
+    \item If $h(a,b)=ab$, then $X$ completion-generates itself from the seed state $1$, but not from the seed state $0$.
+    \item If $h(a,b)=a$, then $X$ does not completion-generate itself from either seed state.
+\end{enumerate}
+Indeed, in case (1) the image of $h(x_0,-)$ is all of $\mathbb{F}_2$ for every $x_0$; in case (2) the image of $h(1,-)$ is all of $\mathbb{F}_2$ but the image of $h(0,-)$ is $\{0\}$; and in case (3) the image of $h(x_0,-)$ is always $\{x_0\}$. In all three cases the identity map is a uniform embedding of $X$ into itself, so case (3) shows that uniform embedding alone does not imply completion generation.
+\end{example}
+
+
+\section{Self-programmed execution}
+
+Self-programmed execution is best presented as a standard CEK evaluator together with a thin oracle wrapper. The CEK evaluator supplies the ordinary deterministic machinery: evaluator states, deterministic stepping, first-class values, and the built-in operations $\eval$ and $\quoteop$. The wrapper adds only what is specific to model interaction: a distinguished primitive $\llm$ and a boundary discipline that pauses when evaluation is poised to apply $\llm$ to a prompt value. Because quoted source is itself admitted as a completion value, seed loading can be expressed inside the source language by applying $\eval$ to an ordinary returned completion; no separate wrapper-level loading mode is needed. The prompt map $p$ and harness map $h$ are therefore read off from the pause/resume behavior of the wrapped evaluator. Because a resumed CEK computation may diverge before reaching the next boundary, the wrapper summarizes resumption by three outcomes: the next boundary, ordinary halt, or divergence.
+
+\begin{definition}[CEK evaluator]\label{def:cek}
+Fix a call-by-value language $\mathcal{L}$ with ordinary first-class data, branching, and general recursion. A \emph{CEK evaluator} for $\mathcal{L}$ is the standard deterministic abstract machine of Felleisen--Friedman and its descendants \cite{FelleisenFriedman86,AgerEtAl03}: its states are triples
+\[
+(e,\rho,\kappa)
+\]
+of control expression, environment, and continuation, and it steps by a partial deterministic transition function
+\[
+T_{\mathrm{CEK}}^{\mathcal{L}}: \Sigma_{\mathrm{CEK}}^{\mathcal{L}} \rightharpoonup \Sigma_{\mathrm{CEK}}^{\mathcal{L}}\cup\{1\}.
+\]
+Assume further that the first-class value domain of $\mathcal{L}$ is a set $V$ containing a subset $Q\subseteq V$ of quoted closed expressions, together with a total quotation operation
+\[
+\quoteop:V\to Q
+\]
+and a semantic evaluation map
+\[
+\eval:Q\to V
+\]
+satisfying
+\[
+\eval(\quoteop(v))=v
+\qquad (v\in V).
+\]
+The source language also contains a built-in form, written \texttt{eval}, whose deterministic CEK behavior on quoted inputs $q\in Q$ is to return the value $\eval(q)$. We do not constrain the behavior of \texttt{eval} on non-quoted inputs beyond the ambient deterministic dynamics of the evaluator (for example, it may trap and thus reach the terminal point $1$). We work on the well-formed fragment on which every finite maximal CEK run ends at the distinguished terminal point $1$; in particular, all finite terminal outcomes, including trapped errors if present, are folded into $1$.
+\end{definition}
+
+\begin{definition}[SPE wrapper over a CEK evaluator]\label{def:spe}
+Fix a CEK evaluator as in Definition~\ref{def:cek}, and fix an oracle interface $(P,C,\mathcal{M})$ with
+\[
+P\subseteq V,
+\qquad
+Q\subseteq C\subseteq V.
+\]
+An \emph{SPE wrapper} over this evaluator consists of:
+\begin{enumerate}[label=(\roman*)]
+    \item an extension $\mathcal{L}^{\llm}$ of the source language by a distinguished unary primitive $\llm$;
+    \item the induced CEK state space
+    \[
+    \Sigma:=\Sigma_{\mathrm{CEK}}^{\mathcal{L}^{\llm}}
+    \]
+    for the extended language, together with a subset
+    \[
+    B\subseteq \Sigma
+    \]
+    of \emph{boundary states}, consisting of those CEK states at which deterministic evaluation is suspended because the next external action is to apply $\llm$ to an already-evaluated prompt value in $P$ and return one completion value in $C$ to the waiting continuation.
+\end{enumerate}
+From this data one reads off a prompt map
+\[
+p:B\to P
+\]
+and a harness map
+\[
+h:B\times C\to B\cup\{1,\uparrow\}
+\]
+as follows. If $\beta\in B$ is poised to invoke $\llm$ on the prompt value $q\in P$, define $p(\beta):=q$. For $c\in C$, let
+\[
+r(\beta,c)\in \Sigma
+\]
+be the resumed CEK state obtained by returning the completion value $c$ to the waiting continuation of $\beta$. Then define
+\[
+h(\beta,c)=
+\begin{cases}
+\beta' & \text{if the deterministic CEK run from } r(\beta,c) \text{ first reaches some } \beta'\in B,\\
+1 & \text{if that run first reaches the terminal point } 1,\\
+\uparrow & \text{if that run is infinite and never reaches } B\cup\{1\}.
+\end{cases}
+\]
+The associated SSM is
+\[
+X_{\SPE}=(B,p,h).
+\]
+\end{definition}
+
+This is the same three-way distinction familiar from standard operational-semantics treatments of divergence: after a completion is returned to the suspended continuation, evaluation either reaches the next externally visible interaction point, reaches a finite terminal configuration, or diverges \cite{LeroyGrall09}. Because boundary states are defined only when the argument to $\llm$ has already been reduced to a value in $P$, there is no separate outer clause for expressions of the form $\llm(e)$: ordinary CEK evaluation first reduces $e$ deterministically, and the wrapper intervenes only when the resulting prompt value is ready to be sent to the oracle. Likewise, a seed program can receive an ordinary completion value $y\in C$ and continue as \texttt{eval} $y$; if $y$ happens to lie in $Q$, this reconstructs the encoded source value inside the language itself.
+
+\section{Pure realizations and completion-generated universality}
+
+\begin{definition}[Pure CEK realization]
+Let $X'=(S',p',h')$ be an SSM over $(P,C,\mathcal{M})$. We say that $X'$ is \emph{purely realizable in the underlying CEK evaluator} if there exist:
+\begin{itemize}
+    \item an injective encoding
+    \[
+    \enc:S'\to V,
+    \]
+    \item a deterministic program $\mathsf{Prompt}$ such that evaluating $\mathsf{Prompt}$ on input $\enc(s')$ yields $p'(s')$,
+    \item a first-class outcome form $\mathsf{StepOut}$ with constructors
+    \[
+    \mathsf{next}:V\to \mathsf{StepOut},
+    \qquad
+    \mathsf{halt}\in \mathsf{StepOut},
+    \]
+    together with ordinary deterministic case analysis on $\mathsf{StepOut}$,
+    \item a deterministic program $\mathsf{Step}$ such that evaluating $\mathsf{Step}$ on inputs $(\enc(s'),c)$ behaves as follows: it yields $\mathsf{next}(\enc(t'))$ when $h'(s',c)=t'\in S'$, it yields $\mathsf{halt}$ when $h'(s',c)=1$, and it diverges without further oracle calls when $h'(s',c)=\uparrow$.
+\end{itemize}
+These programs are required to be \emph{pure}: they make no further oracle calls and no other stochastic choices.
+\end{definition}
+
+\begin{theorem}[Completion-generated universality of SPE]\label{thm:main}
+Let $\SPE$ be an SPE wrapper over a CEK evaluator in the sense of Definition~\ref{def:spe}, and let $X'=(S',p',h')$ be an SSM over the same oracle interface. If $X'$ is purely realizable in the underlying CEK evaluator of $\SPE$, then there exist a uniform embedding
+\[
+e:S'\to B
+\]
+and a seed state $x_0\in B$ such that
+\[
+\forall s'\in S'\ \exists c\in C\text{ with } e(s')=h(x_0,c).
+\]
+In particular, the associated SSM $X_{\SPE}$ completion-generates $X'$.
+\end{theorem}
+
+\begin{proof}
+If $S'=\varnothing$, the claim is vacuous. Assume henceforth that $S'\neq\varnothing$, and fix a pure CEK realization $\enc$, $\mathsf{Prompt}$, and $\mathsf{Step}$.
+
+Choose any fixed terminal value $v_{\mathrm{done}}\in V$, and define a recursive source-level wrapper
+\[
+\mathsf{Loop}(z)
+\]
+that behaves as follows: it evaluates $\mathsf{Prompt}(z)$ to obtain a prompt value, invokes $\llm$ on that prompt, evaluates $\mathsf{Step}(z,c)$ on the returned completion $c$, and then performs case analysis on the resulting $\mathsf{StepOut}$ value, recurring on $z'$ in the case $\mathsf{next}(z')$ and returning $v_{\mathrm{done}}$ in the case $\mathsf{halt}$. This term is well formed because the underlying language has ordinary recursion and case analysis.
+
+For each $s'\in S'$, let $e(s')\in B$ be the first boundary state reached by deterministic evaluation of $\mathsf{Loop}(\enc(s'))$. Because $\mathsf{Prompt}$ is pure and terminates with value $p'(s')$, this boundary exists and satisfies
+\[
+p(e(s'))=p'(s').
+\]
+Now resume $e(s')$ with a completion $c\in C$. By construction, the resumed CEK run continues exactly as evaluation of $\mathsf{Loop}(\enc(s'))$ after the call to $\llm$ has returned $c$. If $h'(s',c)=\uparrow$, then $\mathsf{Step}(\enc(s'),c)$ diverges, so the resumed CEK run diverges before the next boundary and hence
+\[
+h(e(s'),c)=\uparrow.
+\]
+If $h'(s',c)=1$, then $\mathsf{Step}(\enc(s'),c)$ yields $\mathsf{halt}$, so the wrapper returns $v_{\mathrm{done}}$ and the resumed run reaches the terminal point $1$. Finally, if $h'(s',c)=t'\in S'$, then $\mathsf{Step}(\enc(s'),c)$ yields $\mathsf{next}(\enc(t'))$, and the wrapper continues as $\mathsf{Loop}(\enc(t'))$ until the next boundary state, which is exactly $e(t')$. Therefore
+\[
+h(e(s'),c)=e(h'(s',c))
+\]
+for all $s'\in S'$ and $c\in C$, with the conventions $e(1)=1$ and $e(\uparrow)=\uparrow$. Since the paused CEK state $e(s')$ stores $\enc(s')$ inside this fixed wrapper template, $e$ is injective because $\enc$ is injective. Thus $X_{\SPE}$ uniformly embeds $X'$.
+
+Choose any $s_0'\in S'$ and set
+\[
+q_0:=p'(s_0')\in P.
+\]
+Let $\mathsf{Seed}$ be the source term that calls $\llm$ on $q_0$, binds the returned completion to $y$, and then continues as $\mathsf{Loop}(\texttt{eval }y)$. Let $x_0\in B$ be the first boundary state reached by deterministic evaluation of $\mathsf{Seed}$. For each $s'\in S'$, set
+\[
+c_{s'}:=\quoteop(\enc(s'))\in Q\subseteq C.
+\]
+Then
+\[
+\eval(c_{s'})=\eval(\quoteop(\enc(s')))=\enc(s').
+\]
+So, when $x_0$ is resumed with completion $c_{s'}$, the resumed CEK run continues as evaluation of $\mathsf{Loop}(\texttt{eval }c_{s'})$, hence as evaluation of $\mathsf{Loop}(\enc(s'))$. The first boundary reached by that run is exactly $e(s')$. Therefore
+\[
+h(x_0,c_{s'})=e(s')
+\]
+for every $s'\in S'$. Hence $X'$ is completion-generated by the seed state $x_0$ of $X_{\SPE}$, and $X_{\SPE}$ completion-generates $X'$.
+\end{proof}
+
+\begin{remark}[Interpretation]
+The proof reuses a classical pattern --- an injective state encoding together with a simulation/refinement-style commuting square \cite{AbadiLamport91,LynchVaandrager95,SegalaLynch95} --- and adds one SPE-specific ingredient: the seed state $x_0$ and the one-hop loading clause $h(x_0,c_{s'})=e(s')$. The point is not to install an arbitrary CEK state from a description. Rather, all embedded states $e(s')$ arise from one fixed source-level wrapper $\mathsf{Loop}$, and the seed state $x_0$ uses the ordinary completion channel together with \texttt{eval} to recover the argument $\enc(s')$ for that fixed wrapper. Because quoted source values already lie in the completion space, no special wrapper-level loading mechanism is required.
+\end{remark}
+
+\begin{remark}[How this maps to Spell]
+Spell is an instance in which $Q$ is the space of quoted source forms accepted by \texttt{eval}. Under the trailing-expression discipline used by the standard wrapper, each completion appends a new trailing expression, so a seed term of the form \texttt{let y = llm ... in eval y} loads quoted source through the ordinary completion channel. The usual extend-extend-extend loop therefore produces a sequence of seed states. Earlier quoted effectful forms are shifted out of final position and become inert data, while only the new trailing form is activated by the next explicit \texttt{eval}. This is one motivation for Spell's gating discipline, under which globally effectful operations such as model calls are activated only by double evaluation.
+\end{remark}
+
+\begin{remark}[Closures and reification]
+Closures are not a fundamental obstruction; the formal issue is only whether the first-class values used for state encoding admit reification. If a runtime value contains hidden environment data, then $\quoteop$ must expose that data in source form before the value can be carried across the completion boundary. Closure conversion or any equivalent serialization theorem would suffice.
+\end{remark}
+
+\begin{thebibliography}{99}
+
+
+\bibitem{Landin64}
+P. J. Landin.
+\newblock The Mechanical Evaluation of Expressions.
+\newblock \emph{The Computer Journal}, 6(4):308--320, 1964.
+
+\bibitem{Plotkin81}
+G. D. Plotkin.
+\newblock A Structural Approach to Operational Semantics.
+\newblock DAIMI FN-19, Computer Science Department, Aarhus University, 1981.
+
+\bibitem{Gurevich00}
+Yuri Gurevich.
+\newblock Sequential Abstract State Machines Capture Sequential Algorithms.
+\newblock \emph{ACM Transactions on Computational Logic}, 1(1):77--111, 2000.
+
+\bibitem{Turing39}
+A. M. Turing.
+\newblock Systems of Logic Based on Ordinals.
+\newblock \emph{Proceedings of the London Mathematical Society}, s2-45(1):161--228, 1939.
+
+\bibitem{Soare09}
+Robert I. Soare.
+\newblock Turing Oracle Machines, Online Computing, and Three Displacements in Computability Theory.
+\newblock \emph{Annals of Pure and Applied Logic}, 160(3):368--399, 2009.
+
+\bibitem{LynchTuttle89}
+Nancy A. Lynch and Mark R. Tuttle.
+\newblock An Introduction to Input/Output Automata.
+\newblock \emph{Formal Aspects of Computing}, 1:219--246, 1989.
+
+\bibitem{AbadiLamport91}
+Mart\'\i n Abadi and Leslie Lamport.
+\newblock The Existence of Refinement Mappings.
+\newblock \emph{Theoretical Computer Science}, 82(2):253--284, 1991.
+
+\bibitem{LynchVaandrager95}
+Nancy A. Lynch and Frits W. Vaandrager.
+\newblock Forward and Backward Simulations. Part I: Untimed Systems.
+\newblock \emph{Information and Computation}, 121(2):214--233, 1995.
+
+\bibitem{SegalaLynch95}
+Roberto Segala and Nancy A. Lynch.
+\newblock Probabilistic Simulations for Probabilistic Processes.
+\newblock \emph{Nordic Journal of Computing}, 2(2):250--273, 1995.
+
+\bibitem{FelleisenFriedman86}
+Matthias Felleisen and Daniel P. Friedman.
+\newblock Control Operators, the SECD-Machine, and the Lambda-Calculus.
+\newblock In \emph{Proceedings of the 3rd Working Conference on the Formal Description of Programming Concepts}, pages 193--219, 1986.
+
+\bibitem{AgerEtAl03}
+Mads Sig Ager, Dariusz Biernacki, Olivier Danvy, and Jan Midtgaard.
+\newblock A Functional Correspondence Between Evaluators and Abstract Machines.
+\newblock In \emph{Proceedings of the 5th ACM SIGPLAN International Conference on Principles and Practice of Declarative Programming}, pages 8--19, 2003.
+
+\bibitem{LeroyGrall09}
+Xavier Leroy and Herv\'e Grall.
+\newblock Coinductive Big-Step Operational Semantics.
+\newblock \emph{Information and Computation}, 207(2):284--304, 2009.
+
+\bibitem{StateFlow24}
+Yiran Wu, Tianwei Yue, Shaokun Zhang, Chi Wang, and Qingyun Wu.
+\newblock StateFlow: Enhancing LLM Task-Solving through State-Driven Workflows.
+\newblock In \emph{Proceedings of COLM 2024}, 2024.
+
+\bibitem{Allegrini25}
+Edoardo Allegrini, Ananth Shreekumar, and Z. Berkay Celik.
+\newblock Formalizing the Safety, Security, and Functional Properties of Agentic AI Systems.
+\newblock arXiv:2510.14133, 2025.
+
+\bibitem{Koohestani25}
+Roham Koohestani, Ziyou Li, Anton Podkopaev, and Maliheh Izadi.
+\newblock Are Agents Just Automata? On the Formal Equivalence Between Agentic AI and the Chomsky Hierarchy.
+\newblock arXiv:2510.23487, 2025.
+
+\end{thebibliography}
+
+\end{document}
