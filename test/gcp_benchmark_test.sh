@@ -70,6 +70,9 @@ test_render_run_wrapper_contains_status_transitions() {
   assert_contains "$wrapper" "write_status finished" "wrapper should mark finished"
   assert_contains "$wrapper" "write_status failed" "wrapper should mark failed"
   assert_contains "$wrapper" "BENCHMARK_COMMAND=" "wrapper should capture the command"
+  assert_contains "$wrapper" 'sync_repo_ref "$HOME/spell" "$SPELL_REF"' "wrapper should sync the spell repo before running"
+  assert_contains "$wrapper" 'sync_repo_ref "$HOME/spell/benchmarking" "$BENCHMARKING_REF"' "wrapper should sync the benchmarking repo before running"
+  assert_contains "$wrapper" 'git -C "$repo_dir" "${git_args[@]}" fetch origin "$ref" --depth 1' "wrapper should fetch the requested ref on warm VMs"
 }
 
 test_filter_instances_json_by_run_group() {

@@ -535,6 +535,7 @@ SPELL_REF=${spell_ref_q}
 BENCHMARKING_REF=${benchmarking_ref_q}
 BENCHMARK_COMMAND=${benchmark_command_q}
 CURRENT_STATE="starting"
+FETCHED_GITHUB_TOKEN=""
 
 write_status() {
   local state="\$1"
@@ -564,6 +565,95 @@ print(json.dumps(payload, indent=2, sort_keys=True))
 PY
 }
 
+metadata_get() {
+  local key="\$1"
+  local url="http://metadata.google.internal/computeMetadata/v1/\${key}"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL -H "Metadata-Flavor: Google" "\$url"
+    return 0
+  fi
+  python3 - <<'PY' "\$url"
+import sys
+import urllib.request
+
+request = urllib.request.Request(
+    sys.argv[1],
+    headers={"Metadata-Flavor": "Google"},
+)
+with urllib.request.urlopen(request) as response:
+    sys.stdout.write(response.read().decode())
+PY
+}
+
+metadata_attr() {
+  metadata_get "instance/attributes/\$1"
+}
+
+project_id() {
+  metadata_get "project/project-id"
+}
+
+access_token() {
+  metadata_get "instance/service-accounts/default/token" | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])'
+}
+
+fetch_secret() {
+  local project="\$1"
+  local secret_name="\$2"
+  local token
+  token="\$(access_token)"
+  curl -fsSL \\
+    -H "Authorization: Bearer \${token}" \\
+    "https://secretmanager.googleapis.com/v1/projects/\${project}/secrets/\${secret_name}/versions/latest:access" \\
+    | python3 -c 'import base64, json, sys; print(base64.b64decode(json.load(sys.stdin)["payload"]["data"]).decode())'
+}
+
+ensure_github_token() {
+  if [[ -n "\${GITHUB_TOKEN:-}" ]]; then
+    printf '%s' "\$GITHUB_TOKEN"
+    return 0
+  fi
+  if [[ -n "\$FETCHED_GITHUB_TOKEN" ]]; then
+    printf '%s' "\$FETCHED_GITHUB_TOKEN"
+    return 0
+  fi
+
+  local secret_name
+  secret_name="\$(metadata_attr github-token-secret 2>/dev/null || true)"
+  if [[ -z "\$secret_name" ]]; then
+    return 0
+  fi
+
+  FETCHED_GITHUB_TOKEN="\$(fetch_secret "\$(project_id)" "\$secret_name" 2>/dev/null || true)"
+  printf '%s' "\$FETCHED_GITHUB_TOKEN"
+}
+
+sync_repo_ref() {
+  local repo_dir="\$1"
+  local ref="\$2"
+  [[ -n "\$ref" && "\$ref" != "HEAD" ]] || return 0
+
+  local remote_url
+  remote_url="\$(git -C "\$repo_dir" remote get-url origin)"
+
+  local git_args=()
+  if [[ "\$remote_url" == https://github.com/* ]]; then
+    local github_token
+    github_token="\$(ensure_github_token)"
+    if [[ -n "\$github_token" ]]; then
+      local auth_header
+      auth_header="\$(printf 'x-access-token:%s' "\$github_token" | base64 | tr -d '\n')"
+      git_args=(-c "http.extraheader=AUTHORIZATION: basic \${auth_header}")
+    fi
+  fi
+
+  printf '[spell-benchmark] syncing %s to %s\n' "\$repo_dir" "\$ref"
+  git -C "\$repo_dir" "\${git_args[@]}" fetch origin "\$ref" --depth 1
+  git -C "\$repo_dir" checkout --force FETCH_HEAD
+  git -C "\$repo_dir" reset --hard FETCH_HEAD
+  git -C "\$repo_dir" clean -fd
+}
+
 on_exit() {
   local status=\$?
   if (( status != 0 )) && [[ "\$CURRENT_STATE" != "failed" && "\$CURRENT_STATE" != "finished" ]]; then
@@ -578,6 +668,8 @@ write_status starting
 exec >>"\$LOG_FILE" 2>&1
 
 printf '[spell-benchmark] run wrapper started at %s\n' "\$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+sync_repo_ref "\$HOME/spell" "\$SPELL_REF"
+sync_repo_ref "\$HOME/spell/benchmarking" "\$BENCHMARKING_REF"
 write_status running
 
 set +e
