@@ -35,9 +35,8 @@ See `config/CLAUDE.md` for provider/agent details. Base agents: `base-pf`, `base
 
 | Path | Description |
 |------|-------------|
-| `writeup/paper/language-design-v2.md` | Main language design writeup. |
-| `writeup/paper/paper.md` | Paper draft v1. |
-| `writeup/paper/paper_v2.md` | Paper draft v2 (AI-edited, being merged with v1). |
+| `writeup/language-design-v2.md` | Main language design writeup. |
+| `writeup/paper.md` | Current paper draft. |
 | `src/spell/eval.clj` | Core evaluator and special forms. |
 | `src/spell/macros.clj` | Spell macro registry and macro implementations. |
 | `src/spell/runtime.clj` | Box runtime, registry, ask/spawn/send, notifier flow. |
