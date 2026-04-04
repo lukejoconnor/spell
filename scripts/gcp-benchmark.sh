@@ -49,6 +49,7 @@ usage() {
 Usage:
   ./scripts/gcp-benchmark.sh start [options]
   ./scripts/gcp-benchmark.sh run [options] --command "..."
+  ./scripts/gcp-benchmark.sh dispatch [options] --command "..."
   ./scripts/gcp-benchmark.sh ssh [options]
   ./scripts/gcp-benchmark.sh status [options]
   ./scripts/gcp-benchmark.sh status-all [--run-group GROUP | --all] [options]
@@ -62,6 +63,7 @@ Usage:
 Commands:
   start       Create the VM, wait for startup, and attach to tmux.
   run         Create the VM, wait for startup, and launch a benchmark command in tmux.
+  dispatch    Launch a benchmark command on an existing Spell benchmark VM.
   ssh         Reconnect to the VM tmux session.
   status      Show one VM's GCP lifecycle state plus benchmark state.
   status-all  List Spell-managed benchmark VMs in the project.
@@ -321,6 +323,9 @@ validate_args() {
       [[ -n "$RUN_COMMAND" ]] || die "--command is required for run"
       AUTO_SSH=0
       ;;
+    dispatch)
+      [[ -n "$RUN_COMMAND" ]] || die "--command is required for dispatch"
+      ;;
     status-all|wait|pull-all|finish-all)
       if (( OPERATE_ALL == 0 )) && [[ -z "$RUN_GROUP" ]]; then
         die "${ACTION} requires --run-group GROUP or --all"
@@ -346,7 +351,7 @@ validate_args() {
   require_positive_integer "$WAIT_TIMEOUT_SECONDS" "--timeout"
 
   case "$ACTION" in
-    start|run|ssh|status|pull|finish|stop)
+    start|run|dispatch|ssh|status|pull|finish|stop)
       [[ -n "$RUN_GROUP" ]] || RUN_GROUP="$INSTANCE_NAME"
       ;;
   esac
@@ -469,6 +474,33 @@ create_instance() {
     --metadata-from-file "startup-script=${STARTUP_SCRIPT},run-group=${run_group_file},benchmark-command=${command_file}"
   rm -rf "$metadata_dir"
   START_INSTANCE_CREATED=1
+}
+
+refresh_instance_metadata_for_run() {
+  local instance_name="$1"
+  local zone="$2"
+  local labels
+  labels="$(join_by "," "managed-by=${MANAGED_BY_LABEL}" "run-group=${RUN_GROUP_LABEL}")"
+
+  local metadata_dir
+  metadata_dir="$(mktemp -d)"
+  local run_group_file="$metadata_dir/run-group"
+  local command_file="$metadata_dir/benchmark-command"
+  printf '%s' "$RUN_GROUP" >"$run_group_file"
+  printf '%s' "$RUN_COMMAND" >"$command_file"
+
+  gcloud compute instances add-labels "$instance_name" \
+    --project "$PROJECT" \
+    --zone "$zone" \
+    --labels "$labels"
+
+  gcloud compute instances add-metadata "$instance_name" \
+    --project "$PROJECT" \
+    --zone "$zone" \
+    --metadata "$(metadata_values)" \
+    --metadata-from-file "run-group=${run_group_file},benchmark-command=${command_file}"
+
+  rm -rf "$metadata_dir"
 }
 
 render_run_command_script() {
@@ -646,6 +678,47 @@ run_instance() {
   launch_benchmark_command "$INSTANCE_NAME" "$ZONE"
   START_INSTANCE_FINISHED=1
   trap - EXIT
+}
+
+dispatch_instance() {
+  require_cmd gcloud
+  require_cmd python3
+  resolve_project
+
+  local instance_json
+  if ! instance_json="$(describe_instance_json "$INSTANCE_NAME" "$ZONE")" || [[ -z "$instance_json" ]]; then
+    die "instance ${INSTANCE_NAME} not found in ${PROJECT}/${ZONE}; create it with start or run first"
+  fi
+
+  local zone
+  local gcp_state
+  local run_group
+  local spell_ref
+  local benchmarking_ref
+  local command
+  IFS=$'\t' read -r zone gcp_state run_group spell_ref benchmarking_ref command <<<"$(printf '%s' "$instance_json" | instance_summary_row_from_json)"
+
+  case "$gcp_state" in
+    PROVISIONING|STAGING|RUNNING)
+      :
+      ;;
+    *)
+      die "instance ${INSTANCE_NAME} is not dispatchable in GCP state ${gcp_state}"
+      ;;
+  esac
+
+  wait_for_startup "$INSTANCE_NAME" "$zone"
+
+  local benchmark_state
+  benchmark_state="$(read_benchmark_state "$INSTANCE_NAME" "$zone" "RUNNING")"
+  case "$benchmark_state" in
+    running|startup)
+      die "instance ${INSTANCE_NAME} already has an active benchmark (${benchmark_state}); wait or finish it first"
+      ;;
+  esac
+
+  refresh_instance_metadata_for_run "$INSTANCE_NAME" "$zone"
+  launch_benchmark_command "$INSTANCE_NAME" "$zone"
 }
 
 extract_tar_stream_into_dir() {
@@ -1130,6 +1203,9 @@ main() {
       ;;
     run)
       run_instance
+      ;;
+    dispatch)
+      dispatch_instance
       ;;
     ssh)
       require_cmd gcloud

@@ -139,6 +139,57 @@ test_finish_all_skips_active_vms() {
   assert_contains "$output" "skipped active VMs: running-vm:running" "finish-all should summarize skipped active VMs"
 }
 
+test_dispatch_instance_reuses_existing_vm() {
+  INSTANCE_NAME="warm-vm"
+  ZONE="us-central1-a"
+  RUN_GROUP="batch-warm"
+  RUN_COMMAND='uv run python bench.py swebench --dataset lite'
+
+  local calls=""
+  local state_file
+  state_file="$(mktemp)"
+  require_cmd() { :; }
+  resolve_project() { PROJECT="spellbenchmarking"; }
+  describe_instance_json() { printf '{}'; }
+  instance_summary_row_from_json() { printf 'us-central1-a\tRUNNING\tbatch-warm\tmain\tmain\told-command\n'; }
+  wait_for_startup() { calls="${calls}wait:$1:$2 "; }
+  read_benchmark_state() { printf '%s:%s:%s\n' "$1" "$2" "$3" >"$state_file"; printf 'finished\n'; }
+  refresh_instance_metadata_for_run() { calls="${calls}meta:$1:$2 "; }
+  launch_benchmark_command() { calls="${calls}launch:$1:$2 "; }
+
+  dispatch_instance
+
+  assert_eq \
+    "wait:warm-vm:us-central1-a meta:warm-vm:us-central1-a launch:warm-vm:us-central1-a " \
+    "$calls" \
+    "dispatch should wait, refresh metadata, and launch on the existing VM"
+  assert_eq \
+    "warm-vm:us-central1-a:RUNNING" \
+    "$(cat "$state_file")" \
+    "dispatch should check the benchmark state before relaunching"
+  rm -f "$state_file"
+}
+
+test_dispatch_instance_refuses_active_benchmark() {
+  INSTANCE_NAME="busy-vm"
+  ZONE="us-central1-a"
+  RUN_GROUP="batch-busy"
+  RUN_COMMAND='uv run python bench.py swebench --dataset lite'
+
+  require_cmd() { :; }
+  resolve_project() { PROJECT="spellbenchmarking"; }
+  describe_instance_json() { printf '{}'; }
+  instance_summary_row_from_json() { printf 'us-central1-a\tRUNNING\tbatch-busy\tmain\tmain\told-command\n'; }
+  wait_for_startup() { :; }
+  read_benchmark_state() { printf 'running\n'; }
+  refresh_instance_metadata_for_run() { fail "dispatch should not refresh metadata for an active benchmark"; }
+  launch_benchmark_command() { fail "dispatch should not launch over an active benchmark"; }
+
+  if (dispatch_instance >/dev/null 2>&1); then
+    fail "dispatch should fail when the VM already has a running benchmark"
+  fi
+}
+
 test_wait_for_completion_summarizes_and_finishes() {
   RUN_GROUP="batch-a"
   WAIT_INTERVAL_SECONDS=1
@@ -214,6 +265,7 @@ test_help_and_argument_parsing() {
   help_output="$(bash "$REPO_ROOT/scripts/gcp-benchmark.sh" --help)"
   assert_contains "$help_output" "default: 86400 / 24h" "help should document the 24 hour wait default"
   bash "$REPO_ROOT/scripts/gcp-benchmark.sh" start --help >/dev/null
+  bash "$REPO_ROOT/scripts/gcp-benchmark.sh" dispatch --help >/dev/null
   bash "$REPO_ROOT/scripts/gcp-benchmark.sh" pull-all --help >/dev/null
   bash "$REPO_ROOT/scripts/gcp-benchmark.sh" wait --help >/dev/null
 
@@ -224,6 +276,10 @@ test_help_and_argument_parsing() {
   if bash "$REPO_ROOT/scripts/gcp-benchmark.sh" wait >/dev/null 2>&1; then
     fail "wait should require --run-group or --all"
   fi
+
+  if bash "$REPO_ROOT/scripts/gcp-benchmark.sh" dispatch >/dev/null 2>&1; then
+    fail "dispatch should require --command"
+  fi
 }
 
 main() {
@@ -232,6 +288,8 @@ main() {
   test_filter_instances_json_by_run_group
   test_finish_calls_pull_before_stop
   test_finish_all_skips_active_vms
+  test_dispatch_instance_reuses_existing_vm
+  test_dispatch_instance_refuses_active_benchmark
   test_wait_for_completion_summarizes_and_finishes
   test_wait_for_completion_times_out
   test_help_and_argument_parsing
