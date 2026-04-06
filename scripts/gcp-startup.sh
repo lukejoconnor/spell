@@ -141,6 +141,9 @@ install_uv_and_python() {
     fi
     export PATH="$HOME/.local/bin:$PATH"
     uv python install 3.13
+    if ! command -v tb >/dev/null 2>&1; then
+      uv tool install terminal-bench
+    fi
   '
 }
 
@@ -217,6 +220,12 @@ install_clojure_cli
 
 systemctl enable --now docker
 wait_for_docker
+
+echo "[spell-benchmark] installing docker compose plugin"
+mkdir -p /usr/local/lib/docker/cli-plugins
+curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 \
+  -o /usr/local/lib/docker/cli-plugins/docker-compose
+chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
 echo "[spell-benchmark] fetching secrets from Secret Manager"
 ANTHROPIC_API_KEY="$(fetch_secret "$PROJECT_ID" "$ANTHROPIC_SECRET")"
