@@ -275,15 +275,24 @@
               :usage usage-atom})))
 
 (defn- format-cache-stats [stats]
-  (let [cache-write (:cache_creation_input_tokens stats 0)
-        cache-read (:cache_read_input_tokens stats 0)]
+  (let [cache-write (:cache_write_input_tokens stats 0)
+        cache-read (:cached_input_tokens stats 0)]
     (when (pos? (+ cache-write cache-read))
       (format " [cache: %,d write, %,d read]" cache-write cache-read))))
 
 (defn- format-reasoning-stats [stats]
-  (when-let [r (:reasoning_tokens stats)]
+  (when-let [r (:reasoning_output_tokens stats)]
     (when (pos? r)
       (format " [reasoning: %,d]" r))))
+
+(defn- total-input-tokens [stats]
+  (+ (:uncached_input_tokens stats 0)
+     (:cached_input_tokens stats 0)
+     (:cache_write_input_tokens stats 0)))
+
+(defn- total-output-tokens [stats]
+  (+ (:visible_output_tokens stats 0)
+     (:reasoning_output_tokens stats 0)))
 
 (defn- format-token-stat [n]
   (when (some? n)
@@ -308,16 +317,16 @@
         (doseq [[model stats] (sort-by key by-model)]
           (println (format "  %s: %,d in / %,d out (%d calls)%s%s%s%s"
                      model
-                     (:input_tokens stats 0)
-                     (:output_tokens stats 0)
+                     (total-input-tokens stats)
+                     (total-output-tokens stats)
                      (:calls stats 0)
                      (if-let [c (:cost stats)] (format " $%.4f" c) "")
                      (or (format-context-stats stats) "")
                      (or (format-cache-stats stats) "")
                      (or (format-reasoning-stats stats) "")))))
       (println (format "  Total: %,d in / %,d out (%d calls)%s%s%s%s"
-                 (:input_tokens total 0)
-                 (:output_tokens total 0)
+                 (total-input-tokens total)
+                 (total-output-tokens total)
                  (:calls total 0)
                  (if-let [c (:cost total)] (format " $%.4f" c) "")
                  (or (format-context-stats total) "")

@@ -1,0 +1,45 @@
+{
+ "claude-3-5-haiku" {"input" 0.80 "cache-read-input" 0.08 "cache-write-input" 1.00 "output" 4.00}
+ "claude-haiku-4-5" {"input" 1.00 "cache-read-input" 0.10 "cache-write-input" 1.25 "output" 5.00}
+ "claude-sonnet-5" {"input" 3.00 "cache-read-input" 0.30 "cache-write-input" 3.75 "output" 15.00}
+ "claude-sonnet-4" {"input" 3.00 "cache-read-input" 0.30 "cache-write-input" 3.75 "output" 15.00}
+ "claude-opus-4-5" {"input" 5.00 "cache-read-input" 0.50 "cache-write-input" 6.25 "output" 25.00}
+ "claude-opus-4-6" {"input" 5.00 "cache-read-input" 0.50 "cache-write-input" 6.25 "output" 25.00}
+
+ "gpt-4o-mini" {"input" 0.15 "cache-read-input" 0.015 "cache-write-input" 0.1875 "output" 0.60}
+ "gpt-4o" {"input" 2.50 "cache-read-input" 0.25 "cache-write-input" 3.125 "output" 10.00}
+ "gpt-4.1-nano" {"input" 0.10 "cache-read-input" 0.01 "cache-write-input" 0.125 "output" 0.40}
+ "gpt-4.1-mini" {"input" 0.40 "cache-read-input" 0.04 "cache-write-input" 0.50 "output" 1.60}
+ "gpt-4.1" {"input" 2.00 "cache-read-input" 0.20 "cache-write-input" 2.50 "output" 8.00}
+ "o3-mini" {"input" 1.10 "cache-read-input" 0.11 "cache-write-input" 1.375 "output" 4.40}
+ "o4-mini" {"input" 1.10 "cache-read-input" 0.11 "cache-write-input" 1.375 "output" 4.40}
+ "o3" {"input" 2.00 "cache-read-input" 0.20 "cache-write-input" 2.50 "output" 8.00}
+ "gpt-5-mini" {"input" 0.25 "cache-read-input" 0.025 "cache-write-input" 0.3125 "output" 2.00}
+ "gpt-5-codex" {"input" 1.25 "cache-read-input" 0.125 "cache-write-input" 1.5625 "output" 10.00}
+ "gpt-5.1-codex" {"input" 1.25 "cache-read-input" 0.125 "cache-write-input" 1.5625 "output" 10.00}
+ "gpt-5" {"input" 1.25 "cache-read-input" 0.125 "cache-write-input" 1.5625 "output" 10.00}
+ "gpt-5.1" {"input" 1.25 "cache-read-input" 0.125 "cache-write-input" 1.5625 "output" 10.00}
+ "gpt-5.2-codex" {"input" 1.75 "cache-read-input" 0.175 "cache-write-input" 2.1875 "output" 14.00}
+ "gpt-5.2" {"input" 1.75 "cache-read-input" 0.175 "cache-write-input" 2.1875 "output" 14.00}
+ "gpt-5.3-codex" {"input" 1.75 "cache-read-input" 0.175 "cache-write-input" 2.1875 "output" 14.00}
+ "gpt-5.3" {"input" 1.75 "cache-read-input" 0.175 "cache-write-input" 2.1875 "output" 14.00}
+ "gpt-5.4-pro" {"input" 30.00 "cache-read-input" 3.00 "cache-write-input" 37.50 "output" 180.00}
+ "gpt-5.4" {"input" 2.50 "cache-read-input" 0.25 "cache-write-input" 3.125 "output" 15.00}
+
+ "accounts/fireworks/models/glm-5" {"input" 1.00 "cache-read-input" 0.20 "cache-write-input" 1.25 "output" 3.20}
+ "accounts/fireworks/models/kimi-k2" {"input" 0.60 "cache-read-input" 0.30 "cache-write-input" 0.75 "output" 2.50}
+ "accounts/fireworks/models/deepseek-v3p1" {"input" 0.56 "cache-read-input" 0.28 "cache-write-input" 0.70 "output" 1.68}
+ "accounts/fireworks/models/qwen3-235b" {"input" 0.20 "cache-read-input" 0.10 "cache-write-input" 0.25 "output" 0.60}
+ "accounts/fireworks/models/qwen3-coder-480b-a35b-instruct" {"input" 0.45 "cache-read-input" 0.22 "cache-write-input" 0.5625 "output" 1.80}
+ "accounts/fireworks/models/kimi-k2p5" {"input" 0.60 "cache-read-input" 0.10 "cache-write-input" 0.75 "output" 3.00}
+
+ "kimi-k2.5" {"input" 0.60 "cache-read-input" 0.06 "cache-write-input" 0.75 "output" 3.00}
+ "kimi-k2-thinking-turbo" {"input" 1.15 "cache-read-input" 0.115 "cache-write-input" 1.4375 "output" 8.00}
+ "kimi-k2-thinking" {"input" 0.60 "cache-read-input" 0.06 "cache-write-input" 0.75 "output" 2.50}
+ "kimi-k2-turbo" {"input" 1.15 "cache-read-input" 0.115 "cache-write-input" 1.4375 "output" 8.00}
+ "kimi-k2-0905" {"input" 0.60 "cache-read-input" 0.06 "cache-write-input" 0.75 "output" 2.50}
+ "kimi-k2-0711" {"input" 0.60 "cache-read-input" 0.06 "cache-write-input" 0.75 "output" 2.50}
+ "moonshot-v1-8k" {"input" 0.20 "cache-read-input" 0.02 "cache-write-input" 0.25 "output" 2.00}
+ "moonshot-v1-32k" {"input" 1.00 "cache-read-input" 0.10 "cache-write-input" 1.25 "output" 3.00}
+ "moonshot-v1-128k" {"input" 2.00 "cache-read-input" 0.20 "cache-write-input" 2.50 "output" 5.00}
+}

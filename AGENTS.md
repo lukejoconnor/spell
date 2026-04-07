@@ -43,6 +43,7 @@ See `config/CLAUDE.md` for provider/agent details. Base agents: `base-pf`, `base
 | `src/spell/llm.clj` | LLM wiring (`make-llm`, inbox pipeline, init builder). |
 | `src/spell/prompt.clj` | System prompt composition from namespace metadata. |
 | `src/spell/provider.clj` | Provider implementations and usage/cost tracking. |
+| `data/pricing.edn` | Shared model pricing table used by both Spell and the benchmarking repo. |
 | `src/spell/agent.clj` | Agent definition loading and llm factory wiring. |
 | `src/spell/api.clj` | Public `run` entry point. |
 | `src/spell/cli.clj` | CLI implementation. |

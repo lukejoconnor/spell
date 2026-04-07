@@ -12,6 +12,7 @@
    - test-provider: Declarative test provider with flexible response matching"
   (:require [clojure.data.json :as json]
             [clojure.edn :as edn]
+            [clojure.java.io :as io]
             [clojure.string :as str])
   (:import [java.net URI]
            [java.net.http HttpClient HttpClient$Version HttpRequest HttpRequest$BodyPublishers
@@ -39,8 +40,13 @@
 
 (def ^:dynamic *usage*
   "When bound to an atom, accumulates token usage from API calls.
-   Atom value is a map: {:by-model {\"model\" {:input_tokens N :output_tokens N :calls N
-                                               :cache_creation_input_tokens N :cache_read_input_tokens N}}}"
+   Atom value is a map: {:records [{:model \"model\" :usage {...} :cost F}]
+                         :by-model {\"model\" {:uncached_input_tokens N
+                                               :cached_input_tokens N
+                                               :cache_write_input_tokens N
+                                               :visible_output_tokens N
+                                               :reasoning_output_tokens N
+                                               :calls N}}}"
   nil)
 
 (def ^:dynamic *budget*
@@ -54,89 +60,92 @@
    Default [0 10] = instant retry, then retry after 10s. nil or [] = no retries."
   [0 10])
 
-(def default-costs
-  "Cost per million tokens.
+(defn- repo-root []
+  (if-let [resource (io/resource "spell/provider.clj")]
+    (-> resource .toURI java.io.File. .getParentFile .getParentFile .getParentFile)
+    (io/file (System/getProperty "user.dir"))))
 
-   Entries may be:
-   - [input-cost output-cost]
-   - {:input input-cost :output output-cost :cache-read-input cache-read-input-cost
-      :cache-write-input cache-write-input-cost}"
-  {"claude-3-5-haiku"  [0.80 4.00]
-   "claude-haiku-4-5"  [1.00 5.00]
-   "claude-sonnet-5"   [3.00 15.00]
-   "claude-sonnet-4"   [3.00 15.00]
-   "claude-opus-4-5"   [5.00 25.00]
-   "claude-opus-4-6"   [5.00 25.00]
-   ;; OpenAI models
-   "gpt-4o-mini"       [0.15 0.60]
-   "gpt-4o"            [2.50 10.00]
-   "gpt-4.1-nano"      [0.10 0.40]
-   "gpt-4.1-mini"      [0.40 1.60]
-   "gpt-4.1"           [2.00 8.00]
-   "o3-mini"           [1.10 4.40]
-   "o4-mini"           [1.10 4.40]
-   "o3"                [2.00 8.00]
-   "gpt-5-mini"        [0.25 2.00]
-   "gpt-5-codex"       [1.25 10.00]
-   "gpt-5.1-codex"     [1.25 10.00]
-   "gpt-5"             [1.25 10.00]
-   "gpt-5.1"           [1.25 10.00]
-   "gpt-5.2-codex"     [1.75 14.00]
-   "gpt-5.2"           [1.75 14.00]
-   "gpt-5.3-codex"     [1.75 14.00]
-   "gpt-5.3"           [1.75 14.00]
-   "gpt-5.4-pro"       [30.00 180.00]
-   "gpt-5.4"           [2.50 15.00]
-   ;; Fireworks hosted open models
-   "accounts/fireworks/models/glm-5"
-   {:input 1.00 :cache-read-input 0.20 :output 3.20}
-   "accounts/fireworks/models/kimi-k2"
-   {:input 0.60 :cache-read-input 0.30 :output 2.50}
-   "accounts/fireworks/models/deepseek-v3p1"
-   {:input 0.56 :cache-read-input 0.28 :output 1.68}
-   "accounts/fireworks/models/qwen3-235b"
-   {:input 0.20 :cache-read-input 0.10 :output 0.60}
-   "accounts/fireworks/models/qwen3-coder-480b-a35b-instruct"
-   {:input 0.45 :cache-read-input 0.22 :output 1.80}
-   "accounts/fireworks/models/kimi-k2p5"
-   {:input 0.60 :cache-read-input 0.10 :output 3.00}
-   ;; Moonshot Kimi models
-   "kimi-k2.5"         [0.60 3.00]
-   "kimi-k2-thinking-turbo" [1.15 8.00]
-   "kimi-k2-thinking"  [0.60 2.50]
-   "kimi-k2-turbo"     [1.15 8.00]
-   "kimi-k2-0905"      [0.60 2.50]
-   "kimi-k2-0711"      [0.60 2.50]
-   "moonshot-v1-8k"    [0.20 2.00]
-   "moonshot-v1-32k"   [1.00 3.00]
-   "moonshot-v1-128k"  [2.00 5.00]})
+(defn- load-shared-costs []
+  (-> (io/file (repo-root) "data" "pricing.edn")
+      slurp
+      edn/read-string))
+
+(def default-costs
+  "Shared pricing table loaded from data/pricing.edn."
+  (load-shared-costs))
+
+(defn- normalize-cost-spec
+  [costs cache-read-ratio]
+  (cond
+    (and (vector? costs) (= 2 (count costs)))
+    (let [[input-cost output-cost] costs]
+      {:input input-cost
+       :output output-cost
+       :cache-write-input (* input-cost 1.25)
+       :cache-read-input (* input-cost cache-read-ratio)})
+
+    (map? costs)
+    (let [input-cost (or (:input costs) (get costs "input"))
+          output-cost (or (:output costs) (get costs "output"))
+          cache-write (or (:cache-write-input costs) (get costs "cache-write-input"))
+          cache-read (or (:cache-read-input costs) (get costs "cache-read-input"))]
+      (when (and input-cost output-cost)
+        {:input input-cost
+         :output output-cost
+         :cache-write-input (or cache-write (* input-cost 1.25))
+         :cache-read-input (or cache-read (* input-cost cache-read-ratio))}))
+
+    :else nil))
+
+(defn- canonical-usage
+  "Normalize legacy provider usage keys into the canonical 5-field record."
+  [usage]
+  (let [reasoning (or (:reasoning_output_tokens usage)
+                      (:reasoning_tokens usage)
+                      0)
+        raw-output (or (:visible_output_tokens usage)
+                       (:output_tokens usage)
+                       0)
+        visible-output (if (:visible_output_tokens usage)
+                         raw-output
+                         (max 0 (- raw-output reasoning)))]
+    {:uncached_input_tokens (or (:uncached_input_tokens usage)
+                                (:input_tokens usage)
+                                0)
+     :cached_input_tokens (or (:cached_input_tokens usage)
+                              (:cache_read_input_tokens usage)
+                              0)
+     :cache_write_input_tokens (or (:cache_write_input_tokens usage)
+                                   (:cache_creation_input_tokens usage)
+                                   0)
+     :visible_output_tokens visible-output
+     :reasoning_output_tokens reasoning}))
+
+(defn- canonical-stats [stats]
+  (merge (canonical-usage stats)
+         (select-keys stats [:calls :max_total_tokens :cost])))
+
+(defn- with-legacy-usage-keys [usage]
+  (cond-> (assoc usage
+                 :input_tokens (:uncached_input_tokens usage 0)
+                 :output_tokens (:visible_output_tokens usage 0)
+                 :cache_creation_input_tokens (:cache_write_input_tokens usage 0)
+                 :cache_read_input_tokens (:cached_input_tokens usage 0))
+    (pos? (:reasoning_output_tokens usage 0))
+    (assoc :reasoning_tokens (:reasoning_output_tokens usage 0))))
+
+(defn- usage-total-tokens [usage]
+  (+ (:uncached_input_tokens usage 0)
+     (:cached_input_tokens usage 0)
+     (:cache_write_input_tokens usage 0)
+     (:visible_output_tokens usage 0)
+     (:reasoning_output_tokens usage 0)))
 
 (defn- lookup-cost
   "Find cost for a model ID by longest-prefix matching in a cost table."
   [model-id cost-table]
   (let [cache-read-ratio (or (:cache-read-ratio cost-table) 0.10)]
-    (letfn [(normalize-cost-spec [costs]
-            (cond
-              (and (vector? costs) (= 2 (count costs)))
-              (let [[input-cost output-cost] costs]
-                {:input input-cost
-                 :output output-cost
-                 :cache-write-input (* input-cost 1.25)
-                 :cache-read-input (* input-cost cache-read-ratio)})
-
-              (map? costs)
-              (let [input-cost (:input costs)
-                    output-cost (:output costs)]
-                (when (and input-cost output-cost)
-                  {:input input-cost
-                   :output output-cost
-                   :cache-write-input (or (:cache-write-input costs)
-                                         (* input-cost 1.25))
-                   :cache-read-input (or (:cache-read-input costs)
-                                         (* input-cost cache-read-ratio))}))
-
-              :else nil))]
-      (when-let [[_ costs]
+    (when-let [[_ costs]
                  (reduce (fn [best [prefix costs]]
                            (if (and (string? prefix)
                                     (.startsWith ^String model-id prefix)
@@ -146,19 +155,21 @@
                              best))
                          nil
                          cost-table)]
-        (normalize-cost-spec costs)))))
+      (normalize-cost-spec costs cache-read-ratio))))
 
 (defn- usage-cost
   "Compute the dollar cost for one usage record from a cost table."
   [model usage cost-table]
   (if-let [{:keys [input output cache-write-input cache-read-input]}
            (lookup-cost model (or cost-table default-costs))]
-    (let [base-input (* (:input_tokens usage 0) (/ input 1000000.0))
-          cache-write (* (:cache_creation_input_tokens usage 0)
+    (let [base-input (* (:uncached_input_tokens usage 0) (/ input 1000000.0))
+          cache-write (* (:cache_write_input_tokens usage 0)
                          (/ cache-write-input 1000000.0))
-          cache-read (* (:cache_read_input_tokens usage 0)
+          cache-read (* (:cached_input_tokens usage 0)
                         (/ cache-read-input 1000000.0))
-          output (* (:output_tokens usage 0) (/ output 1000000.0))]
+          output (* (+ (:visible_output_tokens usage 0)
+                       (:reasoning_output_tokens usage 0))
+                    (/ output 1000000.0))]
       (+ base-input cache-write cache-read output))
     nil))
 
@@ -188,37 +199,40 @@
   ([model usage] (track-usage! model usage nil))
   ([model usage cost-table]
    (when (and *usage* usage)
-     (let [turn-total-tokens (+ (:input_tokens usage 0)
-                                (:output_tokens usage 0)
-                                (:cache_creation_input_tokens usage 0)
-                                (:cache_read_input_tokens usage 0))
+     (let [usage (canonical-usage usage)
+           turn-total-tokens (usage-total-tokens usage)
            turn-cost (usage-cost model usage cost-table)]
        (swap! *usage*
               (fn [u]
-                (cond-> (update-in u [:by-model model]
-                                   (fn [existing]
-                                     (let [merged-stats (cond-> {:input_tokens (+ (:input_tokens existing 0) (:input_tokens usage 0))
-                                                                 :output_tokens (+ (:output_tokens existing 0) (:output_tokens usage 0))
-                                                                 :cache_creation_input_tokens (+ (:cache_creation_input_tokens existing 0)
-                                                                                                 (:cache_creation_input_tokens usage 0))
-                                                                 :cache_read_input_tokens (+ (:cache_read_input_tokens existing 0)
-                                                                                             (:cache_read_input_tokens usage 0))
-                                                                 :calls (inc (:calls existing 0))
-                                                                 :max_total_tokens (max (:max_total_tokens existing 0)
-                                                                                        turn-total-tokens)}
-                                                          (:reasoning_tokens usage)
-                                                          (assoc :reasoning_tokens (+ (:reasoning_tokens existing 0)
-                                                                                      (:reasoning_tokens usage 0))))
-                                           merged-cost (cond
-                                                         (contains? existing :cost)
-                                                         (let [existing-cost (:cost existing)]
-                                                           (when (number? existing-cost)
-                                                             (+ existing-cost (or turn-cost 0.0))))
+                (let [existing (canonical-stats (get-in u [:by-model model] {}))
+                      merged-stats {:uncached_input_tokens (+ (:uncached_input_tokens existing 0)
+                                                              (:uncached_input_tokens usage 0))
+                                    :cached_input_tokens (+ (:cached_input_tokens existing 0)
+                                                            (:cached_input_tokens usage 0))
+                                    :cache_write_input_tokens (+ (:cache_write_input_tokens existing 0)
+                                                                 (:cache_write_input_tokens usage 0))
+                                    :visible_output_tokens (+ (:visible_output_tokens existing 0)
+                                                              (:visible_output_tokens usage 0))
+                                    :reasoning_output_tokens (+ (:reasoning_output_tokens existing 0)
+                                                                (:reasoning_output_tokens usage 0))
+                                    :calls (inc (:calls existing 0))
+                                    :max_total_tokens (max (:max_total_tokens existing 0)
+                                                           turn-total-tokens)}
+                      merged-cost (cond
+                                    (contains? existing :cost)
+                                    (let [existing-cost (:cost existing)]
+                                      (when (number? existing-cost)
+                                        (+ existing-cost (or turn-cost 0.0))))
 
-                                                         :else
-                                                         (usage-cost model merged-stats (or cost-table (:cost-table u))))]
-                                       (assoc merged-stats :cost merged-cost))))
-                  cost-table (update :cost-table merge cost-table)))))
+                                    :else
+                                    (usage-cost model merged-stats (or cost-table (:cost-table u))))]
+                  (cond-> (-> u
+                              (update :records (fnil conj [])
+                                      {:model model :usage usage :cost turn-cost})
+                              (assoc-in [:by-model model]
+                                        (assoc (with-legacy-usage-keys merged-stats) :cost merged-cost)))
+                    (and cost-table (nil? (:cost-table u)))
+                    (assoc :cost-table cost-table))))))
      (when *budget*
        (when-let [cost (current-cost *usage*)]
          (when (> cost *budget*)
@@ -227,55 +241,67 @@
 
 (defn usage-summary
   "Compute a summary from accumulated usage data.
-   Returns {:by-model {model {:input_tokens N :output_tokens N :calls N :cost F
+   Returns {:by-model {model {:uncached_input_tokens N :cached_input_tokens N
+                              :cache_write_input_tokens N :visible_output_tokens N
+                              :reasoning_output_tokens N :calls N :cost F
                               :mean_total_tokens F :max_total_tokens N
-                              :cache_creation_input_tokens N :cache_read_input_tokens N}}
-            :total {:input_tokens N :output_tokens N :calls N :cost F
+                              }}
+            :total {:uncached_input_tokens N :cached_input_tokens N
+                    :cache_write_input_tokens N :visible_output_tokens N
+                    :reasoning_output_tokens N :calls N :cost F
                     :mean_total_tokens F :max_total_tokens N
-                    :cache_creation_input_tokens N :cache_read_input_tokens N}}"
+                    }}"
   [usage-atom]
   (let [{:keys [by-model cost-table]} @usage-atom
+        canonical-by-model (into {}
+                                (map (fn [[model stats]]
+                                       [model (canonical-stats stats)]))
+                                by-model)
         summarize-context (fn [stats]
-                            (let [input-tokens (:input_tokens stats 0)
-                                  output-tokens (:output_tokens stats 0)
-                                  cache-write-tokens (:cache_creation_input_tokens stats 0)
-                                  cache-read-tokens (:cache_read_input_tokens stats 0)
+                            (let [input-tokens (:uncached_input_tokens stats 0)
+                                  cached-input-tokens (:cached_input_tokens stats 0)
+                                  cache-write-tokens (:cache_write_input_tokens stats 0)
+                                  visible-output-tokens (:visible_output_tokens stats 0)
+                                  reasoning-output-tokens (:reasoning_output_tokens stats 0)
                                   calls (:calls stats 0)
                                   total-tokens (+ input-tokens
-                                                  output-tokens
+                                                  cached-input-tokens
                                                   cache-write-tokens
-                                                  cache-read-tokens)]
+                                                  visible-output-tokens
+                                                  reasoning-output-tokens)]
                               (cond-> stats
                                 (pos? calls)
                                 (assoc :mean_total_tokens (double (/ total-tokens calls))
                                        :max_total_tokens (:max_total_tokens stats 0)))))
         with-costs (into {}
                      (map (fn [[model stats]]
-                            [model (assoc (summarize-context stats)
+                            [model (assoc (with-legacy-usage-keys (summarize-context stats))
                                           :cost (bucket-cost model stats cost-table))])
-                          by-model))
-        reasoning-total (reduce + 0 (keep :reasoning_tokens (vals by-model)))
-        total-input (reduce + 0 (map #(:input_tokens % 0) (vals by-model)))
-        total-output (reduce + 0 (map #(:output_tokens % 0) (vals by-model)))
-        total-cache-write (reduce + 0 (map #(:cache_creation_input_tokens % 0) (vals by-model)))
-        total-cache-read (reduce + 0 (map #(:cache_read_input_tokens % 0) (vals by-model)))
-        total-calls (reduce + 0 (map #(:calls % 0) (vals by-model)))
-        total (cond-> {:input_tokens (reduce + 0 (map #(:input_tokens % 0) (vals by-model)))
-                       :output_tokens (reduce + 0 (map #(:output_tokens % 0) (vals by-model)))
-                       :cache_creation_input_tokens total-cache-write
-                       :cache_read_input_tokens total-cache-read
+                          canonical-by-model))
+        reasoning-total (reduce + 0 (map #(:reasoning_output_tokens % 0) (vals canonical-by-model)))
+        total-uncached-input (reduce + 0 (map #(:uncached_input_tokens % 0) (vals canonical-by-model)))
+        total-cached-input (reduce + 0 (map #(:cached_input_tokens % 0) (vals canonical-by-model)))
+        total-cache-write (reduce + 0 (map #(:cache_write_input_tokens % 0) (vals canonical-by-model)))
+        total-visible-output (reduce + 0 (map #(:visible_output_tokens % 0) (vals canonical-by-model)))
+        total-calls (reduce + 0 (map #(:calls % 0) (vals canonical-by-model)))
+        total (cond-> {:uncached_input_tokens total-uncached-input
+                       :cached_input_tokens total-cached-input
+                       :cache_write_input_tokens total-cache-write
+                       :visible_output_tokens total-visible-output
+                       :reasoning_output_tokens reasoning-total
                        :calls total-calls
                        :cost (let [costs (keep :cost (vals with-costs))]
                                (when (seq costs) (reduce + 0.0 costs)))}
-                (pos? total-calls) (assoc :mean_total_tokens (double (/ (+ total-input
-                                                                          total-output
+                (pos? total-calls) (assoc :mean_total_tokens (double (/ (+ total-uncached-input
+                                                                          total-cached-input
                                                                           total-cache-write
-                                                                          total-cache-read)
+                                                                          total-visible-output
+                                                                          reasoning-total)
                                                                        total-calls))
                                           :max_total_tokens (reduce max 0 (map #(:max_total_tokens % 0)
                                                                                (vals with-costs))))
-                (pos? reasoning-total) (assoc :reasoning_tokens reasoning-total))]
-    {:by-model with-costs :total total}))
+                (zero? reasoning-total) (dissoc :reasoning_output_tokens))]
+    {:by-model with-costs :total (with-legacy-usage-keys total)}))
 
 ;; ---------------------------------------------------------------------------
 ;; Anthropic Provider
@@ -355,18 +381,18 @@
                     (filter #(= (:type %) "text"))
                     (map :text)
                     (clojure.string/join "\n"))
-         ;; Include cache usage fields if present
-         :usage {:input_tokens (:input_tokens usage 0)
-                 :output_tokens (:output_tokens usage 0)
-                 :cache_creation_input_tokens (:cache_creation_input_tokens usage 0)
-                 :cache_read_input_tokens (:cache_read_input_tokens usage 0)}}))))
+         :usage (with-legacy-usage-keys
+                  {:uncached_input_tokens (:input_tokens usage 0)
+                   :visible_output_tokens (:output_tokens usage 0)
+                   :cache_write_input_tokens (:cache_creation_input_tokens usage 0)
+                   :cached_input_tokens (:cache_read_input_tokens usage 0)})}))))
 
 (defn- parse-anthropic-pf-stream
   "Parse an Anthropic SSE stream, accumulating text and usage."
   [response-body]
   (let [text (StringBuilder.)
-        usage (atom {:input_tokens 0 :output_tokens 0
-                     :cache_creation_input_tokens 0 :cache_read_input_tokens 0})]
+        usage (atom {:uncached_input_tokens 0 :visible_output_tokens 0
+                     :cache_write_input_tokens 0 :cached_input_tokens 0})]
     (doseq [line (str/split-lines response-body)]
       (when (str/starts-with? line "data: ")
         (let [data (subs line 6)]
@@ -377,9 +403,9 @@
                   "message_start"
                   (let [u (get-in parsed [:message :usage])]
                     (swap! usage merge
-                           {:input_tokens (:input_tokens u 0)
-                            :cache_creation_input_tokens (:cache_creation_input_tokens u 0)
-                            :cache_read_input_tokens (:cache_read_input_tokens u 0)}))
+                           {:uncached_input_tokens (:input_tokens u 0)
+                            :cache_write_input_tokens (:cache_creation_input_tokens u 0)
+                            :cached_input_tokens (:cache_read_input_tokens u 0)}))
 
                   "content_block_delta"
                   (when-let [t (get-in parsed [:delta :text])]
@@ -387,11 +413,11 @@
 
                   "message_delta"
                   (when-let [u (:usage parsed)]
-                    (swap! usage assoc :output_tokens (:output_tokens u 0)))
+                    (swap! usage assoc :visible_output_tokens (:output_tokens u 0)))
 
                   nil)) ; ignore other event types
               (catch Exception _ nil))))))
-    {:text (.toString text) :usage @usage}))
+    {:text (.toString text) :usage (with-legacy-usage-keys @usage)}))
 
 (defrecord AnthropicPfProvider [api-key model max-tokens http-client costs]
   LLMProvider
@@ -511,16 +537,17 @@
                            :provider :anthropic-tc
                            :content (:content parsed)})))
         {:text suffix
-         :usage {:input_tokens (:input_tokens usage 0)
-                 :output_tokens (:output_tokens usage 0)
-                 :cache_creation_input_tokens (:cache_creation_input_tokens usage 0)
-                 :cache_read_input_tokens (:cache_read_input_tokens usage 0)}}))))
+         :usage (with-legacy-usage-keys
+                  {:uncached_input_tokens (:input_tokens usage 0)
+                   :visible_output_tokens (:output_tokens usage 0)
+                   :cache_write_input_tokens (:cache_creation_input_tokens usage 0)
+                   :cached_input_tokens (:cache_read_input_tokens usage 0)})}))))
 
 (defn- parse-anthropic-tc-stream
   "Parse an Anthropic SSE stream for tool-call mode, extracting spell_suffix input."
   [response-body]
-  (let [usage (atom {:input_tokens 0 :output_tokens 0
-                     :cache_creation_input_tokens 0 :cache_read_input_tokens 0})
+  (let [usage (atom {:uncached_input_tokens 0 :visible_output_tokens 0
+                     :cache_write_input_tokens 0 :cached_input_tokens 0})
         tool-blocks (atom {})]
     (doseq [line (str/split-lines response-body)]
       (when (str/starts-with? line "data: ")
@@ -532,9 +559,9 @@
                   "message_start"
                   (let [u (get-in parsed [:message :usage])]
                     (swap! usage merge
-                           {:input_tokens (:input_tokens u 0)
-                            :cache_creation_input_tokens (:cache_creation_input_tokens u 0)
-                            :cache_read_input_tokens (:cache_read_input_tokens u 0)}))
+                           {:uncached_input_tokens (:input_tokens u 0)
+                            :cache_write_input_tokens (:cache_creation_input_tokens u 0)
+                            :cached_input_tokens (:cache_read_input_tokens u 0)}))
 
                   "content_block_start"
                   (let [idx (:index parsed)
@@ -553,7 +580,7 @@
 
                   "message_delta"
                   (when-let [u (:usage parsed)]
-                    (swap! usage assoc :output_tokens (:output_tokens u 0)))
+                    (swap! usage assoc :visible_output_tokens (:output_tokens u 0)))
 
                   nil))
               (catch Exception _ nil))))))
@@ -573,7 +600,7 @@
                         {:type :missing-tool-call
                          :provider :anthropic-tc
                          :body (subs response-body 0 (min 1000 (count response-body)))})))
-      {:text suffix :usage @usage})))
+      {:text suffix :usage (with-legacy-usage-keys @usage)})))
 
 (defrecord AnthropicTcProvider [api-key model max-tokens http-client costs]
   LLMProvider
@@ -642,8 +669,9 @@
     (if-let [error (:error parsed)]
       (throw (ex-info "Ollama API error" {:error error}))
       {:text (get-in parsed [:message :content] "")
-       :usage {:input_tokens (:prompt_eval_count parsed 0)
-               :output_tokens (:eval_count parsed 0)}})))
+       :usage (with-legacy-usage-keys
+                {:uncached_input_tokens (:prompt_eval_count parsed 0)
+                 :visible_output_tokens (:eval_count parsed 0)})})))
 
 (defrecord OllamaProvider [base-url model http-client costs]
   LLMProvider
@@ -692,11 +720,13 @@
   "Normalize OpenAI Responses-style usage, splitting cached tokens out of input."
   [usage]
   (let [cached-tokens (get-in usage [:input_tokens_details :cached_tokens] 0)
-        reasoning-tokens (get-in usage [:output_tokens_details :reasoning_tokens])]
-    (cond-> {:input_tokens (max 0 (- (:input_tokens usage 0) cached-tokens))
-             :output_tokens (:output_tokens usage 0)
-             :cache_read_input_tokens cached-tokens}
-      reasoning-tokens (assoc :reasoning_tokens reasoning-tokens))))
+        reasoning-tokens (get-in usage [:output_tokens_details :reasoning_tokens] 0)
+        output-tokens (:output_tokens usage 0)]
+    (with-legacy-usage-keys
+      {:uncached_input_tokens (max 0 (- (:input_tokens usage 0) cached-tokens))
+       :cached_input_tokens cached-tokens
+       :visible_output_tokens (max 0 (- output-tokens reasoning-tokens))
+       :reasoning_output_tokens reasoning-tokens})))
 
 (defn- openai-responses-request
   [api-key base-url model prompt system-prompt max-tokens reasoning-effort verbosity
@@ -796,11 +826,13 @@
     (if-let [error (:error parsed)]
       (throw (ex-info "OpenAI API error" {:error error}))
       (let [usage (:usage parsed)
-            reasoning-tokens (get-in usage [:completion_tokens_details :reasoning_tokens])]
+            reasoning-tokens (get-in usage [:completion_tokens_details :reasoning_tokens] 0)
+            output-tokens (:completion_tokens usage 0)]
         {:text (get-in parsed [:choices 0 :message :content] "")
-         :usage (cond-> {:input_tokens (:prompt_tokens usage 0)
-                         :output_tokens (:completion_tokens usage 0)}
-                  reasoning-tokens (assoc :reasoning_tokens reasoning-tokens))}))))
+         :usage (with-legacy-usage-keys
+                  {:uncached_input_tokens (:prompt_tokens usage 0)
+                   :visible_output_tokens (max 0 (- output-tokens reasoning-tokens))
+                   :reasoning_output_tokens reasoning-tokens})}))))
 
 (defrecord OpenAIProvider [api-key base-url model max-tokens http-client use-responses-api force-tool-call costs]
   LLMProvider
@@ -1330,9 +1362,10 @@
                             0)
           prompt-tokens (:prompt_tokens u 0)]
       {:text (str text-sb)
-       :usage {:input_tokens (max 0 (- prompt-tokens cached-tokens))
-               :output_tokens (:completion_tokens u 0)
-               :cache_read_input_tokens cached-tokens}})))
+       :usage (with-legacy-usage-keys
+                {:uncached_input_tokens (max 0 (- prompt-tokens cached-tokens))
+                 :visible_output_tokens (:completion_tokens u 0)
+                 :cached_input_tokens cached-tokens})})))
 
 (defrecord FireworksProvider [api-key base-url model max-tokens http-client costs chat-template convert-think?]
   LLMProvider
@@ -1568,7 +1601,7 @@
                 force-tool-call cache-read-ratio]}
         (edn/read-string (slurp path))
         api-key (when api-key-env (System/getenv api-key-env))
-        opts (cond-> {:costs (cond-> (or costs {})
+        opts (cond-> {:costs (cond-> (merge default-costs (or costs {}))
                                cache-read-ratio (assoc :cache-read-ratio cache-read-ratio))}
                api-key (assoc :api-key api-key)
                base-url (assoc :base-url base-url)
@@ -1609,7 +1642,7 @@
            responses response-rules response prefill? chat-template convert-think?
            force-tool-call cache-read-ratio] :as spec}]
   (let [api-key (when api-key-env (System/getenv api-key-env))
-        opts (cond-> {:costs (cond-> (or costs {})
+        opts (cond-> {:costs (cond-> (merge default-costs (or costs {}))
                                cache-read-ratio (assoc :cache-read-ratio cache-read-ratio))}
                api-key (assoc :api-key api-key)
                base-url (assoc :base-url base-url)

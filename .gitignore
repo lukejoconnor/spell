@@ -20,7 +20,8 @@ logs/
 benchmarking/
 
 # Benchmark data (exercism clone, results)
-data/
+data/*
+!data/pricing.edn
 results/
 
 # Claude Code worktrees
