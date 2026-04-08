@@ -20,7 +20,8 @@ logs/
 benchmarking/
 
 # Benchmark data (exercism clone, results)
-data/
+data/*
+!data/pricing.edn
 results/
 
 # Claude Code worktrees
@@ -40,5 +41,17 @@ spell_benchmark_client.py
 __pycache__/
 *.pyc
 
+# Writeup (moved to notebook/writeup/)
+writeup/
+
 # Old/scratch files
-old/
+/old/
+
+# LaTeX build artifacts
+*.aux
+*.fdb_latexmk
+*.fls
+*.synctex.gz
+
+# OS junk
+.DS_Store
