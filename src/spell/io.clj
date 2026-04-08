@@ -1003,7 +1003,7 @@ The content is the raw file contents. For numbered lines, use io/read-file."}
   (io/read-file path start end)    — read numbered line range [start, end)
   (io/read-lines path)             — read file as vector of raw lines
   (io/read-lines path start end)   — read raw line range [start, end)
-  (io/grep pattern path)           — recursive grep with line numbers
+  (io/grep pattern path)           — recursive grep with line numbers (ERE by default)
   (io/glob pattern)                — find files by name pattern
   (io/git \"status\")               — run an allowlisted read-only git subcommand
   (io/exists? path)                — check whether a path exists
@@ -1019,7 +1019,7 @@ running arbitrary commands. For process execution, add io-exec separately."
     :slurp-bytes "Read entire file as raw bytes."
     :read-file "Read a file with numbered lines."
     :read-lines "Read a file as a vector of raw line strings."
-    :grep "Search file contents recursively with line numbers."
+    :grep "Search file contents recursively with line numbers. Pattern is an extended regex (ERE)."
     :glob "Find files by name pattern."
     :git "Run an allowlisted read-only git subcommand."
     :exists? "Check whether a path exists."
