@@ -588,7 +588,9 @@
        :err (str/trim @err-future)})))
 
 (defn grep
-  "Search file contents for a pattern. Returns {:exit N :out \"...\" :err \"...\"}."
+  "Search file contents for a pattern. Pattern is an extended regex (ERE):
+   supports alternation, +, ?, {n,m}, and (...) groups.
+   Returns {:exit N :out \"...\" :err \"...\"}."
   ([pattern path] (grep pattern path {}))
   ([pattern path opts]
    (ensure-string-args "io/grep: pattern and path" [pattern path] "")
@@ -598,7 +600,7 @@
                    (normalize-natural-number-opt "io/grep: :context" (:context opts)))
          max-count (when (contains? opts :max-count)
                      (normalize-natural-number-opt "io/grep: :max-count" (:max-count opts)))
-         flags (cond-> ["-rnH"]
+         flags (cond-> ["-rnHE"]
                  (:ignore-case opts) (conj "-i")
                  context (conj (str "-C" context))
                  max-count (conj (str "-m" max-count)))
@@ -675,7 +677,7 @@
   (io/read-lines path start end)             — line range [start, end) Python-style half-open
   (io/read-file path)                        — read file as numbered-lines string
   (io/read-file path start end)
-  (io/grep pattern path)
+  (io/grep pattern path)           — recursive grep with line numbers (ERE by default; supports |, +, ?, {n,m}, and (...) groups)
   (io/grep pattern path {:ignore-case true :include \"*.clj\"})
   (io/glob pattern)
   (io/glob pattern path {:type \"f\" :max-depth 5})
@@ -816,7 +818,7 @@ For one-turn file peeks, use:
   '(!peek-now code (io/read-lines \"main.py\"))"
 
     :grep
-    "Search file contents recursively with line numbers.
+    "Search file contents recursively with line numbers. Pattern is an extended regex (ERE): supports |, +, ?, {n,m}, and (...) groups.
 
 (io/grep pattern path)
 (io/grep pattern path {:ignore-case true :include \"*.clj\" :context 2 :max-count 20})

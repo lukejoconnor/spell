@@ -685,10 +685,12 @@
 
 (deftest grep-test
   (let [clj-path (str test-dir "/grep-target.clj")
-        txt-path (str test-dir "/nested/grep-target.txt")]
+        txt-path (str test-dir "/nested/grep-target.txt")
+        plus-path (str test-dir "/nested/grep-plus.txt")]
     (.mkdirs (jio/file (str test-dir "/nested")))
     (spit clj-path "(def needle 1)\n")
     (spit txt-path "needle in haystack\n")
+    (spit plus-path "neeeedle in a haystack\n")
     (let [result (io/grep "needle" test-dir)]
       (is (= 0 (:exit result)))
       (is (re-find (re-pattern (java.util.regex.Pattern/quote clj-path)) (:out result)))
@@ -696,7 +698,19 @@
     (let [result (io/grep "needle" test-dir {:include "*.clj"})]
       (is (= 0 (:exit result)))
       (is (re-find (re-pattern (java.util.regex.Pattern/quote clj-path)) (:out result)))
-      (is (not (re-find (re-pattern (java.util.regex.Pattern/quote txt-path)) (:out result)))))))
+      (is (not (re-find (re-pattern (java.util.regex.Pattern/quote txt-path)) (:out result)))))
+    (let [result (io/grep "needle|haystack" test-dir)]
+      (is (= 0 (:exit result)))
+      (is (re-find (re-pattern (java.util.regex.Pattern/quote clj-path)) (:out result)))
+      (is (re-find (re-pattern (java.util.regex.Pattern/quote txt-path)) (:out result))))
+    (let [result (io/grep "neee+dle" test-dir)]
+      (is (= 0 (:exit result)))
+      (is (re-find (re-pattern (java.util.regex.Pattern/quote plus-path)) (:out result)))
+      (is (not (re-find (re-pattern (java.util.regex.Pattern/quote clj-path)) (:out result))))
+      (is (not (re-find (re-pattern (java.util.regex.Pattern/quote txt-path)) (:out result)))))
+    (let [result (io/grep "no-such-token|nonexistent" test-dir)]
+      (is (= 1 (:exit result)))
+      (is (= "" (:out result))))))
 
 (deftest grep-rejects-non-numeric-options-test
   (is (thrown-with-msg?
