@@ -1,7 +1,4 @@
 {:type :openai
  :api-key-env "OPENAI_API_KEY"
  :use-responses-api true
- :default-agent "../agents/base-msg.agent.edn"
- :costs {"o3-mini" [1.10 4.40]
-         "o4-mini" [1.10 4.40]
-         "o3"      [2.00 8.00]}}
+ :default-agent "../agents/base-msg.agent.edn"}

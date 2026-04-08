@@ -50,7 +50,7 @@ Even if the plan didn't mention it, check whether these need updating:
 - Prompt files in `config/prompts/`
 - Agent/provider `.edn` configs
 - Namespace `:docs` / `:short-docs` metadata
-- `writeup/` documents
+- `notebook/writeup/` documents
 
 ### Phase 5: PR
 

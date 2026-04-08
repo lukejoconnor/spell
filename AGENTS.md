@@ -8,7 +8,7 @@ Instead of an external harness controlling an agent loop, the LLM programs its o
 
 ## Language Overview
 
-See `writeup/language-design-v2.md` for full semantics. Key concepts:
+See `notebook/writeup/paper/language-design-v2.md` for full semantics. Key concepts:
 
 - **Self-calls**: `(!llm-self prefix)` makes an LLM call. `!call-now`, `!print`, and `!extend` wrap or expand to `!llm-self`.
 - **Quine**: `(quine name body)` binds `name` to its own source form as data, enabling self-referential LLM calls.
@@ -35,14 +35,16 @@ See `config/CLAUDE.md` for provider/agent details. Base agents: `base-pf`, `base
 
 | Path | Description |
 |------|-------------|
-| `writeup/language-design-v2.md` | Main language design writeup. |
-| `writeup/paper.md` | Current paper draft. |
+| `notebook/writeup/paper/language-design-v2.md` | Main language design writeup. |
+| `notebook/writeup/paper/paper.md` | Paper draft v1. |
+| `notebook/writeup/paper/paper_v2.md` | Paper draft v2 (AI-edited, being merged with v1). |
 | `src/spell/eval.clj` | Core evaluator and special forms. |
 | `src/spell/macros.clj` | Spell macro registry and macro implementations. |
 | `src/spell/runtime.clj` | Box runtime, registry, ask/spawn/send, notifier flow. |
 | `src/spell/llm.clj` | LLM wiring (`make-llm`, inbox pipeline, init builder). |
 | `src/spell/prompt.clj` | System prompt composition from namespace metadata. |
 | `src/spell/provider.clj` | Provider implementations and usage/cost tracking. |
+| `data/pricing.edn` | Shared model pricing table used by both Spell and the benchmarking repo. |
 | `src/spell/agent.clj` | Agent definition loading and llm factory wiring. |
 | `src/spell/api.clj` | Public `run` entry point. |
 | `src/spell/cli.clj` | CLI implementation. |

@@ -390,3 +390,17 @@ gcloud secrets versions add CODEX_AUTH_JSON_B64 \
 ### SWE-bench on Fresh VMs
 
 The first SWE-bench run on a new VM requires building environment images from scratch (~10 min per unique env). These are Docker-cached for subsequent runs on the same VM. If the harness errors with `container_error` and empty messages on a fresh VM, this is the likely cause — the env images need to be built before `build_container` can succeed.
+
+**Always use `--prewarm-envs`** for SWE-bench runs with `--parallel > 1`. Without it, parallel env image builds race on a shared Dockerfile path and fail 20-30% of the time. The prewarm flag builds all unique env images sequentially before launching parallel agent execution.
+
+**Over-provision VMs aggressively.** VM costs are <10% of API costs — a $46 API run on a $1 VM should never fail due to insufficient disk or RAM. Default to `--machine-type e2-standard-16 --boot-disk-size 300` for SWE-bench runs. The marginal cost (~$1 extra per run) is negligible compared to losing an entire API-cost run to OOM or disk-full.
+
+### Monitoring Long-Running GCP Jobs
+
+**Do NOT fire-and-forget GCP benchmark runs.** The `wait --finish` background process is necessary but not sufficient — it relies on SSH which can be flaky. For any run expected to take more than 30 minutes:
+
+1. **Use `/loop` to set up periodic status checks** (e.g., `/loop 30m check status`). Check both the `wait` output file AND `gcloud compute instances list` directly.
+2. **Check for early failures** within the first 15-20 minutes — disk full, OOM, Docker build errors, and SSH connectivity issues all manifest early. Don't assume a run will complete just because VMs launched successfully.
+3. **Pull partial results** with `pull-all --run-group` if the `wait` process stalls. VMs may have completed work even if the wait script can't reach them.
+4. **Check serial console** (`gcloud compute instances get-serial-port-output`) when SSH fails — it reveals OOM kills, DHCP failures, and disk-full errors that SSH-based status checks miss.
+5. **Kill zombie VMs promptly** — VMs that are RUNNING but unreachable (lost DHCP, disk full) waste money. Delete them and relaunch with fixes.

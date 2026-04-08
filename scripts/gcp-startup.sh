@@ -247,7 +247,10 @@ if [[ -n "$CODEX_AUTH_B64" ]]; then
   mkdir -p "$USER_HOME/.codex"
   printf '%s' "$CODEX_AUTH_B64" | base64 -d >"$USER_HOME/.codex/auth.json"
   chmod 600 "$USER_HOME/.codex/auth.json"
-  chown "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/.codex/auth.json"
+  # Chown the directory too, not just auth.json: Codex CLI writes
+  # state_*.sqlite and logs_*.sqlite files into the dir and fails with
+  # "Error: Permission denied (os error 13)" if the dir is root-owned.
+  chown -R "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/.codex"
 fi
 chmod 600 "$USER_HOME/.config/spell-benchmark/env.sh"
 chown -R "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/.config"
