@@ -218,6 +218,11 @@ Multiple tool calls in one turn:
   ;; each step's result is bound and visible next turn; prefer this over wrapping effects in a bare (do ...)
   ;; for subagent exploration, see llms/explore (if available) and prefer io/grep, io/glob, io/git there
 
+Search + read context in one turn:
+  '(!call-now hits (io/grep "TODO|FIXME" "src/" {:context 20}))
+  ;; :context N includes N lines around each match in the output — no need for a follow-up io/read-lines to see surrounding code.
+  ;; use when you need both "where does this appear" and "what's happening near it" in one turn.
+
 Synchronous fork for self-delegation:
   '(!call-now doc-summary (!llm-self "Summarize long-document.txt"))
   ;; for asynchronous delegation, see agents/ namespace
@@ -296,6 +301,7 @@ Bare `do` trailing with no `!` form — if your trailing expression is a bare `(
                run (io/sh "python /tmp/x.py")
                test (io/sh "pytest"))        ; correct: results are visible next turn, then pruned automatically
   Use `_` for effect results you do not need to inspect. Give real binding names to anything that might fail or whose output matters. Use `!call-now` instead when later turns truly need the bindings to persist.
+  Also applies INSIDE a single `!call-now` binding: `'(!call-now x (do (io/read-lines p 100 200) (io/read-lines p 400 500)))` binds `x` to ONLY the last read — the first read is executed but its result is lost. Use multi-binding `!call-now` to capture each read as a separate binding: `'(!call-now sec1 (io/read-lines p 100 200) sec2 (io/read-lines p 400 500))`.
 
 Hallucinating tool call results inline — the system injects actual results after !call-now:
   '(!call-now content (io/read-file path))

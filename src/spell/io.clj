@@ -678,7 +678,8 @@
   (io/read-file path)                        — read file as numbered-lines string
   (io/read-file path start end)
   (io/grep pattern path)           — recursive grep with line numbers (ERE by default; supports |, +, ?, {n,m}, and (...) groups)
-  (io/grep pattern path {:ignore-case true :include \"*.clj\"})
+  (io/grep pattern path {:ignore-case true :include \"*.clj\" :context 20 :max-count 50})
+  ;; :context N returns N lines around each match — one call gets both the hit and the surrounding code
   (io/glob pattern)
   (io/glob pattern path {:type \"f\" :max-depth 5})
   (io/git \"status\")                         — run an allowlisted read-only git subcommand
@@ -705,6 +706,7 @@ Common mistakes:
 1. calling io/* outside the quoted trailing expression
 2. forgetting !call-now when you need the result: '(io/read-file \"x\") evaluates but the result is lost
 3. using io/sh for everything — use io/str-replace to patch files, io/read-file to read them, io/grep to search them
+4. grep-then-read in two turns when one grep with :context N would suffice — prefer `(io/grep pat path {:context 20})` for \"find + see context\"
 
 In examples, ▌ marks cursor position in a completion.
 
@@ -821,10 +823,17 @@ For one-turn file peeks, use:
     "Search file contents recursively with line numbers. Pattern is an extended regex (ERE): supports |, +, ?, {n,m}, and (...) groups.
 
 (io/grep pattern path)
-(io/grep pattern path {:ignore-case true :include \"*.clj\" :context 2 :max-count 20})
+(io/grep pattern path {:ignore-case true :include \"*.clj\" :context 20 :max-count 50})
 
 Returns {:exit N :out \"...\" :err \"...\"}.
-Use :include to restrict matches to files whose names match a glob."
+
+Options:
+  :context N      — include N lines before and after each match (grep -C N). Use this
+                    to find hits AND see their surrounding code in one call, avoiding a
+                    follow-up io/read-lines. Typical values: 10-30 for code, 20-40 for prose.
+  :ignore-case    — case-insensitive match.
+  :include GLOB   — restrict matches to files whose names match the glob pattern (e.g. \"*.clj\").
+  :max-count N    — stop after N matches per file."
 
     :glob
     "Find files by name pattern.
@@ -1004,6 +1013,8 @@ The content is the raw file contents. For numbered lines, use io/read-file."}
   (io/read-lines path)             — read file as vector of raw lines
   (io/read-lines path start end)   — read raw line range [start, end)
   (io/grep pattern path)           — recursive grep with line numbers (ERE by default)
+  (io/grep pattern path {:context 20 :ignore-case true :max-count 50})
+                                    — :context N returns N lines around each match in one call
   (io/glob pattern)                — find files by name pattern
   (io/git \"status\")               — run an allowlisted read-only git subcommand
   (io/exists? path)                — check whether a path exists
