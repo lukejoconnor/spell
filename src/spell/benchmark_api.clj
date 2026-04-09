@@ -107,13 +107,16 @@
 
 (defn- parse-format-key
   "Parse a JSON-provided key spec into a Clojure key for format validation.
-   Strings prefixed with ':' become keywords; other strings become symbols."
+   Plain strings become keywords (Clojure convention). Strings prefixed with
+   \"'\" become symbols for the rare case when a symbol key is actually wanted.
+   A leading ':' is accepted as an explicit keyword marker for backward compat."
   [k]
   (cond
     (or (keyword? k) (symbol? k)) k
-    (string? k) (if (str/starts-with? k ":")
-                  (keyword (subs k 1))
-                  (symbol k))
+    (string? k) (cond
+                  (str/starts-with? k "'") (symbol (subs k 1))
+                  (str/starts-with? k ":") (keyword (subs k 1))
+                  :else (keyword k))
     :else k))
 
 (defn- normalize-format-spec

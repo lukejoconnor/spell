@@ -5,12 +5,20 @@
             [spell.benchmark-api :as benchmark-api]))
 
 (deftest normalize-format-spec-test
-  (testing "parses JSON string keys into symbols/keywords for validation"
+  (testing "plain strings default to keywords (Clojure convention)"
     (let [normalized ((var benchmark-api/normalize-format-spec)
-                      {:required ["result" ":answer"]
-                       :optional [":confidence" "source"]})]
-      (is (= ['result :answer] (:required normalized)))
-      (is (= [:confidence 'source] (:optional normalized))))))
+                      {:required ["result"]
+                       :optional ["confidence"]})]
+      (is (= [:result] (:required normalized)))
+      (is (= [:confidence] (:optional normalized)))))
+  (testing "leading ':' is accepted as explicit keyword marker"
+    (let [normalized ((var benchmark-api/normalize-format-spec)
+                      {:required [":answer"]})]
+      (is (= [:answer] (:required normalized)))))
+  (testing "leading apostrophe marks strings as symbols"
+    (let [normalized ((var benchmark-api/normalize-format-spec)
+                      {:required ["'raw-symbol"]})]
+      (is (= ['raw-symbol] (:required normalized))))))
 
 (deftest response-ok-unwrap-result-test
   (testing "unwraps keyword result wrapper before stringifying"
