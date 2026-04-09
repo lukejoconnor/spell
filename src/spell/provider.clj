@@ -16,7 +16,8 @@
             [clojure.string :as str])
   (:import [java.net URI]
            [java.net.http HttpClient HttpClient$Version HttpRequest HttpRequest$BodyPublishers
-                          HttpResponse$BodyHandlers]))
+                          HttpResponse$BodyHandlers]
+           [java.time Duration]))
 
 ;; ---------------------------------------------------------------------------
 ;; Protocol
@@ -730,7 +731,7 @@
 
 (defn- openai-responses-request
   [api-key base-url model prompt system-prompt max-tokens reasoning-effort verbosity
-   grammar-format force-tool-call]
+   grammar-format force-tool-call prompt-cache-key request-timeout-sec]
   (let [reasoning (when reasoning-effort
                     {:effort reasoning-effort})
         force-tool-instructions
@@ -760,15 +761,18 @@
                max-tokens (assoc :max_output_tokens max-tokens)
                reasoning (assoc :reasoning reasoning)
                verbosity (assoc :verbosity verbosity)
+               prompt-cache-key (assoc :prompt_cache_key prompt-cache-key)
                tool-mode? (assoc :tools [tool]
                                  :tool_choice "required"))
-        request (-> (HttpRequest/newBuilder)
+        builder (-> (HttpRequest/newBuilder)
                     (.uri (URI/create (str base-url "/responses")))
                     (.header "Content-Type" "application/json")
                     (.header "Authorization" (str "Bearer " api-key))
-                    (.POST (HttpRequest$BodyPublishers/ofString (json/write-str body)))
-                    (.build))]
-    request))
+                    (.POST (HttpRequest$BodyPublishers/ofString (json/write-str body))))
+        builder (if request-timeout-sec
+                  (.timeout builder (Duration/ofSeconds (long request-timeout-sec)))
+                  builder)]
+    (.build builder)))
 
 (defn- parse-openai-responses-response
   ([response-body] (parse-openai-responses-response response-body false))
@@ -804,7 +808,8 @@
         {:text text
          :usage (parse-openai-responses-usage usage)})))))
 
-(defn- openai-request [api-key base-url model prompt system-prompt _prefix max-tokens reasoning-effort verbosity]
+(defn- openai-request [api-key base-url model prompt system-prompt _prefix max-tokens reasoning-effort verbosity
+                       prompt-cache-key request-timeout-sec]
   (let [messages (cond-> []
                    system-prompt (conj {:role "system" :content system-prompt})
                    true (conj {:role "user" :content prompt}))
@@ -812,14 +817,17 @@
                       :messages messages
                       :max_completion_tokens (or max-tokens 16384)}
                reasoning-effort (assoc :reasoning_effort reasoning-effort)
-               verbosity (assoc :verbosity verbosity))
-        request (-> (HttpRequest/newBuilder)
+               verbosity (assoc :verbosity verbosity)
+               prompt-cache-key (assoc :prompt_cache_key prompt-cache-key))
+        builder (-> (HttpRequest/newBuilder)
                     (.uri (URI/create (str base-url "/chat/completions")))
                     (.header "Content-Type" "application/json")
                     (.header "Authorization" (str "Bearer " api-key))
-                    (.POST (HttpRequest$BodyPublishers/ofString (json/write-str body)))
-                    (.build))]
-    request))
+                    (.POST (HttpRequest$BodyPublishers/ofString (json/write-str body))))
+        builder (if request-timeout-sec
+                  (.timeout builder (Duration/ofSeconds (long request-timeout-sec)))
+                  builder)]
+    (.build builder)))
 
 (defn- parse-openai-response [response-body]
   (let [parsed (json/read-str response-body :key-fn keyword)]
@@ -834,7 +842,8 @@
                    :visible_output_tokens (max 0 (- output-tokens reasoning-tokens))
                    :reasoning_output_tokens reasoning-tokens})}))))
 
-(defrecord OpenAIProvider [api-key base-url model max-tokens http-client use-responses-api force-tool-call costs]
+(defrecord OpenAIProvider [api-key base-url model max-tokens http-client use-responses-api force-tool-call
+                           prompt-cache-key request-timeout-sec costs]
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt opts]
@@ -844,12 +853,16 @@
                          (responses-model? effective-model) grammar-format)
           reasoning-effort (:reasoning-effort opts)
           verbosity (:verbosity opts)
+          cache-prefix (:cache-prefix opts)
+          effective-cache-key (when cache-prefix prompt-cache-key)
           request (if responses?
                     (openai-responses-request api-key base-url effective-model prompt (:system opts)
                                              max-tokens reasoning-effort verbosity
-                                             grammar-format force-tool-call)
+                                             grammar-format force-tool-call
+                                             effective-cache-key request-timeout-sec)
                     (openai-request api-key base-url effective-model prompt (:system opts) (:prefix opts)
-                                   max-tokens reasoning-effort verbosity))
+                                   max-tokens reasoning-effort verbosity
+                                   effective-cache-key request-timeout-sec))
           response (.send http-client request (HttpResponse$BodyHandlers/ofString))
           status (.statusCode response)]
       (if (<= 200 status 299)
@@ -862,7 +875,8 @@
                         {:status status :body (.body response)})))))
   (plain-text-provider [this]
     (if force-tool-call
-      (->OpenAIProvider api-key base-url model max-tokens http-client use-responses-api false costs)
+      (->OpenAIProvider api-key base-url model max-tokens http-client use-responses-api false
+                        prompt-cache-key request-timeout-sec costs)
       this))
   (supports-prefill [_] false))
 
@@ -876,17 +890,28 @@
    - :max-tokens           - Max tokens per response (default: 16384)
    - :use-responses-api    - Force Responses API instead of Chat Completions (default: false)
    - :force-tool-call      - Require spell_suffix custom tool output via Responses API
+   - :request-timeout-sec  - Per-HTTP-call timeout in seconds (default: 600). Protects
+                             against OpenAI API hangs that would otherwise burn the
+                             full harness budget on a single stalled call.
+   - :prompt-cache-key     - Explicit prompt_cache_key value (default: random UUID
+                             generated at provider construction, reused across calls
+                             with :cache-prefix opt).
    - :costs                - Cost table {model-prefix [input-per-M output-per-M]}
 
    Call opts supported by this provider:
    - :grammar-format       - OpenAI custom-tool grammar format map
                              {:type \"grammar\" :syntax \"lark\" :definition \"...\"}
                              When present, request is routed to Responses API with
-                             tool_choice \"required\" and custom_tool_call output parsing."
+                             tool_choice \"required\" and custom_tool_call output parsing.
+   - :cache-prefix         - When set (non-nil), the provider's prompt_cache_key is
+                             sent with the request so repeated calls with the same
+                             provider instance land on the same cache partition."
   ([] (openai-provider {}))
-  ([{:keys [api-key base-url model max-tokens use-responses-api force-tool-call costs]
+  ([{:keys [api-key base-url model max-tokens use-responses-api force-tool-call
+            prompt-cache-key request-timeout-sec costs]
      :or {model "gpt-4o"
-          base-url "https://api.openai.com/v1"}}]
+          base-url "https://api.openai.com/v1"
+          request-timeout-sec 600}}]
    (let [key (or api-key (System/getenv "OPENAI_API_KEY"))
          url (str/replace (or base-url "https://api.openai.com/v1") #"/$" "")]
        (when-not key
@@ -896,9 +921,10 @@
                       (str/starts-with? url "http://localhost"))
            client (if local?
                     (make-http-client {:http-version HttpClient$Version/HTTP_1_1})
-                    (make-http-client))]
+                    (make-http-client))
+           cache-key (or prompt-cache-key (str (java.util.UUID/randomUUID)))]
        (->OpenAIProvider key url model max-tokens client use-responses-api
-                         force-tool-call costs)))))
+                         force-tool-call cache-key request-timeout-sec costs)))))
 
 ;; ---------------------------------------------------------------------------
 ;; ChatGPT Codex Provider (subscription-backed Responses API)
@@ -1598,7 +1624,7 @@
   [path]
   (let [{:keys [type api-key-env base-url model max-tokens costs use-responses-api auth-file account-id
                 responses response-rules response prefill? chat-template convert-think?
-                force-tool-call cache-read-ratio]}
+                force-tool-call cache-read-ratio request-timeout-sec]}
         (edn/read-string (slurp path))
         api-key (when api-key-env (System/getenv api-key-env))
         opts (cond-> {:costs (cond-> (merge default-costs (or costs {}))
@@ -1612,6 +1638,7 @@
                auth-file (assoc :auth-file auth-file)
                account-id (assoc :account-id account-id)
                chat-template (assoc :chat-template chat-template)
+               request-timeout-sec (assoc :request-timeout-sec request-timeout-sec)
                (some? convert-think?) (assoc :convert-think? convert-think?))]
     (case type
       :anthropic-pf (anthropic-pf-provider opts)
@@ -1640,7 +1667,7 @@
   "Create a provider from an inline config map (same keys as .provider.edn)."
   [{:keys [type api-key-env base-url model max-tokens costs use-responses-api auth-file account-id
            responses response-rules response prefill? chat-template convert-think?
-           force-tool-call cache-read-ratio] :as spec}]
+           force-tool-call cache-read-ratio request-timeout-sec] :as spec}]
   (let [api-key (when api-key-env (System/getenv api-key-env))
         opts (cond-> {:costs (cond-> (merge default-costs (or costs {}))
                                cache-read-ratio (assoc :cache-read-ratio cache-read-ratio))}
@@ -1653,6 +1680,7 @@
                auth-file (assoc :auth-file auth-file)
                account-id (assoc :account-id account-id)
                chat-template (assoc :chat-template chat-template)
+               request-timeout-sec (assoc :request-timeout-sec request-timeout-sec)
                (some? convert-think?) (assoc :convert-think? convert-think?))]
     (case type
       :anthropic-pf (anthropic-pf-provider opts)

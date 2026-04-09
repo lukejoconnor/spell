@@ -660,16 +660,20 @@
       (is (= 4096 (:max-tokens leaf)))))
 
   (testing "openai tool-call resolves to non-toolcall sibling with same routing fields"
-    (let [prov (provider/->OpenAIProvider "sk" "https://api.openai.com/v1" "gpt-5.4" 8192 nil true true {"gpt-5.4" [2.5 15]})
+    (let [prov (provider/->OpenAIProvider "sk" "https://api.openai.com/v1" "gpt-5.4" 8192 nil true true
+                                          "cache-key" 600 {"gpt-5.4" [2.5 15]})
           leaf (provider/plain-text-provider prov)]
       (is (instance? spell.provider.OpenAIProvider leaf))
       (is (= "gpt-5.4" (:model leaf)))
       (is (true? (:use-responses-api leaf)))
       (is (false? (:force-tool-call leaf)))
+      (is (= "cache-key" (:prompt-cache-key leaf)))
+      (is (= 600 (:request-timeout-sec leaf)))
       (is (= {"gpt-5.4" [2.5 15]} (:costs leaf)))))
 
   (testing "openai plain-text providers stay identity-preserving"
-    (let [prov (provider/->OpenAIProvider "sk" "https://api.openai.com/v1" "gpt-5.4" 8192 nil true false {"gpt-5.4" [2.5 15]})]
+    (let [prov (provider/->OpenAIProvider "sk" "https://api.openai.com/v1" "gpt-5.4" 8192 nil true false
+                                          "cache-key" 600 {"gpt-5.4" [2.5 15]})]
       (is (identical? prov (provider/plain-text-provider prov)))))
 
   (testing "already plain-text providers return themselves"
