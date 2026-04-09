@@ -574,6 +574,26 @@
         (finally
           (.delete provider-file)))))
 
+  (testing "load-provider threads OpenAI prompt cache key from .provider.edn"
+    (let [provider-file (java.io.File/createTempFile "provider-openai-cache-key-" ".provider.edn")]
+      (try
+        (spit provider-file (pr-str {:type :openai
+                                     :model "gpt-5.4"
+                                     :prompt-cache-key "stable-cache-key"}))
+        (let [p (provider/load-provider (.getAbsolutePath provider-file))]
+          (is (instance? spell.provider.OpenAIProvider p))
+          (is (= "stable-cache-key" (:prompt-cache-key p))))
+        (finally
+          (.delete provider-file)))))
+
+  (testing "resolve-provider threads OpenAI prompt cache key from inline map"
+    (let [p (provider/resolve-provider {:type :openai
+                                        :model "gpt-5.4"
+                                        :prompt-cache-key "stable-cache-key"}
+                                       nil)]
+      (is (instance? spell.provider.OpenAIProvider p))
+      (is (= "stable-cache-key" (:prompt-cache-key p)))))
+
   (testing "load-provider supports fireworks type"
     (let [provider-file (java.io.File/createTempFile "provider-fireworks-" ".provider.edn")]
       (try
@@ -756,6 +776,25 @@
                                                  :output_tokens 2}})]
       (is (thrown-with-msg? Exception #"missing custom_tool_call"
             (#'provider/parse-openai-responses-response response-body true)))))
+
+  (testing "throws incomplete responses as retryable missing-tool-call errors"
+    (let [response-body (json/write-str {:status "incomplete"
+                                         :incomplete_details {:reason "max_output_tokens"}
+                                         :output [{:type "custom_tool_call"
+                                                   :name "spell_suffix"
+                                                   :input "(def x"}]})
+          ex (try
+               (#'provider/parse-openai-responses-response response-body true)
+               nil
+               (catch Exception e
+                 e))]
+      (is (instance? Exception ex) "expected incomplete response to throw")
+      (is (re-find #"incomplete response" (ex-message ex)))
+      (is (= :missing-tool-call (:type (ex-data ex))))
+      (is (= :openai-tc (:provider (ex-data ex))))
+      (is (= "incomplete" (:status (ex-data ex))))
+      (is (= "max_output_tokens"
+             (get-in (ex-data ex) [:incomplete_details :reason])))))
 
   (testing "throws on error response"
     (let [response-body (json/write-str {:error {:message "invalid api key"

@@ -780,7 +780,16 @@
   (let [parsed (json/read-str response-body :key-fn keyword)]
     (if-let [error (:error parsed)]
       (throw (ex-info "OpenAI Responses API error" {:error error}))
-      (let [usage (:usage parsed)
+      (let [status (:status parsed)
+            incomplete-details (:incomplete_details parsed)]
+        (when (= "incomplete" status)
+          (throw (ex-info "OpenAI Responses API returned incomplete response"
+                          {:type :missing-tool-call
+                           :provider :openai-tc
+                           :status status
+                           :incomplete_details incomplete-details
+                           :output (:output parsed)})))
+        (let [usage (:usage parsed)
             output-text (:output_text parsed "")
             message-text (->> (:output parsed)
                               (filter #(= "message" (:type %)))
@@ -805,8 +814,8 @@
                        (not-empty message-text)
                        (not-empty tool-input)
                        ""))]
-        {:text text
-         :usage (parse-openai-responses-usage usage)})))))
+          {:text text
+           :usage (parse-openai-responses-usage usage)}))))))
 
 (defn- openai-request [api-key base-url model prompt system-prompt _prefix max-tokens reasoning-effort verbosity
                        prompt-cache-key request-timeout-sec]
@@ -1584,7 +1593,7 @@
 (defn retryable?
   "Returns true if the exception looks like a transient API failure worth retrying.
    Rate limits (429), server errors (5xx), network errors, and missing tool-call
-   responses (empty/truncated) are retryable."
+   responses (empty/truncated/incomplete) are retryable."
   [ex]
   (let [data (ex-data ex)
         status (:status data)]
@@ -1624,7 +1633,7 @@
   [path]
   (let [{:keys [type api-key-env base-url model max-tokens costs use-responses-api auth-file account-id
                 responses response-rules response prefill? chat-template convert-think?
-                force-tool-call cache-read-ratio request-timeout-sec]}
+                force-tool-call cache-read-ratio prompt-cache-key request-timeout-sec]}
         (edn/read-string (slurp path))
         api-key (when api-key-env (System/getenv api-key-env))
         opts (cond-> {:costs (cond-> (merge default-costs (or costs {}))
@@ -1635,6 +1644,7 @@
                max-tokens (assoc :max-tokens max-tokens)
                use-responses-api (assoc :use-responses-api true)
                force-tool-call (assoc :force-tool-call true)
+               prompt-cache-key (assoc :prompt-cache-key prompt-cache-key)
                auth-file (assoc :auth-file auth-file)
                account-id (assoc :account-id account-id)
                chat-template (assoc :chat-template chat-template)
@@ -1667,7 +1677,7 @@
   "Create a provider from an inline config map (same keys as .provider.edn)."
   [{:keys [type api-key-env base-url model max-tokens costs use-responses-api auth-file account-id
            responses response-rules response prefill? chat-template convert-think?
-           force-tool-call cache-read-ratio request-timeout-sec] :as spec}]
+           force-tool-call cache-read-ratio prompt-cache-key request-timeout-sec] :as spec}]
   (let [api-key (when api-key-env (System/getenv api-key-env))
         opts (cond-> {:costs (cond-> (merge default-costs (or costs {}))
                                cache-read-ratio (assoc :cache-read-ratio cache-read-ratio))}
@@ -1677,6 +1687,7 @@
                max-tokens (assoc :max-tokens max-tokens)
                use-responses-api (assoc :use-responses-api true)
                force-tool-call (assoc :force-tool-call true)
+               prompt-cache-key (assoc :prompt-cache-key prompt-cache-key)
                auth-file (assoc :auth-file auth-file)
                account-id (assoc :account-id account-id)
                chat-template (assoc :chat-template chat-template)
