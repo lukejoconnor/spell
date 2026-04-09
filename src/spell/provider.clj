@@ -780,7 +780,16 @@
   (let [parsed (json/read-str response-body :key-fn keyword)]
     (if-let [error (:error parsed)]
       (throw (ex-info "OpenAI Responses API error" {:error error}))
-      (let [usage (:usage parsed)
+      (let [status (:status parsed)
+            incomplete-details (:incomplete_details parsed)]
+        (when (= "incomplete" status)
+          (throw (ex-info "OpenAI Responses API returned incomplete response"
+                          {:type :missing-tool-call
+                           :provider :openai-tc
+                           :status status
+                           :incomplete_details incomplete-details
+                           :output (:output parsed)})))
+        (let [usage (:usage parsed)
             output-text (:output_text parsed "")
             message-text (->> (:output parsed)
                               (filter #(= "message" (:type %)))
@@ -805,8 +814,8 @@
                        (not-empty message-text)
                        (not-empty tool-input)
                        ""))]
-        {:text text
-         :usage (parse-openai-responses-usage usage)})))))
+          {:text text
+           :usage (parse-openai-responses-usage usage)}))))))
 
 (defn- openai-request [api-key base-url model prompt system-prompt _prefix max-tokens reasoning-effort verbosity
                        prompt-cache-key request-timeout-sec]
@@ -1584,7 +1593,7 @@
 (defn retryable?
   "Returns true if the exception looks like a transient API failure worth retrying.
    Rate limits (429), server errors (5xx), network errors, and missing tool-call
-   responses (empty/truncated) are retryable."
+   responses (empty/truncated/incomplete) are retryable."
   [ex]
   (let [data (ex-data ex)
         status (:status data)]
