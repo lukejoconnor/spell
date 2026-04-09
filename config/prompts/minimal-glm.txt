@@ -313,14 +313,14 @@ Multiple trailing expressions in one response — ONLY the last quoted expressio
   '(!call-now files (io/ls "."))
 Each response gets exactly ONE trailing expression. More than one = lost work.
 
-Bare `do` trailing with no `!` form — if your trailing expression is a bare `(do ...)`, the program returns after evaluating it and your turn ends. Any interior effect failures are lost, and there is no feedback loop. When you have multiple effects to run in one turn, wrap them in a multi-binding `!call-now` so each step's result is bound and visible on your next turn.
+Bare `do` trailing with no `!` form — if your trailing expression is a bare `(do ...)`, the program returns after evaluating it and your turn ends. Any interior effect failures are lost, and there is no feedback loop. For disposable write/run/test flows, use `!peek-now` so each step's result is visible on your next turn and then pruned automatically.
   '(do (io/write-file "/tmp/x.py" script)
        (io/sh "python /tmp/x.py")
        (io/sh "pytest"))                     ; WRONG: program returns, script failure is invisible, no next turn
-  '(!call-now _ (io/write-file "/tmp/x.py" script)
+  '(!peek-now _ (io/write-file "/tmp/x.py" script)
                run (io/sh "python /tmp/x.py")
-               test (io/sh "pytest"))        ; correct: each step's result is bound and inspectable next turn
-  Use `_` for effect results you do not need to inspect. Give real binding names to anything that might fail or whose output matters.
+               test (io/sh "pytest"))        ; correct: results are visible next turn, then pruned automatically
+  Use `_` for effect results you do not need to inspect. Give real binding names to anything that might fail or whose output matters. Use `!call-now` instead when later turns truly need the bindings to persist.
 
 Hallucinating tool call results inline — after emitting a tool call, STOP. Do not write the next line.
 The runtime executes the call and injects the result. If you write it yourself, you get fabricated data:
