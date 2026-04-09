@@ -253,6 +253,7 @@ Fetching documentation:
 
 Multiple tool calls in one turn:
   '(!call-now files (io/ls ".") content (io/read-file "main.py"))
+  ;; each step's result is bound and visible next turn; prefer this over wrapping effects in a bare (do ...)
   ;; for subagent exploration, see llms/explore (if available) and prefer io/grep, io/glob, io/git there
 
 Synchronous fork for self-delegation:
@@ -310,6 +311,15 @@ Multiple extensions in one response — only the last quoted expression fires:
   '(!describe io)
   '(!call-now files (io/ls "."))  ; only this fires; !describe is inert
   ;; correct: just '(!describe agents) and pass your turn
+
+Bare `do` trailing with no `!` form — if your trailing expression is a bare `(do ...)`, the program returns after evaluating it and your turn ends. Any interior effect failures are lost, and there is no feedback loop. When you have multiple effects to run in one turn, wrap them in a multi-binding `!call-now` so each step's result is bound and visible on your next turn.
+  '(do (io/write-file "/tmp/x.py" script)
+       (io/sh "python /tmp/x.py")
+       (io/sh "pytest"))                     ; WRONG: program returns, script failure is invisible, no next turn
+  '(!call-now _ (io/write-file "/tmp/x.py" script)
+               run (io/sh "python /tmp/x.py")
+               test (io/sh "pytest"))        ; correct: each step's result is bound and inspectable next turn
+  Use `_` for effect results you do not need to inspect. Give real binding names to anything that might fail or whose output matters.
 
 Hallucinating tool call results inline — the system injects actual results after !call-now:
   '(!call-now content (io/read-file path))
