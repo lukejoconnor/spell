@@ -777,45 +777,47 @@
 (defn- parse-openai-responses-response
   ([response-body] (parse-openai-responses-response response-body false))
   ([response-body require-tool-call]
-  (let [parsed (json/read-str response-body :key-fn keyword)]
-    (if-let [error (:error parsed)]
-      (throw (ex-info "OpenAI Responses API error" {:error error}))
-      (let [status (:status parsed)
-            incomplete-details (:incomplete_details parsed)]
-        (when (= "incomplete" status)
-          (throw (ex-info "OpenAI Responses API returned incomplete response"
-                          {:type :missing-tool-call
-                           :provider :openai-tc
-                           :status status
-                           :incomplete_details incomplete-details
-                           :output (:output parsed)})))
-        (let [usage (:usage parsed)
-            output-text (:output_text parsed "")
-            message-text (->> (:output parsed)
-                              (filter #(= "message" (:type %)))
-                              (mapcat :content)
-                              (filter #(= "output_text" (:type %)))
-                              (map :text)
-                              (str/join ""))
-            tool-input (some (fn [item]
-                               (when (and (= "custom_tool_call" (:type item))
-                                          (= "spell_suffix" (:name item)))
-                                 (:input item)))
-                             (:output parsed))
-            text (if require-tool-call
-                   (do
-                     (when-not tool-input
-                       (throw (ex-info "OpenAI mandatory tool-call response missing custom_tool_call"
-                                       {:type :missing-tool-call
-                                        :provider :openai-tc
-                                        :output (:output parsed)})))
-                     tool-input)
-                   (or (not-empty output-text)
-                       (not-empty message-text)
-                       (not-empty tool-input)
-                       ""))]
-          {:text text
-           :usage (parse-openai-responses-usage usage)}))))))
+   (let [parsed (json/read-str response-body :key-fn keyword)]
+     (if-let [error (:error parsed)]
+       (throw (ex-info "OpenAI Responses API error" {:error error}))
+       (let [status (:status parsed)
+             incomplete-details (:incomplete_details parsed)
+             usage (parse-openai-responses-usage (:usage parsed))
+             output-text (:output_text parsed "")
+             message-text (->> (:output parsed)
+                               (filter #(= "message" (:type %)))
+                               (mapcat :content)
+                               (filter #(= "output_text" (:type %)))
+                               (map :text)
+                               (str/join ""))
+             tool-input (some (fn [item]
+                                (when (and (= "custom_tool_call" (:type item))
+                                           (= "spell_suffix" (:name item)))
+                                  (:input item)))
+                              (:output parsed))
+             text (if require-tool-call
+                    (do
+                      (when (= "incomplete" status)
+                        (throw (ex-info "OpenAI Responses API returned incomplete response"
+                                        {:type :missing-tool-call
+                                         :provider :openai-tc
+                                         :status status
+                                         :incomplete_details incomplete-details
+                                         :output (:output parsed)
+                                         :usage usage})))
+                      (when-not tool-input
+                        (throw (ex-info "OpenAI mandatory tool-call response missing custom_tool_call"
+                                        {:type :missing-tool-call
+                                         :provider :openai-tc
+                                         :output (:output parsed)
+                                         :usage usage})))
+                      tool-input)
+                    (or (not-empty output-text)
+                        (not-empty message-text)
+                        (not-empty tool-input)
+                        ""))]
+         {:text text
+          :usage usage})))))
 
 (defn- openai-request [api-key base-url model prompt system-prompt _prefix max-tokens reasoning-effort verbosity
                        prompt-cache-key request-timeout-sec]
@@ -876,7 +878,12 @@
           status (.statusCode response)]
       (if (<= 200 status 299)
         (let [{:keys [text usage]} (if responses?
-                                     (parse-openai-responses-response (.body response) force-tool-call)
+                                     (try
+                                       (parse-openai-responses-response (.body response) force-tool-call)
+                                       (catch clojure.lang.ExceptionInfo e
+                                         (when-let [usage (:usage (ex-data e))]
+                                           (track-usage! effective-model usage costs))
+                                         (throw e)))
                                      (parse-openai-response (.body response)))]
           (track-usage! effective-model usage costs)
           text)
