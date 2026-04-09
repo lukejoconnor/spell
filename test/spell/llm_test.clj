@@ -774,8 +774,51 @@
     (let [response-body (json/write-str {:output_text "plain text"
                                          :usage {:input_tokens 3
                                                  :output_tokens 2}})]
-      (is (thrown-with-msg? Exception #"missing custom_tool_call"
-            (#'provider/parse-openai-responses-response response-body true)))))
+      (let [ex (try
+                 (#'provider/parse-openai-responses-response response-body true)
+                 nil
+                 (catch Exception e
+                   e))]
+        (is (instance? Exception ex))
+        (is (re-find #"missing custom_tool_call" (ex-message ex)))
+        (is (= 3 (get-in (ex-data ex) [:usage :input_tokens])))
+        (is (= 2 (get-in (ex-data ex) [:usage :output_tokens]))))))
+
+  (testing "throws incomplete responses as retryable missing-tool-call errors"
+    (let [response-body (json/write-str {:status "incomplete"
+                                         :incomplete_details {:reason "max_output_tokens"}
+                                         :output [{:type "custom_tool_call"
+                                                   :name "spell_suffix"
+                                                   :input "(def x"}]
+                                         :usage {:input_tokens 15
+                                                 :output_tokens 9
+                                                 :input_tokens_details {:cached_tokens 4}}})
+          ex (try
+               (#'provider/parse-openai-responses-response response-body true)
+               nil
+               (catch Exception e
+                 e))]
+      (is (instance? Exception ex) "expected incomplete response to throw")
+      (is (re-find #"incomplete response" (ex-message ex)))
+      (is (= :missing-tool-call (:type (ex-data ex))))
+      (is (= :openai-tc (:provider (ex-data ex))))
+      (is (= "incomplete" (:status (ex-data ex))))
+      (is (= "max_output_tokens"
+             (get-in (ex-data ex) [:incomplete_details :reason])))
+      (is (= 11 (get-in (ex-data ex) [:usage :input_tokens])))
+      (is (= 4 (get-in (ex-data ex) [:usage :cache_read_input_tokens])))
+      (is (= 9 (get-in (ex-data ex) [:usage :output_tokens])))))
+
+  (testing "plain-text mode returns incomplete response text instead of throwing"
+    (let [response-body (json/write-str {:status "incomplete"
+                                         :incomplete_details {:reason "max_output_tokens"}
+                                         :output_text "partial but usable"
+                                         :usage {:input_tokens 5
+                                                 :output_tokens 3}})
+          result (#'provider/parse-openai-responses-response response-body false)]
+      (is (= "partial but usable" (:text result)))
+      (is (= 5 (get-in result [:usage :input_tokens])))
+      (is (= 3 (get-in result [:usage :output_tokens])))))
 
   (testing "throws incomplete responses as retryable missing-tool-call errors"
     (let [response-body (json/write-str {:status "incomplete"
