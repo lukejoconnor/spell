@@ -189,6 +189,7 @@ ANTHROPIC_SECRET="$(metadata_attr anthropic-secret)"
 OPENAI_SECRET="$(metadata_attr openai-secret)"
 GITHUB_TOKEN_SECRET="$(metadata_attr github-token-secret)"
 CODEX_AUTH_SECRET="$(metadata_attr codex-auth-secret || true)"
+CLAUDE_AUTH_SECRET="$(metadata_attr claude-auth-secret || true)"
 RUN_GROUP="$(metadata_attr run-group || true)"
 BENCHMARK_COMMAND="$(metadata_attr benchmark-command || true)"
 PROJECT_ID="$(project_id)"
@@ -235,6 +236,10 @@ CODEX_AUTH_B64=""
 if [[ -n "$CODEX_AUTH_SECRET" ]]; then
   CODEX_AUTH_B64="$(fetch_secret "$PROJECT_ID" "$CODEX_AUTH_SECRET" 2>/dev/null || true)"
 fi
+CLAUDE_JSON_B64=""
+if [[ -n "$CLAUDE_AUTH_SECRET" ]]; then
+  CLAUDE_JSON_B64="$(fetch_secret "$PROJECT_ID" "$CLAUDE_AUTH_SECRET" 2>/dev/null || true)"
+fi
 
 mkdir -p "$USER_HOME/.config/spell-benchmark"
 cat >"$USER_HOME/.config/spell-benchmark/env.sh" <<EOF
@@ -251,6 +256,13 @@ if [[ -n "$CODEX_AUTH_B64" ]]; then
   # state_*.sqlite and logs_*.sqlite files into the dir and fails with
   # "Error: Permission denied (os error 13)" if the dir is root-owned.
   chown -R "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/.codex"
+fi
+if [[ -n "$CLAUDE_JSON_B64" ]]; then
+  printf 'export CLAUDE_JSON_B64=%q\n' "$CLAUDE_JSON_B64" >>"$USER_HOME/.config/spell-benchmark/env.sh"
+  mkdir -p "$USER_HOME/.claude"
+  printf '%s' "$CLAUDE_JSON_B64" | base64 -d >"$USER_HOME/.claude/.claude.json"
+  chmod 600 "$USER_HOME/.claude/.claude.json"
+  chown -R "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/.claude"
 fi
 chmod 600 "$USER_HOME/.config/spell-benchmark/env.sh"
 chown -R "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/.config"

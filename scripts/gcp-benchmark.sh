@@ -30,6 +30,7 @@ ANTHROPIC_SECRET="${SPELL_GCP_ANTHROPIC_SECRET:-ANTHROPIC_API_KEY}"
 OPENAI_SECRET="${SPELL_GCP_OPENAI_SECRET:-OPENAI_API_KEY}"
 GITHUB_TOKEN_SECRET="${SPELL_GCP_GITHUB_TOKEN_SECRET:-GITHUB_TOKEN}"
 CODEX_AUTH_SECRET="${SPELL_GCP_CODEX_AUTH_SECRET:-CODEX_AUTH_JSON_B64}"
+CLAUDE_AUTH_SECRET="${SPELL_GCP_CLAUDE_AUTH_SECRET:-CLAUDE_JSON_B64}"
 LOCAL_BENCHMARK_DIR="${SPELL_LOCAL_BENCHMARK_DIR:-$REPO_ROOT/benchmarking}"
 RUN_GROUP="${SPELL_GCP_RUN_GROUP:-}"
 RUN_GROUP_LABEL=""
@@ -96,6 +97,7 @@ Options:
   --openai-secret NAME            Secret Manager secret name (default: OPENAI_API_KEY)
   --github-token-secret NAME      Secret Manager secret name (default: GITHUB_TOKEN)
   --codex-auth-secret NAME        Secret Manager secret name for Codex auth (default: CODEX_AUTH_JSON_B64)
+  --claude-auth-secret NAME       Secret Manager secret name for Claude Code auth (default: CLAUDE_JSON_B64)
   --local-benchmark-dir PATH      Local benchmarking checkout/path for pull (default: ./benchmarking)
   --run-group GROUP               Logical fleet label for managed VMs (defaults to VM name for single-VM commands)
   --command CMD                   Benchmark command for run
@@ -268,6 +270,10 @@ parse_args() {
         CODEX_AUTH_SECRET="$2"
         shift 2
         ;;
+      --claude-auth-secret)
+        CLAUDE_AUTH_SECRET="$2"
+        shift 2
+        ;;
       --local-benchmark-dir)
         LOCAL_BENCHMARK_DIR="$2"
         shift 2
@@ -429,6 +435,7 @@ metadata_values() {
     "openai-secret=${OPENAI_SECRET}" \
     "github-token-secret=${GITHUB_TOKEN_SECRET}" \
     "codex-auth-secret=${CODEX_AUTH_SECRET}" \
+    "claude-auth-secret=${CLAUDE_AUTH_SECRET}" \
     "run-group-label=${RUN_GROUP_LABEL}"
 }
 
