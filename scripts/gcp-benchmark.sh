@@ -1173,15 +1173,19 @@ wait_for_completion() {
         benchmark_state="$(read_benchmark_state "$instance_name" "$zone" "$gcp_state")"
         case "$benchmark_state" in
           finished)
+            rm -f "$unreachable_state_dir/$instance_name"
             finished=$((finished + 1))
             ;;
           failed)
+            rm -f "$unreachable_state_dir/$instance_name"
             failed=$((failed + 1))
             ;;
           running)
+            rm -f "$unreachable_state_dir/$instance_name"
             running=$((running + 1))
             ;;
           startup)
+            rm -f "$unreachable_state_dir/$instance_name"
             startup=$((startup + 1))
             ;;
           unreachable)
@@ -1200,6 +1204,7 @@ wait_for_completion() {
             fi
             ;;
           *)
+            rm -f "$unreachable_state_dir/$instance_name"
             unknown=$((unknown + 1))
             ;;
         esac

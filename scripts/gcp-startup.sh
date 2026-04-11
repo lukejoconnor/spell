@@ -281,7 +281,7 @@ mark_interrupted_run_if_needed() {
   local prior_state=""
   prior_state="$(read_run_status_field state 2>/dev/null || true)"
   case "$prior_state" in
-    running|startup)
+    running|startup|starting)
       write_run_status failed "" "VM rebooted before benchmark completed"
       ;;
     "")
@@ -313,6 +313,8 @@ fi
 if [[ -f "$BOOTSTRAP_MARKER" ]] && [[ -d "$USER_HOME/spell/.git" ]] && [[ -d "$USER_HOME/spell/benchmarking/.git" ]]; then
   echo "[spell-benchmark] bootstrap already complete, taking fast path"
   materialize_secrets_and_env
+  systemctl enable --now docker
+  wait_for_docker
   ensure_tmux_session
   mark_interrupted_run_if_needed
   echo "$STARTUP_OK_MARKER"
