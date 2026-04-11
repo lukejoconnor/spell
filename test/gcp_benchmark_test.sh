@@ -285,6 +285,44 @@ test_help_and_argument_parsing() {
   fi
 }
 
+test_startup_script_preserves_claude_auth_and_bootstrap_marker() {
+  local startup_script
+  startup_script="$(cat "$REPO_ROOT/scripts/gcp-startup.sh")"
+
+  assert_contains "$startup_script" '>"$USER_HOME/.claude/.claude.json"' "startup should write Claude auth where host adapters read it"
+  assert_contains "$startup_script" 'BOOTSTRAP_MARKER="/var/lib/spell-benchmark/bootstrap-done"' "startup should use a durable bootstrap marker"
+  assert_contains "$startup_script" 'ensure_tmux_session' "startup should recreate the tmux session on reboot"
+}
+
+test_wait_for_completion_treats_persistent_unreachable_as_terminal() {
+  RUN_GROUP="batch-unreachable"
+  WAIT_INTERVAL_SECONDS=1
+  WAIT_TIMEOUT_SECONDS=5
+  WAIT_UNREACHABLE_FAILURES=2
+  WAIT_AND_FINISH=0
+  SECONDS=0
+
+  list_matching_instances() {
+    printf 'vm-a\tus-central1-a\tRUNNING\tbatch-unreachable\tmain\tmain\n'
+  }
+  read_benchmark_state() {
+    printf 'unreachable\n'
+  }
+  resolve_project() { PROJECT="spellbenchmarking"; }
+  require_cmd() { :; }
+  sleep() { SECONDS=$((SECONDS + ${1:-0})); }
+
+  local output_file
+  output_file="$(mktemp)"
+  wait_for_completion >"$output_file"
+  local output
+  output="$(cat "$output_file")"
+  rm -f "$output_file"
+
+  assert_contains "$output" "0/1 terminal, 0 finished, 0 failed, 0 running, 0 startup, 0 unknown, 1 unreachable" "first unreachable poll should stay non-terminal"
+  assert_contains "$output" "1/1 terminal, 0 finished, 1 failed, 0 running, 0 startup, 0 unknown, 0 unreachable" "persistent unreachable VM should become terminal"
+}
+
 main() {
   test_extract_tar_stream_flattens_paths
   test_render_run_wrapper_contains_status_transitions
@@ -296,6 +334,8 @@ main() {
   test_wait_for_completion_summarizes_and_finishes
   test_wait_for_completion_times_out
   test_help_and_argument_parsing
+  test_startup_script_preserves_claude_auth_and_bootstrap_marker
+  test_wait_for_completion_treats_persistent_unreachable_as_terminal
   printf 'PASS: gcp benchmark launcher tests\n'
 }
 
