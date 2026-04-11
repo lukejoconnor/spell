@@ -298,11 +298,23 @@ install_uv_and_python
 install_node_tooling
 
 echo "[spell-benchmark] cloning spell and spell-benchmarking"
+benchmarking_backup_dir=""
+if [[ -d "$USER_HOME/spell/benchmarking" ]]; then
+  # Preserve any in-progress benchmark checkout across stop/start cycles.
+  benchmarking_backup_dir="$(mktemp -d "$USER_HOME/.spell-benchmarking-backup.XXXXXX")"
+  echo "[spell-benchmark] preserving existing benchmarking checkout"
+  mv "$USER_HOME/spell/benchmarking" "$benchmarking_backup_dir/benchmarking"
+fi
 rm -rf "$USER_HOME/spell"
 clone_repo "$SPELL_REPO_URL" "$USER_HOME/spell" "$SPELL_REF" "$GITHUB_TOKEN"
 mkdir -p "$USER_HOME/spell"
-rm -rf "$USER_HOME/spell/benchmarking"
-clone_repo "$BENCHMARKING_REPO_URL" "$USER_HOME/spell/benchmarking" "$BENCHMARKING_REF" "$GITHUB_TOKEN"
+if [[ -n "$benchmarking_backup_dir" && -d "$benchmarking_backup_dir/benchmarking" ]]; then
+  echo "[spell-benchmark] restoring existing benchmarking checkout"
+  mv "$benchmarking_backup_dir/benchmarking" "$USER_HOME/spell/benchmarking"
+  rmdir "$benchmarking_backup_dir"
+else
+  clone_repo "$BENCHMARKING_REPO_URL" "$USER_HOME/spell/benchmarking" "$BENCHMARKING_REF" "$GITHUB_TOKEN"
+fi
 chown -R "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/spell"
 unset GITHUB_TOKEN
 

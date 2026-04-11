@@ -39,11 +39,17 @@ OPERATE_ALL=0
 FINISHED_ONLY=0
 WAIT_INTERVAL_SECONDS="${SPELL_GCP_WAIT_INTERVAL_SECONDS:-120}"
 WAIT_TIMEOUT_SECONDS="${SPELL_GCP_WAIT_TIMEOUT_SECONDS:-86400}"
+WAIT_UNREACHABLE_FAILURES="${SPELL_GCP_WAIT_UNREACHABLE_FAILURES:-3}"
 WAIT_AND_FINISH=0
 AUTO_SSH=1
 START_INSTANCE_CREATED=0
 START_INSTANCE_FINISHED=0
 ACTION=""
+
+SSH_CONNECT_TIMEOUT_SECONDS=30
+SSH_SERVER_ALIVE_INTERVAL_SECONDS=15
+SSH_SERVER_ALIVE_COUNT_MAX=2
+SSH_CONNECTION_ATTEMPTS=1
 
 usage() {
   cat <<'EOF'
@@ -404,11 +410,24 @@ ssh_into_vm() {
   local instance_name="$1"
   local zone="$2"
   log "attaching to tmux session on $instance_name"
+  gcloud_compute_ssh "$instance_name" "$zone" \
+    --ssh-flag="-t" \
+    --command="tmux new -A -s benchmark -c ~/spell/benchmarking \"bash -lc 'cd ~/spell/benchmarking && exec bash'\""
+}
+
+gcloud_compute_ssh() {
+  local instance_name="$1"
+  local zone="$2"
+  shift 2
+
   gcloud compute ssh "${REMOTE_USER}@${instance_name}" \
     --project "$PROJECT" \
     --zone "$zone" \
-    --ssh-flag="-t" \
-    --command="tmux new -A -s benchmark -c ~/spell/benchmarking \"bash -lc 'cd ~/spell/benchmarking && exec bash'\""
+    --ssh-flag="-o ConnectTimeout=${SSH_CONNECT_TIMEOUT_SECONDS}" \
+    --ssh-flag="-o ServerAliveInterval=${SSH_SERVER_ALIVE_INTERVAL_SECONDS}" \
+    --ssh-flag="-o ServerAliveCountMax=${SSH_SERVER_ALIVE_COUNT_MAX}" \
+    --ssh-flag="-o ConnectionAttempts=${SSH_CONNECTION_ATTEMPTS}" \
+    "$@"
 }
 
 cleanup_failed_start() {
@@ -723,9 +742,7 @@ stage_remote_run_scripts() {
   render_run_launch_script >"$launch_script"
   chmod 700 "$command_script" "$wrapper_script" "$launch_script"
 
-  gcloud compute ssh "${REMOTE_USER}@${instance_name}" \
-    --project "$PROJECT" \
-    --zone "$zone" \
+  gcloud_compute_ssh "$instance_name" "$zone" \
     --command="mkdir -p ${remote_config_dir} ${remote_home}/spell/benchmarking/logs"
 
   gcloud compute scp \
@@ -736,9 +753,7 @@ stage_remote_run_scripts() {
     "$launch_script" \
     "${REMOTE_USER}@${instance_name}:${remote_config_dir}/"
 
-  gcloud compute ssh "${REMOTE_USER}@${instance_name}" \
-    --project "$PROJECT" \
-    --zone "$zone" \
+  gcloud_compute_ssh "$instance_name" "$zone" \
     --command="chmod 700 ${remote_config_dir}/run-command.sh ${remote_config_dir}/run-wrapper.sh ${remote_config_dir}/launch-run.sh"
 
   rm -rf "$staging_dir"
@@ -750,9 +765,7 @@ launch_benchmark_command() {
 
   log "staging benchmark wrapper on ${instance_name}"
   stage_remote_run_scripts "$instance_name" "$zone"
-  gcloud compute ssh "${REMOTE_USER}@${instance_name}" \
-    --project "$PROJECT" \
-    --zone "$zone" \
+  gcloud_compute_ssh "$instance_name" "$zone" \
     --command="bash /home/${REMOTE_USER}/.config/spell-benchmark/launch-run.sh"
   log "benchmark launched on ${instance_name}; use ./scripts/gcp-benchmark.sh status --project ${PROJECT} --name ${instance_name} --zone ${zone}"
 }
@@ -831,9 +844,7 @@ remote_dir_presence() {
   local zone="$2"
   local remote_name="$3"
 
-  gcloud compute ssh "${REMOTE_USER}@${instance_name}" \
-    --project "$PROJECT" \
-    --zone "$zone" \
+  gcloud_compute_ssh "$instance_name" "$zone" \
     --command="bash -lc 'if [[ -d \$HOME/spell/benchmarking/${remote_name} ]]; then echo exists; else echo missing; fi'" < /dev/null
 }
 
@@ -855,9 +866,7 @@ copy_remote_dir_from_instance() {
   fi
 
   log "copying ${remote_name} from ${instance_name} into ${local_base}"
-  gcloud compute ssh "${REMOTE_USER}@${instance_name}" \
-    --project "$PROJECT" \
-    --zone "$zone" \
+  gcloud_compute_ssh "$instance_name" "$zone" \
     --command="bash -lc 'cd \$HOME/spell/benchmarking/${remote_name} && tar -cf - .'" < /dev/null \
     | extract_tar_stream_into_dir "$local_base"
 }
@@ -997,9 +1006,7 @@ print("\t".join(row))
 read_remote_status_json() {
   local instance_name="$1"
   local zone="$2"
-  gcloud compute ssh "${REMOTE_USER}@${instance_name}" \
-    --project "$PROJECT" \
-    --zone "$zone" \
+  gcloud_compute_ssh "$instance_name" "$zone" \
     --command="bash -lc 'cat \$HOME/.config/spell-benchmark/run-status.json'" < /dev/null 2>/dev/null
 }
 
@@ -1048,8 +1055,15 @@ read_benchmark_state() {
   esac
 
   local status_json
-  if status_json="$(read_remote_status_json "$instance_name" "$zone")" && [[ -n "$status_json" ]]; then
+  local status_rc=0
+  status_json="$(read_remote_status_json "$instance_name" "$zone")" || status_rc=$?
+  if (( status_rc == 0 )) && [[ -n "$status_json" ]]; then
     printf '%s' "$status_json" | python3 -c 'import json, sys; print(json.load(sys.stdin).get("state", "unknown"))'
+    return 0
+  fi
+
+  if (( status_rc != 0 )); then
+    printf '%s\n' "unreachable"
     return 0
   fi
 
@@ -1134,6 +1148,8 @@ wait_for_completion() {
 
   local deadline=$((SECONDS + WAIT_TIMEOUT_SECONDS))
   local saw_matches=0
+  local unreachable_state_dir
+  unreachable_state_dir="$(mktemp -d)"
 
   while true; do
     local rows
@@ -1145,6 +1161,7 @@ wait_for_completion() {
     local running=0
     local startup=0
     local unknown=0
+    local unreachable=0
 
     if [[ -n "$rows" ]]; then
       saw_matches=1
@@ -1167,6 +1184,21 @@ wait_for_completion() {
           startup)
             startup=$((startup + 1))
             ;;
+          unreachable)
+            # Give a dead VM a short retry budget before treating it as terminal for this wait loop.
+            local failure_file="$unreachable_state_dir/$instance_name"
+            local failure_count=0
+            if [[ -f "$failure_file" ]]; then
+              failure_count="$(<"$failure_file")"
+            fi
+            failure_count=$((failure_count + 1))
+            printf '%s' "$failure_count" >"$failure_file"
+            if (( failure_count >= WAIT_UNREACHABLE_FAILURES )); then
+              failed=$((failed + 1))
+            else
+              unreachable=$((unreachable + 1))
+            fi
+            ;;
           *)
             unknown=$((unknown + 1))
             ;;
@@ -1180,18 +1212,21 @@ wait_for_completion() {
 
     if (( total == 0 )); then
       if (( saw_matches == 0 )); then
+        rm -rf "$unreachable_state_dir"
         die "wait found no matching Spell-managed benchmark VMs"
       fi
       log "0 matching VMs remain (${timestamp} UTC); treating wait as complete"
+      rm -rf "$unreachable_state_dir"
       return 0
     fi
 
-    log "${terminal}/${total} terminal, ${finished} finished, ${failed} failed, ${running} running, ${startup} startup, ${unknown} unknown (${timestamp} UTC)"
+    log "${terminal}/${total} terminal, ${finished} finished, ${failed} failed, ${running} running, ${startup} startup, ${unknown} unknown, ${unreachable} unreachable (${timestamp} UTC)"
 
     if (( terminal == total )); then
       if (( WAIT_AND_FINISH == 1 )); then
         finish_all_instances
       fi
+      rm -rf "$unreachable_state_dir"
       return 0
     fi
 
