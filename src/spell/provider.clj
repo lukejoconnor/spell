@@ -331,9 +331,46 @@
         (str/includes? model "haiku-3-5")) 8000
     :else 4000))
 
-(defn- anthropic-pf-request [api-key model prompt system-prompt prefix max-tokens stream? thinking cache-prefix]
+(defn- reasoning-effort->thinking-budget
+  "Map reasoning-effort onto Anthropic thinking budget_tokens."
+  [effort]
+  (when effort
+    (case (name effort)
+      "low" 4000
+      "medium" 10000
+      "high" 24000
+      nil)))
+
+(defn- normalize-anthropic-thinking
+  "Return a numeric Anthropic thinking budget, or nil when thinking is disabled."
+  [thinking]
+  (when thinking
+    (if (number? thinking) thinking 10000)))
+
+(defn- effective-anthropic-thinking
+  "Resolve Anthropic thinking budget, letting explicit :thinking win over reasoning-effort."
+  [opts]
+  (or (normalize-anthropic-thinking (:thinking opts))
+      (some-> (:reasoning-effort opts)
+              reasoning-effort->thinking-budget)))
+
+(defn- effective-anthropic-max-tokens
+  "Anthropic requires max_tokens to exceed budget_tokens when thinking is enabled.
+   Leave 4K response headroom above the thinking budget."
+  [configured-max-tokens thinking-budget]
+  (let [base-max-tokens (or configured-max-tokens
+                            (if thinking-budget 32768 16384))]
+    (if thinking-budget
+      (max base-max-tokens (+ thinking-budget 4000))
+      base-max-tokens)))
+
+(defn- anthropic-thinking-config [thinking-budget]
+  (when thinking-budget
+    {:type "enabled" :budget_tokens thinking-budget}))
+
+(defn- anthropic-pf-body [model prompt system-prompt prefix max-tokens thinking-budget stream? cache-prefix]
   (let [;; When thinking is active, don't use assistant prefill (incompatible)
-        effective-prefix (when-not thinking prefix)
+        effective-prefix (when-not thinking-budget prefix)
         ;; Only apply cache_control when content exceeds model's minimum threshold
         min-chars (cache-min-chars model)
         ;; Split user message for caching: stable prefix + new content
@@ -355,23 +392,22 @@
                            (>= (count system-prompt) min-chars)
                            (assoc :cache_control {:type "ephemeral"}))])
         body (cond-> {:model model
-                      :max_tokens (if thinking
-                                    (or max-tokens 32768)
-                                    (or max-tokens 16384))
+                      :max_tokens max-tokens
                       :messages messages}
                cached-system (assoc :system cached-system)
                stream? (assoc :stream true)
-               thinking (assoc :thinking (if (number? thinking)
-                                          {:type "enabled" :budget_tokens thinking}
-                                          {:type "enabled" :budget_tokens 10000})))
-        request (-> (HttpRequest/newBuilder)
-                    (.uri (URI/create "https://api.anthropic.com/v1/messages"))
-                    (.header "Content-Type" "application/json")
-                    (.header "x-api-key" api-key)
-                    (.header "anthropic-version" "2023-06-01")
-                    (.POST (HttpRequest$BodyPublishers/ofString (json/write-str body)))
-                    (.build))]
-    request))
+               thinking-budget (assoc :thinking (anthropic-thinking-config thinking-budget)))]
+    body))
+
+(defn- anthropic-pf-request [api-key model prompt system-prompt prefix max-tokens stream? thinking-budget cache-prefix]
+  (let [body (anthropic-pf-body model prompt system-prompt prefix max-tokens thinking-budget stream? cache-prefix)]
+    (-> (HttpRequest/newBuilder)
+        (.uri (URI/create "https://api.anthropic.com/v1/messages"))
+        (.header "Content-Type" "application/json")
+        (.header "x-api-key" api-key)
+        (.header "anthropic-version" "2023-06-01")
+        (.POST (HttpRequest$BodyPublishers/ofString (json/write-str body)))
+        (.build))))
 
 (defn- parse-anthropic-pf-response [response-body]
   (let [parsed (json/read-str response-body :key-fn keyword)]
@@ -425,13 +461,13 @@
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt opts]
     (let [effective-model (or (:model opts) model)
-          thinking (:thinking opts)
-          effective-max-tokens (or max-tokens (if thinking 32768 16384))
+          thinking-budget (effective-anthropic-thinking opts)
+          effective-max-tokens (effective-anthropic-max-tokens max-tokens thinking-budget)
           ;; Use streaming for large max_tokens (API requires it for >16384) or thinking
-          stream? (or thinking (> effective-max-tokens 16384))
+          stream? (or thinking-budget (> effective-max-tokens 16384))
           cache-prefix (:cache-prefix opts)
           request (anthropic-pf-request api-key effective-model prompt (:system opts) (:prefix opts)
-                                       effective-max-tokens stream? thinking cache-prefix)
+                                       effective-max-tokens stream? thinking-budget cache-prefix)
           response (.send http-client request (HttpResponse$BodyHandlers/ofString))
           status (.statusCode response)]
       (if (<= 200 status 299)
@@ -464,8 +500,8 @@
                        {:env "ANTHROPIC_API_KEY"})))
      (->AnthropicPfProvider key model max-tokens (make-http-client) costs))))
 
-(defn- anthropic-tc-request
-  [api-key model prompt system-prompt max-tokens stream? thinking cache-prefix]
+(defn- anthropic-tc-body
+  [model prompt system-prompt max-tokens thinking-budget stream? cache-prefix]
   (let [min-chars (cache-min-chars model)
         ;; Split user message for caching: stable prefix + new content
         user-content (if (and cache-prefix
@@ -483,9 +519,7 @@
                            (>= (count system-prompt) min-chars)
                            (assoc :cache_control {:type "ephemeral"}))])
         body (cond-> {:model model
-                      :max_tokens (if thinking
-                                    (or max-tokens 32768)
-                                    (or max-tokens 16384))
+                      :max_tokens max-tokens
                       :messages [{:role "user" :content user-content}]
                       :tools [{:name "spell_suffix"
                                :description "Return the full Spell suffix in input.suffix"
@@ -494,20 +528,22 @@
                                               :required ["suffix"]
                                               :additionalProperties false}}]
                       ;; thinking forbids forced tool use; use "auto" instead of "any"
-                      :tool_choice {:type (if thinking "auto" "any")}}
+                      :tool_choice {:type (if thinking-budget "auto" "any")}}
                cached-system (assoc :system cached-system)
                stream? (assoc :stream true)
-               thinking (assoc :thinking (if (number? thinking)
-                                          {:type "enabled" :budget_tokens thinking}
-                                          {:type "enabled" :budget_tokens 10000})))
-        request (-> (HttpRequest/newBuilder)
-                    (.uri (URI/create "https://api.anthropic.com/v1/messages"))
-                    (.header "Content-Type" "application/json")
-                    (.header "x-api-key" api-key)
-                    (.header "anthropic-version" "2023-06-01")
-                    (.POST (HttpRequest$BodyPublishers/ofString (json/write-str body)))
-                    (.build))]
-    request))
+               thinking-budget (assoc :thinking (anthropic-thinking-config thinking-budget)))]
+    body))
+
+(defn- anthropic-tc-request
+  [api-key model prompt system-prompt max-tokens stream? thinking-budget cache-prefix]
+  (let [body (anthropic-tc-body model prompt system-prompt max-tokens thinking-budget stream? cache-prefix)]
+    (-> (HttpRequest/newBuilder)
+        (.uri (URI/create "https://api.anthropic.com/v1/messages"))
+        (.header "Content-Type" "application/json")
+        (.header "x-api-key" api-key)
+        (.header "anthropic-version" "2023-06-01")
+        (.POST (HttpRequest$BodyPublishers/ofString (json/write-str body)))
+        (.build))))
 
 (defn- tool-use->suffix
   "Extract Spell suffix text from an Anthropic tool_use block."
@@ -608,13 +644,13 @@
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt opts]
     (let [effective-model (or (:model opts) model)
-          thinking (:thinking opts)
-          effective-max-tokens (or max-tokens (if thinking 32768 16384))
+          thinking-budget (effective-anthropic-thinking opts)
+          effective-max-tokens (effective-anthropic-max-tokens max-tokens thinking-budget)
           ;; Use streaming for large max_tokens (API requires it for >16384) or thinking
-          stream? (or thinking (> effective-max-tokens 16384))
+          stream? (or thinking-budget (> effective-max-tokens 16384))
           cache-prefix (:cache-prefix opts)
           request (anthropic-tc-request api-key effective-model prompt (:system opts)
-                                        effective-max-tokens stream? thinking cache-prefix)
+                                        effective-max-tokens stream? thinking-budget cache-prefix)
           response (.send http-client request (HttpResponse$BodyHandlers/ofString))
           status (.statusCode response)]
       (if (<= 200 status 299)

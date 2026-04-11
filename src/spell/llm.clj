@@ -371,9 +371,12 @@
                          - fn: custom namespace recovery function (result-map) -> fixed-expr
    - :prefill?         - whether the provider supports assistant prefill (default: true).
                          When false, prefix is sent as user message only and prefix echo is stripped.
-   - :thinking         - Anthropic adaptive thinking. When truthy, passed to provider opts.
-                         Number = budget_tokens, true = default (10000).
-   - :reasoning-effort - OpenAI reasoning effort (\"low\", \"medium\", \"high\").
+   - :thinking         - Anthropic extended thinking. When truthy, passed to provider opts.
+                         Number = budget_tokens, true = default (10000). Takes precedence
+                         over :reasoning-effort on Anthropic providers.
+   - :reasoning-effort - Reasoning effort (\"low\", \"medium\", \"high\"). Applies to
+                         OpenAI/Codex providers directly and Anthropic providers via
+                         budget_tokens (4000/10000/24000) when :thinking is unset.
    - :verbosity        - OpenAI verbosity (\"low\", \"auto\").
    - :suffix-grammar?  - Generate prefix-aware OpenAI grammar constraints per call (default: false).
                          Adds :grammar-format to provider opts. If generated grammar exceeds

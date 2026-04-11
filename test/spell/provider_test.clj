@@ -185,6 +185,52 @@
   (testing "unknown model returns 4000 default"
     (is (= 4000 (#'provider/cache-min-chars "some-random-model")))))
 
+(deftest reasoning-effort->thinking-budget-test
+  (testing "maps supported effort levels from strings and keywords"
+    (is (= 4000 (#'provider/reasoning-effort->thinking-budget "low")))
+    (is (= 10000 (#'provider/reasoning-effort->thinking-budget :medium)))
+    (is (= 24000 (#'provider/reasoning-effort->thinking-budget "high"))))
+
+  (testing "returns nil for nil or unknown effort"
+    (is (nil? (#'provider/reasoning-effort->thinking-budget nil)))
+    (is (nil? (#'provider/reasoning-effort->thinking-budget "extreme")))))
+
+(deftest anthropic-effective-thinking-test
+  (testing "explicit thinking wins over reasoning-effort"
+    (is (= 8000 (#'provider/effective-anthropic-thinking {:thinking 8000
+                                                           :reasoning-effort "high"}))))
+
+  (testing "truthy thinking uses the Anthropic default budget"
+    (is (= 10000 (#'provider/effective-anthropic-thinking {:thinking true}))))
+
+  (testing "reasoning-effort backfills thinking when unset"
+    (is (= 24000 (#'provider/effective-anthropic-thinking {:reasoning-effort "high"})))
+    (is (nil? (#'provider/effective-anthropic-thinking {:reasoning-effort "extreme"})))))
+
+(deftest anthropic-effective-max-tokens-test
+  (testing "uses Anthropic defaults when no max-tokens override is present"
+    (is (= 16384 (#'provider/effective-anthropic-max-tokens nil nil)))
+    (is (= 32768 (#'provider/effective-anthropic-max-tokens nil 10000))))
+
+  (testing "bumps max_tokens to exceed the thinking budget with response headroom"
+    (is (= 28000 (#'provider/effective-anthropic-max-tokens 8000 24000)))
+    (is (= 28000 (#'provider/effective-anthropic-max-tokens 28000 24000)))
+    (is (= 40000 (#'provider/effective-anthropic-max-tokens 40000 24000)))))
+
+(deftest anthropic-tc-body-thinking-test
+  (testing "emits thinking config and switches tool_choice to auto"
+    (let [body (#'provider/anthropic-tc-body "claude-sonnet-4-5-20250929"
+                                             "Prompt body"
+                                             "System prompt"
+                                             32768
+                                             24000
+                                             true
+                                             nil)]
+      (is (= 32768 (:max_tokens body)))
+      (is (= {:type "auto"} (:tool_choice body)))
+      (is (= {:type "enabled" :budget_tokens 24000} (:thinking body)))
+      (is (= [{:role "user" :content "Prompt body"}] (:messages body))))))
+
 ;; =============================================================================
 ;; TestProvider matching strategies
 ;; =============================================================================
