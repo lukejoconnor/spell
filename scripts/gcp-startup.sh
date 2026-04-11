@@ -94,6 +94,25 @@ PY
   chown -R "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/.config"
 }
 
+read_run_status_field() {
+  local field_name="$1"
+  local status_file="$USER_HOME/.config/spell-benchmark/run-status.json"
+  [[ -f "$status_file" ]] || return 1
+  STATUS_FILE="$status_file" FIELD_NAME="$field_name" python3 - <<'PY'
+import json
+import os
+import sys
+
+with open(os.environ["STATUS_FILE"]) as handle:
+    payload = json.load(handle)
+
+value = payload.get(os.environ["FIELD_NAME"])
+if value is None:
+    sys.exit(1)
+print(value)
+PY
+}
+
 append_once() {
   local file="$1"
   local marker="$2"
@@ -180,6 +199,97 @@ wait_for_docker() {
   done
 }
 
+materialize_secrets_and_env() {
+  echo "[spell-benchmark] fetching secrets from Secret Manager"
+  local anthropic_api_key
+  local openai_api_key
+  local github_token
+  local codex_auth_b64=""
+  local claude_json_b64=""
+
+  anthropic_api_key="$(fetch_secret "$PROJECT_ID" "$ANTHROPIC_SECRET")"
+  openai_api_key="$(fetch_secret "$PROJECT_ID" "$OPENAI_SECRET")"
+  github_token="$(fetch_secret "$PROJECT_ID" "$GITHUB_TOKEN_SECRET")"
+  if [[ -n "$CODEX_AUTH_SECRET" ]]; then
+    codex_auth_b64="$(fetch_secret "$PROJECT_ID" "$CODEX_AUTH_SECRET" 2>/dev/null || true)"
+  fi
+  if [[ -n "$CLAUDE_AUTH_SECRET" ]]; then
+    claude_json_b64="$(fetch_secret "$PROJECT_ID" "$CLAUDE_AUTH_SECRET" 2>/dev/null || true)"
+  fi
+
+  mkdir -p "$USER_HOME/.config/spell-benchmark"
+  cat >"$USER_HOME/.config/spell-benchmark/env.sh" <<EOF
+export SPELL_ROOT="$USER_HOME/spell"
+export ANTHROPIC_API_KEY=$(printf '%q' "$anthropic_api_key")
+export OPENAI_API_KEY=$(printf '%q' "$openai_api_key")
+export HF_HUB_ETAG_TIMEOUT=30
+export HF_HUB_DOWNLOAD_TIMEOUT=60
+export HF_HUB_ENABLE_HF_TRANSFER=0
+EOF
+  if [[ -n "$codex_auth_b64" ]]; then
+    printf 'export CODEX_AUTH_JSON_B64=%q\n' "$codex_auth_b64" >>"$USER_HOME/.config/spell-benchmark/env.sh"
+    mkdir -p "$USER_HOME/.codex"
+    printf '%s' "$codex_auth_b64" | base64 -d >"$USER_HOME/.codex/auth.json"
+    chmod 600 "$USER_HOME/.codex/auth.json"
+    chown -R "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/.codex"
+  fi
+  if [[ -n "$claude_json_b64" ]]; then
+    printf 'export CLAUDE_JSON_B64=%q\n' "$claude_json_b64" >>"$USER_HOME/.config/spell-benchmark/env.sh"
+    mkdir -p "$USER_HOME/.claude"
+    printf '%s' "$claude_json_b64" | base64 -d >"$USER_HOME/.claude/.claude.json"
+    chmod 600 "$USER_HOME/.claude/.claude.json"
+    chown -R "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/.claude"
+  fi
+  chmod 600 "$USER_HOME/.config/spell-benchmark/env.sh"
+  chown -R "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/.config"
+
+  append_once "$USER_HOME/.bashrc" "# spell-benchmark env" \
+    '# spell-benchmark env
+export PATH="$HOME/.local/bin:$PATH"
+if [[ -s "$HOME/.nvm/nvm.sh" ]]; then
+  source "$HOME/.nvm/nvm.sh"
+fi
+if [[ -f "$HOME/.config/spell-benchmark/env.sh" ]]; then
+  source "$HOME/.config/spell-benchmark/env.sh"
+fi'
+  append_once "$USER_HOME/.profile" "# spell-benchmark env" \
+    '# spell-benchmark env
+export PATH="$HOME/.local/bin:$PATH"
+if [[ -s "$HOME/.nvm/nvm.sh" ]]; then
+  source "$HOME/.nvm/nvm.sh"
+fi
+if [[ -f "$HOME/.config/spell-benchmark/env.sh" ]]; then
+  source "$HOME/.config/spell-benchmark/env.sh"
+fi
+if [[ -f "$HOME/.bashrc" ]]; then
+  source "$HOME/.bashrc"
+fi'
+  chown "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/.bashrc" "$USER_HOME/.profile"
+
+  GITHUB_TOKEN="$github_token"
+}
+
+ensure_tmux_session() {
+  run_as_benchmark_user '
+    set -euo pipefail
+    tmux has-session -t benchmark 2>/dev/null || \
+      tmux new-session -d -s benchmark -c "$HOME/spell/benchmarking" "bash -lc '\''cd \"$HOME/spell/benchmarking\" && exec bash'\''"
+  '
+}
+
+mark_interrupted_run_if_needed() {
+  local prior_state=""
+  prior_state="$(read_run_status_field state 2>/dev/null || true)"
+  case "$prior_state" in
+    running|startup)
+      write_run_status failed "" "VM rebooted before benchmark completed"
+      ;;
+    "")
+      write_run_status idle
+      ;;
+  esac
+}
+
 BENCHMARK_USER="$(metadata_attr benchmark-user)"
 SPELL_REPO_URL="$(metadata_attr spell-repo-url)"
 SPELL_REF="$(metadata_attr spell-ref)"
@@ -194,10 +304,21 @@ RUN_GROUP="$(metadata_attr run-group || true)"
 BENCHMARK_COMMAND="$(metadata_attr benchmark-command || true)"
 PROJECT_ID="$(project_id)"
 USER_HOME="/home/${BENCHMARK_USER}"
+BOOTSTRAP_MARKER="/var/lib/spell-benchmark/bootstrap-done"
 
 if ! id "$BENCHMARK_USER" >/dev/null 2>&1; then
   useradd --create-home --shell /bin/bash "$BENCHMARK_USER"
 fi
+
+if [[ -f "$BOOTSTRAP_MARKER" ]] && [[ -d "$USER_HOME/spell/.git" ]] && [[ -d "$USER_HOME/spell/benchmarking/.git" ]]; then
+  echo "[spell-benchmark] bootstrap already complete, taking fast path"
+  materialize_secrets_and_env
+  ensure_tmux_session
+  mark_interrupted_run_if_needed
+  echo "$STARTUP_OK_MARKER"
+  exit 0
+fi
+
 write_run_status startup
 
 echo "[spell-benchmark] installing base packages"
@@ -228,93 +349,17 @@ curl -SL https://github.com/docker/compose/releases/latest/download/docker-compo
   -o /usr/local/lib/docker/cli-plugins/docker-compose
 chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
-echo "[spell-benchmark] fetching secrets from Secret Manager"
-ANTHROPIC_API_KEY="$(fetch_secret "$PROJECT_ID" "$ANTHROPIC_SECRET")"
-OPENAI_API_KEY="$(fetch_secret "$PROJECT_ID" "$OPENAI_SECRET")"
-GITHUB_TOKEN="$(fetch_secret "$PROJECT_ID" "$GITHUB_TOKEN_SECRET")"
-CODEX_AUTH_B64=""
-if [[ -n "$CODEX_AUTH_SECRET" ]]; then
-  CODEX_AUTH_B64="$(fetch_secret "$PROJECT_ID" "$CODEX_AUTH_SECRET" 2>/dev/null || true)"
-fi
-CLAUDE_JSON_B64=""
-if [[ -n "$CLAUDE_AUTH_SECRET" ]]; then
-  CLAUDE_JSON_B64="$(fetch_secret "$PROJECT_ID" "$CLAUDE_AUTH_SECRET" 2>/dev/null || true)"
-fi
-
-mkdir -p "$USER_HOME/.config/spell-benchmark"
-cat >"$USER_HOME/.config/spell-benchmark/env.sh" <<EOF
-export SPELL_ROOT="$USER_HOME/spell"
-export ANTHROPIC_API_KEY=$(printf '%q' "$ANTHROPIC_API_KEY")
-export OPENAI_API_KEY=$(printf '%q' "$OPENAI_API_KEY")
-export HF_HUB_ETAG_TIMEOUT=30
-export HF_HUB_DOWNLOAD_TIMEOUT=60
-export HF_HUB_ENABLE_HF_TRANSFER=0
-EOF
-if [[ -n "$CODEX_AUTH_B64" ]]; then
-  printf 'export CODEX_AUTH_JSON_B64=%q\n' "$CODEX_AUTH_B64" >>"$USER_HOME/.config/spell-benchmark/env.sh"
-  mkdir -p "$USER_HOME/.codex"
-  printf '%s' "$CODEX_AUTH_B64" | base64 -d >"$USER_HOME/.codex/auth.json"
-  chmod 600 "$USER_HOME/.codex/auth.json"
-  # Chown the directory too, not just auth.json: Codex CLI writes
-  # state_*.sqlite and logs_*.sqlite files into the dir and fails with
-  # "Error: Permission denied (os error 13)" if the dir is root-owned.
-  chown -R "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/.codex"
-fi
-if [[ -n "$CLAUDE_JSON_B64" ]]; then
-  printf 'export CLAUDE_JSON_B64=%q\n' "$CLAUDE_JSON_B64" >>"$USER_HOME/.config/spell-benchmark/env.sh"
-  mkdir -p "$USER_HOME/.claude"
-  printf '%s' "$CLAUDE_JSON_B64" | base64 -d >"$USER_HOME/.claude/.claude.json"
-  chmod 600 "$USER_HOME/.claude/.claude.json"
-  chown -R "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/.claude"
-fi
-chmod 600 "$USER_HOME/.config/spell-benchmark/env.sh"
-chown -R "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/.config"
-
-append_once "$USER_HOME/.bashrc" "# spell-benchmark env" \
-  '# spell-benchmark env
-export PATH="$HOME/.local/bin:$PATH"
-if [[ -s "$HOME/.nvm/nvm.sh" ]]; then
-  source "$HOME/.nvm/nvm.sh"
-fi
-if [[ -f "$HOME/.config/spell-benchmark/env.sh" ]]; then
-  source "$HOME/.config/spell-benchmark/env.sh"
-fi'
-append_once "$USER_HOME/.profile" "# spell-benchmark env" \
-  '# spell-benchmark env
-export PATH="$HOME/.local/bin:$PATH"
-if [[ -s "$HOME/.nvm/nvm.sh" ]]; then
-  source "$HOME/.nvm/nvm.sh"
-fi
-if [[ -f "$HOME/.config/spell-benchmark/env.sh" ]]; then
-  source "$HOME/.config/spell-benchmark/env.sh"
-fi
-if [[ -f "$HOME/.bashrc" ]]; then
-  source "$HOME/.bashrc"
-fi'
-chown "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/.bashrc" "$USER_HOME/.profile"
+materialize_secrets_and_env
 
 echo "[spell-benchmark] installing uv, Python 3.13, Node, Codex, and Claude Code"
 install_uv_and_python
 install_node_tooling
 
 echo "[spell-benchmark] cloning spell and spell-benchmarking"
-benchmarking_backup_dir=""
-if [[ -d "$USER_HOME/spell/benchmarking" ]]; then
-  # Preserve any in-progress benchmark checkout across stop/start cycles.
-  benchmarking_backup_dir="$(mktemp -d "$USER_HOME/.spell-benchmarking-backup.XXXXXX")"
-  echo "[spell-benchmark] preserving existing benchmarking checkout"
-  mv "$USER_HOME/spell/benchmarking" "$benchmarking_backup_dir/benchmarking"
-fi
 rm -rf "$USER_HOME/spell"
 clone_repo "$SPELL_REPO_URL" "$USER_HOME/spell" "$SPELL_REF" "$GITHUB_TOKEN"
 mkdir -p "$USER_HOME/spell"
-if [[ -n "$benchmarking_backup_dir" && -d "$benchmarking_backup_dir/benchmarking" ]]; then
-  echo "[spell-benchmark] restoring existing benchmarking checkout"
-  mv "$benchmarking_backup_dir/benchmarking" "$USER_HOME/spell/benchmarking"
-  rmdir "$benchmarking_backup_dir"
-else
-  clone_repo "$BENCHMARKING_REPO_URL" "$USER_HOME/spell/benchmarking" "$BENCHMARKING_REF" "$GITHUB_TOKEN"
-fi
+clone_repo "$BENCHMARKING_REPO_URL" "$USER_HOME/spell/benchmarking" "$BENCHMARKING_REF" "$GITHUB_TOKEN"
 chown -R "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/spell"
 unset GITHUB_TOKEN
 
@@ -329,11 +374,10 @@ run_as_benchmark_user '
 '
 
 echo "[spell-benchmark] creating tmux session"
-run_as_benchmark_user '
-  set -euo pipefail
-  tmux new-session -d -s benchmark -c "$HOME/spell/benchmarking" "bash -lc '\''cd \"$HOME/spell/benchmarking\" && exec bash'\''" 2>/dev/null || true
-'
+ensure_tmux_session
 
 write_run_status idle
+mkdir -p "$(dirname "$BOOTSTRAP_MARKER")"
+touch "$BOOTSTRAP_MARKER"
 
 echo "$STARTUP_OK_MARKER"

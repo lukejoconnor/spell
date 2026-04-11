@@ -85,10 +85,11 @@ Recommended workflow:
 - `status-all --run-group <group>` remains the ad-hoc fleet snapshot command. `--all` is the project-wide escape hatch when you intentionally want every Spell-managed VM.
 - `pull-all --run-group <group>` is available for non-destructive syncs, and `finish-all --run-group <group>` remains the manual cleanup path.
 - `start` and `ssh` remain the manual debugging path.
+- `wait` now bounds SSH polling and eventually treats persistently unreachable VMs as terminal for the wait loop, so one dead VM will not hang the whole fleet. `finish-all` remains conservative and skips VMs it cannot still pull.
 
 The launcher tags each managed VM with `managed-by=spell-benchmark` plus a run-group label for fleet discovery. The full run-group string and benchmark command are also stored in instance metadata for detailed reporting.
 
-The VM bootstrap lives in `scripts/gcp-startup.sh`. It clones the main `spell` repo and then separately clones `spell-benchmarking` into `spell/benchmarking`, because `benchmarking/` is an ignored nested repo rather than part of the main checkout.
+The VM bootstrap lives in `scripts/gcp-startup.sh`. It clones the main `spell` repo and then separately clones `spell-benchmarking` into `spell/benchmarking`, because `benchmarking/` is an ignored nested repo rather than part of the main checkout. After the first successful bootstrap, later stop/start cycles take a fast path that refreshes secrets, recreates the tmux shell session, and preserves the existing checkout and benchmark artifacts.
 
 Pulled artifacts land directly under:
 - `benchmarking/results/gcp/<vm-name>/...`
