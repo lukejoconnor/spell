@@ -246,6 +246,9 @@ cat >"$USER_HOME/.config/spell-benchmark/env.sh" <<EOF
 export SPELL_ROOT="$USER_HOME/spell"
 export ANTHROPIC_API_KEY=$(printf '%q' "$ANTHROPIC_API_KEY")
 export OPENAI_API_KEY=$(printf '%q' "$OPENAI_API_KEY")
+export HF_HUB_ETAG_TIMEOUT=30
+export HF_HUB_DOWNLOAD_TIMEOUT=60
+export HF_HUB_ENABLE_HF_TRANSFER=0
 EOF
 if [[ -n "$CODEX_AUTH_B64" ]]; then
   printf 'export CODEX_AUTH_JSON_B64=%q\n' "$CODEX_AUTH_B64" >>"$USER_HOME/.config/spell-benchmark/env.sh"
