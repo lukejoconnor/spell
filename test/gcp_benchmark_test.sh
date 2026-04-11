@@ -285,6 +285,16 @@ test_help_and_argument_parsing() {
   fi
 }
 
+test_startup_script_writes_claude_auth_to_host_path() {
+  local startup_script
+  startup_script="$(cat "$REPO_ROOT/scripts/gcp-startup.sh")"
+
+  assert_contains "$startup_script" '>"$USER_HOME/.claude.json"' "startup should write Claude auth where host adapters read it"
+  if [[ "$startup_script" == *'.claude/.claude.json'* ]]; then
+    fail "startup should not write Claude auth to ~/.claude/.claude.json"
+  fi
+}
+
 main() {
   test_extract_tar_stream_flattens_paths
   test_render_run_wrapper_contains_status_transitions
@@ -296,6 +306,7 @@ main() {
   test_wait_for_completion_summarizes_and_finishes
   test_wait_for_completion_times_out
   test_help_and_argument_parsing
+  test_startup_script_writes_claude_auth_to_host_path
   printf 'PASS: gcp benchmark launcher tests\n'
 }
 

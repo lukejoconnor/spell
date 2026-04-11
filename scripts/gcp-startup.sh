@@ -262,10 +262,9 @@ if [[ -n "$CODEX_AUTH_B64" ]]; then
 fi
 if [[ -n "$CLAUDE_JSON_B64" ]]; then
   printf 'export CLAUDE_JSON_B64=%q\n' "$CLAUDE_JSON_B64" >>"$USER_HOME/.config/spell-benchmark/env.sh"
-  mkdir -p "$USER_HOME/.claude"
-  printf '%s' "$CLAUDE_JSON_B64" | base64 -d >"$USER_HOME/.claude/.claude.json"
-  chmod 600 "$USER_HOME/.claude/.claude.json"
-  chown -R "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/.claude"
+  printf '%s' "$CLAUDE_JSON_B64" | base64 -d >"$USER_HOME/.claude.json"
+  chmod 600 "$USER_HOME/.claude.json"
+  chown "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/.claude.json"
 fi
 chmod 600 "$USER_HOME/.config/spell-benchmark/env.sh"
 chown -R "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/.config"
