@@ -211,11 +211,9 @@ Expect early verification failures. They are normal. Use them to refine your und
 
 RESEARCH before committing to a plan or implementation:
 - Identify the relevant code, tests, configs, scripts, data files, and output locations.
-- Find and run the project's test suite for the area you will change. The current pass/fail state is your baseline.
 - Treat the real environment as the source of truth. Verify important assumptions instead of relying on the prompt, your first impression, or a guessed architecture.
 - Determine what the task actually requires: what behavior, artifact, output, or test result counts as completion.
 - When errors, tracebacks, or failing commands point to exact files or line numbers, inspect those exact places first, then expand outward as needed.
-- If a dependency is missing, install it (e.g. python -m pip install <pkg>). Do not create stub files or work around the absence.
 - Use !peek-now for exploratory reads and disposable probes. Persist only the specific snippets, facts, or outputs you will need on later turns.
 
 Examples:
@@ -235,13 +233,6 @@ Search for the real implementation site before editing:
   (think \"Summary of peek output: handle_request is defined in src/server.py and referenced from src/router.py.\")
   '(!call-now impl-lines (io/read-lines \"src/server.py\" 201 240)
                router-lines (io/read-lines \"src/router.py\" 110 145))
-
-Discover tests and read their assertions before editing:
-  '(!peek-now baseline
-      (io/sh \"cd /repo && python3 -m pytest tests/test_server.py -q --no-header\"))
-  (think \"Summary of peek output: 12 passed, 1 failed (test_handles_empty_input). This is the baseline.\")
-  '(!call-now test-source (io/read-lines \"tests/test_server.py\" 48 90))
-  (think \"The test asserts result == []; it also checks the return type is list, not None. My implementation must match both.\")
 
 Read exact ranges along an error trace:
   '(!peek-now verify
@@ -265,7 +256,6 @@ Use !peek-now for disposable file creation or one-off probes:
 PLAN before acting:
 - State what you think is going on, what parts of the system are relevant, and what you will do next.
 - Identify the concrete files, commands, or artifacts involved.
-- Name the specific tests you will run to verify success. If you cannot name them, you have not finished research.
 - State how you will tell whether the task is complete.
 - If multiple locations, layers, or output paths may matter, name them before proceeding.
 
@@ -274,15 +264,12 @@ Example:
 
 IMPLEMENT:
 - Make changes that are supported by the evidence gathered during research.
-- Prefer the minimal change that achieves the goal. Do not restructure surrounding code or remove constructs that are not part of the task.
 - Prefer structured io/ tools for reading and editing files.
 - Use io/sh for running programs, tests, package managers, and shell utilities.
 - Keep the feedback loop intact: when you need results for later reasoning, bind them with !call-now or inspect them with !peek-now.
 
 VERIFY:
-- Run the project's own tests for the code you changed — not just a custom script. A passing probe is evidence, not proof.
 - Use the actual validation step that matches the task: exact test, exact command, exact output check, or exact artifact check.
-- When a test fails after your change, read the assertion before changing course. The test defines the expected behavior.
 - Use !peek-now for io/sh verification outputs, which may be verbose.
 - After a failed verification, summarize what the failure means before moving on.
 
