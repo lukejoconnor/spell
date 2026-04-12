@@ -29,6 +29,23 @@ assert_contains() {
   fi
 }
 
+assert_occurrences() {
+  local haystack="$1"
+  local needle="$2"
+  local expected="$3"
+  local message="$4"
+  local actual
+  actual="$(HAYSTACK="$haystack" NEEDLE="$needle" python3 - <<'PY'
+import os
+
+print(os.environ["HAYSTACK"].count(os.environ["NEEDLE"]))
+PY
+)"
+  if [[ "$actual" != "$expected" ]]; then
+    fail "${message}: expected [$expected], got [$actual]"
+  fi
+}
+
 assert_file_exists() {
   local path="$1"
   local message="$2"
@@ -285,7 +302,7 @@ test_help_and_argument_parsing() {
   fi
 }
 
-test_startup_script_writes_claude_auth_to_host_path() {
+test_startup_script_preserves_claude_auth_and_bootstrap_marker() {
   local startup_script
   startup_script="$(cat "$REPO_ROOT/scripts/gcp-startup.sh")"
 
@@ -293,6 +310,81 @@ test_startup_script_writes_claude_auth_to_host_path() {
   if [[ "$startup_script" == *'.claude/.claude.json'* ]]; then
     fail "startup should not write Claude auth to ~/.claude/.claude.json"
   fi
+  assert_contains "$startup_script" 'BOOTSTRAP_MARKER="/var/lib/spell-benchmark/bootstrap-done"' "startup should use a durable bootstrap marker"
+  assert_contains "$startup_script" 'running|startup|starting' "startup should treat interrupted starting runs as failed on reboot"
+  assert_contains "$startup_script" $'materialize_secrets_and_env\n  systemctl enable --now docker\n  wait_for_docker\n  ensure_tmux_session' "startup fast path should wait for docker before reporting ready"
+  assert_contains "$startup_script" 'ensure_tmux_session' "startup should recreate the tmux session on reboot"
+}
+
+test_wait_for_completion_treats_persistent_unreachable_as_terminal() {
+  RUN_GROUP="batch-unreachable"
+  WAIT_INTERVAL_SECONDS=1
+  WAIT_TIMEOUT_SECONDS=5
+  WAIT_UNREACHABLE_FAILURES=2
+  WAIT_AND_FINISH=0
+  SECONDS=0
+
+  list_matching_instances() {
+    printf 'vm-a\tus-central1-a\tRUNNING\tbatch-unreachable\tmain\tmain\n'
+  }
+  read_benchmark_state() {
+    printf 'unreachable\n'
+  }
+  resolve_project() { PROJECT="spellbenchmarking"; }
+  require_cmd() { :; }
+  sleep() { SECONDS=$((SECONDS + ${1:-0})); }
+
+  local output_file
+  output_file="$(mktemp)"
+  wait_for_completion >"$output_file"
+  local output
+  output="$(cat "$output_file")"
+  rm -f "$output_file"
+
+  assert_contains "$output" "0/1 terminal, 0 finished, 0 failed, 0 running, 0 startup, 0 unknown, 1 unreachable" "first unreachable poll should stay non-terminal"
+  assert_contains "$output" "1/1 terminal, 0 finished, 1 failed, 0 running, 0 startup, 0 unknown, 0 unreachable" "persistent unreachable VM should become terminal"
+}
+
+test_wait_for_completion_resets_unreachable_budget_after_success() {
+  RUN_GROUP="batch-flaky"
+  WAIT_INTERVAL_SECONDS=1
+  WAIT_TIMEOUT_SECONDS=6
+  WAIT_UNREACHABLE_FAILURES=2
+  WAIT_AND_FINISH=0
+  SECONDS=0
+
+  local phase_file
+  phase_file="$(mktemp)"
+  printf '0\n' >"$phase_file"
+  list_matching_instances() {
+    printf 'vm-a\tus-central1-a\tRUNNING\tbatch-flaky\tmain\tmain\n'
+  }
+  read_benchmark_state() {
+    case "$(cat "$phase_file")" in
+      0) printf 'unreachable\n' ;;
+      1) printf 'running\n' ;;
+      2) printf 'unreachable\n' ;;
+      *) printf 'unreachable\n' ;;
+    esac
+  }
+  resolve_project() { PROJECT="spellbenchmarking"; }
+  require_cmd() { :; }
+  sleep() {
+    printf '%s\n' $(( $(cat "$phase_file") + ${1:-0} )) >"$phase_file"
+    SECONDS=$((SECONDS + ${1:-0}))
+  }
+
+  local output_file
+  output_file="$(mktemp)"
+  wait_for_completion >"$output_file"
+  local output
+  output="$(cat "$output_file")"
+  rm -f "$output_file"
+  rm -f "$phase_file"
+
+  assert_contains "$output" "0/1 terminal, 0 finished, 0 failed, 1 running, 0 startup, 0 unknown, 0 unreachable" "wait should continue after a recovered VM reports running"
+  assert_occurrences "$output" "0/1 terminal, 0 finished, 0 failed, 0 running, 0 startup, 0 unknown, 1 unreachable" "2" "unreachable budget should reset after a successful poll"
+  assert_contains "$output" "1/1 terminal, 0 finished, 1 failed, 0 running, 0 startup, 0 unknown, 0 unreachable" "wait should only fail the VM after consecutive unreachable polls"
 }
 
 main() {
@@ -306,7 +398,9 @@ main() {
   test_wait_for_completion_summarizes_and_finishes
   test_wait_for_completion_times_out
   test_help_and_argument_parsing
-  test_startup_script_writes_claude_auth_to_host_path
+  test_startup_script_preserves_claude_auth_and_bootstrap_marker
+  test_wait_for_completion_treats_persistent_unreachable_as_terminal
+  test_wait_for_completion_resets_unreachable_budget_after_success
   printf 'PASS: gcp benchmark launcher tests\n'
 }
 
