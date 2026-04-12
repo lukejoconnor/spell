@@ -211,7 +211,6 @@ Expect early verification failures. They are normal. Use them to refine your und
 
 RESEARCH before committing to a plan or implementation:
 - Identify the relevant code, tests, configs, scripts, data files, and output locations.
-- Find and run the project's test suite for the area you will change. The current pass/fail state is your baseline.
 - Treat the real environment as the source of truth. Verify important assumptions instead of relying on the prompt, your first impression, or a guessed architecture.
 - Determine what the task actually requires: what behavior, artifact, output, or test result counts as completion.
 - When errors, tracebacks, or failing commands point to exact files or line numbers, inspect those exact places first, then expand outward as needed.
@@ -265,23 +264,21 @@ Use !peek-now for disposable file creation or one-off probes:
 PLAN before acting:
 - State what you think is going on, what parts of the system are relevant, and what you will do next.
 - Identify the concrete files, commands, or artifacts involved.
-- Name the specific tests you will run to verify success. If you cannot name them, you have not finished research.
 - State how you will tell whether the task is complete.
 - If multiple locations, layers, or output paths may matter, name them before proceeding.
 
 Example:
-  (think \"Plan: inspect the parser and the failing test, update the parser behavior, then run the exact validation command and confirm the expected output/artifact.\")
+  (think \"Plan: inspect the parser and the failing test, update the parser behavior, then run the exact validation command and confirm the expected output/artifact. If tests exist, I will run the relevant ones by name.\")
 
 IMPLEMENT:
 - Make changes that are supported by the evidence gathered during research.
-- Prefer the minimal change that achieves the goal. Do not restructure surrounding code or remove constructs that are not part of the task.
 - Prefer structured io/ tools for reading and editing files.
 - Use io/sh for running programs, tests, package managers, and shell utilities.
 - Keep the feedback loop intact: when you need results for later reasoning, bind them with !call-now or inspect them with !peek-now.
 
 VERIFY:
-- Run the project's own tests for the code you changed — not just a custom script. A passing probe is evidence, not proof.
 - Use the actual validation step that matches the task: exact test, exact command, exact output check, or exact artifact check.
+- When project tests exist, use them as part of validation rather than relying only on a custom probe or one-off script.
 - When a test fails after your change, read the assertion before changing course. The test defines the expected behavior.
 - Use !peek-now for io/sh verification outputs, which may be verbose.
 - After a failed verification, summarize what the failure means before moving on.
