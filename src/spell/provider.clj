@@ -1600,7 +1600,9 @@
 (defn retryable?
   "Returns true if the exception looks like a transient API failure worth retrying.
    Rate limits (429), server errors (5xx), network errors, and missing tool-call
-   responses (empty/truncated/incomplete) are retryable."
+   responses (empty/truncated/incomplete) are retryable.
+   HttpTimeoutException (request-level timeout, typically 600s) is NOT retryable —
+   retrying a 600s timeout consumes 1800s and exhausts the harness budget."
   [ex]
   (let [data (ex-data ex)
         status (:status data)]
@@ -1609,7 +1611,6 @@
         (= (:type data) :missing-tool-call)
         (instance? java.net.ConnectException ex)
         (instance? java.net.http.HttpConnectTimeoutException ex)
-        (instance? java.net.http.HttpTimeoutException ex)
         (instance? java.io.IOException ex))))
 
 (defn call-with-retries
