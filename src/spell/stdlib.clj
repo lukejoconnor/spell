@@ -122,10 +122,7 @@ Example:
 
 Related builtins: rand-int, +', -', *', inc', dec', float, double, long, bigdec, rationalize.
 
-Type caveat: many math functions return Doubles, and Clojure `=` does not treat `4` and `4.0` as equal.
-These return Doubles: sqrt, cbrt, pow, exp, expm1, abs, sign, log, log10, log2, log1p,
-sin, cos, tan, asin, acos, atan, atan2, sinh, cosh, tanh, degrees, radians, hypot, rand.
-When you need an integer check, coerce explicitly:
+Type caveat: many math functions return Doubles, and Clojure `=` does not treat `4` and `4.0` as equal. Coerce explicitly when you need an integer check:
 
   (let [r (math/round (math/sqrt s))]
     (= (* r r) s))
@@ -137,7 +134,10 @@ All functions take and return numbers. Use (!describe math :fn-name) for any fun
 Recommended usage pattern: Write a function, evaluate, inspect the result.
 
   ...▌(defn fib [n] (if (<= n 1) n (+ (fib (- n 1)) (fib (- n 2)))))
-  '(!call-now result (fib 10))"}
+  '(!call-now result (fib 10))
+
+Antipattern: return the result of a computation without inspecting it.
+Bind the result, inspect it on the next turn, then decide what to do next."}
 
    ;; Basic
    :sqrt (fn [x] (Math/sqrt x))
