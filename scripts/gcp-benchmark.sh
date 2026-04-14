@@ -105,6 +105,7 @@ Options:
   --github-token-secret NAME      Secret Manager secret name (default: GITHUB_TOKEN)
   --codex-auth-secret NAME        Secret Manager secret name for Codex auth (default: CODEX_AUTH_JSON_B64)
   --claude-auth-secret NAME       Secret Manager secret name for Claude Code auth (default: CLAUDE_JSON_B64)
+  --cc-oauth-secret NAME          Secret Manager secret name for Claude Code OAuth token (default: CLAUDE_CODE_OAUTH_TOKEN)
   --local-benchmark-dir PATH      Local benchmarking checkout/path for pull (default: ./benchmarking)
   --run-group GROUP               Logical fleet label for managed VMs (defaults to VM name for single-VM commands)
   --command CMD                   Benchmark command for run
@@ -279,6 +280,10 @@ parse_args() {
         ;;
       --claude-auth-secret)
         CLAUDE_AUTH_SECRET="$2"
+        shift 2
+        ;;
+      --cc-oauth-secret)
+        CC_OAUTH_SECRET="$2"
         shift 2
         ;;
       --local-benchmark-dir)
