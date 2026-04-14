@@ -23,11 +23,9 @@ Loaded by `src/spell/agent.clj`.
 - `base-pf.agent.edn` — prefill providers, uses `sysprompt-prefill.txt`
 - `base-msg.agent.edn` — message providers (no prefill), uses `sysprompt-message.txt`
 - `base-tc.agent.edn` — tool-call providers, uses `sysprompt-toolcall.txt`
-- `base-glm.agent.edn` — GLM-5 / Fireworks prefill profile, uses `sysprompt-prefill.txt`
 
 **Specialized agents** inherit from a base and add namespaces:
 - `cli.agent.edn` — CLI default (base-tc + io, web, patterns, agents, globals)
-- `cli-glm.agent.edn` — GLM-5 CLI (base-glm + io, web, patterns, agents, globals)
 - `io-pf.agent.edn` — benchmark/runtime prefill profile with io, patterns, agents, globals (web disabled by default)
 - `io-msg.agent.edn` — benchmark/runtime message profile with io, patterns, agents, globals (web disabled by default)
 - `io-tc.agent.edn` — benchmark/runtime toolcall profile with io, patterns, agents, globals (web disabled by default)

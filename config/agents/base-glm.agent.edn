@@ -1,7 +1,0 @@
-;; Base agent for GLM models via Fireworks (prefill mode).
-;; Uses the same prefill prompt as other prefill transports.
-
-{:name base-glm
- :doc "Base agent for GLM models (prefill transport)"
- :system {:file "../prompts/sysprompt-prefill.txt"}
- :llms []}

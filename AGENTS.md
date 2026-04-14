@@ -24,7 +24,7 @@ See `notebook/writeup/paper/language-design-v2.md` for full semantics. Key conce
 
 ## Providers and Agents
 
-See `config/CLAUDE.md` for provider/agent details. Base agents: `base-pf`, `base-msg`, `base-tc`, `base-glm` (GLM-5, experimental — see `glm5-failure-modes`). Agents with `:llms` get a dynamic `llms/` namespace.
+See `config/CLAUDE.md` for provider/agent details. Base agents: `base-pf`, `base-msg`, `base-tc`. Agents with `:llms` get a dynamic `llms/` namespace.
 
 ## CLI and API
 
