@@ -206,6 +206,7 @@ materialize_secrets_and_env() {
   local github_token
   local codex_auth_b64=""
   local claude_json_b64=""
+  local cc_oauth_token=""
 
   anthropic_api_key="$(fetch_secret "$PROJECT_ID" "$ANTHROPIC_SECRET")"
   openai_api_key="$(fetch_secret "$PROJECT_ID" "$OPENAI_SECRET")"
@@ -215,6 +216,9 @@ materialize_secrets_and_env() {
   fi
   if [[ -n "$CLAUDE_AUTH_SECRET" ]]; then
     claude_json_b64="$(fetch_secret "$PROJECT_ID" "$CLAUDE_AUTH_SECRET" 2>/dev/null || true)"
+  fi
+  if [[ -n "$CC_OAUTH_SECRET" ]]; then
+    cc_oauth_token="$(fetch_secret "$PROJECT_ID" "$CC_OAUTH_SECRET" 2>/dev/null || true)"
   fi
 
   mkdir -p "$USER_HOME/.config/spell-benchmark"
@@ -238,6 +242,9 @@ EOF
     printf '%s' "$claude_json_b64" | base64 -d >"$USER_HOME/.claude.json"
     chmod 600 "$USER_HOME/.claude.json"
     chown "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/.claude.json"
+  fi
+  if [[ -n "$cc_oauth_token" ]]; then
+    printf 'export CLAUDE_CODE_OAUTH_TOKEN=%q\n' "$cc_oauth_token" >>"$USER_HOME/.config/spell-benchmark/env.sh"
   fi
   chmod 600 "$USER_HOME/.config/spell-benchmark/env.sh"
   chown -R "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/.config"
@@ -299,6 +306,7 @@ OPENAI_SECRET="$(metadata_attr openai-secret)"
 GITHUB_TOKEN_SECRET="$(metadata_attr github-token-secret)"
 CODEX_AUTH_SECRET="$(metadata_attr codex-auth-secret || true)"
 CLAUDE_AUTH_SECRET="$(metadata_attr claude-auth-secret || true)"
+CC_OAUTH_SECRET="$(metadata_attr cc-oauth-secret || true)"
 RUN_GROUP="$(metadata_attr run-group || true)"
 BENCHMARK_COMMAND="$(metadata_attr benchmark-command || true)"
 PROJECT_ID="$(project_id)"
