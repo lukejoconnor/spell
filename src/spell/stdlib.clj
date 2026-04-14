@@ -229,24 +229,27 @@ RESEARCH before committing to a plan or implementation:
 Examples:
 
 Check dependencies and environment assumptions:
-  '(!peek-now env-check
+  '(!peek env-check
       (io/sh \"which python3 && python3 --version && python3 -m pytest --version && which rg\")
       pkg-check
       (io/sh \"python3 - <<'PY'\nimport importlib.util\nmods = ['pytest', 'numpy', 'pandas']\nfor name in mods:\n    print(f'{name}:', bool(importlib.util.find_spec(name)))\nPY\"))
+  (prune 3)
   (think \"Summary of peek output: python3 and pytest are available; rg is installed; numpy and pandas are importable.\")
   '(!call-now source-hits
       (io/grep \"def handle_request|class Handler\" \"src\" {:include \"*.py\" :context 8 :max-count 20}))
 
 Search for the real implementation site before editing:
-  '(!peek-now def-hits
+  '(!peek def-hits
       (io/grep \"def handle_request|class Handler\" \"src\" {:include \"*.py\" :context 8 :max-count 20}))
+  (prune 2)
   (think \"Summary of peek output: handle_request is defined in src/server.py and referenced from src/router.py.\")
   '(!call-now impl-lines (io/read-lines \"src/server.py\" 201 240)
                router-lines (io/read-lines \"src/router.py\" 110 145))
 
 Read exact ranges along an error trace:
-  '(!peek-now verify
+  '(!peek verify
       (io/sh \"cd /repo && python3 -m pytest tests/test_server.py::test_handles_empty_input -q\"))
+  (prune 2)
   (persist err-summary
       \"Summary of !peek output: AssertionError in test_handles_empty_input; expected empty list but got nil from handle_request.\")
   '(!call-now test-lines   (io/read-lines \"tests/test_server.py\" 52 84)
@@ -254,14 +257,23 @@ Read exact ranges along an error trace:
                impl-lines   (io/read-lines \"src/server.py\" 201 240))
 
 Explore a large file ephemerally, then persist only the relevant subset:
-  '(!peek-now file-lines (io/read-lines \"src/server.py\"))
+  '(!peek file-lines (io/read-lines \"src/server.py\"))
+  (prune 2)
   (persist handler-block (subvec file-lines 200 240))
-  '(!peek-now test-lines (io/read-lines \"tests/test_server.py\" 52 84))
+  '(!peek test-lines (io/read-lines \"tests/test_server.py\" 52 84))
+  (prune 2)
 
-Use !peek-now for disposable file creation or one-off probes:
-  '(!peek-now _
+Use !peek for disposable file creation or one-off probes:
+  '(!peek _
       (io/write-file \"/tmp/check.py\" verify-script)
       probe (io/sh \"python3 /tmp/check.py\"))
+  (prune 3)
+
+Read the tests to find constraints not in the task description:
+  '(!peek test-code (io/read-lines \"tests/test_solution.py\"))
+  (prune 2)
+  (persist size-check (subvec test-code 10 16))
+  (think \"The test compresses output.bin with zlib and asserts the result is under 10000 bytes — I need a compact representation, not a raw dump.\")
 
 PLAN before acting:
 - State what you think is going on, what parts of the system are relevant, and what you will do next.
@@ -284,8 +296,9 @@ VERIFY:
 - After a failed verification, summarize what the failure means before moving on.
 
 Example:
-  '(!peek-now verify
+  '(!peek verify
       (io/sh \"cd /repo && python3 -m pytest tests/test_server.py::test_handles_empty_input -q\"))
+  (prune 2)
   (def err-summary \"Summary of !peek output: AssertionError in test_handles_empty_input; expected empty list but got nil from handle_request.\")
   '(!call-now impl-lines (io/read-lines \"src/server.py\" 201 240))
 
