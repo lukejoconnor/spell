@@ -46,7 +46,7 @@ Usage: bin/spell [options] <prompt>
        bin/spell -e <example>
 
 Options:
-  -m MODEL      Model: haiku, sonnet, opus, ollama:<m>, codex-tc:<m>, openai-tc:<m>, openai:<m>, ...
+  -m MODEL      Model: haiku, sonnet, opus, ollama:<m>, codex-tc:<m>, openai-tc:<m>, anthropic-pf:<m>, anthropic-tc:<m>, fireworks:<m>, ...
   -a FILE       Agent definition (.agent.edn)
   -e NAME       Run a bundled example
   -d DEPTH      Max recursion depth (0 = unlimited)

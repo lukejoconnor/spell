@@ -31,7 +31,6 @@ Loaded by `src/spell/agent.clj`.
 - `io-tc.agent.edn` — benchmark/runtime toolcall profile with io, patterns, agents, globals (web disabled by default)
 - `explore.agent.edn` — read-only codebase exploration (io-read namespace only)
 - `react.agent.edn` — hidden ReAct loop profile (`react` + `io-exec`)
-- `math-tc.agent.edn`, `math-pf.agent.edn`, `math-msg.agent.edn`, `math-compute-tc.agent.edn` — math benchmark agents (no web namespace; `math-compute-tc` uses a computation-first tool-call prompt)
 
 Key semantics:
 - `:base` supports file-based inheritance; paths resolved relative to the current agent file.
@@ -57,11 +56,9 @@ Supported `:type` values:
 - `:anthropic-pf`
 - `:anthropic-tc`
 - `:openai`
-- `:codex-msg`
 - `:codex-tc`
 - `:fireworks`
 - `:ollama`
-- `:kimi`
 - `:test`
 
 Rules:
@@ -77,7 +74,6 @@ Current variants:
 - `sysprompt-prefill.txt`
 - `sysprompt-message.txt`
 - `sysprompt-toolcall.txt`
-- `math-compute-toolcall.txt`
 
 Rules:
 - The main system prompt is single-track. Variation should be transport-specific only (prefill, message, tool-call).

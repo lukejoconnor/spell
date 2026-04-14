@@ -1,4 +1,0 @@
-{:type :openai
- :api-key-env "OPENAI_API_KEY"
- :max-tokens 16384
- :default-agent "../agents/base-msg.agent.edn"}

@@ -505,22 +505,6 @@
                                         :model "qwen2.5:32b"} nil)]
       (is (= "qwen2.5:32b" (:model p)))))
 
-  (testing "load-provider supports codex-msg type"
-    (let [auth-file (java.io.File/createTempFile "provider-codex-msg-auth-" ".json")
-          provider-file (java.io.File/createTempFile "provider-codex-msg-" ".provider.edn")]
-      (try
-        (spit auth-file (json/write-str {:tokens {:access_token "test-token"
-                                                  :account_id "acc-1"}}))
-        (spit provider-file (pr-str {:type :codex-msg
-                                     :auth-file (.getAbsolutePath auth-file)
-                                     :model "gpt-5.3-codex"}))
-        (let [p (provider/load-provider (.getAbsolutePath provider-file))]
-          (is (instance? spell.provider.CodexMsgProvider p))
-          (is (= "gpt-5.3-codex" (:model p))))
-        (finally
-          (.delete auth-file)
-          (.delete provider-file)))))
-
   (testing "load-provider supports codex-tc type"
     (let [auth-file (java.io.File/createTempFile "provider-codex-tc-auth-" ".json")
           provider-file (java.io.File/createTempFile "provider-codex-tc-" ".provider.edn")]
@@ -1158,17 +1142,9 @@
     (is (= {:provider "ollama" :model "smollm2:135m"}
            (cli/parse-model-spec "ollama:smollm2:135m"))))
 
-  (testing "codex-msg provider prefix"
-    (is (= {:provider "codex-msg" :model "gpt-5.3-codex"}
-           (cli/parse-model-spec "codex-msg:gpt-5.3-codex"))))
-
   (testing "codex-tc provider prefix"
     (is (= {:provider "codex-tc" :model "gpt-5.3-codex"}
            (cli/parse-model-spec "codex-tc:gpt-5.3-codex"))))
-
-  (testing "openai provider prefix"
-    (is (= {:provider "openai" :model "gpt-4o"}
-           (cli/parse-model-spec "openai:gpt-4o"))))
 
   (testing "openai-tc provider prefix"
     (is (= {:provider "openai-tc" :model "gpt-5.4"}
@@ -1664,36 +1640,6 @@
                                                 :recover false}))))))
 
 ;; =============================================================================
-;; Kimi provider (#46)
-;; =============================================================================
-
-(deftest kimi-provider-construction
-  (testing "kimi-provider requires API key"
-    (is (thrown-with-msg? Exception #"MOONSHOT_API_KEY"
-                          (provider/kimi-provider {:api-key nil}))))
-
-  (testing "kimi-provider defaults"
-    (let [p (provider/kimi-provider {:api-key "test-key"})]
-      (is (some? (:model p)))
-      (is (some? (:base-url p)))
-      (is (= "test-key" (:api-key p)))))
-
-  (testing "kimi-provider custom opts"
-    (let [p (provider/kimi-provider {:api-key "k"
-                                      :base-url "https://api.moonshot.cn/v1"
-                                      :model "kimi-k2-thinking"
-                                      :max-tokens 4096})]
-      (is (= "kimi-k2-thinking" (:model p)))
-      (is (= "https://api.moonshot.cn/v1" (:base-url p)))
-      (is (= 4096 (:max-tokens p)))))
-
-  (testing "kimi-provider strips trailing slash from base-url"
-    (let [p (provider/kimi-provider {:api-key "k" :base-url "https://api.moonshot.ai/v1/"})]
-      (is (= "https://api.moonshot.ai/v1" (:base-url p)))))
-
-)
-
-;; =============================================================================
 ;; Fireworks provider
 ;; =============================================================================
 
@@ -1734,10 +1680,6 @@
 
   (testing "Ollama provider supports prefill"
     (let [p (provider/ollama-provider)]
-      (is (true? (provider/supports-prefill p)))))
-
-  (testing "Kimi provider supports prefill"
-    (let [p (provider/kimi-provider {:api-key "test"})]
       (is (true? (provider/supports-prefill p)))))
 
   (testing "Fireworks provider supports prefill"

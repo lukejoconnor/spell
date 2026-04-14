@@ -1,3 +1,0 @@
-{:type :kimi
- :api-key-env "MOONSHOT_API_KEY"
- :default-agent "../agents/base-msg.agent.edn"}

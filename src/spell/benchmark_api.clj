@@ -9,8 +9,8 @@
   (:gen-class))
 
 (def provider-prefixes
-  #{"ollama" "codex-msg" "codex-tc" "openai-tc" "openclaw" "openai"
-    "anthropic-pf" "anthropic-tc" "fireworks" "kimi" "moonshot" "test"})
+  #{"ollama" "codex-tc" "openai-tc"
+    "anthropic-pf" "anthropic-tc" "fireworks" "test"})
 
 (def cli-options
   [["-r" "--request FILE" "Request JSON path, or '-' for stdin" :default "-"]
@@ -54,15 +54,10 @@
 (def provider-edn-by-prefix
   {"anthropic-pf"  "config/providers/anthropic-pf.provider.edn"
    "anthropic-tc"  "config/providers/anthropic-tc.provider.edn"
-   "codex-msg"     "config/providers/codex-msg.provider.edn"
    "codex-tc"      "config/providers/codex-tc.provider.edn"
    "fireworks"     "config/providers/fireworks.provider.edn"
-   "openai"        "config/providers/openai.provider.edn"
    "openai-tc"     "config/providers/openai-tc.provider.edn"
-   "ollama"        "config/providers/ollama.provider.edn"
-   "openclaw"      "config/providers/openclaw.provider.edn"
-   "kimi"          "config/providers/kimi.provider.edn"
-   "moonshot"      "config/providers/kimi.provider.edn"})
+   "ollama"        "config/providers/ollama.provider.edn"})
 
 (defn- normalize-keys [v]
   (cond
@@ -146,7 +141,7 @@
   (let [model-spec model
         {:keys [provider model]} (parse-model-spec model-spec)
         resolved-model (resolve-model model)
-        resolved-model (if (and (contains? #{"codex-msg" "codex-tc"} provider)
+        resolved-model (if (and (= "codex-tc" provider)
                                 (= resolved-model "gpt-5.3"))
                          "gpt-5.3-codex"
                          resolved-model)
@@ -157,9 +152,6 @@
       "ollama"
       (provider/ollama-provider base-opts)
 
-      "codex-msg"
-      (provider/codex-msg-provider base-opts)
-
       "codex-tc"
       (provider/codex-tc-provider base-opts)
 
@@ -168,18 +160,8 @@
                                        :use-responses-api true
                                        :force-tool-call true))
 
-      "openai"
-      (provider/openai-provider (cond-> base-opts
-                                  responses-api (assoc :use-responses-api true)))
-
       "fireworks"
       (provider/fireworks-provider base-opts)
-
-      ("kimi" "moonshot")
-      (provider/kimi-provider base-opts)
-
-      "openclaw"
-      (provider/load-provider "config/providers/openclaw.provider.edn")
 
       "test"
       (provider/test-provider {:response "\"hello world\""})
@@ -200,11 +182,7 @@
     (throw (ex-info "model is required to resolve default agent" {:field "model"})))
   (let [{:keys [provider]} (parse-model-spec model)
         provider-prefix (or provider "anthropic-pf")
-        provider-edn (cond
-                       (and (= provider-prefix "openai") responses-api)
-                       "config/providers/openai-responses.provider.edn"
-                       :else
-                       (get provider-edn-by-prefix provider-prefix))]
+        provider-edn (get provider-edn-by-prefix provider-prefix)]
     (or (when provider-edn
           (provider/provider-edn-default-agent provider-edn))
         ;; Test mode doesn't have a provider file; use message transport base.

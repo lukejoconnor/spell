@@ -19,8 +19,8 @@
    "gpt54"   "gpt-5.4"})
 
 (def provider-prefixes
-  #{"ollama" "codex-msg" "codex-tc" "openai-tc" "openclaw" "openai"
-    "anthropic-pf" "anthropic-tc" "fireworks" "kimi" "moonshot" "test"})
+  #{"ollama" "codex-tc" "openai-tc"
+    "anthropic-pf" "anthropic-tc" "fireworks" "test"})
 
 (defn parse-model-spec
   "Parse 'provider:model' into {:provider str :model str}.
@@ -83,7 +83,7 @@
   [["-t" "--test" "Use dummy LLM provider (returns 'hello world')"]
    ["-e" "--example NAME" "Run a named example from examples/"]
    ["-a" "--agent FILE" "Use agent definition from .agent.edn file"]
-   ["-m" "--model MODEL" "Model spec: haiku, sonnet, opus, opus45, ollama:<model>, codex-tc:<model>, codex-msg:<model>, openai-tc:<model>, anthropic-pf:<model>, anthropic-tc:<model>, fireworks:<model>, openai:<model>, openclaw:<model>, user (default: codex-tc:gpt-5.3)"]
+   ["-m" "--model MODEL" "Model spec: haiku, sonnet, opus, opus45, ollama:<model>, codex-tc:<model>, openai-tc:<model>, anthropic-pf:<model>, anthropic-tc:<model>, fireworks:<model>, user (default: codex-tc:gpt-5.3)"]
    ["-d" "--depth DEPTH" "Max recursion depth (default: unlimited, 0 = unlimited)"
     :parse-fn #(Integer/parseInt %)
     :validate [#(>= % 0) "Must be non-negative"]]
@@ -133,10 +133,8 @@
           "  spell -t 'Test prompt'"
           "  spell -m haiku 'Add 1 and 2'"
           "  spell -m ollama:llama3.2 'Return 42'"
-          "  spell -m codex-msg:gpt-5.3-codex 'Return 42'"
           "  spell -m openai-tc:gpt-5.4 'Return 42'"
           "  spell -m fireworks:glm-5 'Return 42'"
-          "  spell -m openai:gpt-4o 'Return 42'"
           "  spell examples/hello-world.spl"
           "  spell -e hello-world"
           "  spell -e twenty-questions -m opus -d 40"
@@ -196,7 +194,7 @@
                                      {:provider "codex-tc" :model "gpt-5.3"})
           resolved-model (when model (resolve-model model))
           ;; ChatGPT/Codex backend exposes gpt-5.3 as gpt-5.3-codex.
-          resolved-model (if (and (#{"codex-msg" "codex-tc"} provider)
+          resolved-model (if (and (= "codex-tc" provider)
                                   (= resolved-model "gpt-5.3"))
                            "gpt-5.3-codex"
                            resolved-model)
@@ -207,9 +205,6 @@
         "ollama"
         (provider/ollama-provider base-opts)
 
-        "codex-msg"
-        (provider/codex-msg-provider base-opts)
-
         "codex-tc"
         (provider/codex-tc-provider base-opts)
 
@@ -218,18 +213,8 @@
                                          :use-responses-api true
                                          :force-tool-call true))
 
-        "openai"
-        (provider/openai-provider (cond-> base-opts
-                                    responses-api (assoc :use-responses-api true)))
-
         "fireworks"
         (provider/fireworks-provider base-opts)
-
-        ("kimi" "moonshot")
-        (provider/kimi-provider base-opts)
-
-        "openclaw"
-        (provider/load-provider "config/providers/openclaw.provider.edn")
 
         ;; anthropic-tc is the default for bare model names
         ("anthropic-tc" nil)

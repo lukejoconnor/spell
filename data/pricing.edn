@@ -34,13 +34,4 @@
  "accounts/fireworks/models/qwen3-coder-480b-a35b-instruct" {"input" 0.45 "cache-read-input" 0.22 "cache-write-input" 0.5625 "output" 1.80}
  "accounts/fireworks/models/kimi-k2p5" {"input" 0.60 "cache-read-input" 0.10 "cache-write-input" 0.75 "output" 3.00}
 
- "kimi-k2.5" {"input" 0.60 "cache-read-input" 0.06 "cache-write-input" 0.75 "output" 3.00}
- "kimi-k2-thinking-turbo" {"input" 1.15 "cache-read-input" 0.115 "cache-write-input" 1.4375 "output" 8.00}
- "kimi-k2-thinking" {"input" 0.60 "cache-read-input" 0.06 "cache-write-input" 0.75 "output" 2.50}
- "kimi-k2-turbo" {"input" 1.15 "cache-read-input" 0.115 "cache-write-input" 1.4375 "output" 8.00}
- "kimi-k2-0905" {"input" 0.60 "cache-read-input" 0.06 "cache-write-input" 0.75 "output" 2.50}
- "kimi-k2-0711" {"input" 0.60 "cache-read-input" 0.06 "cache-write-input" 0.75 "output" 2.50}
- "moonshot-v1-8k" {"input" 0.20 "cache-read-input" 0.02 "cache-write-input" 0.25 "output" 2.00}
- "moonshot-v1-32k" {"input" 1.00 "cache-read-input" 0.10 "cache-write-input" 1.25 "output" 3.00}
- "moonshot-v1-128k" {"input" 2.00 "cache-read-input" 0.20 "cache-write-input" 2.50 "output" 5.00}
 }

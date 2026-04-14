@@ -5,7 +5,6 @@
    - anthropic-pf-provider: Calls Claude API (prefill transport)
    - anthropic-tc-provider: Anthropic Messages API with mandatory spell_suffix tool output
    - openai-provider: Calls OpenAI API
-   - codex-msg-provider: Calls ChatGPT Codex Responses API (message transport)
    - codex-tc-provider: ChatGPT Codex Responses with mandatory custom tool output
    - fireworks-provider: Calls Fireworks Completions API with raw prompt templates
    - ollama-provider: Calls local Ollama API
@@ -1235,64 +1234,6 @@
                         (make-http-client) costs))))
 
 ;; ---------------------------------------------------------------------------
-;; Kimi Provider (Moonshot AI)
-;; ---------------------------------------------------------------------------
-
-(defn- kimi-request [api-key base-url model prompt system-prompt prefix max-tokens]
-  (let [messages (cond-> []
-                   system-prompt (conj {:role "system" :content system-prompt})
-                   true (conj {:role "user" :content prompt})
-                   prefix (conj {:role "assistant" :content (str/trimr prefix)}))
-        body (cond-> {:model model
-                      :messages messages}
-               max-tokens (assoc :max_tokens max-tokens))
-        request (-> (HttpRequest/newBuilder)
-                    (.uri (URI/create (str base-url "/chat/completions")))
-                    (.header "Content-Type" "application/json")
-                    (.header "Authorization" (str "Bearer " api-key))
-                    (.POST (HttpRequest$BodyPublishers/ofString (json/write-str body)))
-                    (.build))]
-    request))
-
-(defrecord KimiProvider [api-key base-url model max-tokens http-client costs]
-  LLMProvider
-  (call-llm [this prompt] (call-llm this prompt {}))
-  (call-llm [_ prompt opts]
-    (let [effective-model (or (:model opts) model)
-          request (kimi-request api-key base-url effective-model prompt
-                                (:system opts) (:prefix opts) max-tokens)
-          response (.send http-client request (HttpResponse$BodyHandlers/ofString))
-          status (.statusCode response)]
-      (if (<= 200 status 299)
-        (let [{:keys [text usage]} (parse-openai-response (.body response))]
-          (track-usage! effective-model usage costs)
-          text)
-        (throw (ex-info "Kimi API request failed"
-                        {:status status :body (.body response)})))))
-  (plain-text-provider [this] this)
-  (supports-prefill [_] true))
-
-(defn kimi-provider
-  "Create a Moonshot Kimi provider.
-
-   Options:
-   - :api-key    - API key (default: MOONSHOT_API_KEY env var)
-   - :base-url   - API base URL (default: https://api.moonshot.ai/v1)
-   - :model      - Model name (default: kimi-k2.5)
-   - :max-tokens - Max tokens per response
-   - :costs      - Cost table {model-prefix [input-per-M output-per-M]}"
-  ([] (kimi-provider {}))
-  ([{:keys [api-key base-url model max-tokens costs]
-     :or {model "kimi-k2.5"
-          base-url "https://api.moonshot.ai/v1"}}]
-   (let [key (or api-key (System/getenv "MOONSHOT_API_KEY"))
-         url (str/replace (or base-url "https://api.moonshot.ai/v1") #"/$" "")]
-     (when-not key
-     (throw (ex-info "No API key provided. Set MOONSHOT_API_KEY or pass :api-key"
-                       {:env "MOONSHOT_API_KEY"})))
-     (->KimiProvider key url model max-tokens (make-http-client) costs))))
-
-;; ---------------------------------------------------------------------------
 ;; Fireworks Provider (Completions API with true prefill)
 ;; ---------------------------------------------------------------------------
 
@@ -1662,11 +1603,9 @@
       :anthropic-pf (anthropic-pf-provider opts)
       :anthropic-tc (anthropic-tc-provider opts)
       :openai    (openai-provider opts)
-      :codex-msg (codex-msg-provider opts)
       :codex-tc  (codex-tc-provider opts)
       :fireworks (fireworks-provider opts)
       :ollama    (ollama-provider opts)
-      :kimi      (kimi-provider opts)
       :test      (test-provider {:responses responses :response-rules response-rules
                                  :response response :prefill? prefill?})
       (throw (ex-info (str "Unknown provider type: " type) {:type type})))))
@@ -1705,11 +1644,9 @@
       :anthropic-pf (anthropic-pf-provider opts)
       :anthropic-tc (anthropic-tc-provider opts)
       :openai    (openai-provider opts)
-      :codex-msg (codex-msg-provider opts)
       :codex-tc  (codex-tc-provider opts)
       :fireworks (fireworks-provider opts)
       :ollama    (ollama-provider opts)
-      :kimi      (kimi-provider opts)
       :test      (test-provider {:responses responses :response-rules response-rules
                                  :response response :prefill? prefill?})
       (throw (ex-info (str "Unknown provider type: " type) {:type type :spec spec})))))
