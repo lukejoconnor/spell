@@ -1,7 +1,0 @@
-;; Base agent for message providers with ACM prompt variant.
-;; Inherits the standard message transport defaults and swaps in the ACM prompt.
-
-{:base base-msg.agent.edn
- :name base-msg-acm
- :doc "Base agent for message providers (ACM prompt)"
- :system {:file "../prompts/acm-no-prefill.txt"}}

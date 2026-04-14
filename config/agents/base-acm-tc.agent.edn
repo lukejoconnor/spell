@@ -1,7 +1,0 @@
-;; Base agent for tool-call providers with ACM prompt variant.
-;; Inherits the standard tool-call transport defaults and swaps in the ACM prompt.
-
-{:base base-tc.agent.edn
- :name base-acm-tc
- :doc "Base agent for tool-call providers (ACM prompt)"
- :system {:file "../prompts/acm-no-prefill-toolcall.txt"}}

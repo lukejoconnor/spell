@@ -1,12 +1,12 @@
-;; I/O-capable profile for message transport providers.
+;; Benchmark/runtime profile for message transport providers.
+;; Web is intentionally omitted; benchmark web access should be opt-in.
 
 {:base base-msg.agent.edn
  :name io-msg
- :doc "Message transport agent with io+web namespaces for benchmark/runtime access"
+ :doc "Message transport benchmark agent with io namespace (web disabled by default)"
 
  :namespaces
  {io       stdlib/io
-  web      stdlib/web
   patterns stdlib/patterns
   agents   stdlib/agents
   globals  stdlib/globals}}

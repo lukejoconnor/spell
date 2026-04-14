@@ -49,7 +49,7 @@ See `config/CLAUDE.md` for provider/agent details. Base agents: `base-pf`, `base
 | `src/spell/api.clj` | Public `run` entry point. |
 | `src/spell/cli.clj` | CLI implementation. |
 | `src/spell/benchmark_api.clj` | JSON benchmark API bridge. |
-| `config/prompts/minimal.txt`, `config/prompts/minimal-no-prefill.txt`, `config/prompts/minimal-no-prefill-toolcall.txt` | Base prompt variants; provider-agnostic behavior changes should be applied consistently to all three unless intentionally variant-specific. |
+| `config/prompts/sysprompt-prefill.txt`, `config/prompts/sysprompt-message.txt`, `config/prompts/sysprompt-toolcall.txt` | Base prompt variants; provider-agnostic behavior changes should be applied consistently to all three unless intentionally variant-specific. |
 | `notebook/ERROR_WATCHLIST.md` | Low-frequency observed errors not yet warranting runtime intervention. |
 
 ## Rules

@@ -1,7 +1,7 @@
 ;; Base agent for GLM models via Fireworks (prefill mode).
-;; Uses GLM-specific system prompt with extra wrapper-closing antipatterns.
+;; Uses the same prefill prompt as other prefill transports.
 
 {:name base-glm
- :doc "Base agent for GLM models (prefill, GLM-specific prompt)"
- :system {:file "../prompts/minimal-glm.txt"}
+ :doc "Base agent for GLM models (prefill transport)"
+ :system {:file "../prompts/sysprompt-prefill.txt"}
  :llms []}

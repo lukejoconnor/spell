@@ -20,20 +20,17 @@ Primary providers: Anthropic tool-call (`anthropic-tc`) and Codex tool-call (`co
 Loaded by `src/spell/agent.clj`.
 
 **Base agents** (one per transport mode, no effect namespaces):
-- `base-pf.agent.edn` — Anthropic (prefill mode), uses `minimal.txt`
-- `base-msg.agent.edn` — message providers (no prefill), uses `minimal-no-prefill.txt`
-- `base-tc.agent.edn` — tool-call providers, uses `minimal-no-prefill-toolcall.txt`
-- `base-msg-acm.agent.edn` — message providers with the ACM no-prefill prompt
-- `base-acm-tc.agent.edn` — tool-call providers with the ACM tool-call prompt
-- `base-glm.agent.edn` — GLM-5 (prefill mode), uses `minimal-glm.txt` (experimental; currently unreliable)
+- `base-pf.agent.edn` — prefill providers, uses `sysprompt-prefill.txt`
+- `base-msg.agent.edn` — message providers (no prefill), uses `sysprompt-message.txt`
+- `base-tc.agent.edn` — tool-call providers, uses `sysprompt-toolcall.txt`
+- `base-glm.agent.edn` — GLM-5 / Fireworks prefill profile, uses `sysprompt-prefill.txt`
 
 **Specialized agents** inherit from a base and add namespaces:
 - `cli.agent.edn` — CLI default (base-tc + io, web, patterns, agents, globals)
 - `cli-glm.agent.edn` — GLM-5 CLI (base-glm + io, web, patterns, agents, globals)
-- `io-pf.agent.edn` — benchmark/runtime I/O profile for prefill providers
-- `io-msg.agent.edn` — benchmark/runtime I/O profile for message providers
-- `io-tc.agent.edn` — benchmark/runtime I/O profile for mandatory toolcall providers
-- `io-msg-acm.agent.edn`, `io-acm-tc.agent.edn` — ACM prompt variants of the runtime I/O profiles
+- `io-pf.agent.edn` — benchmark/runtime prefill profile with io, patterns, agents, globals (web disabled by default)
+- `io-msg.agent.edn` — benchmark/runtime message profile with io, patterns, agents, globals (web disabled by default)
+- `io-tc.agent.edn` — benchmark/runtime toolcall profile with io, patterns, agents, globals (web disabled by default)
 - `explore.agent.edn` — read-only codebase exploration (io-read namespace only)
 - `react.agent.edn` — hidden ReAct loop profile (`react` + `io-exec`)
 - `math-tc.agent.edn`, `math-pf.agent.edn`, `math-msg.agent.edn`, `math-compute-tc.agent.edn` — math benchmark agents (no web namespace; `math-compute-tc` uses a computation-first tool-call prompt)
@@ -79,18 +76,15 @@ Rules:
 ### Prompt Files (`config/prompts/*.txt`)
 
 Current variants:
-- `minimal.txt`
-- `minimal-no-prefill.txt`
-- `minimal-no-prefill-toolcall.txt`
-- `acm.txt`
-- `acm-no-prefill.txt`
-- `acm-no-prefill-toolcall.txt`
+- `sysprompt-prefill.txt`
+- `sysprompt-message.txt`
+- `sysprompt-toolcall.txt`
 - `math-compute-toolcall.txt`
-- `minimal-glm.txt` — GLM-5 variant with targeted antipattern guidance
 
 Rules:
-- Provider-agnostic behavior changes should normally be reflected across all three.
-- Intentional divergences (for transport/toolcall specifics) should be explicit in file comments or nearby docs.
+- The main system prompt is single-track. Variation should be transport-specific only (prefill, message, tool-call).
+- Provider-agnostic behavior changes should normally be reflected across the three transport files.
+- Intentional divergences should be transport-motivated and explicit in file comments or nearby docs.
 
 ### Pattern Library (`config/spl-lib/patterns.spl`)
 

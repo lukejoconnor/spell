@@ -1,8 +1,8 @@
-;; CLI agent for GLM models: full capabilities with GLM-specific prompt.
+;; CLI agent for GLM models: full capabilities with the standard prefill prompt.
 
 {:base base-glm.agent.edn
  :name cli-glm
- :doc "CLI default for GLM: full capabilities, GLM-specific prompt"
+ :doc "CLI profile for GLM: full capabilities"
  :llms {explore explore.agent.edn}
 
  :namespaces

@@ -3,5 +3,5 @@
 
 {:name base-msg
  :doc "Base agent for message providers (no prefill)"
- :system {:file "../prompts/minimal-no-prefill.txt"}
+ :system {:file "../prompts/sysprompt-message.txt"}
  :llms []}
