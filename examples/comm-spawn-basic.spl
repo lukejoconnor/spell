@@ -1,0 +1,1 @@
+Start a child agent in the background, but don't wait for it. Return "parent done" immediately.

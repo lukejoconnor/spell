@@ -1,0 +1,15 @@
+;; Optional config for spell.web namespace.
+;; Search default is dynamic:
+;; - :serper when SERPER_API_KEY is present (or :serper-api-key is set below)
+;; - :duckduckgo otherwise
+;; Set {:search {:backend ...}} here to force a backend.
+
+{:search {:max-results 5
+          :region "us-en"}
+
+ :fetch {:backend :jina
+         :max-chars 40000
+         :timeout-ms 15000
+         :fallback-backend :raw}
+
+ :http {:user-agent "spell-web/0.1 (+https://github.com/loconnor/spell)"}}

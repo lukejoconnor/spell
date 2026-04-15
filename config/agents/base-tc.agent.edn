@@ -1,0 +1,7 @@
+;; Base agent for tool-call providers.
+;; No effect namespaces — just the transport-appropriate system prompt.
+
+{:name base-tc
+ :doc "Base agent for tool-call providers"
+ :system {:file "../prompts/sysprompt-toolcall.txt"}
+ :llms []}

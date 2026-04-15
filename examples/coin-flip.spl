@@ -1,0 +1,1 @@
+Flip a coin programmatically. If it lands heads, pass this exact prompt onto a child LLM, using its binding, so that they can do the same thing; prepend "h" to the child's answer. If it lands tails, return "t".

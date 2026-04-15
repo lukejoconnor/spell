@@ -1,0 +1,12 @@
+;; Benchmark/runtime profile for prefill transport providers.
+;; Web is intentionally omitted; benchmark web access should be opt-in.
+
+{:base base-pf.agent.edn
+ :name io-pf
+ :doc "Prefill transport benchmark agent with io namespace (web disabled by default)"
+
+ :namespaces
+ {io       stdlib/io
+  patterns stdlib/patterns
+  agents   stdlib/agents
+  globals  stdlib/globals}}
