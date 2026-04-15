@@ -15,6 +15,7 @@ bin/
 dev/
 traces/
 logs/
+scripts/check-codex-auth.sh
 
 # Benchmarking (separate repo)
 benchmarking/

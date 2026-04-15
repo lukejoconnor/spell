@@ -226,14 +226,16 @@ Example: long documents in chunks
     (def chunk-1 (line-offset 1 ["..." "..." ...]))
     (prune 2)
     ;; start of turn 2 suffix
-    (persist chunk-1-summary "Lines 1-80 define the setting, notation, and main claim.")
+    (def chunk-1-summary "Lines 1-80 define the setting, notation, and main claim.")
+    (persist chunk-1-focus (subvec chunk-1 20 35))
     '(!peek chunk-2 (io/read-lines "docs/report.md" 81 160))
 
     ;; on turn 3:
-    (persist chunk-1-summary "Lines 1-80 define the setting, notation, and main claim.")
+    (def chunk-1-summary "Lines 1-80 define the setting, notation, and main claim.")
+    (persist chunk-1-focus (line-offset 21 ["..." "..." ...]))
     (def chunk-2 (line-offset 81 ["..." "..." ...]))
     (prune 2)
-    (persist chunk-2-summary "Lines 81-160 give the method, key evidence, and open questions.")
+    (def chunk-2-summary "Lines 81-160 give the method, key evidence, and open questions.")
     '(!extend)
 
 Example: test outputs
