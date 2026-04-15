@@ -160,14 +160,18 @@ You can also use rethink to delete a tool call result from context:
 
 `!peek` automates this ephemeral-binding pattern:
     ...'(!peek file-lines (io/read-lines "big-dir/huge-file.txt"))
+    ;; end of turn 1 completion
     (def file-lines ["... many lines ..."])
     (prune 2)
-    ;; next turn: both the !peek call and file-lines are gone
+    ;; start of turn 2 suffix (not shown)
+    ;; both the !peek call and file-lines are gone on the following extension
 
 `persist` retains a computed value across prune/rethink pruning:
     ...'(!peek data (io/read-lines "src/server.py"))
+    ;; end of turn 1 completion
     (def data (line-offset 1 ["..." "..." ...]))
     (prune 2)
+    ;; start of turn 2 suffix
     (persist target-lines (subvec data 180 220))
     '(!peek ...)
     ;; next turn: data is pruned, target-lines survives as a literal value
@@ -205,10 +209,11 @@ When using !peek to read a file, use io/read-lines. Then, use persist and subvec
 Example: large files
     '(!peek server-lines (io/read-lines "src/server.py")
              test-lines (io/read-lines "tests/test_server.py"))
+    ;; end of turn 1 completion
     (def server-lines (line-offset 1 ["..." "..." ...]))
     (def test-lines (line-offset 1 ["..." "..." ...]))
     (prune 3)
-    ;; turn 2 suffix begins here
+    ;; start of turn 2 suffix
     (persist server-focus (subvec server-lines 180 220))
     (persist test-focus (subvec test-lines 40 72))
     '(!extend)
@@ -219,11 +224,28 @@ Example: large files
     (persist test-focus (line-offset 41 ["..." "..." ...]))
     ...
 
+Example: long documents in chunks
+    '(!peek chunk-1 (io/read-lines "docs/report.md" 1 80))
+    ;; end of turn 1 completion
+    (def chunk-1 (line-offset 1 ["..." "..." ...]))
+    (prune 2)
+    ;; start of turn 2 suffix
+    (persist chunk-1-summary "Lines 1-80 define the setting, notation, and main claim.")
+    '(!peek chunk-2 (io/read-lines "docs/report.md" 81 160))
+
+    ;; on turn 3:
+    (persist chunk-1-summary "Lines 1-80 define the setting, notation, and main claim.")
+    (def chunk-2 (line-offset 81 ["..." "..." ...]))
+    (prune 2)
+    (persist chunk-2-summary "Lines 81-160 give the method, key evidence, and open questions.")
+    '(!extend)
+
 Example: test outputs
     '(!peek-now test-out (io/sh "uv run pytest tests/test_api.py -x -q"))
-    ;; next turn:
+    ;; end of turn 1 completion
     (def test-out "=========================== FAILURES ===========================\n... tests/test_api.py::test_empty_input ... ValueError ...")
     (prune 2)
+    ;; start of turn 2 suffix
     (think "Current failure: tests/test_api.py::test_empty_input still raises ValueError on empty input. Next step: patch the guard in the handler and rerun this test.")
     '(!extend)
 
@@ -271,6 +293,11 @@ Synchronous fork for self-delegation:
 
 Calculate and extend:
     '(!call-now result (+41 1))
+
+Math helper function:
+  (defn hypotenuse [a b]
+    (math/sqrt (+ (* a a) (* b b))))
+  (hypotenuse 5 12)
 
 Plan + execute with a clean context window:
   (quine prompt "...") (think "...") '(!call-now ...) ... ; 1k tokens of thinking + tool calls

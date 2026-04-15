@@ -233,7 +233,9 @@ Check dependencies and environment assumptions:
       (io/sh \"which python3 && python3 --version && python3 -m pytest --version && which rg\")
       pkg-check
       (io/sh \"python3 - <<'PY'\nimport importlib.util\nmods = ['pytest', 'numpy', 'pandas']\nfor name in mods:\n    print(f'{name}:', bool(importlib.util.find_spec(name)))\nPY\"))
+  ;; end of turn 1 completion
   (prune 3)
+  ;; start of turn 2 suffix
   (think \"Summary of peek output: python3 and pytest are available; rg is installed; numpy and pandas are importable.\")
   '(!call-now source-hits
       (io/grep \"def handle_request|class Handler\" \"src\" {:include \"*.py\" :context 8 :max-count 20}))
@@ -241,7 +243,9 @@ Check dependencies and environment assumptions:
 Search for the real implementation site before editing:
   '(!peek def-hits
       (io/grep \"def handle_request|class Handler\" \"src\" {:include \"*.py\" :context 8 :max-count 20}))
+  ;; end of turn 1 completion
   (prune 2)
+  ;; start of turn 2 suffix
   (think \"Summary of peek output: handle_request is defined in src/server.py and referenced from src/router.py.\")
   '(!call-now impl-lines (io/read-lines \"src/server.py\" 201 240)
                router-lines (io/read-lines \"src/router.py\" 110 145))
@@ -249,7 +253,9 @@ Search for the real implementation site before editing:
 Read exact ranges along an error trace:
   '(!peek verify
       (io/sh \"cd /repo && python3 -m pytest tests/test_server.py::test_handles_empty_input -q\"))
+  ;; end of turn 1 completion
   (prune 2)
+  ;; start of turn 2 suffix
   (persist err-summary
       \"Summary of !peek output: AssertionError in test_handles_empty_input; expected empty list but got nil from handle_request.\")
   '(!call-now test-lines   (io/read-lines \"tests/test_server.py\" 52 84)
@@ -258,20 +264,28 @@ Read exact ranges along an error trace:
 
 Explore a large file ephemerally, then persist only the relevant subset:
   '(!peek file-lines (io/read-lines \"src/server.py\"))
+  ;; end of turn 1 completion
   (prune 2)
+  ;; start of turn 2 suffix
   (persist handler-block (subvec file-lines 200 240))
   '(!peek test-lines (io/read-lines \"tests/test_server.py\" 52 84))
+  ;; end of turn 2 completion
   (prune 2)
+  ;; start of turn 3 suffix
 
 Use !peek for disposable file creation or one-off probes:
   '(!peek _
       (io/write-file \"/tmp/check.py\" verify-script)
       probe (io/sh \"python3 /tmp/check.py\"))
+  ;; end of turn 1 completion
   (prune 3)
+  ;; start of turn 2 suffix
 
 Read the tests to find constraints not in the task description:
   '(!peek test-code (io/read-lines \"tests/test_solution.py\"))
+  ;; end of turn 1 completion
   (prune 2)
+  ;; start of turn 2 suffix
   (persist size-check (subvec test-code 10 16))
   (think \"The test compresses output.bin with zlib and asserts the result is under 10000 bytes — I need a compact representation, not a raw dump.\")
 
@@ -298,7 +312,9 @@ VERIFY:
 Example:
   '(!peek verify
       (io/sh \"cd /repo && python3 -m pytest tests/test_server.py::test_handles_empty_input -q\"))
+  ;; end of turn 1 completion
   (prune 2)
+  ;; start of turn 2 suffix
   (def err-summary \"Summary of !peek output: AssertionError in test_handles_empty_input; expected empty list but got nil from handle_request.\")
   '(!call-now impl-lines (io/read-lines \"src/server.py\" 201 240))
 
@@ -366,16 +382,20 @@ Prefer !peek-now over !call-now for disposable tool calls (auto-appends prune th
     '(!peek-now data (io/bash \"find . -name '*.py'\"))
 
 On the subsequent turn, persist what you need before extending:
+    ;; end of turn 1 completion
     (def data \"... 200 lines ...\")
     (prune)
-    ;; turn begins here — data still in scope
+    ;; start of turn 2 suffix
+    ;; data is still in scope here
     (persist targets (take 5 (strings/split-lines data)))
     '(!extend)
     ;; next turn: the !peek-now call and data are pruned; targets survive as literals
 
 When running a shell script or Python program that you do not need to rerun, keep it inside !peek-now:
     '(!peek-now verify (io/sh \"cd /repo && python - <<'PY'\\nimport ...\\nPY\"))
+    ;; end of turn 1 completion
     (prune)
+    ;; start of turn 2 suffix
     (think \"Verification passed: the fix handles both edge cases.\")
     '(!extend)
     ;; next turn: both the command and result are gone
@@ -393,8 +413,10 @@ When context grows large, compact:
 Plan-clear pattern — reason and explore, then start fresh with a self-contained plan:
     (think \"analyzing the problem...\" ...)
     '(!peek-now files (io/ls \".\"))
+    ;; end of turn 1 completion
     (def files [...])
     (def plan \"Task: fix the calculator bug in calc.py\\n1. Edit line 12: fix off-by-one\\n2. Run tests\")
+    ;; start of turn 2 suffix
     '(!llm-self plan)
     ;; next turn has only the plan as prefix — maximum working space
 
@@ -916,7 +938,7 @@ to rerun the script later, write it to disk first with io/write-file."
 '(!peek name expr)
 '(!peek-now name expr)
 
-!peek/!peek-now runs like !call-now, then appends:
+!peek/!peek-now runs like !call-now, and the next-turn prefix includes:
   (prune 2)
 
 On your next extension, that prune removes both the peek command and its
@@ -925,8 +947,10 @@ with your own persist form.
 
 Example:
   '(!peek-now code (io/read-lines \"main.py\"))
+  ;; end of turn 1 completion
   (def code [\"... many lines ...\"])
   (prune 2)
+  ;; start of turn 2 suffix
   (def fn-defn (subvec code 100 111))
   ;; next turn: both the !peek-now call and code are pruned; fn-defn remains"
 
@@ -971,8 +995,10 @@ N defaults to 1 (prune previous sibling). Specify N to prune more siblings.
 
 Example:
   '(!peek-now code (io/read-lines \"main.py\"))
+  ;; end of turn 1 completion
   (def code [\"... many lines ...\"])
   (prune 2)
+  ;; start of turn 2 suffix
   (persist fn-defn (subvec code 100 111))
   '(!extend completion)"
 
