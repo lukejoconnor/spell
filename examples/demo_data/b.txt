@@ -1,3 +1,0 @@
-File B contains a different amount of text.
-It has three lines.
-Line three is here.

@@ -1,1 +1,0 @@
-Store your handle in globals under :greeter, then read it back and return it.
