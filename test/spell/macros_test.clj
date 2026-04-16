@@ -114,7 +114,7 @@
                           (reopen-eval
                             (list (quote def) (quote snapshot)
                                   (read-string (serialize call-now__1))))
-                          (reopen-eval (list (quote prune) 2)))))
+                          (reopen-eval (list (quote prune) 1)))))
              (expand1 '(!peek-now snapshot expr)))))
     (with-stable-gensyms
       (is (= '(let [call-now-left__1 expr-left
@@ -127,7 +127,7 @@
                           (reopen-eval
                             (list (quote def) (quote right)
                                   (read-string (serialize call-now-right__2))))
-                          (reopen-eval (list (quote prune) 3)))))
+                          (reopen-eval (list (quote prune) 2)))))
              (expand1 '(!peek-now left expr-left right expr-right))))))
 
   (testing "!peek is an alias for !peek-now"
