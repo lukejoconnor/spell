@@ -317,6 +317,11 @@ if ! id "$BENCHMARK_USER" >/dev/null 2>&1; then
   useradd --create-home --shell /bin/bash "$BENCHMARK_USER"
 fi
 
+# Prevent systemd from tearing down the user session when SSH disconnects.
+# Without this, Docker network churn can trigger session cleanup after ~8h,
+# killing the tmux session and losing all in-progress benchmark work.
+loginctl enable-linger "$BENCHMARK_USER"
+
 if [[ -f "$BOOTSTRAP_MARKER" ]] && [[ -d "$USER_HOME/spell/.git" ]] && [[ -d "$USER_HOME/spell/benchmarking/.git" ]]; then
   echo "[spell-benchmark] bootstrap already complete, taking fast path"
   materialize_secrets_and_env
