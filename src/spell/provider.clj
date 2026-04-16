@@ -1082,24 +1082,31 @@
                       {:body (subs response-body 0 (min 1000 (count response-body)))})))
     (parse-openai-responses-response (json/write-str @completed))))
 
+(defn- codex-custom-tool-input
+  [items]
+  (some (fn [item]
+          (when (and (= "custom_tool_call" (:type item))
+                     (= "spell_suffix" (:name item)))
+            (:input item)))
+        items))
+
 (defn- parse-codex-tc-response
   "Parse a completed ChatGPT Codex response.
    Prefer custom_tool_call input; ignore assistant message text when no tool call is present."
-  [completed]
-  (let [usage (:usage completed)
-        tool-input (some (fn [item]
-                           (when (= "custom_tool_call" (:type item))
-                             (:input item)))
-                         (:output completed))
-        reasoning-tokens (get-in usage [:output_tokens_details :reasoning_tokens])]
-    (when-not tool-input
-      (throw (ex-info "Codex toolcall response missing custom_tool_call"
-                      {:type :missing-tool-call
-                       :provider :codex-tc
-                       :output (:output completed)})))
-    {:text tool-input
-     :usage (cond-> (parse-openai-responses-usage usage)
-              reasoning-tokens (assoc :reasoning_tokens reasoning-tokens))}))
+  ([completed] (parse-codex-tc-response completed nil))
+  ([completed stream-tool-input]
+   (let [usage (:usage completed)
+         tool-input (or stream-tool-input
+                        (codex-custom-tool-input (:output completed)))
+         reasoning-tokens (get-in usage [:output_tokens_details :reasoning_tokens])]
+     (when-not tool-input
+       (throw (ex-info "Codex toolcall response missing custom_tool_call"
+                       {:type :missing-tool-call
+                        :provider :codex-tc
+                        :output (:output completed)})))
+     {:text tool-input
+      :usage (cond-> (parse-openai-responses-usage usage)
+               reasoning-tokens (assoc :reasoning_tokens reasoning-tokens))})))
 
 
 (defn- parse-codex-tc-stream
@@ -1107,7 +1114,9 @@
    Throws if no custom_tool_call is present (protocol violation)."
   [response-body]
   (let [failed (atom nil)
-        completed (atom nil)]
+        completed (atom nil)
+        tool-items (atom {})
+        partial-inputs (atom {})]
     (doseq [line (str/split-lines response-body)]
       (when (str/starts-with? line "data: ")
         (let [data (subs line 6)]
@@ -1122,6 +1131,24 @@
                   "response.completed"
                   (reset! completed (:response parsed))
 
+                  "response.output_item.added"
+                  (when-let [item (:item parsed)]
+                    (when (and (= "custom_tool_call" (:type item))
+                               (= "spell_suffix" (:name item)))
+                      (swap! tool-items assoc (:id item) item)))
+
+                  "response.output_item.done"
+                  (when-let [item (:item parsed)]
+                    (when (and (= "custom_tool_call" (:type item))
+                               (= "spell_suffix" (:name item)))
+                      (swap! tool-items assoc (:id item) item)))
+
+                  "response.custom_tool_call_input.delta"
+                  (let [item-id (:item_id parsed)
+                        delta (:delta parsed)]
+                    (when (and (string? item-id) (string? delta))
+                      (swap! partial-inputs update item-id #(str (or % "") delta))))
+
                   nil))
               (catch Exception _ nil))))))
     (when @failed
@@ -1129,7 +1156,14 @@
     (when-not @completed
       (throw (ex-info "ChatGPT Codex Responses stream missing response.completed"
                       {:body (subs response-body 0 (min 1000 (count response-body)))})))
-    (parse-codex-tc-response @completed)))
+    (let [stream-tool-input
+          (some (fn [[item-id item]]
+                  (when (and (= "custom_tool_call" (:type item))
+                             (= "spell_suffix" (:name item)))
+                    (or (not-empty (:input item))
+                        (not-empty (get @partial-inputs item-id)))))
+                @tool-items)]
+      (parse-codex-tc-response @completed stream-tool-input))))
 
 (defrecord CodexMsgProvider [api-key account-id base-url model max-tokens http-client costs]
   LLMProvider
