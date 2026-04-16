@@ -199,6 +199,37 @@ wait_for_docker() {
   done
 }
 
+configure_env_image_cache() {
+  local repository="$1"
+  if [[ -z "$repository" ]]; then
+    return 0
+  fi
+
+  local host="${repository#https://}"
+  host="${host#http://}"
+  host="${host%%/*}"
+  if [[ -z "$host" ]]; then
+    echo "[spell-benchmark] warning: invalid env image cache repository: $repository" >&2
+    return 0
+  fi
+
+  local token
+  token="$(access_token)"
+  local token_q
+  token_q="$(printf '%q' "$token")"
+  if run_as_benchmark_user "printf '%s' ${token_q} | docker login -u oauth2accesstoken --password-stdin https://${host}"; then
+    echo "[spell-benchmark] authenticated docker for env image cache at ${host}"
+  else
+    echo "[spell-benchmark] warning: docker login failed for ${host}; env image cache will fall back to local builds" >&2
+  fi
+
+  append_once "$USER_HOME/.config/spell-benchmark/env.sh" "# spell-benchmark env image cache" \
+    "# spell-benchmark env image cache
+export SPELL_SWEBENCH_ENV_IMAGE_CACHE_REPOSITORY=$(printf '%q' "$repository")"
+  chmod 600 "$USER_HOME/.config/spell-benchmark/env.sh"
+  chown "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/.config/spell-benchmark/env.sh"
+}
+
 materialize_secrets_and_env() {
   echo "[spell-benchmark] fetching secrets from Secret Manager"
   local anthropic_api_key
@@ -307,6 +338,7 @@ GITHUB_TOKEN_SECRET="$(metadata_attr github-token-secret)"
 CODEX_AUTH_SECRET="$(metadata_attr codex-auth-secret || true)"
 CLAUDE_AUTH_SECRET="$(metadata_attr claude-auth-secret || true)"
 CC_OAUTH_SECRET="$(metadata_attr cc-oauth-secret || true)"
+ENV_IMAGE_CACHE_REPOSITORY="$(metadata_attr env-image-cache-repository || true)"
 RUN_GROUP="$(metadata_attr run-group || true)"
 BENCHMARK_COMMAND="$(metadata_attr benchmark-command || true)"
 PROJECT_ID="$(project_id)"
@@ -327,6 +359,7 @@ if [[ -f "$BOOTSTRAP_MARKER" ]] && [[ -d "$USER_HOME/spell/.git" ]] && [[ -d "$U
   materialize_secrets_and_env
   systemctl enable --now docker
   wait_for_docker
+  configure_env_image_cache "$ENV_IMAGE_CACHE_REPOSITORY"
   ensure_tmux_session
   mark_interrupted_run_if_needed
   echo "$STARTUP_OK_MARKER"
@@ -388,6 +421,7 @@ run_as_benchmark_user '
 '
 
 echo "[spell-benchmark] creating tmux session"
+configure_env_image_cache "$ENV_IMAGE_CACHE_REPOSITORY"
 ensure_tmux_session
 
 write_run_status idle

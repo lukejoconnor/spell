@@ -32,6 +32,7 @@ GITHUB_TOKEN_SECRET="${SPELL_GCP_GITHUB_TOKEN_SECRET:-GITHUB_TOKEN}"
 CODEX_AUTH_SECRET="${SPELL_GCP_CODEX_AUTH_SECRET:-CODEX_AUTH_JSON_B64}"
 CLAUDE_AUTH_SECRET="${SPELL_GCP_CLAUDE_AUTH_SECRET:-CLAUDE_JSON_B64}"
 CC_OAUTH_SECRET="${SPELL_GCP_CC_OAUTH_SECRET:-CLAUDE_CODE_OAUTH_TOKEN}"
+ENV_IMAGE_CACHE_REPOSITORY="${SPELL_GCP_ENV_IMAGE_CACHE_REPOSITORY:-}"
 LOCAL_BENCHMARK_DIR="${SPELL_LOCAL_BENCHMARK_DIR:-$REPO_ROOT/benchmarking}"
 RUN_GROUP="${SPELL_GCP_RUN_GROUP:-}"
 RUN_GROUP_LABEL=""
@@ -106,6 +107,7 @@ Options:
   --codex-auth-secret NAME        Secret Manager secret name for Codex auth (default: CODEX_AUTH_JSON_B64)
   --claude-auth-secret NAME       Secret Manager secret name for Claude Code auth (default: CLAUDE_JSON_B64)
   --cc-oauth-secret NAME          Secret Manager secret name for Claude Code OAuth token (default: CLAUDE_CODE_OAUTH_TOKEN)
+  --env-image-cache-repository URI Artifact Registry repository for SWE-bench env-image caching
   --local-benchmark-dir PATH      Local benchmarking checkout/path for pull (default: ./benchmarking)
   --run-group GROUP               Logical fleet label for managed VMs (defaults to VM name for single-VM commands)
   --command CMD                   Benchmark command for run
@@ -286,6 +288,10 @@ parse_args() {
         CC_OAUTH_SECRET="$2"
         shift 2
         ;;
+      --env-image-cache-repository)
+        ENV_IMAGE_CACHE_REPOSITORY="$2"
+        shift 2
+        ;;
       --local-benchmark-dir)
         LOCAL_BENCHMARK_DIR="$2"
         shift 2
@@ -462,6 +468,7 @@ metadata_values() {
     "codex-auth-secret=${CODEX_AUTH_SECRET}" \
     "claude-auth-secret=${CLAUDE_AUTH_SECRET}" \
     "cc-oauth-secret=${CC_OAUTH_SECRET}" \
+    "env-image-cache-repository=${ENV_IMAGE_CACHE_REPOSITORY}" \
     "run-group-label=${RUN_GROUP_LABEL}"
 }
 

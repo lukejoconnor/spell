@@ -90,6 +90,7 @@ Recommended workflow:
 The launcher tags each managed VM with `managed-by=spell-benchmark` plus a run-group label for fleet discovery. The full run-group string and benchmark command are also stored in instance metadata for detailed reporting.
 
 The VM bootstrap lives in `scripts/gcp-startup.sh`. It clones the main `spell` repo and then separately clones `spell-benchmarking` into `spell/benchmarking`, because `benchmarking/` is an ignored nested repo rather than part of the main checkout. After the first successful bootstrap, later stop/start cycles take a fast path that refreshes secrets, recreates the tmux shell session, and preserves the existing checkout and benchmark artifacts.
+- To enable remote SWE-bench env-image caching on disposable VMs, set `SPELL_GCP_ENV_IMAGE_CACHE_REPOSITORY` to an Artifact Registry repo. The startup script uses the VM service account token to authenticate Docker to that repo and exports `SPELL_SWEBENCH_ENV_IMAGE_CACHE_REPOSITORY` for `bench.py swebench`, so `sweb.env.*` images can be pulled instead of rebuilt on later VMs.
 
 Pulled artifacts land directly under:
 - `benchmarking/results/gcp/<vm-name>/...`
