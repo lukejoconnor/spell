@@ -2587,20 +2587,20 @@
       (is (= '(quote def) (second (second (nth reopen-form 2)))))
       (is (= '(quote code) (nth (second (nth reopen-form 2)) 2)))
       (is (= 'read-string (first (nth (second (nth reopen-form 2)) 3))))
-      (is (= '(reopen-eval (list (quote prune) 2))
+      (is (= '(reopen-eval (list (quote prune) 1))
              (last reopen-form)))))
 
-  (testing "!peek-now multi-binding prunes the command and both result bindings"
+  (testing "!peek-now multi-binding prunes both result bindings"
     (let [expanded (macros/spell-macroexpand-1 '(!peek-now a (io/read-file "a.txt") b (io/read-file "b.txt")))
           llm-call (nth expanded 2)
           reopen-form (second llm-call)]
-      (is (= '(reopen-eval (list (quote prune) 3)) (last reopen-form)))))
+      (is (= '(reopen-eval (list (quote prune) 2)) (last reopen-form)))))
 
-  (testing "peeked full binding is pruned on extension while persisted slice remains"
+  (testing "peeked binding is pruned on extension while the peek call stays visible"
     (let [quine-form '(quine completion (eval (do
                           '(!peek-now file-lines (io/read-lines "main.py"))
                           (def file-lines ["L1" "L2" "L3" "L4" "L5"])
-                          (prune 2)
+                          (prune 1)
                           (def fn-defn ["L2" "L3"])
                           (quote (!extend completion)))))
           result (run-spell (list 'prune-and-reopen (list 'quote quine-form)))
@@ -2608,8 +2608,8 @@
       (is (seq? result))
       (is (.contains ^String prefix "(def fn-defn [\"L2\" \"L3\"])"))
       (is (false? (.contains ^String prefix "(def file-lines)")))
-      (is (false? (.contains ^String prefix "(!peek-now file-lines (io/read-lines \"main.py\"))")))
-      (is (false? (.contains ^String prefix "(prune 2)")))
+      (is (.contains ^String prefix "(!peek-now file-lines (io/read-lines \"main.py\"))"))
+      (is (false? (.contains ^String prefix "(prune 1)")))
       (is (false? (.contains ^String prefix "(think"))))))
 
 ;; =============================================================================

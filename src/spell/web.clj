@@ -395,7 +395,7 @@ Recommended usage pattern: Search, then fetch the most relevant result.
 
 2. Next turn: results is available. Pick the best URL and fetch it.
   ...(def results {:ok [{:title \"Transducers - Clojure\" :url \"https://clojure.org/reference/transducers\" :snippet \"...\"} ...]})
-  (rethink 2 \"!peek-now call and binding(s) disappear unless you persist what you need.\")
+  (rethink 2 \"After persisting what you need, rethink 2 to drop the prior !peek-now call and binding.\")
   ▌(persist best-url (get (first (:ok results)) :url))
   '(!peek-now page (web/fetch best-url))"
     :search "Search the web. Returns {:ok [{:title :url :snippet} ...]} or {:error msg}."

@@ -95,7 +95,7 @@ Extension-producing forms:
     '(!extend) ; simple extension
     '(!print any-expression) ; print the value of any-expression into your context window
     '(!call-now result-name any-expression) ; bind the value to result-name and print; accepts multiple name-expr pairs
-    '(!peek result-name any-expression) ; like !call-now, but the tool call is only visible to you for one turn, useful for context management; see below; accepts multiple name-expr pairs
+    '(!peek result-name any-expression) ; like !call-now, but the bound value is ephemeral for one turn while the !peek call stays visible as prior work; see below; accepts multiple name-expr pairs
     '(!describe some-namespace) ; print documentation; accepts multiple namespace names
     '(agents/!ask :agent-handle query) ; see below
 
@@ -158,15 +158,15 @@ You can also use rethink to delete a tool call result from context:
     ...'(!peek file-lines (io/read-lines "big-dir/huge-file.txt"))
     ;; end of turn 1 completion
     (def file-lines ["... many lines ..."])
-    (prune 2)
+    (prune 1)
     ;; start of turn 2 suffix (not shown)
-    ;; both the !peek call and file-lines are gone on the following extension
+    ;; file-lines is gone on the following extension; the !peek call remains visible
 
 `persist` retains a computed value across prune/rethink pruning:
     ...'(!peek data (io/read-lines "src/server.py"))
     ;; end of turn 1 completion
     (def data (first-line 1 ["..." "..." ...]))
-    (prune 2)
+    (prune 1)
     ;; start of turn 2 suffix
     (persist target-lines (subvec data 180 220))
     '(!peek ...)
@@ -208,7 +208,7 @@ Example: large files
     ;; end of turn 1 completion
     (def server-lines (first-line 1 ["..." "..." ...]))
     (def test-lines (first-line 1 ["..." "..." ...]))
-    (prune 3)
+    (prune 2)
     ;; start of turn 2 suffix
     (persist server-focus (subvec server-lines 180 220))
     (persist test-focus (subvec test-lines 40 72))
@@ -224,7 +224,7 @@ Example: long documents in chunks
     '(!peek chunk-1 (io/read-lines "docs/report.md" 1 80))
     ;; end of turn 1 completion
     (def chunk-1 (first-line 1 ["..." "..." ...]))
-    (prune 2)
+    (prune 1)
     ;; start of turn 2 suffix
     (def chunk-1-summary "Lines 1-80 define the setting, notation, and main claim.")
     (persist chunk-1-focus (subvec chunk-1 20 35))
@@ -234,7 +234,7 @@ Example: long documents in chunks
     (def chunk-1-summary "Lines 1-80 define the setting, notation, and main claim.")
     (persist chunk-1-focus (first-line 21 ["..." "..." ...]))
     (def chunk-2 (first-line 81 ["..." "..." ...]))
-    (prune 2)
+    (prune 1)
     (def chunk-2-summary "Lines 81-160 give the method, key evidence, and open questions.")
     '(!extend)
 
@@ -242,7 +242,7 @@ Example: test outputs
     '(!peek-now test-out (io/sh "uv run pytest tests/test_api.py -x -q"))
     ;; end of turn 1 completion
     (def test-out "=========================== FAILURES ===========================\n... tests/test_api.py::test_empty_input ... ValueError ...")
-    (prune 2)
+    (prune 1)
     ;; start of turn 2 suffix
     (think "Current failure: tests/test_api.py::test_empty_input still raises ValueError on empty input. Next step: patch the guard in the handler and rerun this test.")
     '(!extend)
