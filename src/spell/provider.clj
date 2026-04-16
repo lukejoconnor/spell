@@ -1108,6 +1108,15 @@
       :usage (cond-> (parse-openai-responses-usage usage)
                reasoning-tokens (assoc :reasoning_tokens reasoning-tokens))})))
 
+(defn- merge-codex-stream-input
+  [current fragment]
+  (cond
+    (str/blank? fragment) current
+    (nil? current) fragment
+    (str/starts-with? fragment current) fragment
+    (str/starts-with? current fragment) current
+    :else (str current fragment)))
+
 
 (defn- parse-codex-tc-stream
   "Parse ChatGPT Codex Responses SSE stream for tool-call mode.
@@ -1147,7 +1156,17 @@
                   (let [item-id (:item_id parsed)
                         delta (:delta parsed)]
                     (when (and (string? item-id) (string? delta))
-                      (swap! partial-inputs update item-id #(str (or % "") delta))))
+                      (swap! partial-inputs update item-id merge-codex-stream-input delta)))
+
+                  "response.custom_tool_call_input.done"
+                  (let [item-id (:item_id parsed)
+                        input (or (:input parsed)
+                                  (:arguments parsed)
+                                  (get-in parsed [:item :input])
+                                  (get-in parsed [:item :arguments])
+                                  (:delta parsed))]
+                    (when (and (string? item-id) (string? input))
+                      (swap! partial-inputs update item-id merge-codex-stream-input input)))
 
                   nil))
               (catch Exception _ nil))))))
@@ -1162,7 +1181,10 @@
                              (= "spell_suffix" (:name item)))
                     (or (not-empty (:input item))
                         (not-empty (get @partial-inputs item-id)))))
-                @tool-items)]
+                @tool-items)
+          stream-tool-input (or stream-tool-input
+                                (when (= 1 (count @partial-inputs))
+                                  (some-> @partial-inputs vals first not-empty)))]
       (parse-codex-tc-response @completed stream-tool-input))))
 
 (defrecord CodexMsgProvider [api-key account-id base-url model max-tokens http-client costs]

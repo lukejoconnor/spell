@@ -1145,6 +1145,40 @@
       (is (= 9 (get-in result [:usage :input_tokens])))
       (is (= 3 (get-in result [:usage :output_tokens])))))
 
+  (testing "parses custom_tool_call_input.done when it carries the final suffix"
+    (let [item-id "ctc_124"
+          sse (str "event: response.output_item.added\n"
+                   "data: "
+                   (json/write-str {:type "response.output_item.added"
+                                    :item {:id item-id
+                                           :type "custom_tool_call"
+                                           :name "spell_suffix"
+                                           :input ""}})
+                   "\n\n"
+                   "event: response.custom_tool_call_input.delta\n"
+                   "data: "
+                   (json/write-str {:type "response.custom_tool_call_input.delta"
+                                    :item_id item-id
+                                    :delta "(def"})
+                   "\n\n"
+                   "event: response.custom_tool_call_input.done\n"
+                   "data: "
+                   (json/write-str {:type "response.custom_tool_call_input.done"
+                                    :item_id item-id
+                                    :input " x 1)"})
+                   "\n\n"
+                   "event: response.completed\n"
+                   "data: "
+                   (json/write-str {:type "response.completed"
+                                    :response {:output []
+                                               :usage {:input_tokens 9
+                                                       :output_tokens 3}}})
+                   "\n\n")
+          result (#'provider/parse-codex-tc-stream sse)]
+      (is (= "(def x 1)" (:text result)))
+      (is (= 9 (get-in result [:usage :input_tokens])))
+      (is (= 3 (get-in result [:usage :output_tokens])))))
+
   (testing "throws when no custom_tool_call is present"
     (let [sse (str "event: response.completed\n"
                    "data: "
