@@ -272,15 +272,16 @@
                      (/ (count args) 2)
                      1)]
     [(reopen-eval-form
-      (list 'list (list 'quote 'prune) (inc n-bindings)))]))
+      (list 'list (list 'quote 'prune) n-bindings))]))
 
 (defspellmacro '!call-now
   (fn [& args]
     (call-now-expander "!call-now" args nil)))
 
 ;; !peek-now: same as !call-now, but marks the binding as one-turn ephemeral.
-;; The injected prune marker removes both the peek command and its result
-;; binding(s) on the following extension unless the model persists a needed subset.
+;; The injected prune marker removes the result binding(s) on the following
+;; extension, leaving the !peek call itself visible as evidence of prior research
+;; (unless the model persists a needed subset).
 (defspellmacro '!peek-now
   (fn [& args]
     (call-now-expander "!peek-now" args (peek-extra-form-exprs args))))
