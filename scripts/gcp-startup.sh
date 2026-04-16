@@ -199,9 +199,51 @@ wait_for_docker() {
   done
 }
 
+upsert_env_export() {
+  local file="$1"
+  local key="$2"
+  local value="${3:-}"
+  mkdir -p "$(dirname "$file")"
+  touch "$file"
+  ENV_FILE="$file" EXPORT_KEY="$key" EXPORT_VALUE="$value" python3 - <<'PY'
+import os
+from pathlib import Path
+
+path = Path(os.environ["ENV_FILE"])
+key = os.environ["EXPORT_KEY"]
+value = os.environ.get("EXPORT_VALUE", "")
+target = f"export {key}="
+
+lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+filtered = [line for line in lines if not line.startswith(target)]
+if value:
+    filtered.append(f"{target}{value}")
+path.write_text("".join(f"{line}\n" for line in filtered), encoding="utf-8")
+PY
+}
+
+install_docker_credential_gcr() {
+  if command -v docker-credential-gcr >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local version="2.1.29"
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  curl -fsSL \
+    "https://github.com/GoogleCloudPlatform/docker-credential-gcr/releases/download/v${version}/docker-credential-gcr_linux_amd64-${version}.tar.gz" \
+    | tar -xz -C "$tmpdir" docker-credential-gcr
+  install -m 0755 "$tmpdir/docker-credential-gcr" /usr/local/bin/docker-credential-gcr
+  rm -rf "$tmpdir"
+}
+
 configure_env_image_cache() {
   local repository="$1"
+  local env_file="$USER_HOME/.config/spell-benchmark/env.sh"
   if [[ -z "$repository" ]]; then
+    upsert_env_export "$env_file" "SPELL_SWEBENCH_ENV_IMAGE_CACHE_REPOSITORY" ""
+    chmod 600 "$env_file"
+    chown "$BENCHMARK_USER:$BENCHMARK_USER" "$env_file"
     return 0
   fi
 
@@ -213,21 +255,15 @@ configure_env_image_cache() {
     return 0
   fi
 
-  local token
-  token="$(access_token)"
-  local token_q
-  token_q="$(printf '%q' "$token")"
-  if run_as_benchmark_user "printf '%s' ${token_q} | docker login -u oauth2accesstoken --password-stdin https://${host}"; then
-    echo "[spell-benchmark] authenticated docker for env image cache at ${host}"
+  if install_docker_credential_gcr && run_as_benchmark_user "docker-credential-gcr configure-docker --registries=${host}"; then
+    echo "[spell-benchmark] configured docker credential helper for env image cache at ${host}"
   else
-    echo "[spell-benchmark] warning: docker login failed for ${host}; env image cache will fall back to local builds" >&2
+    echo "[spell-benchmark] warning: docker credential helper setup failed for ${host}; env image cache will fall back to local builds" >&2
   fi
 
-  append_once "$USER_HOME/.config/spell-benchmark/env.sh" "# spell-benchmark env image cache" \
-    "# spell-benchmark env image cache
-export SPELL_SWEBENCH_ENV_IMAGE_CACHE_REPOSITORY=$(printf '%q' "$repository")"
-  chmod 600 "$USER_HOME/.config/spell-benchmark/env.sh"
-  chown "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/.config/spell-benchmark/env.sh"
+  upsert_env_export "$env_file" "SPELL_SWEBENCH_ENV_IMAGE_CACHE_REPOSITORY" "$(printf '%q' "$repository")"
+  chmod 600 "$env_file"
+  chown "$BENCHMARK_USER:$BENCHMARK_USER" "$env_file"
 }
 
 materialize_secrets_and_env() {

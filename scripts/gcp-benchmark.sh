@@ -668,6 +668,61 @@ ensure_github_token() {
   printf '%s' "\$FETCHED_GITHUB_TOKEN"
 }
 
+upsert_env_export() {
+  local file="\$1"
+  local key="\$2"
+  local value="\${3:-}"
+  mkdir -p "\$(dirname "\$file")"
+  touch "\$file"
+  ENV_FILE="\$file" EXPORT_KEY="\$key" EXPORT_VALUE="\$value" python3 - <<'PY'
+import os
+from pathlib import Path
+
+path = Path(os.environ["ENV_FILE"])
+key = os.environ["EXPORT_KEY"]
+value = os.environ.get("EXPORT_VALUE", "")
+target = f"export {key}="
+
+lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+filtered = [line for line in lines if not line.startswith(target)]
+if value:
+    filtered.append(f"{target}{value}")
+path.write_text("".join(f"{line}\n" for line in filtered), encoding="utf-8")
+PY
+}
+
+sync_env_image_cache() {
+  local repository
+  repository="\$(metadata_attr env-image-cache-repository 2>/dev/null || true)"
+  local env_file="\$HOME/.config/spell-benchmark/env.sh"
+
+  if [[ -z "\$repository" ]]; then
+    upsert_env_export "\$env_file" "SPELL_SWEBENCH_ENV_IMAGE_CACHE_REPOSITORY" ""
+    printf '[spell-benchmark] env image cache disabled for this run\n'
+    return 0
+  fi
+
+  local host="\${repository#https://}"
+  host="\${host#http://}"
+  host="\${host%%/*}"
+  if [[ -z "\$host" ]]; then
+    printf '[spell-benchmark] warning: invalid env image cache repository: %s\n' "\$repository" >&2
+    upsert_env_export "\$env_file" "SPELL_SWEBENCH_ENV_IMAGE_CACHE_REPOSITORY" ""
+    return 0
+  fi
+
+  upsert_env_export "\$env_file" "SPELL_SWEBENCH_ENV_IMAGE_CACHE_REPOSITORY" "\$(printf '%q' "\$repository")"
+  if command -v docker-credential-gcr >/dev/null 2>&1; then
+    if docker-credential-gcr configure-docker --registries="\$host" >/dev/null 2>&1; then
+      printf '[spell-benchmark] env image cache configured for %s\n' "\$host"
+    else
+      printf '[spell-benchmark] warning: failed to configure docker credential helper for %s\n' "\$host" >&2
+    fi
+  else
+    printf '[spell-benchmark] warning: docker-credential-gcr missing; env image cache may fail for %s\n' "\$host" >&2
+  fi
+}
+
 sync_repo_ref() {
   local repo_dir="\$1"
   local ref="\$2"
@@ -710,6 +765,7 @@ exec >>"\$LOG_FILE" 2>&1
 printf '[spell-benchmark] run wrapper started at %s\n' "\$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 sync_repo_ref "\$HOME/spell" "\$SPELL_REF"
 sync_repo_ref "\$HOME/spell/benchmarking" "\$BENCHMARKING_REF"
+sync_env_image_cache
 write_status running
 
 set +e
