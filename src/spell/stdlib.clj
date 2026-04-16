@@ -298,6 +298,8 @@ PLAN before acting:
 Example:
   (think \"Plan: inspect the parser and the failing test, update the parser behavior, then run the exact validation command and confirm the expected output/artifact.\")
 
+Your research must progress to the planning stage: gather needed context, persist what is relevant, then when you understand the existing logic, stop researching and plan.
+
 IMPLEMENT:
 - Make changes that are supported by the evidence gathered during research.
 - Prefer structured io/ tools for reading and editing files.
