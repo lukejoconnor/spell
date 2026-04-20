@@ -325,6 +325,7 @@
   (cond
     (or (str/includes? model "opus-4-5")
         (str/includes? model "opus-4-6")
+        (str/includes? model "opus-4-7")
         (str/includes? model "haiku-4-5")) 16000
     (or (str/includes? model "haiku-3")
         (str/includes? model "haiku-3-5")) 8000
@@ -443,8 +444,9 @@
                         {:status status :body (.body response)})))))
   (plain-text-provider [this] this)
   (supports-prefill [_]
-    ;; Opus 4.6 does not support assistant prefill (returns 400 error)
-    (not (str/includes? (str model) "opus-4-6"))))
+    ;; Opus 4.6+ does not support assistant prefill (returns 400 error)
+    (not (or (str/includes? (str model) "opus-4-6")
+             (str/includes? (str model) "opus-4-7")))))
 
 (defn anthropic-pf-provider
   "Create an Anthropic provider.
