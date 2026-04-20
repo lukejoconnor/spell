@@ -2,7 +2,34 @@
   (:require [clojure.test :refer [deftest testing is]]
             [clojure.data.json :as json]
             [clojure.string :as str]
-            [spell.provider :as provider]))
+            [spell.provider :as provider])
+  (:import [java.io ByteArrayOutputStream]
+           [java.nio ByteBuffer]
+           [java.util.concurrent Flow$Subscriber Flow$Subscription]))
+
+(defn- request-json-body
+  [request]
+  (let [publisher (.get (.bodyPublisher request))
+        out (ByteArrayOutputStream.)
+        done (promise)]
+    (.subscribe publisher
+                (reify Flow$Subscriber
+                  (onSubscribe [_ subscription]
+                    (.request ^Flow$Subscription subscription Long/MAX_VALUE))
+                  (onNext [_ item]
+                    (let [buf ^ByteBuffer item
+                          bytes (byte-array (.remaining buf))]
+                      (.get buf bytes)
+                      (.write out bytes 0 (alength bytes))))
+                  (onError [_ throwable]
+                    (deliver done throwable))
+                  (onComplete [_]
+                    (deliver done true))))
+    (let [result (deref done 1000 ::timeout)]
+      (cond
+        (instance? Throwable result) (throw result)
+        (= ::timeout result) (throw (ex-info "Timed out reading request body" {}))
+        :else (json/read-str (.toString out "UTF-8") :key-fn keyword)))))
 
 ;; =============================================================================
 ;; Anthropic PF response parsing
@@ -322,6 +349,10 @@
     (let [p (provider/anthropic-pf-provider {:api-key "test" :model "claude-opus-4-6-20250301"})]
       (is (false? (provider/supports-prefill p)))))
 
+  (testing "opus-4-7 model returns false"
+    (let [p (provider/anthropic-pf-provider {:api-key "test" :model "claude-opus-4-7-20250416"})]
+      (is (false? (provider/supports-prefill p)))))
+
   (testing "sonnet model returns true"
     (let [p (provider/anthropic-pf-provider {:api-key "test" :model "claude-sonnet-4-20250514"})]
       (is (true? (provider/supports-prefill p)))))
@@ -329,6 +360,27 @@
   (testing "opus-4-5 model returns true"
     (let [p (provider/anthropic-pf-provider {:api-key "test" :model "claude-opus-4-5-20250901"})]
       (is (true? (provider/supports-prefill p))))))
+
+(deftest anthropic-opus47-thinking-request-test
+  (testing "tool-call path treats reasoning-effort as adaptive thinking on opus-4-7"
+    (let [request (#'provider/anthropic-tc-request "test" "claude-opus-4-7-20250416"
+                                                   "prompt" "system" nil false nil
+                                                   "medium" nil)
+          body (request-json-body request)]
+      (is (= 32768 (:max_tokens body)))
+      (is (= {:type "auto"} (:tool_choice body)))
+      (is (= {:type "adaptive"} (:thinking body)))
+      (is (= {:effort "medium"} (:output_config body)))))
+
+  (testing "plain-text path uses adaptive thinking and drops assistant prefill on opus-4-7"
+    (let [request (#'provider/anthropic-pf-request "test" "claude-opus-4-7-20250416"
+                                                   "prompt" "system" "prefill" nil false nil
+                                                   "high" nil)
+          body (request-json-body request)]
+      (is (= 32768 (:max_tokens body)))
+      (is (= [{:role "user" :content "prompt"}] (:messages body)))
+      (is (= {:type "adaptive"} (:thinking body)))
+      (is (= {:effort "high"} (:output_config body))))))
 
 ;; =============================================================================
 ;; call-with-retries exhaustion
