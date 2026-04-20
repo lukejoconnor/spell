@@ -287,6 +287,10 @@ materialize_secrets_and_env() {
   if [[ -n "$CC_OAUTH_SECRET" ]]; then
     cc_oauth_token="$(fetch_secret "$PROJECT_ID" "$CC_OAUTH_SECRET" 2>/dev/null || true)"
   fi
+  local fireworks_api_key=""
+  if [[ -n "$FIREWORKS_SECRET" ]]; then
+    fireworks_api_key="$(fetch_secret "$PROJECT_ID" "$FIREWORKS_SECRET" 2>/dev/null || true)"
+  fi
 
   mkdir -p "$USER_HOME/.config/spell-benchmark"
   cat >"$USER_HOME/.config/spell-benchmark/env.sh" <<EOF
@@ -312,6 +316,9 @@ EOF
   fi
   if [[ -n "$cc_oauth_token" ]]; then
     printf 'export CLAUDE_CODE_OAUTH_TOKEN=%q\n' "$cc_oauth_token" >>"$USER_HOME/.config/spell-benchmark/env.sh"
+  fi
+  if [[ -n "$fireworks_api_key" ]]; then
+    printf 'export FIREWORKS_API_KEY=%q\n' "$fireworks_api_key" >>"$USER_HOME/.config/spell-benchmark/env.sh"
   fi
   chmod 600 "$USER_HOME/.config/spell-benchmark/env.sh"
   chown -R "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/.config"
@@ -374,6 +381,7 @@ GITHUB_TOKEN_SECRET="$(metadata_attr github-token-secret)"
 CODEX_AUTH_SECRET="$(metadata_attr codex-auth-secret || true)"
 CLAUDE_AUTH_SECRET="$(metadata_attr claude-auth-secret || true)"
 CC_OAUTH_SECRET="$(metadata_attr cc-oauth-secret || true)"
+FIREWORKS_SECRET="$(metadata_attr fireworks-secret || true)"
 ENV_IMAGE_CACHE_REPOSITORY="$(metadata_attr env-image-cache-repository || true)"
 RUN_GROUP="$(metadata_attr run-group || true)"
 BENCHMARK_COMMAND="$(metadata_attr benchmark-command || true)"
