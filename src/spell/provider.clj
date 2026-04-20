@@ -466,8 +466,9 @@
      (->AnthropicPfProvider key model max-tokens (make-http-client) costs))))
 
 (defn- anthropic-tc-request
-  [api-key model prompt system-prompt max-tokens stream? thinking cache-prefix]
+  [api-key model prompt system-prompt max-tokens stream? thinking reasoning-effort cache-prefix]
   (let [min-chars (cache-min-chars model)
+        adaptive-only? (str/includes? (str model) "opus-4-7")
         ;; Split user message for caching: stable prefix + new content
         user-content (if (and cache-prefix
                               (not (str/blank? cache-prefix))
@@ -498,9 +499,15 @@
                       :tool_choice {:type (if thinking "auto" "any")}}
                cached-system (assoc :system cached-system)
                stream? (assoc :stream true)
-               thinking (assoc :thinking (if (number? thinking)
-                                          {:type "enabled" :budget_tokens thinking}
-                                          {:type "enabled" :budget_tokens 10000})))
+               ;; Opus 4.7 requires adaptive thinking; budget_tokens is rejected.
+               (and adaptive-only? thinking) (assoc :thinking {:type "adaptive"})
+               (and (not adaptive-only?) thinking)
+               (assoc :thinking (if (number? thinking)
+                                  {:type "enabled" :budget_tokens thinking}
+                                  {:type "enabled" :budget_tokens 10000}))
+               ;; effort is only supported on 4.5+/4.6/4.7; send only on adaptive-only models for now
+               (and adaptive-only? reasoning-effort)
+               (assoc :output_config {:effort reasoning-effort}))
         request (-> (HttpRequest/newBuilder)
                     (.uri (URI/create "https://api.anthropic.com/v1/messages"))
                     (.header "Content-Type" "application/json")
@@ -610,12 +617,14 @@
   (call-llm [_ prompt opts]
     (let [effective-model (or (:model opts) model)
           thinking (:thinking opts)
+          reasoning-effort (:reasoning-effort opts)
           effective-max-tokens (or max-tokens (if thinking 32768 16384))
           ;; Use streaming for large max_tokens (API requires it for >16384) or thinking
           stream? (or thinking (> effective-max-tokens 16384))
           cache-prefix (:cache-prefix opts)
           request (anthropic-tc-request api-key effective-model prompt (:system opts)
-                                        effective-max-tokens stream? thinking cache-prefix)
+                                        effective-max-tokens stream? thinking
+                                        reasoning-effort cache-prefix)
           response (.send http-client request (HttpResponse$BodyHandlers/ofString))
           status (.statusCode response)]
       (if (<= 200 status 299)
