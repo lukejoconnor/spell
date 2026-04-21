@@ -1234,8 +1234,8 @@
 
   (testing "quine-extension recovery re-enters through the recovery quine"
     ;; Program is a quine with an error. Quine-extension recovery appends
-    ;; a rethink marker plus a new arg with error info, then reopens the
-    ;; recovery quine. The second LLM call provides the fix.
+    ;; a new recovery tail with error info, then reopens the recovery quine.
+    ;; The second LLM call provides the fix.
     (let [call-count (atom 0)
           llm (th/make-test-runner
                {:response-fn (fn [_]
@@ -1250,7 +1250,7 @@
         (is (= 2 @call-count))
         (is (= 42 result)))))
 
-  (testing "quine-extension recovery injects rethink and reopens without _previous_program"
+  (testing "quine-extension recovery keeps original program and recovery metadata in the next prompt"
     (let [prompts (atom [])]
       (let [llm (th/make-test-runner
                  {:response-fn (fn [prompt]
@@ -1262,9 +1262,29 @@
         (let [result (llm "(quine completion (eval (do ")
               recovery-prompt (second @prompts)]
           (is (= 42 result))
-          (is (str/includes? recovery-prompt "(rethink \"Error recovery - see _error for details.\")"))
+          (is (str/includes? recovery-prompt "(think \"Error recovery - see _error for details.\")"))
+          (is (str/includes? recovery-prompt "undefined-symbol"))
           (is (str/includes? recovery-prompt "!llm-self (reopen completion)"))
           (is (not (str/includes? recovery-prompt "_previous_program")))))))
+
+  (testing "extend during recovery preserves the original failing program in later prompts"
+    (let [prompts (atom [])
+          llm (th/make-test-runner
+               {:response-fn (fn [prompt]
+                               (swap! prompts conj prompt)
+                               (case (count @prompts)
+                                 1 "undefined-symbol) '(!extend completion))"
+                                 2 "'(!extend completion))"
+                                 "(def fix 42))"))}
+               :namespaces {} :prefill? false)]
+      (let [result (llm "(quine completion (eval (do ")
+            recovery-prompt (second @prompts)
+            resumed-prompt (nth @prompts 2)]
+        (is (= 42 result))
+        (is (str/includes? recovery-prompt "undefined-symbol"))
+        (is (str/includes? resumed-prompt "undefined-symbol"))
+        (is (str/includes? resumed-prompt "(quine completion (eval (do undefined-symbol)"))
+        (is (str/includes? resumed-prompt "_error")))))
 
   (testing "shared recovery limit stops eval-only runaway loops"
     (let [call-count (atom 0)]
