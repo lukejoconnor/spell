@@ -348,18 +348,38 @@
 (defn- cache-min-chars
   "Minimum character count for caching to be worthwhile on a given model.
    Based on Anthropic's minimum cacheable token thresholds (~4 chars/token):
-   - Opus 4.5/4.6, Haiku 4.5: 4096 tokens (~16K chars)
-   - Sonnet, Opus 4.0/4.1: 1024 tokens (~4K chars)
+   - Opus 4.x, Sonnet, Haiku 4.5: 1024 tokens (~4K chars)
    - Haiku 3.x: 2048 tokens (~8K chars)"
   [model]
   (cond
-    (or (str/includes? model "opus-4-5")
-        (str/includes? model "opus-4-6")
-        (str/includes? model "opus-4-7")
-        (str/includes? model "haiku-4-5")) 16000
     (or (str/includes? model "haiku-3")
         (str/includes? model "haiku-3-5")) 8000
     :else 4000))
+
+(defn- common-prefix-length
+  [a b]
+  (let [limit (min (count a) (count b))]
+    (loop [idx 0]
+      (if (and (< idx limit)
+               (= (.charAt ^String a idx) (.charAt ^String b idx)))
+        (recur (inc idx))
+        idx))))
+
+(defn- anthropic-cacheable-user-content
+  [model prompt cache-prefix]
+  (let [min-chars (cache-min-chars model)]
+    (if (and cache-prefix
+             (not (str/blank? cache-prefix)))
+      (let [shared-length (common-prefix-length prompt cache-prefix)]
+        (if (>= shared-length min-chars)
+          (let [shared (subs prompt 0 shared-length)
+                tail (subs prompt shared-length)]
+            (if (zero? (count tail))
+              [{:type "text" :text shared :cache_control {:type "ephemeral"}}]
+              [{:type "text" :text shared :cache_control {:type "ephemeral"}}
+               {:type "text" :text tail :cache_control {:type "ephemeral"}}]))
+          prompt))
+      prompt)))
 
 (declare anthropic-adaptive-thinking-model?
          anthropic-output-effort
@@ -373,19 +393,10 @@
         thinking-enabled? (anthropic-thinking-enabled? model thinking reasoning-effort)
         ;; When thinking is active, don't use assistant prefill (incompatible)
         effective-prefix (when-not thinking-enabled? prefix)
-        ;; Only apply cache_control when content exceeds model's minimum threshold
+        ;; Only apply cache_control when the shared user-content prefix exceeds
+        ;; the model's minimum cacheable threshold.
         min-chars (cache-min-chars model)
-        ;; Split user message for caching: stable prefix + new content
-        user-content (if (and cache-prefix
-                              (not (str/blank? cache-prefix))
-                              (str/starts-with? prompt cache-prefix)
-                              (>= (count cache-prefix) min-chars))
-                       (let [new-content (subs prompt (count cache-prefix))]
-                         (if (str/blank? new-content)
-                           [{:type "text" :text prompt :cache_control {:type "ephemeral"}}]
-                           [{:type "text" :text cache-prefix :cache_control {:type "ephemeral"}}
-                            {:type "text" :text new-content :cache_control {:type "ephemeral"}}]))
-                       prompt)
+        user-content (anthropic-cacheable-user-content model prompt cache-prefix)
         messages (cond-> [{:role "user" :content user-content}]
                    effective-prefix (conj {:role "assistant" :content (str/trimr effective-prefix)}))
         ;; Use cache_control for system prompt when it exceeds model's minimum threshold
@@ -542,17 +553,9 @@
         adaptive-only? (anthropic-adaptive-thinking-model? model)
         output-effort (anthropic-output-effort reasoning-effort)
         thinking-enabled? (anthropic-thinking-enabled? model thinking reasoning-effort)
-        ;; Split user message for caching: stable prefix + new content
-        user-content (if (and cache-prefix
-                              (not (str/blank? cache-prefix))
-                              (str/starts-with? prompt cache-prefix)
-                              (>= (count cache-prefix) min-chars))
-                       (let [new-content (subs prompt (count cache-prefix))]
-                         (if (str/blank? new-content)
-                           [{:type "text" :text prompt :cache_control {:type "ephemeral"}}]
-                           [{:type "text" :text cache-prefix :cache_control {:type "ephemeral"}}
-                            {:type "text" :text new-content :cache_control {:type "ephemeral"}}]))
-                       prompt)
+        ;; Only apply cache_control when the shared user-content prefix exceeds
+        ;; the model's minimum cacheable threshold.
+        user-content (anthropic-cacheable-user-content model prompt cache-prefix)
         cached-system (when system-prompt
                         [(cond-> {:type "text" :text system-prompt}
                            (>= (count system-prompt) min-chars)
