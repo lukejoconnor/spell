@@ -1576,7 +1576,11 @@
       (is (= "Continue this Spell program." (first @received-prompts)))
       ;; Second call: user message with retry hint appended
       (is (clojure.string/includes? (second @received-prompts)
-                                     "retrying")))))
+                                     "retrying because the previous response did not call the required spell_suffix tool"))
+      (is (clojure.string/includes? (second @received-prompts)
+                                     "Do not send assistant text, markdown, or a thinking-only response"))
+      (is (clojure.string/includes? (second @received-prompts)
+                                     "The raw Spell suffix must be in the spell_suffix tool input")))))
 
 (deftest missing-tool-call-retry-hint-in-leaf-llm
   (testing "retry hint is appended in leaf-llm on missing-tool-call retry"
@@ -1601,7 +1605,11 @@
       (is (= "hi" (first @received-prompts)))
       ;; Second call: prompt with retry hint
       (is (clojure.string/includes? (second @received-prompts)
-                                     "retrying"))))
+                                     "retrying because the previous response did not call the required spell_suffix tool"))
+      (is (clojure.string/includes? (second @received-prompts)
+                                     "Do not send assistant text, markdown, or a thinking-only response"))
+      (is (clojure.string/includes? (second @received-prompts)
+                                     "The raw Spell suffix must be in the spell_suffix tool input"))))
 
   (testing "leaf-llm uses the provider's plain-text sibling instead of the parent transport"
     (let [main-calls (atom 0)
