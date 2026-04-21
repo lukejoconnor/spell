@@ -1406,17 +1406,26 @@
                 (ok (binding [*spell-env* e] (apply f args)) e)
                 (catch Exception ex
                   (let [thrown (get (ex-data ex) :spell/thrown)
-                        ex-type (get (ex-data ex) :type)]
+                        ex-type (get (ex-data ex) :type)
+                        inner-result (get (ex-data ex) :result)
+                        recovery-phase (get (ex-data ex) :spell/recovery-phase)]
                     (cond
                       ;; Typed exceptions — re-throw, not recoverable
                       ex-type (throw ex)
                       ;; Spell throw — preserve thrown value for try/catch
                       thrown {:err (ex-message ex) :thrown thrown :env e :expr expr}
                       ;; Other errors — wrap as eval error with Spell name + ex-data
-                      :else (let [data (not-empty (dissoc (ex-data ex) :spell/thrown :result))
+                      :else (let [data (not-empty (dissoc (ex-data ex)
+                                                          :spell/thrown
+                                                          :result
+                                                          :spell/recovery-phase))
                                   msg (str fn-call-prefix (first expr) ": " (ex-message ex)
                                            (when data (str " " (pr-str data))))]
-                              (err msg e expr))))))))
+                              (cond-> (err msg e expr)
+                                inner-result
+                                (assoc :result inner-result)
+                                recovery-phase
+                                (assoc :spell/recovery-phase recovery-phase)))))))))
           (let [result (spell-eval (first remaining) e)]
             (if (err? result)
               result
