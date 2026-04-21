@@ -1310,8 +1310,8 @@
 
   (testing "quine-extension recovery re-enters through the recovery quine"
     ;; Program is a quine with an error. Quine-extension recovery appends
-    ;; a rethink marker plus a new arg with error info, then reopens the
-    ;; recovery quine. The second LLM call provides the fix.
+    ;; a new recovery tail with error info, then reopens the recovery quine.
+    ;; The second LLM call provides the fix.
     (let [call-count (atom 0)
           llm (th/make-test-runner
                {:response-fn (fn [_]
@@ -1326,7 +1326,7 @@
         (is (= 2 @call-count))
         (is (= 42 result)))))
 
-  (testing "quine-extension recovery injects rethink and reopens without _previous_program"
+  (testing "quine-extension recovery keeps original program and recovery metadata in the next prompt"
     (let [prompts (atom [])]
       (let [llm (th/make-test-runner
                  {:response-fn (fn [prompt]
@@ -1338,9 +1338,90 @@
         (let [result (llm "(quine completion (eval (do ")
               recovery-prompt (second @prompts)]
           (is (= 42 result))
-          (is (str/includes? recovery-prompt "(rethink \"Error recovery - see _error for details.\")"))
+          (is (str/includes? recovery-prompt "none of its bindings are live unless you redefine them"))
+          (is (str/includes? recovery-prompt "Do not rely on bindings or data from the previous program remaining available in later prompts."))
+          (is (str/includes? recovery-prompt "repeating tool calls that recover the relevant files, definitions, tests, or other evidence"))
+          (is (str/includes? recovery-prompt "undefined-symbol"))
+          (is (str/includes? recovery-prompt "(prune)"))
           (is (str/includes? recovery-prompt "!llm-self (reopen completion)"))
           (is (not (str/includes? recovery-prompt "_previous_program")))))))
+
+  (testing "extend during inert recovery prunes the original failing program from later prompts"
+    (let [prompts (atom [])
+          llm (th/make-test-runner
+               {:response-fn (fn [prompt]
+                               (swap! prompts conj prompt)
+                               (case (count @prompts)
+                                 1 "undefined-symbol) '(!extend completion))"
+                                 2 "'(!extend completion))"
+                                 "(def fix 42))"))}
+               :namespaces {} :prefill? false)]
+      (let [result (llm "(quine completion (eval (do ")
+            recovery-prompt (second @prompts)
+            resumed-prompt (nth @prompts 2)]
+        (is (= 42 result))
+        (is (str/includes? recovery-prompt "none of its bindings are live unless you redefine them"))
+        (is (str/includes? recovery-prompt "undefined-symbol"))
+        (is (str/includes? resumed-prompt "undefined-symbol"))
+        (is (not (str/includes? resumed-prompt "(quine completion (eval (do undefined-symbol)")))
+        (is (str/includes? resumed-prompt "_error"))
+        (is (not (str/includes? resumed-prompt "(prune)")))
+        (is (not (str/includes? resumed-prompt "(think \"Error recovery - see _error for details.\")"))))))
+
+  (testing "trailing-expression recovery reopens the same do tail and keeps earlier bindings live"
+    (let [prompts (atom [])
+          llm (th/make-test-runner
+               {:response-fn (fn [prompt]
+                               (swap! prompts conj prompt)
+                               (if (= 1 (count @prompts))
+                                 "(def x 41) '(+ x missing)))"
+                                 "'(+ x 1)))"))}
+               :namespaces {} :prefill? false)]
+      (let [result (llm "(quine completion (eval (do ")
+            recovery-prompt (second @prompts)]
+        (is (= 42 result))
+        (is (str/includes? recovery-prompt "Earlier expressions in this same do block will be reevaluated first."))
+        (is (str/includes? recovery-prompt "Their bindings remain available if reevaluation still succeeds."))
+        (is (str/includes? recovery-prompt "do not repeat the failing trailing expression unchanged"))
+        (is (str/includes? recovery-prompt "(def x 41)"))
+        (is (str/includes? recovery-prompt "(quote (+ x missing))"))
+        (is (not (str/includes? recovery-prompt "(prune)")))
+        (is (not (str/includes? recovery-prompt "none of its bindings are live unless you redefine them"))))))
+
+  (testing "repeated trailing-expression recovery keeps prior failed tails inert"
+    (let [prompts (atom [])
+          llm (th/make-test-runner
+               {:response-fn (fn [prompt]
+                               (swap! prompts conj prompt)
+                               (case (count @prompts)
+                                 1 "(def x 39) '(+ x missing)))"
+                                 2 "'(+ x still-missing)))"
+                                 "'(+ x 3)))"))}
+               :namespaces {} :prefill? false)]
+      (let [result (llm "(quine completion (eval (do ")
+            second-recovery-prompt (nth @prompts 2)]
+        (is (= 42 result))
+        (is (str/includes? second-recovery-prompt "(def x 39)"))
+        (is (str/includes? second-recovery-prompt "(quote (+ x missing))"))
+        (is (str/includes? second-recovery-prompt "(quote (+ x still-missing))"))
+        (is (str/includes? second-recovery-prompt "Earlier expressions in this same do block will be reevaluated first."))
+        (is (not (str/includes? second-recovery-prompt "(prune)"))))))
+
+  (testing "nested eval failure in the do body still uses inert recovery"
+    (let [prompts (atom [])
+          llm (th/make-test-runner
+               {:response-fn (fn [prompt]
+                               (swap! prompts conj prompt)
+                               (if (= 1 (count @prompts))
+                                 "(def x 41) (eval '(+ x missing)) '(+ x 1)))"
+                                 "(def x 41) '(+ x 1)))"))}
+               :namespaces {} :prefill? false)]
+      (let [result (llm "(quine completion (eval (do ")
+            recovery-prompt (second @prompts)]
+        (is (= 42 result))
+        (is (str/includes? recovery-prompt "none of its bindings are live unless you redefine them"))
+        (is (str/includes? recovery-prompt "(prune)"))
+        (is (not (str/includes? recovery-prompt "Earlier expressions in this same do block will be reevaluated first."))))))
 
   (testing "shared recovery limit stops eval-only runaway loops"
     (let [call-count (atom 0)]

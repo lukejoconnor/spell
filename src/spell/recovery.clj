@@ -2,8 +2,9 @@
   "Error recovery for Spell programs.
 
    Namespace recovery — deterministic symbol fixup (unbound or misqualified).
-   Quine-extension recovery — appends error info to the quine, plants a rethink,
-   and re-enters via bare reopen so pruning happens on the following !extend."
+   Quine-extension recovery — reopens the same do-tail for trailing-expression
+   failures, or appends error info plus a one-turn prune marker to an inert
+   recovery branch for other failures."
   (:require [clojure.string :as str]
             [spell.eval :as eval]))
 
