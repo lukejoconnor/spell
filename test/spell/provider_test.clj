@@ -391,6 +391,7 @@
 
 (deftest anthropic-cache-prefix-request-test
   (let [shared-prefix (repeated-string 4100 "a")
+        boundary-prefix (repeated-string 4000 "c")
         prompt-extends (str shared-prefix "fg")
         cache-prefix (str shared-prefix "xyz")
         short-prefix (repeated-string 3000 "b")]
@@ -402,6 +403,26 @@
         (is (= [{:role "user"
                  :content [{:type "text" :text shared-prefix :cache_control {:type "ephemeral"}}
                            {:type "text" :text "fg" :cache_control {:type "ephemeral"}}]}]
+               (:messages body)))))
+
+    (testing "tool-call path preserves whitespace-only tails"
+      (let [request (#'provider/anthropic-tc-request "test" "claude-sonnet-4-20250514"
+                                                     (str shared-prefix "\n  ") nil nil false nil
+                                                     nil cache-prefix)
+            body (request-json-body request)]
+        (is (= [{:role "user"
+                 :content [{:type "text" :text shared-prefix :cache_control {:type "ephemeral"}}
+                           {:type "text" :text "\n  " :cache_control {:type "ephemeral"}}]}]
+               (:messages body)))))
+
+    (testing "tool-call path caches at the exact 4000 character threshold"
+      (let [request (#'provider/anthropic-tc-request "test" "claude-sonnet-4-20250514"
+                                                     (str boundary-prefix "z") nil nil false nil
+                                                     nil (str boundary-prefix "y"))
+            body (request-json-body request)]
+        (is (= [{:role "user"
+                 :content [{:type "text" :text boundary-prefix :cache_control {:type "ephemeral"}}
+                           {:type "text" :text "z" :cache_control {:type "ephemeral"}}]}]
                (:messages body)))))
 
     (testing "tool-call path keeps the prompt cached when prune/rethink shrinks it to the shared prefix"
@@ -428,7 +449,15 @@
                                                      nil (str short-prefix "123"))
             body (request-json-body request)]
         (is (= [{:role "user" :content (str short-prefix "xyz")}]
-               (:messages body)))))))
+               (:messages body)))))
+
+    (testing "system prompt gets cache_control at the exact 4000 character threshold"
+      (let [request (#'provider/anthropic-tc-request "test" "claude-sonnet-4-20250514"
+                                                     "prompt" boundary-prefix nil false nil
+                                                     nil nil)
+            body (request-json-body request)]
+        (is (= [{:type "text" :text boundary-prefix :cache_control {:type "ephemeral"}}]
+               (:system body)))))))
 
 ;; =============================================================================
 ;; call-with-retries exhaustion

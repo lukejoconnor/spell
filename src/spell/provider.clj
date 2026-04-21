@@ -356,7 +356,7 @@
         (if (>= shared-length min-chars)
           (let [shared (subs prompt 0 shared-length)
                 tail (subs prompt shared-length)]
-            (if (str/blank? tail)
+            (if (zero? (count tail))
               [{:type "text" :text shared :cache_control {:type "ephemeral"}}]
               [{:type "text" :text shared :cache_control {:type "ephemeral"}}
                {:type "text" :text tail :cache_control {:type "ephemeral"}}]))
