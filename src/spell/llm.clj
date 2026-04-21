@@ -131,6 +131,24 @@
   [result]
   (= :trailing-expression (:spell/recovery-phase result)))
 
+(defn- completion-tail-do-quine?
+  [program]
+  (and (seq? program)
+       (= 'quine (first program))
+       (= 'completion (second program))
+       (let [tail (last program)]
+         (and (seq? tail)
+              (= 'eval (first tail))
+              (= 2 (count tail))
+              (seq? (second tail))
+              (= 'do (first (second tail)))))))
+
+(defn- same-tail-recoverable?
+  [program result]
+  (and (trailing-expression-error? result)
+       (completion-tail-do-quine? program)
+       (nil? (:containing-form result))))
+
 (defn- recovery-source-result
   [result]
   (if (trailing-expression-error? result)
@@ -185,7 +203,7 @@
           _     (throw-if-recovery-exhausted! :eval (:error error-map))
           _     (eval/vlog (str indent "Recovery attempt: "
                                 (inc *recovery-depth*) "/" max-recovery-attempts))
-          recovery-quine (if (trailing-expression-error? result)
+          recovery-quine (if (same-tail-recoverable? program result)
                            (build-same-tail-recovery-quine program error-map)
                            (build-inert-recovery-quine program error-map))
           _     (eval/vlog (str indent "Recovery quine: " (pr-str recovery-quine)))
