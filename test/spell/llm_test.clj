@@ -1407,6 +1407,22 @@
         (is (str/includes? second-recovery-prompt "Earlier expressions in this same do block will be reevaluated first."))
         (is (not (str/includes? second-recovery-prompt "(prune)"))))))
 
+  (testing "nested eval failure in the do body still uses inert recovery"
+    (let [prompts (atom [])
+          llm (th/make-test-runner
+               {:response-fn (fn [prompt]
+                               (swap! prompts conj prompt)
+                               (if (= 1 (count @prompts))
+                                 "(def x 41) (eval '(+ x missing)) '(+ x 1)))"
+                                 "(def x 41) '(+ x 1)))"))}
+               :namespaces {} :prefill? false)]
+      (let [result (llm "(quine completion (eval (do ")
+            recovery-prompt (second @prompts)]
+        (is (= 42 result))
+        (is (str/includes? recovery-prompt "none of its bindings are live unless you redefine them"))
+        (is (str/includes? recovery-prompt "(prune)"))
+        (is (not (str/includes? recovery-prompt "Earlier expressions in this same do block will be reevaluated first."))))))
+
   (testing "shared recovery limit stops eval-only runaway loops"
     (let [call-count (atom 0)]
       (let [llm (th/make-test-runner
