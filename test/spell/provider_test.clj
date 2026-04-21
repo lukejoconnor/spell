@@ -31,6 +31,10 @@
         (= ::timeout result) (throw (ex-info "Timed out reading request body" {}))
         :else (json/read-str (.toString out "UTF-8") :key-fn keyword)))))
 
+(defn- repeated-string
+  [n s]
+  (apply str (repeat n s)))
+
 ;; =============================================================================
 ;; Anthropic PF response parsing
 ;; =============================================================================
@@ -191,14 +195,17 @@
 ;; =============================================================================
 
 (deftest cache-min-chars-test
-  (testing "opus-4-5 returns 16000"
-    (is (= 16000 (#'provider/cache-min-chars "claude-opus-4-5-20250901"))))
+  (testing "opus-4-5 returns 4000"
+    (is (= 4000 (#'provider/cache-min-chars "claude-opus-4-5-20250901"))))
 
-  (testing "opus-4-6 returns 16000"
-    (is (= 16000 (#'provider/cache-min-chars "claude-opus-4-6-20250301"))))
+  (testing "opus-4-6 returns 4000"
+    (is (= 4000 (#'provider/cache-min-chars "claude-opus-4-6-20250301"))))
 
-  (testing "haiku-4-5 returns 16000"
-    (is (= 16000 (#'provider/cache-min-chars "claude-haiku-4-5-20251001"))))
+  (testing "opus-4-7 returns 4000"
+    (is (= 4000 (#'provider/cache-min-chars "claude-opus-4-7-20250416"))))
+
+  (testing "haiku-4-5 returns 4000"
+    (is (= 4000 (#'provider/cache-min-chars "claude-haiku-4-5-20251001"))))
 
   (testing "haiku-3 returns 8000"
     (is (= 8000 (#'provider/cache-min-chars "claude-haiku-3-20240307"))))
@@ -381,6 +388,47 @@
       (is (= [{:role "user" :content "prompt"}] (:messages body)))
       (is (= {:type "adaptive"} (:thinking body)))
       (is (= {:effort "high"} (:output_config body))))))
+
+(deftest anthropic-cache-prefix-request-test
+  (let [shared-prefix (repeated-string 4100 "a")
+        prompt-extends (str shared-prefix "fg")
+        cache-prefix (str shared-prefix "xyz")
+        short-prefix (repeated-string 3000 "b")]
+    (testing "tool-call path splits on the longest shared prefix when prompt extends prior content"
+      (let [request (#'provider/anthropic-tc-request "test" "claude-sonnet-4-20250514"
+                                                     prompt-extends nil nil false nil
+                                                     nil cache-prefix)
+            body (request-json-body request)]
+        (is (= [{:role "user"
+                 :content [{:type "text" :text shared-prefix :cache_control {:type "ephemeral"}}
+                           {:type "text" :text "fg" :cache_control {:type "ephemeral"}}]}]
+               (:messages body)))))
+
+    (testing "tool-call path keeps the prompt cached when prune/rethink shrinks it to the shared prefix"
+      (let [request (#'provider/anthropic-tc-request "test" "claude-sonnet-4-20250514"
+                                                     shared-prefix nil nil false nil
+                                                     nil cache-prefix)
+            body (request-json-body request)]
+        (is (= [{:role "user"
+                 :content [{:type "text" :text shared-prefix :cache_control {:type "ephemeral"}}]}]
+               (:messages body)))))
+
+    (testing "plain-text path uses a cached block when the prompt exactly matches the shared prefix"
+      (let [request (#'provider/anthropic-pf-request "test" "claude-sonnet-4-20250514"
+                                                     shared-prefix nil nil nil false nil
+                                                     nil shared-prefix)
+            body (request-json-body request)]
+        (is (= [{:role "user"
+                 :content [{:type "text" :text shared-prefix :cache_control {:type "ephemeral"}}]}]
+               (:messages body)))))
+
+    (testing "common prefixes below the threshold stay a plain string"
+      (let [request (#'provider/anthropic-tc-request "test" "claude-sonnet-4-20250514"
+                                                     (str short-prefix "xyz") nil nil false nil
+                                                     nil (str short-prefix "123"))
+            body (request-json-body request)]
+        (is (= [{:role "user" :content (str short-prefix "xyz")}]
+               (:messages body)))))))
 
 ;; =============================================================================
 ;; call-with-retries exhaustion
