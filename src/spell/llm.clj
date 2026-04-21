@@ -130,13 +130,16 @@
           _     (eval/vlog (str indent "Recovery attempt: "
                                 (inc *recovery-depth*) "/" max-recovery-attempts))
           recovery-prompt (recovery-prompt-text (:error error-map))
-          rethink-arg '(rethink "Error recovery - see _error for details.")
           recovery-arg (list 'eval
                          (list 'do
+                           ;; Keep the recovery marker inside the active tail so later
+                           ;; !extend pruning can compact recovery chatter without
+                           ;; dropping the original failing program from inert quine args.
+                           '(think "Error recovery - see _error for details.")
                            (list 'def '_recovery_prompt recovery-prompt)
                            (list 'def '_error error-map)
                            (list 'quote (list '!llm-self (list 'reopen 'completion)))))
-          recovery-quine (apply list (concat (seq program) [rethink-arg recovery-arg]))
+          recovery-quine (apply list (concat (seq program) [recovery-arg]))
           _     (eval/vlog (str indent "Recovery quine: " (pr-str recovery-quine)))
           retry (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
                           eval/*raw-text*       nil
