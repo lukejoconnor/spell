@@ -58,6 +58,13 @@
        "Reminder: Emit Spell code only, not prose. "
        "Error message: " error-msg))
 
+(defn- missing-tool-call-retry-message
+  "Instruction appended after a tool-call transport response omitted spell_suffix."
+  []
+  (str "\n;; system: retrying because the previous response did not call the required spell_suffix tool."
+       "\n;; Respond with exactly one spell_suffix tool call. Do not send assistant text, markdown, or a thinking-only response."
+       "\n;; The raw Spell suffix must be in the spell_suffix tool input."))
+
 ;; ---------------------------------------------------------------------------
 ;; Prefix Echo Deduplication
 ;; ---------------------------------------------------------------------------
@@ -417,13 +424,11 @@
                         base-user-msg (if prefill?
                                         "Continue this Spell program."
                                         prompt-str)
-                        max-tok (:max-tokens provider)
                         response (provider/call-with-retries
                                    (fn [err]
                                      (let [user-msg (if (and err (= :missing-tool-call (:type (ex-data err))))
                                                       (str base-user-msg
-                                                           "\n;; system: retrying — previous response was truncated or empty"
-                                                           (when max-tok (str ", max output tokens " max-tok)))
+                                                           (missing-tool-call-retry-message))
                                                       base-user-msg)]
                                        (provider/strip-code-fences
                                          (provider/call-llm provider user-msg opts))))
@@ -565,13 +570,11 @@
                           (eval/vlog (str indent "Prompt: " (pr-str prompt))))
                opts     (cond-> {:system system}
                           model (assoc :model model))
-               max-tok  (:max-tokens leaf-provider)
                response (provider/call-with-retries
                           (fn [err]
                             (let [msg (if (and err (= :missing-tool-call (:type (ex-data err))))
                                        (str prompt-str
-                                            "\n;; system: retrying — previous response was truncated or empty"
-                                            (when max-tok (str ", max output tokens " max-tok)))
+                                            (missing-tool-call-retry-message))
                                        prompt-str)]
                               (provider/strip-code-fences
                                 (provider/call-llm leaf-provider msg opts))))
