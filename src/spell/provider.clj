@@ -300,8 +300,20 @@
                                                                        total-calls))
                                           :max_total_tokens (reduce max 0 (map #(:max_total_tokens % 0)
                                                                                (vals with-costs))))
-                (zero? reasoning-total) (dissoc :reasoning_output_tokens))]
-    {:by-model with-costs :total (with-legacy-usage-keys total)}))
+                (zero? reasoning-total) (dissoc :reasoning_output_tokens))
+        records (:records @usage-atom)]
+    (cond-> {:by-model with-costs :total (with-legacy-usage-keys total)}
+      (seq records) (assoc :per-call
+                           (mapv (fn [{:keys [model usage cost]}]
+                                   (let [u (canonical-usage usage)]
+                                     (cond-> {:model model
+                                              :uncached_input_tokens (:uncached_input_tokens u 0)
+                                              :cached_input_tokens (:cached_input_tokens u 0)
+                                              :cache_write_input_tokens (:cache_write_input_tokens u 0)
+                                              :visible_output_tokens (:visible_output_tokens u 0)
+                                              :reasoning_output_tokens (:reasoning_output_tokens u 0)}
+                                       cost (assoc :cost cost))))
+                                 records)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Anthropic Provider
