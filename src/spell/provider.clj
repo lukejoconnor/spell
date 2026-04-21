@@ -527,11 +527,8 @@
                                               :properties {:suffix {:type "string"}}
                                               :required ["suffix"]
                                               :additionalProperties false}}]
-                      ;; Manual thinking (enabled+budget_tokens) forbids forced tool use.
-                      ;; Adaptive thinking (opus-4-7) supports forced tool use, so keep "any".
-                      :tool_choice {:type (if (and thinking-enabled? (not adaptive-only?))
-                                            "auto"
-                                            "any")}}
+                      ;; thinking forbids forced tool use; use "auto" instead of "any"
+                      :tool_choice {:type (if thinking-enabled? "auto" "any")}}
                cached-system (assoc :system cached-system)
                stream? (assoc :stream true)
                ;; Opus 4.7 requires adaptive thinking; budget_tokens is rejected.
