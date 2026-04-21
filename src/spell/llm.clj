@@ -48,13 +48,34 @@
                       error-msg
                       (assoc (if (= phase :reader) :parse-error :error) error-msg))))))
 
-(defn- recovery-prompt-text
-  "Instruction shown to the model during recovery attempts."
+(defn- inert-recovery-prompt-text
+  "Instruction shown when recovery restarts from an inert quine branch."
   [error-msg]
   (str "The previous Spell program threw an error. "
        "Please recover from this error by writing a new program that fulfills "
        "the intent of the previous program while avoiding the error. "
-       "The previous program is inert text; it will not be reevaluated. "
+       "The previous program is inert text; it will not be reevaluated, "
+       "and none of its bindings are live unless you redefine them. "
+       "Do not rely on bindings or data from the previous program remaining "
+       "available in later prompts. "
+       "If you need to keep any useful context, carry it forward now by "
+       "emitting fresh summaries or literal values, or by repeating tool calls "
+       "that recover the relevant files, definitions, tests, or other evidence. "
+       "Reminder: Emit Spell code only, not prose. "
+       "Error message: " error-msg))
+
+(defn- same-tail-recovery-prompt-text
+  "Instruction shown when recovery reopens the current do-block tail."
+  [error-msg]
+  (str "The previous Spell program threw an error in its trailing expression. "
+       "Please recover by continuing the same `(eval (do ...))` block with a new "
+       "trailing expression that fulfills the original intent while avoiding the error. "
+       "Earlier expressions in this same do block will be reevaluated first. "
+       "Their bindings remain available if reevaluation still succeeds. "
+       "The previous failing trailing expression is now inert earlier context "
+       "because your new expression will be appended after it. "
+       "Use the existing live bindings when helpful, but do not repeat the "
+       "failing trailing expression unchanged. "
        "Reminder: Emit Spell code only, not prose. "
        "Error message: " error-msg))
 
@@ -106,6 +127,45 @@
 ;; LLM Engine
 ;; ---------------------------------------------------------------------------
 
+(defn- trailing-expression-error?
+  [result]
+  (= :trailing-expression (:spell/recovery-phase result)))
+
+(defn- recovery-source-result
+  [result]
+  (if (trailing-expression-error? result)
+    (or (:result result) result)
+    result))
+
+(defn- recovery-error-map
+  [result]
+  (let [source (recovery-source-result result)
+        location-form (or (:containing-form source) (:expr source))]
+    (cond-> {:error (recovery/clean-error-message (:err source))}
+      location-form
+      (assoc :in (list 'quote location-form))
+      (:trace source)
+      (assoc :trace (:trace source)))))
+
+(defn- build-inert-recovery-quine
+  [program error-map]
+  (let [recovery-prompt (inert-recovery-prompt-text (:error error-map))
+        prune-arg '(prune)
+        recovery-arg (list 'eval
+                       (list 'do
+                         (list 'def '_recovery_prompt recovery-prompt)
+                         (list 'def '_error error-map)
+                         (list 'quote (list '!llm-self (list 'reopen 'completion)))))]
+    (apply list (concat (seq program) [prune-arg recovery-arg]))))
+
+(defn- build-same-tail-recovery-quine
+  [program error-map]
+  (let [recovery-prompt (same-tail-recovery-prompt-text (:error error-map))]
+    (eval/reopen program
+                 (list 'def '_recovery_prompt recovery-prompt)
+                 (list 'def '_error error-map)
+                 (list 'quote (list '!llm-self (list 'reopen 'completion))))))
+
 (defn- try-quine-recovery
   "Attempt quine-extension recovery: append error info to the quine and reopen it.
    Returns eval result (ok or err). Throws on non-quine or shared recovery limit.
@@ -120,26 +180,14 @@
       (eval/vlog (str indent "Wrapping in quine completion for recovery"))
       (try-quine-recovery wrapped result variant-builtins eval-builtin gated-ns-hints))
     ;; Normal path: program is already (quine completion ...)
-    (let [error-map (cond-> {:error (recovery/clean-error-message (:err result))}
-                      (:containing-form result)
-                      (assoc :in (list 'quote (:containing-form result)))
-                      (:trace result)
-                      (assoc :trace (:trace result)))
+    (let [error-map (recovery-error-map result)
           indent (apply str (repeat eval/*llm-depth* "  "))
           _     (throw-if-recovery-exhausted! :eval (:error error-map))
           _     (eval/vlog (str indent "Recovery attempt: "
                                 (inc *recovery-depth*) "/" max-recovery-attempts))
-          recovery-prompt (recovery-prompt-text (:error error-map))
-          recovery-arg (list 'eval
-                         (list 'do
-                           ;; Keep the recovery marker inside the active tail so later
-                           ;; !extend pruning can compact recovery chatter without
-                           ;; dropping the original failing program from inert quine args.
-                           '(think "Error recovery - see _error for details.")
-                           (list 'def '_recovery_prompt recovery-prompt)
-                           (list 'def '_error error-map)
-                           (list 'quote (list '!llm-self (list 'reopen 'completion)))))
-          recovery-quine (apply list (concat (seq program) [recovery-arg]))
+          recovery-quine (if (trailing-expression-error? result)
+                           (build-same-tail-recovery-quine program error-map)
+                           (build-inert-recovery-quine program error-map))
           _     (eval/vlog (str indent "Recovery quine: " (pr-str recovery-quine)))
           retry (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
                           eval/*raw-text*       nil
@@ -164,7 +212,7 @@
         _         (eval/vlog (str indent "Recovery attempt: "
                                   (inc *recovery-depth*) "/" max-recovery-attempts))
         _         (eval/vlog (str indent "Parse error: " error-msg))
-        recovery-prompt (recovery-prompt-text (str "Reader error: " error-msg))
+        recovery-prompt (inert-recovery-prompt-text (str "Reader error: " error-msg))
         error-map {:error (str "Reader error: " error-msg) :raw raw}
         recovery-quine (list 'quine 'completion
                          (list 'eval
@@ -351,7 +399,9 @@
                  (let [result (eval/spell-eval expr caller-env)]
                    (if (eval/ok? result)
                      (:ok result)
-                     (throw (ex-info (:err result) {:result result})))))))]
+                     (throw (ex-info (:err result)
+                                     {:result result
+                                      :spell/recovery-phase :trailing-expression})))))))]
      eval-builtin)))
 
 (defn- wrap-nl
@@ -376,7 +426,9 @@
    - :llm-var          - optional var ref to bind as 'llm for self-recursion (e.g., #'llm)
    - :recover          - error recovery setting (default: true = enabled).
                          - true: namespace recovery + quine-extension recovery
-                           (recovery quine adds error info + rethink, then reopens)
+                           (trailing-expression errors reopen the same do tail;
+                           other recovery quines add error info, a one-turn
+                           prune marker, then reopen)
                          - false: disable recovery (errors propagate immediately)
                          - fn: custom namespace recovery function (result-map) -> fixed-expr
    - :prefill?         - whether the provider supports assistant prefill (default: true).
