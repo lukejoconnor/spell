@@ -5,7 +5,9 @@
             [clojure.string :as str]
             [clojure.tools.cli :refer [parse-opts]]
             [spell.api :as api]
-            [spell.provider :as provider])
+            [spell.provider :as provider]
+            [spell.runtime :as runtime])
+  (:import [java.util.concurrent TimeUnit])
   (:gen-class))
 
 (def provider-prefixes
@@ -99,6 +101,31 @@
     (set? v) (mapv json-safe v)
     (seq? v) (mapv json-safe v)
     :else (pr-str v)))
+
+(defn- partial-work?
+  "Return true when the running Spell agent has produced at least one raw turn."
+  []
+  (boolean
+    (some (fn [[_ entry]]
+            (some? @(get entry :last-raw)))
+          @runtime/registry)))
+
+(defn- patch-on-disk?
+  "Best-effort dirty-worktree check for shutdown reporting."
+  []
+  (try
+    (let [proc (-> (ProcessBuilder. ["git" "status" "--porcelain"])
+                   (.redirectErrorStream true)
+                   (.start))
+          finished? (.waitFor proc 2 TimeUnit/SECONDS)]
+      (if finished?
+        (and (zero? (.exitValue proc))
+             (not (str/blank? (slurp (.getInputStream proc)))))
+        (do
+          (.destroyForcibly proc)
+          false)))
+    (catch Exception _
+      false)))
 
 (defn- parse-format-key
   "Parse a JSON-provided key spec into a Clojure key for format validation.
@@ -210,6 +237,19 @@
      :error_type (some-> (:type data) name)
      :error_data (json-safe data)}))
 
+(defn- killed-response [req mode start-ns]
+  (let [partial-work? (partial-work?)
+        patch-on-disk? (patch-on-disk?)]
+    {:ok false
+     :mode mode
+     :latency_ms (/ (double (- (System/nanoTime) start-ns)) 1000000.0)
+     :error "spell.benchmark-api was terminated before completing"
+     :error_type "killed"
+     :patch_on_disk patch-on-disk?
+     :error_data (json-safe {:patch_on_disk patch-on-disk?
+                             :partial_work partial-work?})
+     :trace_dir (:trace-dir req)}))
+
 (defn- normalize-budget [budget]
   (cond
     (nil? budget) nil
@@ -316,6 +356,26 @@
 
       :else
       (let [req (read-json-source (:request options))
-            response (run-request req)]
-        (write-json-dest (:response options) response)
-        (System/exit (if (:ok response) 0 1))))))
+            start-ns (System/nanoTime)
+            response-state (atom :pending)
+            shutdown-hook (Thread.
+                           ^Runnable
+                           (fn []
+                             (when (= :pending @response-state)
+                               (write-json-dest (:response options)
+                                                (killed-response req (or (:mode req) "spell") start-ns))
+                               (flush))))]
+        (.addShutdownHook (Runtime/getRuntime) shutdown-hook)
+        (try
+          (let [response (run-request req)]
+            (write-json-dest (:response options) response)
+            (reset! response-state :done)
+            (System/exit (if (:ok response) 0 1)))
+          (catch Exception e
+            (reset! response-state :failed)
+            (throw e))
+          (finally
+            (when shutdown-hook
+              (try
+                (.removeShutdownHook (Runtime/getRuntime) shutdown-hook)
+                (catch IllegalStateException _)))))))))
