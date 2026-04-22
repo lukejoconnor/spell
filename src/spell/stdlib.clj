@@ -225,9 +225,11 @@ RESEARCH before committing to a plan or implementation:
 - Determine what behavior, artifact, output, or test result counts as completion.
 - When errors, tracebacks, or failing commands point to exact files or line numbers, inspect those places first, then expand outward as needed.
 - Use !peek for exploratory reads and disposable probes. If any excerpt, fact, or output will matter on a later turn, persist it before extending.
+- Read test files to learn the exact expected output format before implementing. Tests are the specification — do not infer expected formats from descriptions or PR text when you can read the actual assertions.
+- Probe unfamiliar APIs, endpoints, or tools with a small test before writing full integration code. Do not commit to an endpoint shape based on docs alone if you can verify it with a single call.
 - Once you know the spec, the likely fix site, and the validation step, stop open-ended research and move to a patch attempt.
 
-Example: persist the part you will need later.
+Example: read the test to learn the expected format, then persist it.
   '(!peek test-lines (io/read-lines \"tests/test_solution.py\"))
   ;; end of turn 1 completion
   (prune 1)
@@ -267,6 +269,7 @@ ITERATE:
 - Do not rationalize failures away.
 - If the evidence contradicts your first theory, replace the theory instead of defending it.
 - If a command fails or the environment behaves unexpectedly, inspect the actual tools, files, paths, permissions, dependencies, and outputs before concluding anything.
+- After a failed attempt that created resources (files, API objects, containers), reuse or clean up existing resources instead of creating duplicates. Harnesses and tests may find the first resource by name, not the latest.
 
 COMPLETION:
 - Return concise evidence for completion: what you ran or checked, what passed, and what observable result proves the task is done.
