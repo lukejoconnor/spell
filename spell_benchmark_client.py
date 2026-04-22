@@ -106,11 +106,9 @@ class SpellBenchmarkClient:
             trace_dir = self._trace_dir_with_files(run_cwd, payload_request.get("trace_dir"))
             recovered_payload = self._try_parse_payload(stdout)
             payload = {
+                **(recovered_payload or {}),
                 "ok": False,
                 "mode": payload_request.get("mode", "unknown"),
-                "result": recovered_payload.get("result") if recovered_payload else None,
-                "usage": recovered_payload.get("usage") if recovered_payload else None,
-                "latency_ms": recovered_payload.get("latency_ms") if recovered_payload else None,
                 "error": f"spell.benchmark-api timed out after {timeout}s",
                 "error_type": "timeout",
                 "error_data": {
@@ -118,16 +116,18 @@ class SpellBenchmarkClient:
                     "stdout": stdout[:4000],
                     "stderr": stderr[:4000],
                     "cmd": cmd,
-                    "recovered_payload": bool(recovered_payload),
+                    "recovered_payload": recovered_payload,
                 },
                 "trace_dir": recovered_payload.get("trace_dir") if recovered_payload and recovered_payload.get("trace_dir") else trace_dir,
             }
+            if recovered_payload is not None:
+                payload["recovered_payload"] = recovered_payload
             return BenchmarkAPIResponse(
                 ok=False,
                 mode=str(payload["mode"]),
-                result=payload["result"],
-                usage=payload["usage"],
-                latency_ms=payload["latency_ms"],
+                result=payload.get("result"),
+                usage=payload.get("usage"),
+                latency_ms=payload.get("latency_ms"),
                 error=payload["error"],
                 error_type=payload["error_type"],
                 error_data=payload["error_data"],
