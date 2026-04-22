@@ -2,6 +2,7 @@
   (:require [clojure.data.json :as json]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
+            [spell.runtime :as runtime]
             [spell.benchmark-api :as benchmark-api]))
 
 (deftest normalize-format-spec-test
@@ -59,6 +60,21 @@
       (is (nil? (get-in out [:usage :by-model "unknown-model" :cost])))
       (is (nil? (get-in out [:usage :total :cost])))
       (is (string? (json/write-str out))))))
+
+(deftest killed-response-reflects-partial-work-test
+  (try
+    (runtime/register! :main)
+    (reset! (:last-raw (get @runtime/registry :main)) "(def x 1)")
+    (let [start (System/nanoTime)
+          out ((var benchmark-api/killed-response) {:trace-dir "traces/demo"} "spell" start)]
+      (is (false? (:ok out)))
+      (is (= "killed" (:error_type out)))
+      (is (true? (:patch_on_disk out)))
+      (is (true? (get-in out [:error_data "patch_on_disk"])))
+      (is (true? (get-in out [:error_data "partial_work"])))
+      (is (= "traces/demo" (:trace_dir out))))
+    (finally
+      (reset! runtime/registry {}))))
 
 (deftest fireworks-model-spec-and-default-agent-test
   (testing "parse-model-spec accepts fireworks prefix"
