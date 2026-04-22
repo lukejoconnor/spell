@@ -214,168 +214,164 @@ Bind the result, inspect it on the next turn, then decide what to do next."}
   {:short-docs "Context reminders for Spell program completion."
    :docs {:guide "REMINDER: This text belongs to the prefix of a Spell program that you are tasked with completing. Your entire response is code; embed all natural language within string literals. Follow the instructions on how to write correct Spell code in your system prompt.
 
-For coding tasks (bug fixes, feature implementation, test-driven work), consult (!describe reminders :coding) on the first turn for a research-plan-implement-verify-iterate workflow and concrete examples of how to use peek/persist, inspect traces, and return concise validation evidence. For SWE-bench-specific guidance, consult (!describe reminders :swe-bench)."
-          :coding "CODING TASKS — Research, plan, implement, verify, iterate.
+For coding tasks (bug fixes, feature implementation, test-driven work), consult (!describe reminders :coding) on the first turn for a research-plan-implement-verify workflow focused on !peek, persist, short validation loops, and concise completion evidence."
+          :coding "CODING TASKS - Research, plan, implement, verify, iterate.
 
 Expect early verification failures. They are normal. Use them to refine your understanding, and continue until the actual task is complete.
 
 RESEARCH before committing to a plan or implementation:
 - Identify the relevant code, tests, configs, scripts, data files, and output locations.
 - Treat the real environment as the source of truth. Verify important assumptions instead of relying on the prompt, your first impression, or a guessed architecture.
-- Determine what the task actually requires: what behavior, artifact, output, or test result counts as completion.
-- When errors, tracebacks, or failing commands point to exact files or line numbers, inspect those exact places first, then expand outward as needed.
-- Use !peek-now for exploratory reads and disposable probes. Persist only the specific snippets, facts, or outputs you will need on later turns.
+- Determine what behavior, artifact, output, or test result counts as completion.
+- When errors, tracebacks, or failing commands point to exact files or line numbers, inspect those places first, then expand outward as needed.
+- Use !peek for exploratory reads and disposable probes. If any excerpt, fact, or output will matter on a later turn, persist it before extending.
+- Once you know the spec, the likely fix site, and the validation step, stop open-ended research and move to a patch attempt.
 
-Examples:
-
-Check dependencies and environment assumptions:
-  '(!peek env-check
-      (io/sh \"which python3 && python3 --version && python3 -m pytest --version && which rg\")
-      pkg-check
-      (io/sh \"python3 - <<'PY'\nimport importlib.util\nmods = ['pytest', 'numpy', 'pandas']\nfor name in mods:\n    print(f'{name}:', bool(importlib.util.find_spec(name)))\nPY\"))
-  ;; end of turn 1 completion
-  (prune 2)
-  ;; start of turn 2 suffix
-  (think \"Summary of peek output: python3 and pytest are available; rg is installed; numpy and pandas are importable.\")
-  '(!call-now source-hits
-      (io/grep \"def handle_request|class Handler\" \"src\" {:include \"*.py\" :context 8 :max-count 20}))
-
-Search for the real implementation site before editing:
-  '(!peek def-hits
-      (io/grep \"def handle_request|class Handler\" \"src\" {:include \"*.py\" :context 8 :max-count 20}))
+Example: persist the part you will need later.
+  '(!peek test-lines (io/read-lines \"tests/test_solution.py\"))
   ;; end of turn 1 completion
   (prune 1)
   ;; start of turn 2 suffix
-  (think \"Summary of peek output: handle_request is defined in src/server.py and referenced from src/router.py.\")
-  '(!call-now impl-lines (io/read-lines \"src/server.py\" 201 240)
-               router-lines (io/read-lines \"src/router.py\" 110 145))
-
-Read exact ranges along an error trace:
-  '(!peek verify
-      (io/sh \"cd /repo && python3 -m pytest tests/test_server.py::test_handles_empty_input -q\"))
-  ;; end of turn 1 completion
-  (prune 1)
-  ;; start of turn 2 suffix
-  (persist err-summary
-      \"Summary of !peek output: AssertionError in test_handles_empty_input; expected empty list but got nil from handle_request.\")
-  '(!call-now test-lines   (io/read-lines \"tests/test_server.py\" 52 84)
-               router-lines (io/read-lines \"src/router.py\" 110 145)
-               impl-lines   (io/read-lines \"src/server.py\" 201 240))
-
-Explore a large file ephemerally, then persist only the relevant subset:
-  '(!peek file-lines (io/read-lines \"src/server.py\"))
-  ;; end of turn 1 completion
-  (prune 1)
-  ;; start of turn 2 suffix
-  (persist handler-block (subvec file-lines 200 240))
-  '(!peek test-lines (io/read-lines \"tests/test_server.py\" 52 84))
-  ;; end of turn 2 completion
-  (prune 1)
-  ;; start of turn 3 suffix
-
-Use !peek for disposable file creation or one-off probes:
-  '(!peek _
-      (io/write-file \"/tmp/check.py\" verify-script)
-      probe (io/sh \"python3 /tmp/check.py\"))
-  ;; end of turn 1 completion
-  (prune 2)
-  ;; start of turn 2 suffix
-
-Read the tests to find constraints not in the task description:
-  '(!peek test-code (io/read-lines \"tests/test_solution.py\"))
-  ;; end of turn 1 completion
-  (prune 1)
-  ;; start of turn 2 suffix
-  (persist size-check (subvec test-code 10 16))
-  (think \"The test compresses output.bin with zlib and asserts the result is under 10000 bytes — I need a compact representation, not a raw dump.\")
+  (persist relevant-assertion (subvec test-lines 10 16))
+  '(!call-now impl-lines (io/read-lines \"src/solution.py\" 120 170))
 
 PLAN before acting:
-- State what you think is going on, what parts of the system are relevant, and what you will do next.
-- Identify the concrete files, commands, or artifacts involved.
-- State how you will tell whether the task is complete.
-- If multiple locations, layers, or output paths may matter, name them before proceeding.
-
-Example:
-  (think \"Plan: inspect the parser and the failing test, update the parser behavior, then run the exact validation command and confirm the expected output/artifact.\")
-
-Your research must progress to the planning stage: gather needed context, persist what is relevant, then when you understand the existing logic, stop researching and plan.
+- State what you think is going on, which file or files are likely involved, and how you will verify the result.
+- Name the concrete fix site or sites before editing. If evidence points to multiple coupled sites, name them all before patching.
+- Prefer the smallest change supported by the evidence. Do not add speculative defenses or broad rewrites without evidence. But do not force a one-line patch if the behavior clearly spans multiple sites.
+- Be ready to change direction quickly if tests, tool output, or file contents contradict your initial diagnosis.
 
 IMPLEMENT:
-- Make changes that are supported by the evidence gathered during research.
+- Make the first credible patch once you understand the task; do not keep researching indefinitely.
 - Prefer structured io/ tools for reading and editing files.
 - Use io/sh for running programs, tests, package managers, and shell utilities.
-- Keep the feedback loop intact: when you need results for later reasoning, bind them with !call-now or inspect them with !peek-now.
+- Prefer short feedback loops over one large script or refactor when behavior is still uncertain.
+- Keep needed results in context with !call-now or with !peek plus explicit persist.
 
 VERIFY:
-- Use the actual validation step that matches the task: exact test, exact command, exact output check, or exact artifact check.
-- Use !peek-now for io/sh verification outputs, which may be verbose.
+- Run the actual validation that matches the task: exact test, exact command, exact output check, or exact artifact check.
+- Use !peek for verbose verification output.
 - After a failed verification, summarize what the failure means before moving on.
 
-Example:
+Example: rerun after updating your diagnosis.
   '(!peek verify
-      (io/sh \"cd /repo && python3 -m pytest tests/test_server.py::test_handles_empty_input -q\"))
+      (io/sh \"cd /repo && python3 -m pytest tests/test_solution.py::test_handles_empty_input -q\"))
   ;; end of turn 1 completion
   (prune 1)
   ;; start of turn 2 suffix
-  (def err-summary \"Summary of !peek output: AssertionError in test_handles_empty_input; expected empty list but got nil from handle_request.\")
-  '(!call-now impl-lines (io/read-lines \"src/server.py\" 201 240))
+  (think \"The failure still comes from the handler path, not the parser. Update the handler and rerun the same test.\")
+  '(!call-now impl-lines (io/read-lines \"src/solution.py\" 120 170))
 
 ITERATE:
 - If verification fails, keep going. Read the failure, update your model of the task, and try again.
-- Re-check your assumptions after each surprising result. Be open to the possibility that your previous reasoning, chosen file, inferred root cause, or validation method was wrong.
+- Do not rationalize failures away.
+- If the evidence contradicts your first theory, replace the theory instead of defending it.
 - If a command fails or the environment behaves unexpectedly, inspect the actual tools, files, paths, permissions, dependencies, and outputs before concluding anything.
-
-Example:
-  (think \"My earlier assumption was wrong: the failure is not in src/router.py; the traceback and test output point to src/server.py, and pytest is using a different code path than my custom repro.\")
 
 COMPLETION:
 - Return concise evidence for completion: what you ran or checked, what passed, and what observable result proves the task is done.
-- Do not treat diagnosis, a plausible patch, or a partial check as completion.
+- Diagnosis alone is not completion, and a plausible patch is not completion until you verify it."
+          :orchestrate "ORCHESTRATION TASKS - Decompose only when the task structure justifies it.
 
-Example:
-  (think \"Validation evidence: ran `python3 -m pytest tests/test_server.py::test_handles_empty_input -q` and it passed; output file `/app/out.json` now exists and contains the expected empty list.\")"
-          :swe-bench "CODING TASKS — Research, plan, implement, verify. Expect first attempts to fail; iterate until the real tests pass.
+Orchestration is a tool, not a goal. The baseline is still a direct coding loop. Only add orchestration when it creates a real advantage: independent exploration, disjoint implementation work, bounded experiments, or a deliberate context reset between phases.
 
-RESEARCH before proposing a fix:
-- Read the actual failing test(s) in full. If the task names a test or a traceback points at a file:line, find that function and read its body entirely. The test's assertions ARE the specification.
-- Follow tracebacks to their source line. If the PR/issue description points to file X line Y, start reading there — not at the first call site you find by grep.
-- Read enough of the test file to cover test functions that the harness may have added. Do not stop a sed/read range at an arbitrary line.
-- Use !peek-now for bulk exploration reads you don't need to retain. Persist only values that are escape-fragile (multi-line regex, long verbatim strings) or expensive to recompute.
+DECIDE whether orchestration is warranted:
+- Do not orchestrate by default. If one fix site and one validation step are already clear, stay in the basic research-plan-implement-verify loop.
+- Orchestrate when there are genuinely separable questions or workstreams: independent subsystems, two plausible root causes, a wide codebase scan plus a focused implementation, or a long investigation that would benefit from summarizing before continuing.
+- Prefer the lightest useful form of orchestration first:
+  - same-agent phase split: research -> summarize -> implement
+  - parallel tool reads in one turn
+  - summarize-and-reopen with rethink or !llm-self
+  - bounded helper agents only when the work can be specified cleanly
+- If the first orchestration attempt creates confusion, invalid code, or duplicated work, collapse back to a single-agent loop instead of doubling down.
 
-PLAN before editing:
-- State the root cause in one sentence: 'The bug is in FILE at LINE because X.'
-- State the fix site: 'The minimal change is in FILE at LINE.'
-- Name the specific test function(s) you will run to verify. If you cannot name them, you have not found the spec yet — go back to research.
-- Prefer the MINIMAL change. If a traceback points at one line, fix that line. Do not restructure adjacent code. Do not add 'defensive' overrides you were not asked for. Do not fix at the consumer layer when the producer is the bug site.
-- When a helper and its caller share responsibility for a behavior (e.g. a gate condition in the caller + rendering in the helper), changes to one usually require reviewing the other. Check both.
+PLAN the structure before you fan out:
+- Name the subproblems explicitly. Each subproblem should have a concrete question, owner, and success condition.
+- Keep the orchestrator state small: a short plan, a few persisted facts, and the current decision. Do not carry raw file dumps or long transcripts longer than needed.
+- Ask explorers for answers or summaries, not whole-file regurgitation, unless exact text is required later.
+- Give workers narrow scopes: exact files, exact questions, or exact experiments. Prefer disjoint ownership over overlapping edits.
+- Never assume delegation succeeded. Inspect what came back and verify it against the repository before building on it.
 
-IMPLEMENT:
-- Use io/str-replace for small targeted patches and io/replace-lines for multi-line hunks with known line numbers. Reserve io/sh for running programs (tests, scripts, git) — not for file editing via sed/awk/Python heredocs.
-- Prefer io/read-file and io/read-lines over cat/sed in io/sh. Prefer io/grep over shell grep.
+EXECUTE with bounded steps:
+- After each exploration phase, summarize what changed in your understanding before starting implementation.
+- Use rethink when a long exploration phase has converged on a smaller plan.
+- If you spawn helper agents, give them a narrow contract and a stop condition. Avoid open-ended \"solve the whole task\" delegation.
+- When a helper returns noisy output or malformed code, salvage only the validated facts. Do not import its whole reasoning into your context.
+- Main-thread verification is mandatory. The orchestrator is responsible for the final patch and the final validation.
 
-VERIFY before declaring success:
-- Run the EXACT test function the task targets, by name, from the test file the harness will run. Not a broader -k filter. Not your own bespoke repro script. If the failing test lives in tests/test_pickle.py, run tests/test_pickle.py — not tests/test_legend.py.
-- If a test fails, READ THE ASSERTION. Compare expected vs actual byte-for-byte and adjust the patch. The normal path is: run test → see failure → read assertion → adjust patch → re-run. Three iterations is normal; giving up after one is premature.
-- 'exit 0 on a narrow test subset' is not success. A passing custom repro script you wrote is not success. Only the harness FAIL_TO_PASS tests are success.
-- Expect failure on the first attempt. Plan for iteration.
+Example: choose not to orchestrate when the task is already local.
+  (think \"One failing test, one obvious fix site, one exact pytest command. A direct patch loop is cheaper than delegation.\")
+  '(!call-now impl-lines (io/read-lines \"src/solution.py\" 120 170)
+               test-lines (io/read-lines \"tests/test_solution.py\" 10 30))
 
-DO NOT rationalize test failures away:
-- 'The test must be stale' — almost never. The task prompt says all test files are already updated. A failure after your patch IS caused by your change or by an incomplete fix.
-- 'My repro passes so the fix is correct' — the repro is not the spec; the harness test is.
-- 'The failure is in an unrelated module' — check: does your patch modify a function that module calls, directly or transitively? If yes, it is related.
-- 'I will run the concrete/algebraic suite instead to confirm the fix' — no. Run the suite that exercises the thing you changed.
+Example: split a broad search into two bounded explorer questions, then synthesize.
+  '(!call-now api-shape
+      (agents/!spawn-ask
+        \"Read src/api.py and answer only: which function validates the request, which function writes the response, and what tests mention the failing flag? Return a short map.\")
+      ui-shape
+      (agents/!spawn-ask
+        \"Read src/ui.py and answer only: where is the toggle rendered, what state drives it, and what tests mention it? Return a short map.\"))
+  ;; next turn
+  (think \"The API path owns validation, the UI path only mirrors state. Fix API first, then update the UI if the rendered state still disagrees.\")
+  '(!call-now impl-lines (io/read-lines \"src/api.py\" 80 150))
 
-TOOLS AND DEPENDENCIES — install, don't stub:
-- Tool not installed (pytest, roman, etc.): install it. Use 'python -m pip install <pkg>' to avoid PATH issues. For SWE-bench the testbed python is typically /opt/miniconda3/envs/testbed/bin/python; 'which python' will show it.
-- 'python: not found': try python3. 'pytest: not found': try 'python -m pytest', or the repo's own bin/test runner, or 'python -m unittest'.
-- pip install PERSISTS through the eval boundary. PYTHONPATH=/tmp shims DO NOT — they only work inside your own session. Do not stub missing modules in /tmp. Install them for real.
-- A dependency listed in requirements.txt is NOT the same as a dependency installed in the environment. If your fix needs a package, actually install it in the session — do not just note that it needs installation.
-- If pip install fails from transient network errors: retry. If it keeps failing: try an alternate index, check if the package is importable under a different name, or use the package the repo actually vendors. Do not give up on the first failure.
+Example: compress after exploration, then reopen with a clean implementation prefix.
+  (think \"I explored three files and two failing tests. The root cause is now clear: the serializer drops the flag before the renderer sees it.\")
+  (rethink \"Plan: edit serializer.py to preserve the flag, verify with tests/test_serializer.py::test_preserves_flag, then rerun the renderer test if needed.\")
+  '(!llm-self \"Continue from this plan only. Implement the serializer fix, run the exact tests, and report concrete evidence.\")
 
-DIAGNOSIS IS NOT A FIX:
-- If you have diagnosed the problem, you are not done. You must implement the fix AND verify that the fix resolves the failing test.
-- If the fix requires a multi-line change, make the whole change. Do not apply part of it and assume the rest is obvious.
-- A patch that 'looks right' but was never run against the target test is not verified work."
+FAILURE MODES:
+- Delegation that never changes behavior is not a success. If helpers only repeat what you could have read directly, stop delegating.
+- Delegation that produces parse errors, malformed patches, or contradictory summaries is evidence against the pattern for this task. Fall back to direct execution.
+- More moving parts increase verification burden. If orchestration cost exceeds its information gain, simplify."
+          :orchestrate-strong "ORCHESTRATION INTERVENTION - Use explicit orchestration, not just a basic single-agent loop.
+
+This reminder is intentionally stronger than the default coding workflow. The goal is to induce real orchestration attempts. Unless the environment makes it impossible, do not solve the task as a plain single-agent research-plan-implement-verify loop. Act as an orchestrator coordinating bounded subproblems.
+
+DEFAULT BEHAVIOR:
+- Start by decomposing the task into at least two concrete subproblems or phases.
+- Perform an explicit orchestration maneuver early: helper agents, parallel reads, or a summarize-and-reopen boundary.
+- Even if the task looks local, still use one orchestration step before committing to the final patch.
+- Treat yourself as the coordinator: gather results, compare them, decide what to trust, and integrate the final answer.
+
+DECOMPOSE DELIBERATELY:
+- Name the subproblems explicitly before editing.
+- Prefer bounded delegation over open-ended \"solve the whole task\" prompts.
+- Give helpers narrow scopes: exact files, exact question, exact stop condition.
+- If there are multiple plausible root causes, investigate them in parallel instead of serially.
+- If there are multiple likely fix sites, assign them as separate work items before patching.
+
+ORCHESTRATOR RULES:
+- Ask helpers for summaries, answers, diffs, or exact facts, not raw transcript dumps.
+- Never assume helper success. Inspect what came back against the repository before building on it.
+- If a helper fails, returns malformed code, or gets confused, salvage the validated facts and reassign or take over.
+- Keep orchestrator state compact: plan, findings, decision. Compress aggressively once exploration has converged.
+- Main-thread verification is still mandatory, but verification itself can be decomposed into bounded probes before the final check.
+
+WHEN ORCHESTRATION MISFIRES:
+- If workers duplicate effort, tighten ownership and resend narrower prompts.
+- If workers are noisy or unreliable, replace them with direct reads or a same-agent compression step rather than carrying their whole output forward.
+- If orchestration is clearly causing confusion, simplify one layer at a time instead of instantly abandoning the structure.
+- Integrate partial useful results. Do not pretend earlier orchestration never happened.
+
+Example: orchestrate broad exploration before patching.
+  (think \"I will treat this as two subproblems: find the exact behavioral contract, and find the implementation path that violates it.\")
+  '(!call-now contract
+      (agents/!spawn-ask
+        \"Read the relevant tests/docs and return only: required behavior, exact verification command, and likely central files.\")
+      impl-map
+      (agents/!spawn-ask
+        \"Read the likely implementation files and return only: probable fix site, adjacent coupled code, and obvious risks.\"))
+
+Example: force one orchestration step even for a local-looking bug.
+  (think \"This bug looks local, but I still want an explicit orchestration step before patching.\")
+  '(!call-now test-view (io/read-lines \"tests/test_solution.py\" 1 80)
+               impl-view (io/read-lines \"src/solution.py\" 100 180))
+
+Example: recover by compressing after noisy delegation.
+  (think \"Worker outputs were noisy, but two facts survived: the serializer drops the flag and the renderer test is the right verifier.\")
+  (rethink \"Plan: patch serializer.py directly, verify with tests/test_renderer.py::test_preserves_flag, then rerun the serializer-focused test if needed.\")
+  '(!llm-self \"Continue from this compressed plan only. Implement the fix, verify it, and report concrete evidence.\")"
           :context-efficiency "CONTEXT EFFICIENCY — Minimize total context window usage.
 
 Context tokens are your scarcest resource. Prune aggressively to stay effective over long tasks.

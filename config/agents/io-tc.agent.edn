@@ -8,6 +8,5 @@
 
  :namespaces
  {io       stdlib/io
-  patterns stdlib/patterns
   agents   stdlib/agents
   globals  stdlib/globals}}
