@@ -65,14 +65,15 @@
   (try
     (runtime/register! :main)
     (reset! (:last-raw (get @runtime/registry :main)) "(def x 1)")
-    (let [start (System/nanoTime)
-          out ((var benchmark-api/killed-response) {:trace-dir "traces/demo"} "spell" start)]
-      (is (false? (:ok out)))
-      (is (= "killed" (:error_type out)))
-      (is (true? (:patch_on_disk out)))
-      (is (true? (get-in out [:error_data "patch_on_disk"])))
-      (is (true? (get-in out [:error_data "partial_work"])))
-      (is (= "traces/demo" (:trace_dir out))))
+    (with-redefs [benchmark-api/patch-on-disk? (constantly true)]
+      (let [start (System/nanoTime)
+            out ((var benchmark-api/killed-response) {:trace-dir "traces/demo"} "spell" start)]
+        (is (false? (:ok out)))
+        (is (= "killed" (:error_type out)))
+        (is (true? (:patch_on_disk out)))
+        (is (true? (get-in out [:error_data "patch_on_disk"])))
+        (is (true? (get-in out [:error_data "partial_work"])))
+        (is (= "traces/demo" (:trace_dir out)))))
     (finally
       (reset! runtime/registry {}))))
 
