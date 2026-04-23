@@ -80,8 +80,7 @@
         trace-atom (when trace (trace/new-trace))
         trace-dir (when trace
                     (or trace-dir
-                        (let [fmt (java.text.SimpleDateFormat. "yyyy-MM-dd'T'HH-mm-ss")]
-                          (str "traces/" (.format fmt (java.util.Date.))))))
+                        (trace/default-trace-dir)))
         trace-written? (atom false)
         write-trace-once!
         (fn [force?]

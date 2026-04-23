@@ -31,6 +31,16 @@
   []
   (atom {:nodes [] :next-id 0 :root nil}))
 
+(defn default-trace-dir
+  "Return an absolute default trace directory outside the current workspace."
+  []
+  (let [fmt (java.text.SimpleDateFormat. "yyyy-MM-dd'T'HH-mm-ss")
+        timestamp (.format fmt (java.util.Date.))
+        suffix (Long/toUnsignedString (System/nanoTime) 36)]
+    (.getAbsolutePath (io/file (System/getProperty "java.io.tmpdir")
+                               "spell-traces"
+                               (str timestamp "-" suffix)))))
+
 (defn begin-node!
   "Register a new node. Returns its ID.
    Called at the start of -llm / leaf-llm, before the LLM API call."
