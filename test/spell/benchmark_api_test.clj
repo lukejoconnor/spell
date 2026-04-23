@@ -3,7 +3,8 @@
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [spell.runtime :as runtime]
-            [spell.benchmark-api :as benchmark-api]))
+            [spell.benchmark-api :as benchmark-api]
+            [spell.provider :as provider]))
 
 (deftest normalize-format-spec-test
   (testing "plain strings default to keywords (Clojure convention)"
@@ -97,3 +98,34 @@
     (is (str/ends-with? ((var benchmark-api/default-agent-from-request)
                          {:model "openai-tc:gpt-5.4"})
                         "config/providers/../agents/base-tc.agent.edn"))))
+
+(deftest run-spell-trace-default-test
+  (testing "trace defaults to an absolute temp dir when no trace-dir override is provided"
+    (let [result (with-redefs [benchmark-api/make-provider
+                               (fn [_] (provider/test-provider {:response "(def x 42))"}))
+                               benchmark-api/default-agent-from-request
+                               (fn [_] "config/agents/base-msg.agent.edn")]
+                   ((var benchmark-api/run-spell) {:prompt "Return 42"
+                                                   :model "test:dummy"
+                                                   :trace true}))]
+      (is (:ok result))
+      (is (.isAbsolute (java.io.File. (:trace_dir result))))
+      (is (= (.getAbsolutePath
+               (java.io.File. (System/getProperty "java.io.tmpdir")
+                              "spell-traces"))
+             (.getAbsolutePath (.getParentFile (java.io.File. (:trace_dir result))))))))
+
+  (testing "explicit trace-dir override is preserved exactly"
+    (let [trace-dir (.toString (java.nio.file.Files/createTempDirectory
+                                 "spell-benchmark-trace-"
+                                 (make-array java.nio.file.attribute.FileAttribute 0)))
+          result (with-redefs [benchmark-api/make-provider
+                               (fn [_] (provider/test-provider {:response "(def x 42))"}))
+                               benchmark-api/default-agent-from-request
+                               (fn [_] "config/agents/base-msg.agent.edn")]
+                   ((var benchmark-api/run-spell) {:prompt "Return 42"
+                                                   :model "test:dummy"
+                                                   :trace true
+                                                   :trace-dir trace-dir}))]
+      (is (:ok result))
+      (is (= trace-dir (:trace_dir result))))))
