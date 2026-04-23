@@ -106,7 +106,7 @@
     :parse-fn #(Integer/parseInt %)
     :validate [pos? "Must be positive"]]
    [nil "--responses-api" "Force OpenAI Responses API instead of Chat Completions"]
-   ["-T" "--trace" "Record execution trace to traces/"]
+   ["-T" "--trace" "Record execution trace to a temp dir under java.io.tmpdir/spell-traces/"]
    ["-l" "--log FILE" "Log verbose output to FILE (implies -v)"]
    ["-v" "--verbose" "Show raw LLM response"]
    ["-S" "--setup CMD" "Shell command to run before spell execution"]

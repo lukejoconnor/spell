@@ -132,7 +132,12 @@
                            :agent test-agent
                            :trace true})]
       (is (= 42 (:result result)))
-      (is (string? (:trace-dir result)))))
+      (is (string? (:trace-dir result)))
+      (is (.isAbsolute (java.io.File. (:trace-dir result))))
+      (is (= (.getAbsolutePath
+               (java.io.File. (System/getProperty "java.io.tmpdir")
+                              "spell-traces"))
+             (.getAbsolutePath (.getParentFile (java.io.File. (:trace-dir result))))))))
 
   (testing "trace option respects provided trace-dir"
     (let [p (provider/test-provider {:response "(def x 42))"})
