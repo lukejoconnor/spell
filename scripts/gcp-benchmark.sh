@@ -19,7 +19,7 @@ IMAGE_FAMILY="${SPELL_GCP_IMAGE_FAMILY:-debian-12}"
 IMAGE_PROJECT="${SPELL_GCP_IMAGE_PROJECT:-debian-cloud}"
 NETWORK="${SPELL_GCP_NETWORK:-default}"
 SUBNET="${SPELL_GCP_SUBNET:-}"
-MAX_RUN_DURATION="${SPELL_GCP_MAX_RUN_DURATION:-24h}"
+MAX_RUN_DURATION="${SPELL_GCP_MAX_RUN_DURATION:-168h}"
 STARTUP_TIMEOUT_SECONDS="${SPELL_GCP_STARTUP_TIMEOUT_SECONDS:-1800}"
 REMOTE_USER="${SPELL_GCP_REMOTE_USER:-spell}"
 SPELL_REPO_URL="${SPELL_GCP_SPELL_REPO_URL:-https://github.com/lukejoconnor/spell.git}"
@@ -41,7 +41,7 @@ RUN_COMMAND="${SPELL_GCP_RUN_COMMAND:-}"
 OPERATE_ALL=0
 FINISHED_ONLY=0
 WAIT_INTERVAL_SECONDS="${SPELL_GCP_WAIT_INTERVAL_SECONDS:-120}"
-WAIT_TIMEOUT_SECONDS="${SPELL_GCP_WAIT_TIMEOUT_SECONDS:-86400}"
+WAIT_TIMEOUT_SECONDS="${SPELL_GCP_WAIT_TIMEOUT_SECONDS:-604800}"
 WAIT_UNREACHABLE_FAILURES="${SPELL_GCP_WAIT_UNREACHABLE_FAILURES:-3}"
 WAIT_AND_FINISH=0
 AUTO_SSH=1
@@ -95,7 +95,7 @@ Options:
   --image-project PROJECT         Image project (default: debian-cloud)
   --network NAME                  VPC network name (default: default)
   --subnet NAME                   Optional subnetwork name
-  --max-run-duration DURATION     Auto-delete window, e.g. 24h (default: 24h)
+  --max-run-duration DURATION     Auto-delete window, e.g. 168h (default: 168h / 7d)
   --startup-timeout SECONDS       Wait time for startup (default: 1800)
   --remote-user USER              SSH user created on the VM (default: spell)
   --spell-ref REF                 Git ref to check out for spell (default: main)
@@ -116,7 +116,7 @@ Options:
   --all                           Target all Spell-managed benchmark VMs in the project
   --finished-only                 For pull-all, only pull finished/failed VMs
   --interval SECONDS              Poll interval for wait (default: 120)
-  --timeout SECONDS               Timeout for wait (default: 86400 / 24h)
+  --timeout SECONDS               Timeout for wait (default: 604800 / 7d)
   --finish                        For wait, run finish-all before exiting
   --no-ssh                        Create the VM but do not auto-attach after startup
   -h, --help                      Show this help text
