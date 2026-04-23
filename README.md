@@ -53,7 +53,7 @@ Options:
   -b DOLLARS    Budget cap in dollars (default: $1.00, 0 = unlimited)
   -M TOKENS     Max tokens per LLM response (default: 16384)
   -K BUDGET     Enable extended thinking (budget_tokens)
-  -T            Record execution trace to traces/
+  -T            Record execution trace to a temp dir under java.io.tmpdir/spell-traces/
   -v            Verbose output (show raw LLM responses)
   --log FILE    Log verbose output to file
   -h            Show help
