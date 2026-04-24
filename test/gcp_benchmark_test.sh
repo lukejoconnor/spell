@@ -283,7 +283,8 @@ test_wait_for_completion_times_out() {
 test_help_and_argument_parsing() {
   local help_output
   help_output="$(bash "$REPO_ROOT/scripts/gcp-benchmark.sh" --help)"
-  assert_contains "$help_output" "default: 86400 / 24h" "help should document the 24 hour wait default"
+  assert_contains "$help_output" "default: 604800 / 7d" "help should document the 7 day wait default"
+  assert_contains "$help_output" "Auto-stop window" "help should document that max-run-duration stops rather than deletes VMs"
   bash "$REPO_ROOT/scripts/gcp-benchmark.sh" start --help >/dev/null
   bash "$REPO_ROOT/scripts/gcp-benchmark.sh" dispatch --help >/dev/null
   bash "$REPO_ROOT/scripts/gcp-benchmark.sh" pull-all --help >/dev/null
@@ -302,6 +303,13 @@ test_help_and_argument_parsing() {
   fi
 }
 
+test_launcher_stops_instead_of_deleting_on_timeout() {
+  local launcher_script
+  launcher_script="$(cat "$REPO_ROOT/scripts/gcp-benchmark.sh")"
+
+  assert_contains "$launcher_script" '--instance-termination-action STOP' "launcher should stop instances at max-run-duration"
+}
+
 test_startup_script_preserves_claude_auth_and_bootstrap_marker() {
   local startup_script
   startup_script="$(cat "$REPO_ROOT/scripts/gcp-startup.sh")"
@@ -312,7 +320,7 @@ test_startup_script_preserves_claude_auth_and_bootstrap_marker() {
   fi
   assert_contains "$startup_script" 'BOOTSTRAP_MARKER="/var/lib/spell-benchmark/bootstrap-done"' "startup should use a durable bootstrap marker"
   assert_contains "$startup_script" 'running|startup|starting' "startup should treat interrupted starting runs as failed on reboot"
-  assert_contains "$startup_script" $'materialize_secrets_and_env\n  systemctl enable --now docker\n  wait_for_docker\n  ensure_tmux_session' "startup fast path should wait for docker before reporting ready"
+  assert_contains "$startup_script" $'materialize_secrets_and_env\n  systemctl enable --now docker\n  wait_for_docker' "startup fast path should wait for docker before continuing"
   assert_contains "$startup_script" 'ensure_tmux_session' "startup should recreate the tmux session on reboot"
 }
 

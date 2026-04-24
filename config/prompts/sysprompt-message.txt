@@ -99,7 +99,7 @@ Extension-producing forms:
     '(!describe some-namespace) ; print documentation; accepts multiple namespace names
     '(agents/!ask :agent-handle query) ; see below
 
-Usually, include exactly one ! expression in your quoted trailing expression. Zero ! expressions: your program returns and you do not get another turn. Two or more ! expressions: synchronous fork to delegate work.
+Usually, include exactly one ! expression in your quoted trailing expression. Zero ! expressions: your program returns and you do not get another turn. Two or more ! expressions are valid but usually unnecessary; only use them when you intentionally want parallel work.
 
 LEAF-LLM
 
@@ -182,7 +182,6 @@ Access functions with qualified symbols.
 Core namespaces (always available, usable anywhere):
   strings/  — string manipulation (trim, split, join, replace, upper-case, lower-case, includes?, starts-with?, ...)
   math/     — math functions (sqrt, pow, abs, floor, ceil, rand, factorial, PI, ...)
-  patterns/ — orchestration patterns (check-result, clean-prompt, ralph, team, fix-loop)
   builtins/ — reference for core builtins by category (docs only; includes subs, re-find, re-matches, re-seq, rand-int, ...)
 
 Effect namespaces are configurable and only usable in the quoted trailing expression.
@@ -194,6 +193,7 @@ On first use of an unfamiliar effect namespace, consider using '(!describe ns) t
 CONTEXT MANAGEMENT
 
 Context tokens are your scarcest resource. Each extension should carry forward only what the next step needs.
+If tool output, tests, or file contents contradict your current theory, update the theory promptly instead of defending the first idea.
 
 Use !peek for read-only results you only need for the next turn.
 - Exploratory file reading and grepping
@@ -284,10 +284,6 @@ Search + read context in one turn:
   '(!call-now hits (io/grep "TODO|FIXME" "src/" {:context 20}))
   ;; :context N includes N lines around each match in the output, reducing the need for follow-up reads.
   ;; use when you need both "where does this appear" and "what's happening near it" in one turn.
-
-Synchronous fork for self-delegation:
-  '(!call-now doc-summary (!llm-self "Summarize long-document.txt"))
-  ;; for asynchronous delegation, see agents/ namespace
 
 Calculate and extend:
     '(!call-now result (+41 1))
