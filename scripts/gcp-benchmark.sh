@@ -95,7 +95,7 @@ Options:
   --image-project PROJECT         Image project (default: debian-cloud)
   --network NAME                  VPC network name (default: default)
   --subnet NAME                   Optional subnetwork name
-  --max-run-duration DURATION     Auto-delete window, e.g. 168h (default: 168h / 7d)
+  --max-run-duration DURATION     Auto-stop window, e.g. 168h (default: 168h / 7d)
   --startup-timeout SECONDS       Wait time for startup (default: 1800)
   --remote-user USER              SSH user created on the VM (default: spell)
   --spell-ref REF                 Git ref to check out for spell (default: main)
@@ -516,7 +516,7 @@ create_instance() {
     --scopes cloud-platform \
     --labels "$labels" \
     --max-run-duration "$MAX_RUN_DURATION" \
-    --instance-termination-action DELETE \
+    --instance-termination-action STOP \
     --metadata "$(metadata_values)" \
     --metadata-from-file "startup-script=${STARTUP_SCRIPT},run-group=${run_group_file},benchmark-command=${command_file}"
   rm -rf "$metadata_dir"

@@ -108,4 +108,4 @@ One-time setup on your Mac:
 
 **SWE-bench on fresh VMs:** The first SWE-bench run on a new VM requires building environment images (~10 min per unique env). These are cached for subsequent runs. A full SWE-bench Lite run touches ~20 unique envs, so initial bootstrapping can take ~3 hours. Consider pre-building images or using a persistent disk cache.
 
-The launcher uses Compute Engine's built-in `--max-run-duration` with `--instance-termination-action=DELETE` so benchmark VMs auto-delete instead of lingering after long unattended runs.
+The launcher uses Compute Engine's built-in `--max-run-duration` with `--instance-termination-action=STOP` so benchmark VMs stop instead of auto-deleting after long unattended runs. Pull artifacts first, then delete finished VMs explicitly with `finish`/`finish-all`.
