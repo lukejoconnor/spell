@@ -5,7 +5,8 @@
             [clojure.string :as str]
             [clojure.tools.cli :refer [parse-opts]]
             [spell.api :as api]
-            [spell.provider :as provider])
+            [spell.provider :as provider]
+            [spell.trace :as trace])
   (:gen-class))
 
 (def provider-prefixes
@@ -216,10 +217,6 @@
     (zero? budget) nil
     :else budget))
 
-(defn- default-trace-dir []
-  (let [fmt (java.text.SimpleDateFormat. "yyyy-MM-dd'T'HH-mm-ss")]
-    (str "traces/" (.format fmt (java.util.Date.)))))
-
 (defn- run-one-shot [{:keys [prompt reasoning-effort verbosity thinking budget retries] :as req}]
   (let [usage-atom (atom {:by-model {}})
         provider-inst (make-provider req)
@@ -243,7 +240,7 @@
   (let [provider-inst (make-provider req)
         resolved-agent (or agent (default-agent-from-request req))
         normalized-format (normalize-format-spec format)
-        resolved-trace-dir (when trace (or trace-dir (default-trace-dir)))
+        resolved-trace-dir (when trace (or trace-dir (trace/default-trace-dir)))
         effective-prefill (if (contains? req :prefill)
                             prefill
                             (and (provider/supports-prefill provider-inst)
