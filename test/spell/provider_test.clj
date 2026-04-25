@@ -167,6 +167,14 @@
                     :cache-read-ratio 0.25})]
       (is (= 1.00 (:cache-read-input result)) "4.00 * 0.25 = 1.00")))
 
+  (testing "shared pricing includes Kimi K2.6 Fireworks rates"
+    (let [result (#'provider/lookup-cost "accounts/fireworks/models/kimi-k2p6"
+                   provider/default-costs)]
+      (is (= 0.95 (:input result)))
+      (is (= 0.16 (:cache-read-input result)))
+      (is (= 1.1875 (:cache-write-input result)))
+      (is (= 4.00 (:output result)))))
+
   (testing "returns nil for unknown model"
     (is (nil? (#'provider/lookup-cost "nonexistent" {"other" [1.0 2.0]})))))
 
@@ -326,6 +334,9 @@
 
   (testing "detect-chat-template returns :deepseek-v3 for deepseek models"
     (is (= :deepseek-v3 (#'provider/detect-chat-template "accounts/fireworks/models/deepseek-v3p1"))))
+
+  (testing "detect-chat-template returns :chatml for Kimi K2.6"
+    (is (= :chatml (#'provider/detect-chat-template "accounts/fireworks/models/kimi-k2p6"))))
 
   (testing "detect-chat-template returns :chatml as default"
     (is (= :chatml (#'provider/detect-chat-template "some-other-model"))))

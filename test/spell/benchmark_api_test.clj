@@ -81,7 +81,9 @@
 (deftest fireworks-model-spec-and-default-agent-test
   (testing "parse-model-spec accepts fireworks prefix"
     (is (= {:provider "fireworks" :model "glm-5"}
-           ((var benchmark-api/parse-model-spec) "fireworks:glm-5"))))
+           ((var benchmark-api/parse-model-spec) "fireworks:glm-5")))
+    (is (= {:provider "fireworks" :model "kimi-k2p6"}
+           ((var benchmark-api/parse-model-spec) "fireworks:kimi-k2p6"))))
 
   (testing "default-agent resolution uses the fireworks provider config"
     (is (= "config/providers/fireworks.provider.edn"

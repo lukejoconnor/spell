@@ -844,6 +844,11 @@
       (is (= "https://api.fireworks.ai/inference/v1" (:base-url p)))
       (is (= "accounts/fireworks/models/deepseek-v3p1" (:model p)))))
 
+  (testing "fireworks-provider expands Kimi K2.6 short model id"
+    (let [p (provider/fireworks-provider {:api-key "fw-test"
+                                          :model "kimi-k2p6"})]
+      (is (= "accounts/fireworks/models/kimi-k2p6" (:model p)))))
+
   (testing "format-completions-prompt leaves assistant prefix open"
     (is (= "<|im_start|>system\nsys<|im_end|>\n<|im_start|>user\nuser<|im_end|>\n<|im_start|>assistant\n(prefill"
            (#'provider/format-completions-prompt
@@ -1228,7 +1233,9 @@
 
   (testing "fireworks provider prefix"
     (is (= {:provider "fireworks" :model "glm-5"}
-           (cli/parse-model-spec "fireworks:glm-5"))))
+           (cli/parse-model-spec "fireworks:glm-5")))
+    (is (= {:provider "fireworks" :model "kimi-k2p6"}
+           (cli/parse-model-spec "fireworks:kimi-k2p6"))))
 
   (testing "anthropic-tc provider prefix"
     (is (= {:provider "anthropic-tc" :model "claude-sonnet-4-5-20250929"}
