@@ -251,6 +251,13 @@
                              :partial_work partial-work?})
      :trace_dir (:trace-dir req)}))
 
+(defn- request-with-defaults [{:keys [mode trace trace-dir] :as req}]
+  (if (and trace
+           (or (nil? mode) (= mode "spell"))
+           (nil? trace-dir))
+    (assoc req :trace-dir (trace/default-trace-dir))
+    req))
+
 (defn- normalize-budget [budget]
   (cond
     (nil? budget) nil
@@ -352,7 +359,7 @@
         (System/exit 2))
 
       :else
-      (let [req (read-json-source (:request options))
+      (let [req (request-with-defaults (read-json-source (:request options)))
             start-ns (System/nanoTime)
             response-state (atom :pending)
             shutdown-hook (Thread.

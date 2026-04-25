@@ -78,6 +78,24 @@
     (finally
       (reset! runtime/registry {}))))
 
+(deftest request-with-defaults-trace-dir-test
+  (testing "spell trace requests get an absolute trace dir before shutdown-hook registration"
+    (let [out ((var benchmark-api/request-with-defaults) {:trace true})]
+      (is (.isAbsolute (java.io.File. (:trace-dir out))))
+      (is (= (.getAbsolutePath
+               (java.io.File. (System/getProperty "java.io.tmpdir")
+                              "spell-traces"))
+             (.getAbsolutePath (.getParentFile (java.io.File. (:trace-dir out))))))))
+
+  (testing "explicit trace-dir overrides are preserved"
+    (is (= "/tmp/custom"
+           (:trace-dir ((var benchmark-api/request-with-defaults)
+                        {:trace true :trace-dir "/tmp/custom"})))))
+
+  (testing "one-shot requests do not get spell trace defaults"
+    (is (nil? (:trace-dir ((var benchmark-api/request-with-defaults)
+                           {:mode "one_shot" :trace true}))))))
+
 (deftest fireworks-model-spec-and-default-agent-test
   (testing "parse-model-spec accepts fireworks prefix"
     (is (= {:provider "fireworks" :model "glm-5"}

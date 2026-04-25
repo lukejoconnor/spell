@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -30,10 +29,6 @@ class SpellBenchmarkClient:
     def __init__(self, project_root: Path | str | None = None, clj_cmd: list[str] | None = None):
         self.project_root = Path(project_root or Path(__file__).resolve().parent)
         self.clj_cmd = clj_cmd or ["clj", "-M", "-m", "spell.benchmark-api"]
-
-    @staticmethod
-    def _default_trace_dir() -> str:
-        return f"traces/{datetime.now().strftime('%Y-%m-%dT%H-%M-%S-%f')}"
 
     @staticmethod
     def _coerce_text(value: str | bytes | None) -> str:
@@ -67,8 +62,6 @@ class SpellBenchmarkClient:
         cmd = [*self.clj_cmd, "--request", "-", "--response", "-"]
         run_cwd = Path(cwd or self.project_root)
         payload_request = dict(request)
-        if payload_request.get("trace") and not payload_request.get("trace_dir"):
-            payload_request["trace_dir"] = self._default_trace_dir()
         try:
             proc = subprocess.Popen(
                 cmd,
