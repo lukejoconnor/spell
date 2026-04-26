@@ -233,6 +233,7 @@ EOF
     chmod 600 "$USER_HOME/.codex/auth.json"
     chown -R "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/.codex"
   fi
+  rm -f "$USER_HOME/.claude.json"
   if [[ -n "$cc_oauth_token" ]]; then
     printf 'export CLAUDE_CODE_OAUTH_TOKEN=%q\n' "$cc_oauth_token" >>"$USER_HOME/.config/spell-benchmark/env.sh"
   else
