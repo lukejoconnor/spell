@@ -844,6 +844,16 @@
       (is (= "https://api.fireworks.ai/inference/v1" (:base-url p)))
       (is (= "accounts/fireworks/models/deepseek-v3p1" (:model p)))))
 
+  (testing "fireworks-provider expands Qwen3.6 Plus benchmark model id to priced account path"
+    (let [p (provider/fireworks-provider {:api-key "fw-test"
+                                          :model "qwen3p6-plus"})
+          usage-atom (atom {:by-model {(:model p) {:uncached_input_tokens 1000000
+                                                   :cached_input_tokens 1000000
+                                                   :cache_write_input_tokens 1000000
+                                                   :visible_output_tokens 1000000}}})]
+      (is (= "accounts/fireworks/models/qwen3p6-plus" (:model p)))
+      (is (= 4.225 (provider/current-cost usage-atom)))))
+
   (testing "format-completions-prompt leaves assistant prefix open"
     (is (= "<|im_start|>system\nsys<|im_end|>\n<|im_start|>user\nuser<|im_end|>\n<|im_start|>assistant\n(prefill"
            (#'provider/format-completions-prompt
