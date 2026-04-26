@@ -205,7 +205,6 @@ materialize_secrets_and_env() {
   local openai_api_key
   local github_token
   local codex_auth_b64=""
-  local claude_json_b64=""
   local cc_oauth_token=""
 
   anthropic_api_key="$(fetch_secret "$PROJECT_ID" "$ANTHROPIC_SECRET")"
@@ -213,9 +212,6 @@ materialize_secrets_and_env() {
   github_token="$(fetch_secret "$PROJECT_ID" "$GITHUB_TOKEN_SECRET")"
   if [[ -n "$CODEX_AUTH_SECRET" ]]; then
     codex_auth_b64="$(fetch_secret "$PROJECT_ID" "$CODEX_AUTH_SECRET" 2>/dev/null || true)"
-  fi
-  if [[ -n "$CLAUDE_AUTH_SECRET" ]]; then
-    claude_json_b64="$(fetch_secret "$PROJECT_ID" "$CLAUDE_AUTH_SECRET" 2>/dev/null || true)"
   fi
   if [[ -n "$CC_OAUTH_SECRET" ]]; then
     cc_oauth_token="$(fetch_secret "$PROJECT_ID" "$CC_OAUTH_SECRET" 2>/dev/null || true)"
@@ -237,14 +233,11 @@ EOF
     chmod 600 "$USER_HOME/.codex/auth.json"
     chown -R "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/.codex"
   fi
-  if [[ -n "$claude_json_b64" ]]; then
-    printf 'export CLAUDE_JSON_B64=%q\n' "$claude_json_b64" >>"$USER_HOME/.config/spell-benchmark/env.sh"
-    printf '%s' "$claude_json_b64" | base64 -d >"$USER_HOME/.claude.json"
-    chmod 600 "$USER_HOME/.claude.json"
-    chown "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/.claude.json"
-  fi
+  rm -f "$USER_HOME/.claude.json"
   if [[ -n "$cc_oauth_token" ]]; then
     printf 'export CLAUDE_CODE_OAUTH_TOKEN=%q\n' "$cc_oauth_token" >>"$USER_HOME/.config/spell-benchmark/env.sh"
+  else
+    echo "[spell-benchmark] warning: Secret Manager secret ${CC_OAUTH_SECRET:-CLAUDE_CODE_OAUTH_TOKEN} was unavailable or empty; Claude Code benchmark runs require CLAUDE_CODE_OAUTH_TOKEN" >&2
   fi
   chmod 600 "$USER_HOME/.config/spell-benchmark/env.sh"
   chown -R "$BENCHMARK_USER:$BENCHMARK_USER" "$USER_HOME/.config"
@@ -305,7 +298,6 @@ ANTHROPIC_SECRET="$(metadata_attr anthropic-secret)"
 OPENAI_SECRET="$(metadata_attr openai-secret)"
 GITHUB_TOKEN_SECRET="$(metadata_attr github-token-secret)"
 CODEX_AUTH_SECRET="$(metadata_attr codex-auth-secret || true)"
-CLAUDE_AUTH_SECRET="$(metadata_attr claude-auth-secret || true)"
 CC_OAUTH_SECRET="$(metadata_attr cc-oauth-secret || true)"
 RUN_GROUP="$(metadata_attr run-group || true)"
 BENCHMARK_COMMAND="$(metadata_attr benchmark-command || true)"

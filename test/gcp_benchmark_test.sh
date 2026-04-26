@@ -302,18 +302,41 @@ test_help_and_argument_parsing() {
   fi
 }
 
-test_startup_script_preserves_claude_auth_and_bootstrap_marker() {
+test_startup_script_uses_claude_code_oauth_and_bootstrap_marker() {
   local startup_script
   startup_script="$(cat "$REPO_ROOT/scripts/gcp-startup.sh")"
 
-  assert_contains "$startup_script" '>"$USER_HOME/.claude.json"' "startup should write Claude auth where host adapters read it"
-  if [[ "$startup_script" == *'.claude/.claude.json'* ]]; then
-    fail "startup should not write Claude auth to ~/.claude/.claude.json"
+  assert_contains "$startup_script" 'export CLAUDE_CODE_OAUTH_TOKEN=%q' "startup should export Claude Code OAuth token for host adapters"
+  assert_contains "$startup_script" 'rm -f "$USER_HOME/.claude.json"' "startup should clean legacy Claude Code JSON auth on fresh and warm VMs"
+  if [[ "$startup_script" == *'CLAUDE_JSON_B64'* || "$startup_script" == *'>"$USER_HOME/.claude.json"'* ]]; then
+    fail "startup should not materialize legacy Claude Code JSON auth"
   fi
   assert_contains "$startup_script" 'BOOTSTRAP_MARKER="/var/lib/spell-benchmark/bootstrap-done"' "startup should use a durable bootstrap marker"
   assert_contains "$startup_script" 'running|startup|starting' "startup should treat interrupted starting runs as failed on reboot"
   assert_contains "$startup_script" $'materialize_secrets_and_env\n  systemctl enable --now docker\n  wait_for_docker\n  ensure_tmux_session' "startup fast path should wait for docker before reporting ready"
   assert_contains "$startup_script" 'ensure_tmux_session' "startup should recreate the tmux session on reboot"
+}
+
+test_metadata_values_uses_claude_code_oauth_only() {
+  REMOTE_USER="spell"
+  SPELL_REPO_URL="https://example.test/spell.git"
+  SPELL_REF="main"
+  BENCHMARKING_REPO_URL="https://example.test/benchmarking.git"
+  BENCHMARKING_REF="main"
+  ANTHROPIC_SECRET="ANTHROPIC_API_KEY"
+  OPENAI_SECRET="OPENAI_API_KEY"
+  GITHUB_TOKEN_SECRET="GITHUB_TOKEN"
+  CODEX_AUTH_SECRET="CODEX_AUTH_JSON_B64"
+  CC_OAUTH_SECRET="CUSTOM_CC_OAUTH_TOKEN"
+  RUN_GROUP_LABEL="batch-a"
+
+  local metadata
+  metadata="$(metadata_values)"
+
+  assert_contains "$metadata" "cc-oauth-secret=CUSTOM_CC_OAUTH_TOKEN" "metadata should pass Claude Code OAuth secret name"
+  if [[ "$metadata" == *'claude-auth-secret='* || "$metadata" == *'CLAUDE_JSON_B64'* ]]; then
+    fail "metadata should not pass legacy Claude Code JSON auth"
+  fi
 }
 
 test_wait_for_completion_treats_persistent_unreachable_as_terminal() {
@@ -398,7 +421,8 @@ main() {
   test_wait_for_completion_summarizes_and_finishes
   test_wait_for_completion_times_out
   test_help_and_argument_parsing
-  test_startup_script_preserves_claude_auth_and_bootstrap_marker
+  test_startup_script_uses_claude_code_oauth_and_bootstrap_marker
+  test_metadata_values_uses_claude_code_oauth_only
   test_wait_for_completion_treats_persistent_unreachable_as_terminal
   test_wait_for_completion_resets_unreachable_budget_after_success
   printf 'PASS: gcp benchmark launcher tests\n'
