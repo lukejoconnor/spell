@@ -302,13 +302,13 @@ test_help_and_argument_parsing() {
   fi
 }
 
-test_startup_script_preserves_claude_auth_and_bootstrap_marker() {
+test_startup_script_uses_claude_code_oauth_and_bootstrap_marker() {
   local startup_script
   startup_script="$(cat "$REPO_ROOT/scripts/gcp-startup.sh")"
 
-  assert_contains "$startup_script" '>"$USER_HOME/.claude.json"' "startup should write Claude auth where host adapters read it"
-  if [[ "$startup_script" == *'.claude/.claude.json'* ]]; then
-    fail "startup should not write Claude auth to ~/.claude/.claude.json"
+  assert_contains "$startup_script" 'export CLAUDE_CODE_OAUTH_TOKEN=%q' "startup should export Claude Code OAuth token for host adapters"
+  if [[ "$startup_script" == *'CLAUDE_JSON_B64'* || "$startup_script" == *'.claude.json'* ]]; then
+    fail "startup should not materialize legacy Claude Code JSON auth"
   fi
   assert_contains "$startup_script" 'BOOTSTRAP_MARKER="/var/lib/spell-benchmark/bootstrap-done"' "startup should use a durable bootstrap marker"
   assert_contains "$startup_script" 'running|startup|starting' "startup should treat interrupted starting runs as failed on reboot"
@@ -398,7 +398,7 @@ main() {
   test_wait_for_completion_summarizes_and_finishes
   test_wait_for_completion_times_out
   test_help_and_argument_parsing
-  test_startup_script_preserves_claude_auth_and_bootstrap_marker
+  test_startup_script_uses_claude_code_oauth_and_bootstrap_marker
   test_wait_for_completion_treats_persistent_unreachable_as_terminal
   test_wait_for_completion_resets_unreachable_budget_after_success
   printf 'PASS: gcp benchmark launcher tests\n'

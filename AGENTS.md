@@ -101,7 +101,7 @@ One-time setup on your Mac:
 - Enable `compute.googleapis.com` and `secretmanager.googleapis.com`
 - Store `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and a read-only `GITHUB_TOKEN` in Secret Manager
 - For `codex-tc` model runs: store `CODEX_AUTH_JSON_B64` in Secret Manager (base64-encode your local `~/.codex/auth.json`). Without this, use `openai-tc:gpt-5.4` instead (standard OpenAI API).
-- For Claude Code with Max subscription: run `claude setup-token` locally, then store the resulting token as `CLAUDE_CODE_OAUTH_TOKEN` in Secret Manager. Without this, Claude Code uses `ANTHROPIC_API_KEY` (API billing) instead of the subscription.
+- For Claude Code runs: run `claude setup-token` locally, then store the resulting token as `CLAUDE_CODE_OAUTH_TOKEN` in Secret Manager. Claude Code benchmark harnesses require this Max subscription OAuth token and do not fall back to `ANTHROPIC_API_KEY` or `CLAUDE_JSON_B64`.
 - Grant the default Compute Engine service account `roles/secretmanager.secretAccessor` on those secrets
 - Ensure the project has a usable VPC network. If it has no `default` VPC, create one or pass `--network <name>` to the launcher.
 
