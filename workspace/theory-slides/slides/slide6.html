@@ -1,0 +1,27 @@
+<!DOCTYPE html><html><head><style>
+
+html { background: #ffffff; }
+body { width: 720pt; height: 405pt; margin: 0; padding: 0; font-family: Arial, sans-serif; display: flex; flex-direction: column; }
+
+body { background: #ffffff; }
+.hdr { background: #1B2838; padding: 9pt 30pt; min-height: 38pt; display: flex; align-items: center; flex-shrink: 0; }
+.bar { height: 3pt; background: #277884; flex-shrink: 0; }
+.body { flex: 1; padding: 14pt 30pt 12pt 30pt; overflow: hidden; }
+.defbox { background: #E8F4F2; border-left: 4pt solid #277884; padding: 9pt 13pt; margin: 6pt 0; }
+.thmbox { background: #FFF8F0; border-left: 4pt solid #D4A843; padding: 9pt 13pt; margin: 6pt 0; }
+.codebox { background: #EDEDF3; border-left: 4pt solid #4A5568; padding: 8pt 13pt; margin: 6pt 0; }
+.cols { display: flex; gap: 18pt; height: 100%; }
+.col { flex: 1; }
+</style></head><body>
+<div class="hdr"><h2 style="color: #ffffff; font-size: 21pt; margin: 0;">The Agentic Evaluator</h2></div>
+<div class="bar"></div>
+<div class="body">
+<p style="font-size: 13pt; color: #2C2C2C; margin: 0 0 8pt 0;">Take a standard program evaluator (the <b>CEK machine</b>) and add a special primitive <span style="font-family: 'Courier New', monospace; color: #277884; font-weight: bold;">lm</span> that calls the language model.</p>
+<div class="defbox">
+  <p style="font-size: 13pt; color: #2C2C2C; margin: 0 0 6pt 0;"><b>Definition.</b> The <b>CEK agentic evaluator</b> observes the CEK machine only at <b>boundary states</b> — states where the next step is to evaluate <span style="font-family: 'Courier New', monospace; color: #277884;">lm</span>:</p>
+  <div class="codebox" style="margin: 6pt 0 0 0;">
+    <p style="font-size: 15pt; color: #2C2C2C; margin: 0; font-family: 'Courier New', monospace;"><b>let</b> y = <span style="color: #277884; font-weight: bold;">lm</span> v <b>in</b> ...</p>
+  </div>
+</div>
+<p style="font-size: 12pt; color: #2C2C2C; margin: 10pt 0 0 0;">Between boundaries, execution is ordinary <b>deterministic evaluation</b>. The model contributes exactly one completion per transition. The evaluator itself is not a hand-written agent loop — it is the boundary-to-boundary behavior of a generic program evaluator around model calls.</p></div>
+</body></html>

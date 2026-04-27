@@ -285,7 +285,14 @@ materialize_secrets_and_env() {
     claude_json_b64="$(fetch_secret "$PROJECT_ID" "$CLAUDE_AUTH_SECRET" 2>/dev/null || true)"
   fi
   if [[ -n "$CC_OAUTH_SECRET" ]]; then
-    cc_oauth_token="$(fetch_secret "$PROJECT_ID" "$CC_OAUTH_SECRET" 2>/dev/null || true)"
+    if ! cc_oauth_token="$(fetch_secret "$PROJECT_ID" "$CC_OAUTH_SECRET")"; then
+      echo "[spell-benchmark] FATAL: fetch_secret failed for CC_OAUTH_SECRET=${CC_OAUTH_SECRET}; Claude Code benchmark VMs require Max-sub OAuth and must not fall back to ANTHROPIC_API_KEY" >&2
+      exit 64
+    fi
+    if [[ -z "$cc_oauth_token" ]]; then
+      echo "[spell-benchmark] FATAL: CC_OAUTH_SECRET=${CC_OAUTH_SECRET} resolved to an empty value; refusing to bootstrap" >&2
+      exit 64
+    fi
   fi
   local fireworks_api_key=""
   if [[ -n "$FIREWORKS_SECRET" ]]; then

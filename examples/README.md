@@ -43,6 +43,7 @@ spell -v -m opus "Your prompt here"
 | `comm-spawn-basic.spl` | Fire-and-forget spawn | Sonnet |
 | `negotiate.spl` | Multi-turn negotiation with ask/reply | Opus |
 | `auction.spl` | Sealed-bid auction with parallel bidders | Opus |
+| `telephone.spl` | Telephone relay through spawned agents | Opus |
 | `globals-basic.spl` | Store/read global shared state | Sonnet |
 | `globals-roles.spl` | Role registration + spawn-ask | Opus |
 

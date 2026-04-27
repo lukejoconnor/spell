@@ -28,6 +28,7 @@ spell -v -m opus examples/auction.spl  # verbose + model override
 | `comm-ask.spl` | `agents/spawn` + `agents/!ask` for request/reply | Sonnet |
 | `negotiate.spl` | Multi-turn negotiation via `!ask` / `!reply-ask` / `!reply` | Opus |
 | `auction.spl` | Sealed-bid auction: parallel spawns + `agents/send` notifications, `agents/!ask` collection | Opus |
+| `telephone.spl` | Telephone relay through spawned agents | Opus |
 | `globals-basic.spl` | `globals/set!` and `globals/get` for shared state | Sonnet |
 | `globals-roles.spl` | Role registration in globals + `spawn-ask` | Opus |
 | `chat.spl` | Interactive user conversation via comms | Sonnet |

@@ -1,0 +1,25 @@
+<!DOCTYPE html><html><head><style>
+
+html { background: #ffffff; }
+body { width: 720pt; height: 405pt; margin: 0; padding: 0; font-family: Arial, sans-serif; display: flex; flex-direction: column; }
+
+body { background: #ffffff; }
+.hdr { background: #1B2838; padding: 9pt 30pt; min-height: 38pt; display: flex; align-items: center; flex-shrink: 0; }
+.bar { height: 3pt; background: #277884; flex-shrink: 0; }
+.body { flex: 1; padding: 14pt 30pt 12pt 30pt; overflow: hidden; }
+.defbox { background: #E8F4F2; border-left: 4pt solid #277884; padding: 9pt 13pt; margin: 6pt 0; }
+.thmbox { background: #FFF8F0; border-left: 4pt solid #D4A843; padding: 9pt 13pt; margin: 6pt 0; }
+.codebox { background: #EDEDF3; border-left: 4pt solid #4A5568; padding: 8pt 13pt; margin: 6pt 0; }
+.cols { display: flex; gap: 18pt; height: 100%; }
+.col { flex: 1; }
+</style></head><body>
+<div class="hdr"><h2 style="color: #ffffff; font-size: 21pt; margin: 0;">Invisible Embeddings</h2></div>
+<div class="bar"></div>
+<div class="body">
+<div class="thmbox">
+  <p style="font-size: 15pt; color: #2C2C2C; margin: 0 0 8pt 0;"><b>Theorem C.3.3.</b> Embeddings are invisible to the language model.</p>
+  <p style="font-size: 13pt; color: #2C2C2C; margin: 0;">If <i>e</i> embeds <i>X′</i> into <i>X</i>, then for every state <i>s′</i> and every sequence of future completions, the model sees exactly the same prompts whether it interacts with <i>X′</i> from <i>s′</i> or with <i>X</i> from <i>e</i>(<i>s′</i>).</p>
+</div>
+<p style="font-size: 13pt; color: #2C2C2C; margin: 14pt 0 0 0;">The model cannot distinguish an embedded copy from the original. The only thing visible to the model is the prompt, and an embedding preserves both prompts and the dynamics of every future completion sequence.</p>
+<p style="font-size: 12pt; color: #666; margin: 12pt 0 0 0;">Formally: (<i>X′</i>, <i>s′</i>) ~ (<i>X</i>, <i>e</i>(<i>s′</i>)) &nbsp; where ~ is <b>LM-indistinguishability</b> — identical prompt traces under all completion sequences.</p></div>
+</body></html>

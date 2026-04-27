@@ -1,0 +1,25 @@
+<!DOCTYPE html><html><head><style>
+
+html { background: #ffffff; }
+body { width: 720pt; height: 405pt; margin: 0; padding: 0; font-family: Arial, sans-serif; display: flex; flex-direction: column; }
+
+body { background: #ffffff; }
+.hdr { background: #1B2838; padding: 9pt 30pt; min-height: 38pt; display: flex; align-items: center; flex-shrink: 0; }
+.bar { height: 3pt; background: #277884; flex-shrink: 0; }
+.body { flex: 1; padding: 14pt 30pt 12pt 30pt; overflow: hidden; }
+.defbox { background: #E8F4F2; border-left: 4pt solid #277884; padding: 9pt 13pt; margin: 6pt 0; }
+.thmbox { background: #FFF8F0; border-left: 4pt solid #D4A843; padding: 9pt 13pt; margin: 6pt 0; }
+.codebox { background: #EDEDF3; border-left: 4pt solid #4A5568; padding: 8pt 13pt; margin: 6pt 0; }
+.cols { display: flex; gap: 18pt; height: 100%; }
+.col { flex: 1; }
+</style></head><body>
+<div class="hdr"><h2 style="color: #ffffff; font-size: 21pt; margin: 0;">Embeddings</h2></div>
+<div class="bar"></div>
+<div class="body">
+<div class="defbox" style="margin-bottom: 6pt;">
+  <p style="font-size: 12pt; color: #2C2C2C; margin: 0;"><b>Definition.</b> An <b>embedding</b> <i>e</i> : <i>S′</i> → <i>S</i> is an injection with: &nbsp; <b>prompt preservation</b> <i>p</i>(<i>e</i>(<i>s′</i>)) = <i>p′</i>(<i>s′</i>) &nbsp;and&nbsp; <b>transition commutation</b> <i>h</i>(<i>e</i>(<i>s′</i>), <i>c</i>) = <i>e</i>(<i>h′</i>(<i>s′</i>, <i>c</i>))</p>
+</div>
+<div style="display: flex; justify-content: center;">
+  <img src="/Users/lukeoconnor/Dropbox/GitHub/spell/workspace/theory-slides/img/embedding.png" style="width: 390pt;">
+</div></div>
+</body></html>

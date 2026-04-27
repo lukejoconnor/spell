@@ -1,0 +1,32 @@
+<!DOCTYPE html><html><head><style>
+
+html { background: #ffffff; }
+body { width: 720pt; height: 405pt; margin: 0; padding: 0; font-family: Arial, sans-serif; display: flex; flex-direction: column; }
+
+body { background: #ffffff; }
+.hdr { background: #1B2838; padding: 9pt 30pt; min-height: 38pt; display: flex; align-items: center; flex-shrink: 0; }
+.bar { height: 3pt; background: #277884; flex-shrink: 0; }
+.body { flex: 1; padding: 14pt 30pt 12pt 30pt; overflow: hidden; }
+.defbox { background: #E8F4F2; border-left: 4pt solid #277884; padding: 9pt 13pt; margin: 6pt 0; }
+.thmbox { background: #FFF8F0; border-left: 4pt solid #D4A843; padding: 9pt 13pt; margin: 6pt 0; }
+.codebox { background: #EDEDF3; border-left: 4pt solid #4A5568; padding: 8pt 13pt; margin: 6pt 0; }
+.cols { display: flex; gap: 18pt; height: 100%; }
+.col { flex: 1; }
+</style></head><body>
+<div class="hdr"><h2 style="color: #ffffff; font-size: 21pt; margin: 0;">Completion-Generation</h2></div>
+<div class="bar"></div>
+<div class="body">
+<div class="cols">
+  <div class="col">
+    <div class="defbox">
+      <p style="font-size: 13pt; color: #2C2C2C; margin: 0 0 6pt 0;"><b>Definition C.3.6.</b></p>
+      <p style="font-size: 12pt; color: #2C2C2C; margin: 0 0 6pt 0;">A state <i>x</i><span style="font-size: 9pt;">seed</span> of <i>X</i> <b>completion-generates</b> <i>X′</i> if there exists an embedding <i>e</i> of <i>X′</i> in <i>X</i> such that every embedded state is reachable via some completion:</p>
+      <p style="font-size: 12pt; color: #277884; margin: 4pt 0 0 0;"><b>∀ s′ ∈ S′ : ∃ c ∈ C : h(x</b><span style="font-size: 9pt;">seed</span><b>, c) = e(s′)</b></p>
+    </div>
+    <p style="font-size: 11pt; color: #444; margin: 8pt 0 0 0;">One completion from a fixed seed state can “load” any state of the target machine into the ambient machine.</p>
+  </div>
+  <div class="col" style="display: flex; align-items: center; justify-content: center;">
+    <img src="/Users/lukeoconnor/Dropbox/GitHub/spell/workspace/theory-slides/img/completion-gen.png" style="width: 300pt;">
+  </div>
+</div></div>
+</body></html>

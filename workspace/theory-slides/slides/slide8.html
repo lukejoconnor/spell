@@ -1,0 +1,29 @@
+<!DOCTYPE html><html><head><style>
+
+html { background: #ffffff; }
+body { width: 720pt; height: 405pt; margin: 0; padding: 0; font-family: Arial, sans-serif; display: flex; flex-direction: column; }
+
+body { background: #ffffff; }
+.hdr { background: #1B2838; padding: 9pt 30pt; min-height: 38pt; display: flex; align-items: center; flex-shrink: 0; }
+.bar { height: 3pt; background: #277884; flex-shrink: 0; }
+.body { flex: 1; padding: 14pt 30pt 12pt 30pt; overflow: hidden; }
+.defbox { background: #E8F4F2; border-left: 4pt solid #277884; padding: 9pt 13pt; margin: 6pt 0; }
+.thmbox { background: #FFF8F0; border-left: 4pt solid #D4A843; padding: 9pt 13pt; margin: 6pt 0; }
+.codebox { background: #EDEDF3; border-left: 4pt solid #4A5568; padding: 8pt 13pt; margin: 6pt 0; }
+.cols { display: flex; gap: 18pt; height: 100%; }
+.col { flex: 1; }
+</style></head><body>
+<div class="hdr"><h2 style="color: #ffffff; font-size: 21pt; margin: 0;">Universality</h2></div>
+<div class="bar"></div>
+<div class="body">
+<div class="thmbox" style="margin-top: 10pt; margin-bottom: 14pt;">
+  <p style="font-size: 15pt; color: #2C2C2C; margin: 0 0 8pt 0;"><b>Corollary.</b></p>
+  <p style="font-size: 14pt; color: #2C2C2C; margin: 0;">The SPE state of the agentic evaluator <b>completion-generates any computable harness</b>.</p>
+</div>
+<p style="font-size: 13pt; color: #2C2C2C; margin: 0 0 10pt 0;">Every agentic machine whose prompt function and harness procedure are computable can be embedded in the CEK agentic evaluator and reached from a single seed state.</p>
+<p style="font-size: 13pt; color: #2C2C2C; margin: 0 0 14pt 0;">In other words: one fixed program —</p>
+<div class="codebox" style="margin-bottom: 14pt;">
+  <p style="font-size: 17pt; color: #2C2C2C; margin: 0; font-family: 'Courier New', monospace;"><b>let</b> y = <span style="color: #277884; font-weight: bold;">lm</span> q <b>in</b> <span style="color: #E07A5F; font-weight: bold;">eval</span> y</p>
+</div>
+<p style="font-size: 13pt; color: #2C2C2C; margin: 0;">— allows the model to implement <b>any computable agent loop</b> by choosing the right completion. The embedding is invisible to the model (Thm C.3.3), so the model fully specifies the successor state via its program.</p></div>
+</body></html>

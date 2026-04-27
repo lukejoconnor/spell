@@ -1,0 +1,1 @@
+Play a game of telephone. Create an initial message which gets sent to agent 1, then 2, then 3, then back to you. Each agent should receive the message and should be told to pass it on to the next agent, but re-worded. Your goal is to orchestrate this system such that the message goes around successfully. Report what the initial and final messages were.

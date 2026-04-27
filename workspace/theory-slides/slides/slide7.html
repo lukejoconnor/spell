@@ -1,0 +1,30 @@
+<!DOCTYPE html><html><head><style>
+
+html { background: #ffffff; }
+body { width: 720pt; height: 405pt; margin: 0; padding: 0; font-family: Arial, sans-serif; display: flex; flex-direction: column; }
+
+body { background: #ffffff; }
+.hdr { background: #1B2838; padding: 9pt 30pt; min-height: 38pt; display: flex; align-items: center; flex-shrink: 0; }
+.bar { height: 3pt; background: #277884; flex-shrink: 0; }
+.body { flex: 1; padding: 14pt 30pt 12pt 30pt; overflow: hidden; }
+.defbox { background: #E8F4F2; border-left: 4pt solid #277884; padding: 9pt 13pt; margin: 6pt 0; }
+.thmbox { background: #FFF8F0; border-left: 4pt solid #D4A843; padding: 9pt 13pt; margin: 6pt 0; }
+.codebox { background: #EDEDF3; border-left: 4pt solid #4A5568; padding: 8pt 13pt; margin: 6pt 0; }
+.cols { display: flex; gap: 18pt; height: 100%; }
+.col { flex: 1; }
+</style></head><body>
+<div class="hdr"><h2 style="color: #ffffff; font-size: 21pt; margin: 0;">SPE States</h2></div>
+<div class="bar"></div>
+<div class="body">
+<div class="defbox" style="margin-bottom: 8pt;">
+  <p style="font-size: 13pt; color: #2C2C2C; margin: 0;"><b>Definition.</b> A state <i>x</i> is an <b>SPE state</b> of <i>X</i> if (<i>X</i>, <i>x</i>) completion-generates <i>X</i> itself. From one state, the model can reach an embedded copy of <i>any</i> state of the machine.</p>
+</div>
+<div class="thmbox" style="margin-bottom: 8pt;">
+  <p style="font-size: 14pt; color: #2C2C2C; margin: 0 0 6pt 0;"><b>Theorem C.5.2.</b> The CEK agentic evaluator contains an SPE state.</p>
+  <p style="font-size: 12pt; color: #2C2C2C; margin: 0;">The seed state is produced by evaluating:</p>
+  <div class="codebox" style="margin: 6pt 0 0 0;">
+    <p style="font-size: 17pt; color: #2C2C2C; margin: 0; font-family: 'Courier New', monospace;"><b>let</b> y = <span style="color: #277884; font-weight: bold;">lm</span> q <b>in</b> <span style="color: #E07A5F; font-weight: bold;">eval</span> y</p>
+  </div>
+</div>
+<p style="font-size: 12pt; color: #444; margin: 0;">Ask the model for a completion <i>y</i>, then evaluate <i>y</i> as code. Whatever program the model returns becomes the next computation. Since any boundary state can be loaded by evaluating a suitable quotation, one completion from this seed reaches every state of the evaluator.</p></div>
+</body></html>
