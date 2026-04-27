@@ -525,15 +525,35 @@
     (let [provider-file (java.io.File/createTempFile "provider-anthropic-tc-" ".provider.edn")]
       (try
         (spit provider-file (pr-str {:type :anthropic-tc
-                                     :model "claude-sonnet-4-5-20250929"}))
+                                     :model "claude-sonnet-4-5-20250929"
+                                     :request-timeout-sec 45}))
         (with-redefs [provider/anthropic-tc-provider (fn [opts]
                                                        {:provider :anthropic-tc
                                                         :opts opts})]
           (let [p (provider/load-provider (.getAbsolutePath provider-file))]
             (is (= :anthropic-tc (:provider p)))
-            (is (= "claude-sonnet-4-5-20250929" (get-in p [:opts :model])))))
+            (is (= "claude-sonnet-4-5-20250929" (get-in p [:opts :model])))
+            (is (= 45 (get-in p [:opts :request-timeout-sec])))))
         (finally
           (.delete provider-file)))))
+
+  (testing "resolve-provider threads anthropic prefill timeout from inline map"
+    (let [p (provider/resolve-provider {:type :anthropic-pf
+                                        :api-key "anthropic-key"
+                                        :model "claude-sonnet-4-5-20250929"
+                                        :request-timeout-sec 33} nil)]
+      (is (instance? spell.provider.AnthropicPfProvider p))
+      (is (= 33 (:request-timeout-sec p)))
+      (is (= 33 (some-> (:http-client p) .connectTimeout (.orElse nil) .getSeconds)))))
+
+  (testing "resolve-provider threads anthropic tool-call timeout from inline map"
+    (let [p (provider/resolve-provider {:type :anthropic-tc
+                                        :api-key "anthropic-key"
+                                        :model "claude-sonnet-4-5-20250929"
+                                        :request-timeout-sec 47} nil)]
+      (is (instance? spell.provider.AnthropicTcProvider p))
+      (is (= 47 (:request-timeout-sec p)))
+      (is (= 47 (some-> (:http-client p) .connectTimeout (.orElse nil) .getSeconds)))))
 
   (testing "load-provider threads OpenAI toolcall opts and cache-read ratio"
     (let [provider-file (java.io.File/createTempFile "provider-openai-tc-" ".provider.edn")]
@@ -1531,6 +1551,10 @@
   (testing "retryable? still returns true for 429 and 5xx"
     (is (provider/retryable? (ex-info "rate limit" {:status 429})))
     (is (provider/retryable? (ex-info "server error" {:status 500}))))
+
+  (testing "retryable? returns false for request and connect timeouts"
+    (is (not (provider/retryable? (java.net.http.HttpTimeoutException. "request timeout"))))
+    (is (not (provider/retryable? (java.net.http.HttpConnectTimeoutException. "connect timeout")))))
 
   (testing "retryable? returns false for other errors"
     (is (not (provider/retryable? (ex-info "bad request" {:status 400}))))
