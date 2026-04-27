@@ -648,11 +648,12 @@
 
 (deftest plain-text-provider-mapping-test
   (testing "anthropic tool-call resolves to prefill sibling with same model"
-    (let [prov (provider/->AnthropicTcProvider "k" "claude-sonnet-4-5-20250929" 16384 nil {"claude" [1 1]})
+    (let [prov (provider/->AnthropicTcProvider "k" "claude-sonnet-4-5-20250929" 16384 nil 600 {"claude" [1 1]})
           leaf (provider/plain-text-provider prov)]
       (is (instance? spell.provider.AnthropicPfProvider leaf))
       (is (= "claude-sonnet-4-5-20250929" (:model leaf)))
       (is (= 16384 (:max-tokens leaf)))
+      (is (= 600 (:request-timeout-sec leaf)))
       (is (= {"claude" [1 1]} (:costs leaf)))))
 
   (testing "codex tool-call resolves to message sibling with same model"
@@ -877,11 +878,13 @@
                                               :model "claude-sonnet-4-5-20250929"})]
       (is (instance? spell.provider.AnthropicTcProvider p))
       (is (= "anthropic-key" (:api-key p)))
-      (is (= "claude-sonnet-4-5-20250929" (:model p)))))
+      (is (= "claude-sonnet-4-5-20250929" (:model p)))
+      (is (= 600 (:request-timeout-sec p)))))
 
   (testing "uses a default model when omitted"
     (let [p (provider/anthropic-tc-provider {:api-key "anthropic-key"})]
-      (is (some? (:model p))))))
+      (is (some? (:model p)))
+      (is (= 600 (:request-timeout-sec p))))))
 
 (deftest anthropic-tc-parse-test
   (testing "parses completed response with spell_suffix tool_use"

@@ -309,10 +309,12 @@
 
 (defn- make-http-client
   ([] (make-http-client nil))
-  ([{:keys [http-version]}]
+  ([{:keys [http-version connect-timeout-sec]}]
    (let [builder (HttpClient/newBuilder)]
      (when http-version
        (.version builder http-version))
+     (when connect-timeout-sec
+       (.connectTimeout builder (Duration/ofSeconds (long connect-timeout-sec))))
      (.build builder))))
 
 (defn- cache-min-chars
@@ -336,7 +338,8 @@
          anthropic-thinking-enabled?)
 
 (defn- anthropic-pf-request
-  [api-key model prompt system-prompt prefix max-tokens stream? thinking reasoning-effort cache-prefix]
+  [api-key model prompt system-prompt prefix max-tokens stream? thinking reasoning-effort
+   cache-prefix request-timeout-sec]
   (let [adaptive-only? (anthropic-adaptive-thinking-model? model)
         output-effort (anthropic-output-effort reasoning-effort)
         thinking-enabled? (anthropic-thinking-enabled? model thinking reasoning-effort)
@@ -376,8 +379,10 @@
                                   {:type "enabled" :budget_tokens 10000}))
                (and adaptive-only? output-effort)
                (assoc :output_config {:effort output-effort}))
-        request (-> (HttpRequest/newBuilder)
-                    (.uri (URI/create "https://api.anthropic.com/v1/messages"))
+        builder (cond-> (HttpRequest/newBuilder)
+                  true (.uri (URI/create "https://api.anthropic.com/v1/messages"))
+                  request-timeout-sec (.timeout (Duration/ofSeconds (long request-timeout-sec))))
+        request (-> builder
                     (.header "Content-Type" "application/json")
                     (.header "x-api-key" api-key)
                     (.header "anthropic-version" "2023-06-01")
@@ -448,7 +453,7 @@
       (and (anthropic-adaptive-thinking-model? model)
            (anthropic-output-effort reasoning-effort))))
 
-(defrecord AnthropicPfProvider [api-key model max-tokens http-client costs]
+(defrecord AnthropicPfProvider [api-key model max-tokens http-client request-timeout-sec costs]
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt opts]
@@ -461,7 +466,8 @@
           stream? (or thinking-enabled? (> effective-max-tokens 16384))
           cache-prefix (:cache-prefix opts)
           request (anthropic-pf-request api-key effective-model prompt (:system opts) (:prefix opts)
-                                       effective-max-tokens stream? thinking reasoning-effort cache-prefix)
+                                       effective-max-tokens stream? thinking reasoning-effort
+                                       cache-prefix request-timeout-sec)
           response (.send http-client request (HttpResponse$BodyHandlers/ofString))
           status (.statusCode response)]
       (if (<= 200 status 299)
@@ -485,18 +491,24 @@
    - :api-key - API key (default: ANTHROPIC_API_KEY env var)
    - :model - Model name (default: claude-sonnet-4-20250514)
    - :max-tokens - Max tokens per response (default: 16384)
+   - :request-timeout-sec - Per-HTTP-call timeout in seconds (default: 600)
    - :costs - Cost table {model-prefix [input-per-M output-per-M]}"
   ([] (anthropic-pf-provider {}))
-  ([{:keys [api-key model max-tokens costs]
-     :or {model "claude-sonnet-4-5-20250929"}}]
+  ([{:keys [api-key model max-tokens request-timeout-sec costs]
+     :or {model "claude-sonnet-4-5-20250929"
+          request-timeout-sec 600}}]
    (let [key (or api-key (System/getenv "ANTHROPIC_API_KEY"))]
      (when-not key
        (throw (ex-info "No API key provided. Set ANTHROPIC_API_KEY or pass :api-key"
                        {:env "ANTHROPIC_API_KEY"})))
-     (->AnthropicPfProvider key model max-tokens (make-http-client) costs))))
+     (->AnthropicPfProvider key model max-tokens
+                            (make-http-client {:connect-timeout-sec request-timeout-sec})
+                            request-timeout-sec
+                            costs))))
 
 (defn- anthropic-tc-request
-  [api-key model prompt system-prompt max-tokens stream? thinking reasoning-effort cache-prefix]
+  [api-key model prompt system-prompt max-tokens stream? thinking reasoning-effort
+   cache-prefix request-timeout-sec]
   (let [min-chars (cache-min-chars model)
         adaptive-only? (anthropic-adaptive-thinking-model? model)
         output-effort (anthropic-output-effort reasoning-effort)
@@ -539,8 +551,10 @@
                                   {:type "enabled" :budget_tokens 10000}))
                (and adaptive-only? output-effort)
                (assoc :output_config {:effort output-effort}))
-        request (-> (HttpRequest/newBuilder)
-                    (.uri (URI/create "https://api.anthropic.com/v1/messages"))
+        builder (cond-> (HttpRequest/newBuilder)
+                  true (.uri (URI/create "https://api.anthropic.com/v1/messages"))
+                  request-timeout-sec (.timeout (Duration/ofSeconds (long request-timeout-sec))))
+        request (-> builder
                     (.header "Content-Type" "application/json")
                     (.header "x-api-key" api-key)
                     (.header "anthropic-version" "2023-06-01")
@@ -642,7 +656,7 @@
                          :body (subs response-body 0 (min 1000 (count response-body)))})))
       {:text suffix :usage (with-legacy-usage-keys @usage)})))
 
-(defrecord AnthropicTcProvider [api-key model max-tokens http-client costs]
+(defrecord AnthropicTcProvider [api-key model max-tokens http-client request-timeout-sec costs]
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt opts]
@@ -656,7 +670,7 @@
           cache-prefix (:cache-prefix opts)
           request (anthropic-tc-request api-key effective-model prompt (:system opts)
                                         effective-max-tokens stream? thinking
-                                        reasoning-effort cache-prefix)
+                                        reasoning-effort cache-prefix request-timeout-sec)
           response (.send http-client request (HttpResponse$BodyHandlers/ofString))
           status (.statusCode response)]
       (if (<= 200 status 299)
@@ -668,7 +682,7 @@
         (throw (ex-info "Anthropic mandatory tool-call request failed"
                         {:status status :body (.body response)})))))
   (plain-text-provider [_]
-    (->AnthropicPfProvider api-key model max-tokens http-client costs))
+    (->AnthropicPfProvider api-key model max-tokens http-client request-timeout-sec costs))
   (supports-prefill [_] false))
 
 (defn anthropic-tc-provider
@@ -678,15 +692,20 @@
    - :api-key - API key (default: ANTHROPIC_API_KEY env var)
    - :model - Model name (default: claude-sonnet-4-5-20250929)
    - :max-tokens - Max tokens per response (default: 16384)
+   - :request-timeout-sec - Per-HTTP-call timeout in seconds (default: 600)
    - :costs - Cost table {model-prefix [input-per-M output-per-M]}"
   ([] (anthropic-tc-provider {}))
-  ([{:keys [api-key model max-tokens costs]
-     :or {model "claude-sonnet-4-5-20250929"}}]
+  ([{:keys [api-key model max-tokens request-timeout-sec costs]
+     :or {model "claude-sonnet-4-5-20250929"
+          request-timeout-sec 600}}]
    (let [key (or api-key (System/getenv "ANTHROPIC_API_KEY"))]
      (when-not key
        (throw (ex-info "No API key provided. Set ANTHROPIC_API_KEY or pass :api-key"
                        {:env "ANTHROPIC_API_KEY"})))
-     (->AnthropicTcProvider key model max-tokens (make-http-client) costs))))
+     (->AnthropicTcProvider key model max-tokens
+                            (make-http-client {:connect-timeout-sec request-timeout-sec})
+                            request-timeout-sec
+                            costs))))
 
 ;; ---------------------------------------------------------------------------
 ;; Ollama Provider

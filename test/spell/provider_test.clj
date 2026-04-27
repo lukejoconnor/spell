@@ -31,6 +31,10 @@
         (= ::timeout result) (throw (ex-info "Timed out reading request body" {}))
         :else (json/read-str (.toString out "UTF-8") :key-fn keyword)))))
 
+(defn- request-timeout-seconds
+  [request]
+  (some-> request .timeout (.orElse nil) .getSeconds))
+
 ;; =============================================================================
 ;; Anthropic PF response parsing
 ;; =============================================================================
@@ -365,22 +369,33 @@
   (testing "tool-call path treats reasoning-effort as adaptive thinking on opus-4-7"
     (let [request (#'provider/anthropic-tc-request "test" "claude-opus-4-7-20250416"
                                                    "prompt" "system" nil false nil
-                                                   "medium" nil)
+                                                   "medium" nil 600)
           body (request-json-body request)]
       (is (= 32768 (:max_tokens body)))
       (is (= {:type "auto"} (:tool_choice body)))
       (is (= {:type "adaptive"} (:thinking body)))
-      (is (= {:effort "medium"} (:output_config body)))))
+      (is (= {:effort "medium"} (:output_config body)))
+      (is (= 600 (request-timeout-seconds request)))))
 
   (testing "plain-text path uses adaptive thinking and drops assistant prefill on opus-4-7"
     (let [request (#'provider/anthropic-pf-request "test" "claude-opus-4-7-20250416"
                                                    "prompt" "system" "prefill" nil false nil
-                                                   "high" nil)
+                                                   "high" nil 600)
           body (request-json-body request)]
       (is (= 32768 (:max_tokens body)))
       (is (= [{:role "user" :content "prompt"}] (:messages body)))
       (is (= {:type "adaptive"} (:thinking body)))
-      (is (= {:effort "high"} (:output_config body))))))
+      (is (= {:effort "high"} (:output_config body)))
+      (is (= 600 (request-timeout-seconds request))))))
+
+(deftest make-http-client-connect-timeout-test
+  (testing "applies connect timeout when requested"
+    (let [client (#'provider/make-http-client {:connect-timeout-sec 17})]
+      (is (= 17 (some-> client .connectTimeout (.orElse nil) .getSeconds)))))
+
+  (testing "omits connect timeout when not requested"
+    (let [client (#'provider/make-http-client)]
+      (is (nil? (some-> client .connectTimeout (.orElse nil)))))))
 
 ;; =============================================================================
 ;; call-with-retries exhaustion
