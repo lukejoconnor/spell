@@ -16,7 +16,8 @@
   (:import [java.net URI]
            [java.net.http HttpClient HttpClient$Version HttpRequest HttpRequest$BodyPublishers
                           HttpResponse$BodyHandlers]
-           [java.time Duration]))
+           [java.time Duration]
+           [java.util.concurrent ExecutionException TimeUnit TimeoutException]))
 
 ;; ---------------------------------------------------------------------------
 ;; Protocol
@@ -317,6 +318,33 @@
        (.connectTimeout builder (Duration/ofSeconds (long connect-timeout-sec))))
      (.build builder))))
 
+(defn- await-http-response
+  "Wait for an async HTTP response, bounding the entire exchange including body read.
+   This is stricter than HttpRequest.timeout, which does not reliably protect
+   long-lived streaming body reads."
+  [response-future timeout-sec]
+  (try
+    (if timeout-sec
+      (.get response-future (long timeout-sec) TimeUnit/SECONDS)
+      (.get response-future))
+    (catch TimeoutException _
+      (.cancel response-future true)
+      (throw (java.net.http.HttpTimeoutException.
+              (str "HTTP response timed out after " timeout-sec "s"))))
+    (catch InterruptedException e
+      (.cancel response-future true)
+      (.interrupt (Thread/currentThread))
+      (throw e))
+    (catch ExecutionException e
+      (let [cause (.getCause e)]
+        (throw (if (instance? Throwable cause)
+                 cause
+                 (ex-info "HTTP request failed" {:cause cause} e)))))))
+
+(defn- send-http-request
+  [http-client request body-handler timeout-sec]
+  (await-http-response (.sendAsync http-client request body-handler) timeout-sec))
+
 (defn- cache-min-chars
   "Minimum character count for caching to be worthwhile on a given model.
    Based on Anthropic's minimum cacheable token thresholds (~4 chars/token):
@@ -468,7 +496,8 @@
           request (anthropic-pf-request api-key effective-model prompt (:system opts) (:prefix opts)
                                        effective-max-tokens stream? thinking reasoning-effort
                                        cache-prefix request-timeout-sec)
-          response (.send http-client request (HttpResponse$BodyHandlers/ofString))
+          response (send-http-request http-client request (HttpResponse$BodyHandlers/ofString)
+                                      request-timeout-sec)
           status (.statusCode response)]
       (if (<= 200 status 299)
         (let [{:keys [text usage]} (if stream?
@@ -671,7 +700,8 @@
           request (anthropic-tc-request api-key effective-model prompt (:system opts)
                                         effective-max-tokens stream? thinking
                                         reasoning-effort cache-prefix request-timeout-sec)
-          response (.send http-client request (HttpResponse$BodyHandlers/ofString))
+          response (send-http-request http-client request (HttpResponse$BodyHandlers/ofString)
+                                      request-timeout-sec)
           status (.statusCode response)]
       (if (<= 200 status 299)
         (let [{:keys [text usage]} (if stream?
