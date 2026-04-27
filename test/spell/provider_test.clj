@@ -387,7 +387,17 @@
       (is (= 32768 (:max_tokens body)))
       (is (= [{:role "user" :content "prompt"}] (:messages body)))
       (is (= {:type "adaptive"} (:thinking body)))
-      (is (= {:effort "high"} (:output_config body))))))
+      (is (= {:effort "high"} (:output_config body)))))
+
+  (testing "low reasoning effort does not enable Anthropic thinking"
+    (let [request (#'provider/anthropic-tc-request "test" "claude-opus-4-7-20250416"
+                                                   "prompt" "system" nil false nil
+                                                   "low" nil)
+          body (request-json-body request)]
+      (is (= 16384 (:max_tokens body)))
+      (is (= {:type "any"} (:tool_choice body)))
+      (is (nil? (:thinking body)))
+      (is (nil? (:output_config body))))))
 
 (deftest anthropic-cache-prefix-request-test
   (let [shared-prefix (repeated-string 4100 "a")
