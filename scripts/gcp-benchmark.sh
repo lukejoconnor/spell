@@ -40,6 +40,7 @@ FINISHED_ONLY=0
 WAIT_INTERVAL_SECONDS="${SPELL_GCP_WAIT_INTERVAL_SECONDS:-120}"
 WAIT_TIMEOUT_SECONDS="${SPELL_GCP_WAIT_TIMEOUT_SECONDS:-86400}"
 WAIT_UNREACHABLE_FAILURES="${SPELL_GCP_WAIT_UNREACHABLE_FAILURES:-3}"
+PULL_RETRY_ATTEMPTS="${SPELL_GCP_PULL_RETRY_ATTEMPTS:-3}"
 WAIT_AND_FINISH=0
 AUTO_SSH=1
 START_INSTANCE_CREATED=0
@@ -361,6 +362,7 @@ validate_args() {
 
   require_positive_integer "$WAIT_INTERVAL_SECONDS" "--interval"
   require_positive_integer "$WAIT_TIMEOUT_SECONDS" "--timeout"
+  require_positive_integer "$PULL_RETRY_ATTEMPTS" "SPELL_GCP_PULL_RETRY_ATTEMPTS"
 
   case "$ACTION" in
     start|run|dispatch|ssh|status|pull|finish|stop)
@@ -833,10 +835,23 @@ dispatch_instance() {
   launch_benchmark_command "$INSTANCE_NAME" "$zone"
 }
 
-extract_tar_stream_into_dir() {
-  local local_base="$1"
+extract_tarball_into_dir() {
+  local tarball="$1"
+  local local_base="$2"
+
+  local staging_dir
+  staging_dir="$(mktemp -d)"
+  if ! tar -xf "$tarball" -C "$staging_dir"; then
+    rm -rf "$staging_dir"
+    return 1
+  fi
+
   mkdir -p "$local_base"
-  tar -xf - -C "$local_base"
+  if ! tar -cf - -C "$staging_dir" . | tar -xf - -C "$local_base"; then
+    rm -rf "$staging_dir"
+    return 1
+  fi
+  rm -rf "$staging_dir"
 }
 
 remote_dir_presence() {
@@ -865,10 +880,70 @@ copy_remote_dir_from_instance() {
     return 0
   fi
 
-  log "copying ${remote_name} from ${instance_name} into ${local_base}"
+  local attempt
+  for (( attempt = 1; attempt <= PULL_RETRY_ATTEMPTS; attempt++ )); do
+    if copy_remote_dir_from_instance_once "$instance_name" "$zone" "$remote_name" "$local_base" "$attempt"; then
+      return 0
+    fi
+    log "copy attempt ${attempt}/${PULL_RETRY_ATTEMPTS} failed for ${instance_name}:${remote_name}"
+    if (( attempt < PULL_RETRY_ATTEMPTS )); then
+      sleep 5
+    fi
+  done
+  return 1
+}
+
+copy_remote_dir_from_instance_once() {
+  local instance_name="$1"
+  local zone="$2"
+  local remote_name="$3"
+  local local_base="$4"
+  local attempt="$5"
+
+  local remote_tar="/tmp/spell-benchmark-${remote_name}-$(date +%s)-${RANDOM}.tar"
+  local quoted_remote_tar
+  quoted_remote_tar="$(shell_quote "$remote_tar")"
+
+  local local_tmp_dir
+  local_tmp_dir="$(mktemp -d)"
+  local local_tar="${local_tmp_dir}/${remote_name}.tar"
+
+  log "copying ${remote_name} from ${instance_name} into ${local_base} (attempt ${attempt}/${PULL_RETRY_ATTEMPTS})"
+  if ! gcloud_compute_ssh "$instance_name" "$zone" \
+      --command="bash -lc 'set -euo pipefail; tar -cf ${quoted_remote_tar} -C \"\$HOME/spell/benchmarking/${remote_name}\" .; test -s ${quoted_remote_tar}'" < /dev/null; then
+    rm -rf "$local_tmp_dir"
+    return 1
+  fi
+
+  local copy_status=0
+  if ! gcloud compute scp \
+      --project "$PROJECT" \
+      --zone "$zone" \
+      "${REMOTE_USER}@${instance_name}:${remote_tar}" \
+      "$local_tar"; then
+    copy_status=1
+  fi
+
   gcloud_compute_ssh "$instance_name" "$zone" \
-    --command="bash -lc 'cd \$HOME/spell/benchmarking/${remote_name} && tar -cf - .'" < /dev/null \
-    | extract_tar_stream_into_dir "$local_base"
+    --command="rm -f ${quoted_remote_tar}" >/dev/null 2>&1 || \
+    log "warning: failed to remove remote tarball ${remote_tar} on ${instance_name}"
+
+  if (( copy_status != 0 )); then
+    rm -rf "$local_tmp_dir"
+    return 1
+  fi
+  if [[ ! -s "$local_tar" ]]; then
+    log "copied tarball is empty for ${instance_name}:${remote_name}"
+    rm -rf "$local_tmp_dir"
+    return 1
+  fi
+  if ! extract_tarball_into_dir "$local_tar" "$local_base"; then
+    log "failed to extract copied tarball for ${instance_name}:${remote_name}"
+    rm -rf "$local_tmp_dir"
+    return 1
+  fi
+
+  rm -rf "$local_tmp_dir"
 }
 
 pull_results_from_instance() {
@@ -878,9 +953,11 @@ pull_results_from_instance() {
   resolve_project
   mkdir -p "$LOCAL_BENCHMARK_DIR"
 
-  copy_remote_dir_from_instance "$instance_name" "$zone" "results" "$LOCAL_BENCHMARK_DIR/results/gcp/$instance_name"
-  copy_remote_dir_from_instance "$instance_name" "$zone" "traces" "$LOCAL_BENCHMARK_DIR/traces/gcp/$instance_name"
-  copy_remote_dir_from_instance "$instance_name" "$zone" "logs" "$LOCAL_BENCHMARK_DIR/logs/gcp/$instance_name"
+  local status=0
+  copy_remote_dir_from_instance "$instance_name" "$zone" "results" "$LOCAL_BENCHMARK_DIR/results/gcp/$instance_name" || status=1
+  copy_remote_dir_from_instance "$instance_name" "$zone" "traces" "$LOCAL_BENCHMARK_DIR/traces/gcp/$instance_name" || status=1
+  copy_remote_dir_from_instance "$instance_name" "$zone" "logs" "$LOCAL_BENCHMARK_DIR/logs/gcp/$instance_name" || status=1
+  return "$status"
 }
 
 stop_instance_named() {
@@ -898,7 +975,10 @@ stop_instance_named() {
 finish_instance_named() {
   local instance_name="$1"
   local zone="$2"
-  pull_results_from_instance "$instance_name" "$zone"
+  if ! pull_results_from_instance "$instance_name" "$zone"; then
+    log "not deleting ${instance_name}; artifact pull failed"
+    return 1
+  fi
   stop_instance_named "$instance_name" "$zone"
 }
 

@@ -58,14 +58,15 @@ assert_not_exists() {
   [[ ! -e "$path" ]] || fail "${message}: unexpected path [$path]"
 }
 
-test_extract_tar_stream_flattens_paths() {
+test_extract_tarball_flattens_paths() {
   local tmpdir
   tmpdir="$(mktemp -d)"
   mkdir -p "$tmpdir/remote/results/subdir"
   printf 'alpha\n' >"$tmpdir/remote/results/result.json"
   printf 'beta\n' >"$tmpdir/remote/results/subdir/detail.log"
 
-  tar -cf - -C "$tmpdir/remote/results" . | extract_tar_stream_into_dir "$tmpdir/local"
+  tar -cf "$tmpdir/results.tar" -C "$tmpdir/remote/results" .
+  extract_tarball_into_dir "$tmpdir/results.tar" "$tmpdir/local"
 
   assert_file_exists "$tmpdir/local/result.json" "pull should flatten top-level contents"
   assert_file_exists "$tmpdir/local/subdir/detail.log" "pull should keep nested contents"
@@ -129,6 +130,39 @@ test_finish_calls_pull_before_stop() {
   finish_instance_named "vm-one" "us-central1-a"
 
   assert_eq "pull:vm-one stop:vm-one " "$calls" "finish should pull before delete"
+}
+
+test_finish_does_not_stop_when_pull_fails() {
+  local calls=""
+  pull_results_from_instance() { calls="${calls}pull:$1 "; return 1; }
+  stop_instance_named() { calls="${calls}stop:$1 "; }
+
+  if finish_instance_named "vm-one" "us-central1-a" >/dev/null; then
+    fail "finish should fail when artifact pull fails"
+  fi
+
+  assert_eq "pull:vm-one " "$calls" "finish should not delete after pull failure"
+}
+
+test_finish_all_does_not_stop_when_pull_fails() {
+  list_matching_instances() {
+    printf 'done-vm\tus-central1-a\tRUNNING\trg\tmain\tmain\n'
+  }
+  read_benchmark_state() { printf 'finished\n'; }
+  pull_results_from_instance() { return 1; }
+  stop_instance_named() { fail "finish-all should not delete after pull failure"; }
+
+  local output_file
+  output_file="$(mktemp)"
+  if finish_all_instances >"$output_file"; then
+    rm -f "$output_file"
+    fail "finish-all should fail when artifact pull fails"
+  fi
+  local output
+  output="$(cat "$output_file")"
+  rm -f "$output_file"
+
+  assert_contains "$output" "finish failures: done-vm" "finish-all should report pull failures"
 }
 
 test_finish_all_skips_active_vms() {
@@ -411,10 +445,12 @@ test_wait_for_completion_resets_unreachable_budget_after_success() {
 }
 
 main() {
-  test_extract_tar_stream_flattens_paths
+  test_extract_tarball_flattens_paths
   test_render_run_wrapper_contains_status_transitions
   test_filter_instances_json_by_run_group
   test_finish_calls_pull_before_stop
+  test_finish_does_not_stop_when_pull_fails
+  test_finish_all_does_not_stop_when_pull_fails
   test_finish_all_skips_active_vms
   test_dispatch_instance_reuses_existing_vm
   test_dispatch_instance_refuses_active_benchmark
