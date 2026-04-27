@@ -5,15 +5,19 @@
             [clojure.java.io :as io]
             [spell.api :as api]
             [spell.provider :as provider])
+  (:import [java.time LocalDateTime]
+           [java.time.format DateTimeFormatter])
   (:gen-class))
 
 (def model-aliases
   {"haiku"   "claude-haiku-4-5-20251001"
    "sonnet"  "claude-sonnet-4-5-20250929"
-   "opus"    "claude-opus-4-6"
+   "opus"    "claude-opus-4-7"
+   "opus46"  "claude-opus-4-6"
    "opus45"  "claude-opus-4-5-20251101"
    "o3"      "o3"
    "o4-mini" "o4-mini"
+   "gpt"     "gpt-5.4"
    "gpt52"   "gpt-5.2"
    "gpt53"   "gpt-5.3"
    "gpt54"   "gpt-5.4"})
@@ -83,7 +87,7 @@
   [["-t" "--test" "Use dummy LLM provider (returns 'hello world')"]
    ["-e" "--example NAME" "Run a named example from examples/"]
    ["-a" "--agent FILE" "Use agent definition from .agent.edn file"]
-   ["-m" "--model MODEL" "Model spec: haiku, sonnet, opus, opus45, ollama:<model>, codex-tc:<model>, openai-tc:<model>, anthropic-pf:<model>, anthropic-tc:<model>, fireworks:<model>, user (default: codex-tc:gpt-5.3)"]
+   ["-m" "--model MODEL" "Model spec: haiku, sonnet, opus, opus46, opus45, gpt, ollama:<model>, codex-tc:<model>, openai-tc:<model>, anthropic-pf:<model>, anthropic-tc:<model>, fireworks:<model>, user (default: codex-tc:gpt-5.3)"]
    ["-d" "--depth DEPTH" "Max recursion depth (default: unlimited, 0 = unlimited)"
     :parse-fn #(Integer/parseInt %)
     :validate [#(>= % 0) "Must be non-negative"]]
@@ -96,7 +100,7 @@
    ["-K" "--thinking BUDGET" "Enable Anthropic adaptive thinking (budget_tokens, e.g. 10000)"
     :parse-fn #(Integer/parseInt %)
     :validate [pos? "Must be positive"]]
-   ["-R" "--reasoning-effort EFFORT" "OpenAI reasoning effort (none, low, medium, high, xhigh)"
+   ["-R" "--reasoning-effort EFFORT" "Reasoning effort (none, low, medium, high, xhigh; Anthropic maps medium/high to thinking)"
     :validate [#(contains? #{"none" "low" "medium" "high" "xhigh"} %)
                "Must be none, low, medium, high, or xhigh"]]
    [nil "--verbosity LEVEL" "OpenAI verbosity (low, auto)"
@@ -107,7 +111,7 @@
     :validate [pos? "Must be positive"]]
    [nil "--responses-api" "Force OpenAI Responses API instead of Chat Completions"]
    ["-T" "--trace" "Record execution trace to a temp dir under java.io.tmpdir/spell-traces/"]
-   ["-l" "--log FILE" "Log verbose output to FILE (implies -v)"]
+   ["-l" "--log FILE" "Log verbose output to FILE, or to logs/<timestamp>.log when omitted (implies -v)"]
    ["-v" "--verbose" "Show raw LLM response"]
    ["-S" "--setup CMD" "Shell command to run before spell execution"]
    ["-C" "--cleanup CMD" "Shell command to run after spell execution"]
@@ -148,8 +152,41 @@
 (defn error-msg [errors]
   (str "Error:\n" (str/join \newline errors)))
 
+(def ^:private log-timestamp-format
+  (DateTimeFormatter/ofPattern "yyyyMMdd-HHmmss-SSS"))
+
+(defn- timestamped-log-path []
+  (str (io/file "logs" (str "spell-" (.format (LocalDateTime/now) log-timestamp-format) ".log"))))
+
+(defn- option-token? [arg]
+  (and arg
+       (str/starts-with? arg "-")
+       (not= arg "-")))
+
+(defn- expand-optional-log-args
+  "Normalize --log/-l so it can be used with or without an explicit FILE.
+   With one remaining positional argument, the argument is treated as the prompt;
+   use --log=FILE or --log FILE <prompt> for an explicit log path."
+  [args]
+  (loop [result []
+         [arg nxt & more :as remaining] (seq args)]
+    (cond
+      (nil? arg)
+      result
+
+      (= "--" arg)
+      (into result remaining)
+
+      (or (= "--log" arg) (= "-l" arg))
+      (if (and nxt (not (option-token? nxt)) (seq more))
+        (recur (conj result arg nxt) more)
+        (recur (conj result arg (timestamped-log-path)) (rest remaining)))
+
+      :else
+      (recur (conj result arg) (rest remaining)))))
+
 (defn validate-args [args]
-  (let [{:keys [options arguments errors summary]} (parse-opts args cli-options)]
+  (let [{:keys [options arguments errors summary]} (parse-opts (expand-optional-log-args args) cli-options)]
     (cond
       (:help options)
       {:exit-message (usage summary) :ok? true}
@@ -180,6 +217,8 @@
       :else
       {:exit-message (usage summary) :ok? false})))
 
+(declare model-provider-info)
+
 (defn- make-provider [{:keys [test model max-tokens responses-api]}]
   (cond
     test
@@ -189,15 +228,12 @@
     (provider/user-provider)
 
     :else
-    (let [{:keys [provider model]} (if model
-                                     (parse-model-spec model)
-                                     {:provider "codex-tc" :model "gpt-5.3"})
-          resolved-model (when model (resolve-model model))
+    (let [{:keys [provider model]} (model-provider-info model)
           ;; ChatGPT/Codex backend exposes gpt-5.3 as gpt-5.3-codex.
           resolved-model (if (and (= "codex-tc" provider)
-                                  (= resolved-model "gpt-5.3"))
+                                  (= model "gpt-5.3"))
                            "gpt-5.3-codex"
-                           resolved-model)
+                           model)
           base-opts (cond-> {:costs provider/default-costs}
                       resolved-model (assoc :model resolved-model)
                       max-tokens (assoc :max-tokens max-tokens))]
@@ -223,6 +259,58 @@
         "anthropic-pf"
         (provider/anthropic-pf-provider base-opts)))))
 
+(def ^:private anthropic-budget-thinking-by-effort
+  {"medium" 10000
+   "high" 32000})
+
+(def ^:private anthropic-adaptive-efforts
+  #{"low" "medium" "high" "xhigh"})
+
+(defn- openai-model? [model]
+  (boolean
+   (when model
+     (or (str/starts-with? model "gpt-")
+         (re-matches #"o\d.*" model)))))
+
+(defn- model-provider-info [model]
+  (let [{:keys [provider model]} (if model
+                                   (parse-model-spec model)
+                                   {:provider "codex-tc" :model "gpt-5.3"})
+        resolved-model (when model (resolve-model model))]
+    {:provider (or provider
+                   (when (openai-model? resolved-model)
+                     "openai-tc"))
+     :model resolved-model}))
+
+(defn- anthropic-provider? [provider]
+  (contains? #{nil "anthropic-pf" "anthropic-tc"} provider))
+
+(defn- anthropic-adaptive-effort-model? [model]
+  (str/includes? (str model) "opus-4-7"))
+
+(defn- cli-thinking
+  [provider model thinking reasoning-effort]
+  (or thinking
+      (when (and (anthropic-provider? provider)
+                 (not (anthropic-adaptive-effort-model? model)))
+        (get anthropic-budget-thinking-by-effort reasoning-effort))))
+
+(defn- cli-reasoning-effort
+  [provider model thinking reasoning-effort]
+  (if (anthropic-provider? provider)
+    (when (and (not thinking)
+               (anthropic-adaptive-effort-model? model)
+               (contains? anthropic-adaptive-efforts reasoning-effort))
+      reasoning-effort)
+    reasoning-effort))
+
+(defn- log-writer [log]
+  (when log
+    (let [file (io/file log)]
+      (when-let [parent (.getParentFile file)]
+        (.mkdirs parent))
+      (io/writer file :append true))))
+
 (defn run-prompt
   [prompt {:keys [depth verbose log budget trace agent model thinking reasoning-effort verbosity
                   suffix-grammar grammar-max-chars]
@@ -232,13 +320,13 @@
                     (nil? depth) nil    ; default: no depth limit
                     (zero? depth) nil   ; 0 also means unlimited
                     :else depth)
-        resolved-model (some-> model parse-model-spec :model resolve-model)
-        opus? (and resolved-model (str/includes? resolved-model "opus"))
-        thinking (or thinking (when opus? 16384))
+        {:keys [provider model]} (model-provider-info model)
+        thinking (cli-thinking provider model thinking reasoning-effort)
+        reasoning-effort (cli-reasoning-effort provider model thinking reasoning-effort)
         prov (make-provider opts)
         prefill? (and (provider/supports-prefill prov) (not thinking))
         resolved-agent (or agent "config/agents/cli.agent.edn")
-        log-writer (when log (io/writer (io/file log) :append true))]
+        log-writer (log-writer log)]
     (api/run {:prompt prompt
               :provider prov
               :agent resolved-agent
