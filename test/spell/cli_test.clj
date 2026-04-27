@@ -83,6 +83,12 @@
       (is (nil? (:thinking opts)))
       (is (= "medium" (:reasoning-effort opts)))))
 
+  (testing "Opus 4.7 receives low and xhigh adaptive efforts"
+    (doseq [effort ["low" "xhigh"]]
+      (let [opts (captured-run-options {:model "opus" :reasoning-effort effort})]
+        (is (nil? (:thinking opts)))
+        (is (= effort (:reasoning-effort opts))))))
+
   (testing "non-adaptive Anthropic models receive benchmark-style thinking budgets"
     (let [opts (captured-run-options {:model "anthropic-tc:claude-sonnet-4-5"
                                       :reasoning-effort "medium"})]
@@ -103,11 +109,48 @@
       (is (= 12345 (:thinking opts)))
       (is (nil? (:reasoning-effort opts)))))
 
+  (testing "explicit --thinking overrides Opus 4.7 adaptive effort"
+    (let [opts (captured-run-options {:model "opus"
+                                      :thinking 12345
+                                      :reasoning-effort "high"})]
+      (is (= 12345 (:thinking opts)))
+      (is (nil? (:reasoning-effort opts)))))
+
   (testing "OpenAI providers keep reasoning-effort unchanged"
     (let [opts (captured-run-options {:model "openai-tc:gpt-5.4"
                                       :reasoning-effort "xhigh"})]
       (is (nil? (:thinking opts)))
       (is (= "xhigh" (:reasoning-effort opts))))))
+
+(deftest bare-openai-aliases-use-openai-provider
+  (testing "gpt alias routes to openai-tc instead of bare Anthropic"
+    (let [opts (captured-run-options {:model "gpt" :reasoning-effort "medium"})]
+      (is (= "medium" (:reasoning-effort opts)))
+      (is (= "config/agents/cli.agent.edn" (:agent opts)))))
+
+  (testing "provider-qualified gpt alias keeps the explicit provider"
+    (let [opts (captured-run-options {:model "codex-tc:gpt" :reasoning-effort "medium"})]
+      (is (= "medium" (:reasoning-effort opts))))))
+
+(deftest make-provider-routes-bare-openai-aliases-to-openai
+  (with-redefs [provider/openai-provider (fn [opts] {:provider :openai :opts opts})
+                provider/anthropic-tc-provider (fn [opts] {:provider :anthropic-tc :opts opts})]
+    (is (= {:provider :openai
+            :opts {:costs provider/default-costs
+                   :model "gpt-5.4"
+                   :use-responses-api true
+                   :force-tool-call true}}
+           (#'cli/make-provider {:model "gpt"})))
+    (is (= {:provider :openai
+            :opts {:costs provider/default-costs
+                   :model "o4-mini"
+                   :use-responses-api true
+                   :force-tool-call true}}
+           (#'cli/make-provider {:model "o4-mini"})))
+    (is (= {:provider :anthropic-tc
+            :opts {:costs provider/default-costs
+                   :model "claude-opus-4-7"}}
+           (#'cli/make-provider {:model "opus"})))))
 
 (deftest log-writer-creates-parent-directory
   (let [dir (io/file (System/getProperty "java.io.tmpdir")

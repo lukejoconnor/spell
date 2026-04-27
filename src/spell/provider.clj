@@ -461,7 +461,7 @@
 
 (defn- anthropic-output-effort
   [reasoning-effort]
-  (when (contains? #{"medium" "high"} reasoning-effort)
+  (when (contains? #{"low" "medium" "high" "xhigh" "max"} reasoning-effort)
     reasoning-effort))
 
 (defn- anthropic-thinking-enabled?

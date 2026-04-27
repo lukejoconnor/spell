@@ -389,15 +389,23 @@
       (is (= {:type "adaptive"} (:thinking body)))
       (is (= {:effort "high"} (:output_config body)))))
 
-  (testing "low reasoning effort does not enable Anthropic thinking"
+  (testing "low reasoning effort enables adaptive thinking with low effort"
     (let [request (#'provider/anthropic-tc-request "test" "claude-opus-4-7-20250416"
                                                    "prompt" "system" nil false nil
                                                    "low" nil)
           body (request-json-body request)]
-      (is (= 16384 (:max_tokens body)))
-      (is (= {:type "any"} (:tool_choice body)))
-      (is (nil? (:thinking body)))
-      (is (nil? (:output_config body))))))
+      (is (= 32768 (:max_tokens body)))
+      (is (= {:type "auto"} (:tool_choice body)))
+      (is (= {:type "adaptive"} (:thinking body)))
+      (is (= {:effort "low"} (:output_config body)))))
+
+  (testing "xhigh reasoning effort is passed through for Opus 4.7"
+    (let [request (#'provider/anthropic-tc-request "test" "claude-opus-4-7-20250416"
+                                                   "prompt" "system" nil false nil
+                                                   "xhigh" nil)
+          body (request-json-body request)]
+      (is (= {:type "adaptive"} (:thinking body)))
+      (is (= {:effort "xhigh"} (:output_config body))))))
 
 (deftest anthropic-cache-prefix-request-test
   (let [shared-prefix (repeated-string 4100 "a")

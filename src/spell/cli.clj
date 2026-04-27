@@ -217,6 +217,8 @@
       :else
       {:exit-message (usage summary) :ok? false})))
 
+(declare model-provider-info)
+
 (defn- make-provider [{:keys [test model max-tokens responses-api]}]
   (cond
     test
@@ -226,15 +228,12 @@
     (provider/user-provider)
 
     :else
-    (let [{:keys [provider model]} (if model
-                                     (parse-model-spec model)
-                                     {:provider "codex-tc" :model "gpt-5.3"})
-          resolved-model (when model (resolve-model model))
+    (let [{:keys [provider model]} (model-provider-info model)
           ;; ChatGPT/Codex backend exposes gpt-5.3 as gpt-5.3-codex.
           resolved-model (if (and (= "codex-tc" provider)
-                                  (= resolved-model "gpt-5.3"))
+                                  (= model "gpt-5.3"))
                            "gpt-5.3-codex"
-                           resolved-model)
+                           model)
           base-opts (cond-> {:costs provider/default-costs}
                       resolved-model (assoc :model resolved-model)
                       max-tokens (assoc :max-tokens max-tokens))]
@@ -260,16 +259,28 @@
         "anthropic-pf"
         (provider/anthropic-pf-provider base-opts)))))
 
-(def ^:private anthropic-thinking-by-effort
+(def ^:private anthropic-budget-thinking-by-effort
   {"medium" 10000
    "high" 32000})
+
+(def ^:private anthropic-adaptive-efforts
+  #{"low" "medium" "high" "xhigh"})
+
+(defn- openai-model? [model]
+  (boolean
+   (when model
+     (or (str/starts-with? model "gpt-")
+         (re-matches #"o\d.*" model)))))
 
 (defn- model-provider-info [model]
   (let [{:keys [provider model]} (if model
                                    (parse-model-spec model)
-                                   {:provider "codex-tc" :model "gpt-5.3"})]
-    {:provider provider
-     :model (when model (resolve-model model))}))
+                                   {:provider "codex-tc" :model "gpt-5.3"})
+        resolved-model (when model (resolve-model model))]
+    {:provider (or provider
+                   (when (openai-model? resolved-model)
+                     "openai-tc"))
+     :model resolved-model}))
 
 (defn- anthropic-provider? [provider]
   (contains? #{nil "anthropic-pf" "anthropic-tc"} provider))
@@ -282,14 +293,14 @@
   (or thinking
       (when (and (anthropic-provider? provider)
                  (not (anthropic-adaptive-effort-model? model)))
-        (get anthropic-thinking-by-effort reasoning-effort))))
+        (get anthropic-budget-thinking-by-effort reasoning-effort))))
 
 (defn- cli-reasoning-effort
   [provider model thinking reasoning-effort]
   (if (anthropic-provider? provider)
     (when (and (not thinking)
                (anthropic-adaptive-effort-model? model)
-               (contains? anthropic-thinking-by-effort reasoning-effort))
+               (contains? anthropic-adaptive-efforts reasoning-effort))
       reasoning-effort)
     reasoning-effort))
 
