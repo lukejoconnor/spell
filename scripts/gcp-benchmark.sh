@@ -975,7 +975,10 @@ stop_instance_named() {
 finish_instance_named() {
   local instance_name="$1"
   local zone="$2"
-  pull_results_from_instance "$instance_name" "$zone"
+  if ! pull_results_from_instance "$instance_name" "$zone"; then
+    log "not deleting ${instance_name}; artifact pull failed"
+    return 1
+  fi
   stop_instance_named "$instance_name" "$zone"
 }
 
