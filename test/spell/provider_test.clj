@@ -5,7 +5,7 @@
             [spell.provider :as provider])
   (:import [java.io ByteArrayOutputStream]
            [java.nio ByteBuffer]
-           [java.util.concurrent Flow$Subscriber Flow$Subscription]))
+           [java.util.concurrent CompletableFuture Flow$Subscriber Flow$Subscription]))
 
 (defn- request-json-body
   [request]
@@ -396,6 +396,23 @@
   (testing "omits connect timeout when not requested"
     (let [client (#'provider/make-http-client)]
       (is (nil? (some-> client .connectTimeout (.orElse nil)))))))
+
+(deftest await-http-response-test
+  (testing "returns completed async response"
+    (let [future (doto (CompletableFuture.) (.complete :ok))]
+      (is (= :ok (#'provider/await-http-response future 1)))))
+
+  (testing "times out and cancels unfinished responses"
+    (let [future (CompletableFuture.)]
+      (is (thrown-with-msg? java.net.http.HttpTimeoutException #"timed out"
+            (#'provider/await-http-response future 0)))
+      (is (.isCancelled future))))
+
+  (testing "unwraps execution exceptions"
+    (let [future (doto (CompletableFuture.)
+                   (.completeExceptionally (ex-info "boom" {:status 500})))]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"boom"
+            (#'provider/await-http-response future 1))))))
 
 ;; =============================================================================
 ;; call-with-retries exhaustion
