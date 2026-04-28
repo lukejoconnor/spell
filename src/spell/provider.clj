@@ -66,6 +66,9 @@
    Snapshot writing is best-effort and never interrupts model execution."
   nil)
 
+(defonce ^:private usage-snapshot-lock
+  (Object.))
+
 (defn- repo-root []
   (if-let [resource (io/resource "spell/provider.clj")]
     (-> resource .toURI java.io.File. .getParentFile .getParentFile .getParentFile)
@@ -341,19 +344,20 @@
 (defn- write-usage-snapshot! [usage-atom]
   (when (and *usage-snapshot-path* usage-atom)
     (try
-      (let [target (-> (io/file *usage-snapshot-path*) .toPath .toAbsolutePath)
-            parent (.getParent target)
-            tmp (.resolve parent (str (.getFileName target) ".tmp"))
-            payload (str (json/write-str (usage-snapshot-payload usage-atom)) "\n")]
-        (Files/createDirectories parent (make-array java.nio.file.attribute.FileAttribute 0))
-        (spit (.toFile tmp) payload)
-        (try
-          (Files/move tmp target
-                      (into-array CopyOption [StandardCopyOption/ATOMIC_MOVE
-                                              StandardCopyOption/REPLACE_EXISTING]))
-          (catch AtomicMoveNotSupportedException _
+      (locking usage-snapshot-lock
+        (let [target (-> (io/file *usage-snapshot-path*) .toPath .toAbsolutePath)
+              parent (.getParent target)
+              tmp (.resolve parent (str (.getFileName target) ".tmp"))
+              payload (str (json/write-str (usage-snapshot-payload usage-atom)) "\n")]
+          (Files/createDirectories parent (make-array java.nio.file.attribute.FileAttribute 0))
+          (spit (.toFile tmp) payload)
+          (try
             (Files/move tmp target
-                        (into-array CopyOption [StandardCopyOption/REPLACE_EXISTING])))))
+                        (into-array CopyOption [StandardCopyOption/ATOMIC_MOVE
+                                                StandardCopyOption/REPLACE_EXISTING]))
+            (catch AtomicMoveNotSupportedException _
+              (Files/move tmp target
+                          (into-array CopyOption [StandardCopyOption/REPLACE_EXISTING]))))))
       (catch Exception _
         nil))))
 

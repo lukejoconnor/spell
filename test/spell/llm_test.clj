@@ -251,6 +251,30 @@
         (is (number? (get-in snapshot [:usage :total :cost])))
         (is (= 1 (count (:records snapshot))))))))
 
+(deftest track-usage-concurrent-snapshot-test
+  (testing "concurrent tracked calls leave the live snapshot at the latest cumulative usage"
+    (let [usage-atom (atom {:by-model {}})
+          dir (java.nio.file.Files/createTempDirectory
+                "spell-usage-snapshot-concurrent-"
+                (make-array java.nio.file.attribute.FileAttribute 0))
+          path (.resolve dir "spell-usage.json")
+          call-count 100]
+      (binding [provider/*usage* usage-atom
+                provider/*usage-snapshot-path* (str path)
+                provider/*budget* nil]
+        (doseq [fut (doall
+                      (repeatedly call-count
+                                  #(future-call
+                                     (bound-fn []
+                                       (provider/track-usage! "gpt-5.4"
+                                                              {:input_tokens 1
+                                                               :output_tokens 1})))))]
+          @fut))
+      (let [snapshot (json/read-str (slurp (str path)) :key-fn keyword)]
+        (is (= call-count (get-in @usage-atom [:by-model "gpt-5.4" :calls])))
+        (is (= call-count (get-in snapshot [:usage :total :calls])))
+        (is (= call-count (count (:records snapshot))))))))
+
 (deftest usage-summary-context-stats-test
   (testing "usage-summary reports per-model and total context mean/max"
     (let [usage-atom (atom {:by-model {}})]
