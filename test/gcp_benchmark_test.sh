@@ -92,6 +92,17 @@ test_render_run_wrapper_contains_status_transitions() {
   assert_contains "$wrapper" 'git -C "$repo_dir" "${git_args[@]}" fetch origin "$ref" --depth 1' "wrapper should fetch the requested ref on warm VMs"
 }
 
+test_render_run_command_runs_inside_remote_benchmarking_checkout() {
+  RUN_COMMAND='uv run python bench.py harbor-terminalbench --dev-smoke -k 1'
+
+  local command_script
+  command_script="$(render_run_command_script)"
+
+  assert_contains "$command_script" 'cd "$HOME/spell/benchmarking"' "run command should start in the remote benchmarking checkout"
+  assert_contains "$command_script" "command cwd" "run command should log its working directory"
+  assert_contains "$command_script" "$RUN_COMMAND" "run command should include the requested benchmark command"
+}
+
 test_filter_instances_json_by_run_group() {
   OPERATE_ALL=0
   local json

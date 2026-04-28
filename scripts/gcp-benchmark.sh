@@ -17,7 +17,7 @@ BOOT_DISK_SIZE_GB="${SPELL_GCP_BOOT_DISK_SIZE_GB:-100}"
 BOOT_DISK_TYPE="${SPELL_GCP_BOOT_DISK_TYPE:-pd-balanced}"
 IMAGE_FAMILY="${SPELL_GCP_IMAGE_FAMILY:-debian-12}"
 IMAGE_PROJECT="${SPELL_GCP_IMAGE_PROJECT:-debian-cloud}"
-NETWORK="${SPELL_GCP_NETWORK:-default}"
+NETWORK="${SPELL_GCP_NETWORK:-}"
 SUBNET="${SPELL_GCP_SUBNET:-}"
 MAX_RUN_DURATION="${SPELL_GCP_MAX_RUN_DURATION:-168h}"
 STARTUP_TIMEOUT_SECONDS="${SPELL_GCP_STARTUP_TIMEOUT_SECONDS:-1800}"
@@ -93,7 +93,7 @@ Options:
   --disk-type TYPE                Boot disk type (default: pd-balanced)
   --image-family FAMILY           Image family (default: debian-12)
   --image-project PROJECT         Image project (default: debian-cloud)
-  --network NAME                  VPC network name (default: default)
+  --network NAME                  VPC network name (default: auto-detect; env SPELL_GCP_NETWORK)
   --subnet NAME                   Optional subnetwork name
   --max-run-duration DURATION     Auto-stop window, e.g. 168h (default: 168h / 7d)
   --startup-timeout SECONDS       Wait time for startup (default: 1800)
@@ -112,7 +112,7 @@ Options:
   --env-image-cache-repository URI Artifact Registry repository for SWE-bench env-image caching
   --local-benchmark-dir PATH      Local benchmarking checkout/path for pull (default: ./benchmarking)
   --run-group GROUP               Logical fleet label for managed VMs (defaults to VM name for single-VM commands)
-  --command CMD                   Benchmark command for run
+  --command CMD                   Benchmark command for run; executed from ~/spell/benchmarking on the VM
   --all                           Target all Spell-managed benchmark VMs in the project
   --finished-only                 For pull-all, only pull finished/failed VMs
   --interval SECONDS              Poll interval for wait (default: 120)
@@ -182,6 +182,37 @@ resolve_project() {
   fi
   PROJECT="$detected"
   [[ -n "$PROJECT" ]] || die "no GCP project configured; pass --project or run gcloud init"
+}
+
+resolve_network() {
+  if [[ -n "$NETWORK" ]]; then
+    return
+  fi
+
+  if gcloud compute networks describe default \
+      --project "$PROJECT" \
+      --format='value(name)' >/dev/null 2>&1; then
+    NETWORK="default"
+    return
+  fi
+
+  local networks=()
+  local network_name
+  while IFS= read -r network_name; do
+    [[ -n "$network_name" ]] && networks+=("$network_name")
+  done < <(gcloud compute networks list --project "$PROJECT" --format='value(name)' 2>/dev/null || true)
+
+  if [[ "${#networks[@]}" -eq 1 ]]; then
+    NETWORK="${networks[0]}"
+    log "using only available VPC network: ${NETWORK}"
+    return
+  fi
+
+  if [[ "${#networks[@]}" -eq 0 ]]; then
+    die "no GCP VPC network found in project ${PROJECT}; pass --network or set SPELL_GCP_NETWORK"
+  fi
+
+  die "multiple GCP VPC networks found in project ${PROJECT}: $(join_by ', ' "${networks[@]}"); pass --network or set SPELL_GCP_NETWORK"
 }
 
 parse_args() {
@@ -483,6 +514,7 @@ create_instance() {
   require_cmd gcloud
   [[ -f "$STARTUP_SCRIPT" ]] || die "missing startup script: $STARTUP_SCRIPT"
   resolve_project
+  resolve_network
 
   local network_flags=(--network "$NETWORK")
   if [[ -n "$SUBNET" ]]; then
@@ -556,6 +588,7 @@ render_run_command_script() {
 set -euo pipefail
 source "\$HOME/.profile" 2>/dev/null || true
 cd "\$HOME/spell/benchmarking"
+printf '[spell-benchmark] command cwd: %s\\n' "\$PWD"
 ${RUN_COMMAND}
 EOF
 }
