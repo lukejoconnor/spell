@@ -112,7 +112,7 @@ Options:
   --env-image-cache-repository URI Artifact Registry repository for SWE-bench env-image caching
   --local-benchmark-dir PATH      Local benchmarking checkout/path for pull (default: ./benchmarking)
   --run-group GROUP               Logical fleet label for managed VMs (defaults to VM name for single-VM commands)
-  --command CMD                   Benchmark command for run
+  --command CMD                   Benchmark command for run; executed from ~/spell/benchmarking on the VM
   --all                           Target all Spell-managed benchmark VMs in the project
   --finished-only                 For pull-all, only pull finished/failed VMs
   --interval SECONDS              Poll interval for wait (default: 120)
@@ -588,6 +588,7 @@ render_run_command_script() {
 set -euo pipefail
 source "\$HOME/.profile" 2>/dev/null || true
 cd "\$HOME/spell/benchmarking"
+printf '[spell-benchmark] command cwd: %s\\n' "\$PWD"
 ${RUN_COMMAND}
 EOF
 }
