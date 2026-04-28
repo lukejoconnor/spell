@@ -62,6 +62,35 @@
       (is (nil? (get-in out [:usage :total :cost])))
       (is (string? (json/write-str out))))))
 
+(deftest run-one-shot-usage-log-path-test
+  (testing "usage_log_path is normalized and bound as the provider snapshot path"
+    (let [dir (java.nio.file.Files/createTempDirectory
+                "spell-benchmark-usage-log-"
+                (make-array java.nio.file.attribute.FileAttribute 0))
+          usage-log-path (str (.resolve dir "spell-usage.json"))
+          provider-inst (reify provider/LLMProvider
+                          (call-llm [this prompt] (provider/call-llm this prompt {}))
+                          (call-llm [_ _ _]
+                            (provider/track-usage! "gpt-5.4"
+                                                   {:input_tokens 1000
+                                                    :cache_read_input_tokens 50
+                                                    :output_tokens 100})
+                            "done")
+                          (plain-text-provider [this] this)
+                          (supports-prefill [_] false))
+          result (with-redefs [benchmark-api/make-provider (fn [_] provider-inst)]
+                   ((var benchmark-api/run-one-shot)
+                    {:prompt "Return done"
+                     :model "test:dummy"
+                     :usage-log-path usage-log-path
+                     :budget nil}))]
+      (is (:ok result))
+      (let [snapshot (json/read-str (slurp usage-log-path) :key-fn keyword)]
+        (is (= 1 (get-in snapshot [:usage :total :calls])))
+        (is (= 1000 (get-in snapshot [:usage :total :uncached_input_tokens])))
+        (is (= 50 (get-in snapshot [:usage :total :cached_input_tokens])))
+        (is (= 100 (get-in snapshot [:usage :total :visible_output_tokens])))))))
+
 (deftest killed-response-reflects-partial-work-test
   (try
     (runtime/register! :main)

@@ -16,7 +16,8 @@
   (:import [java.net URI]
            [java.net.http HttpClient HttpClient$Version HttpRequest HttpRequest$BodyPublishers
                           HttpResponse$BodyHandlers]
-           [java.time Duration]))
+           [java.nio.file AtomicMoveNotSupportedException CopyOption Files StandardCopyOption]
+           [java.time Duration Instant]))
 
 ;; ---------------------------------------------------------------------------
 ;; Protocol
@@ -59,6 +60,11 @@
    Each element is one retry attempt; the value is how long to sleep before retrying.
    Default [0 10] = instant retry, then retry after 10s. nil or [] = no retries."
   [0 10])
+
+(def ^:dynamic *usage-snapshot-path*
+  "When bound to a path string, write cumulative usage JSON after each tracked provider call.
+   Snapshot writing is best-effort and never interrupts model execution."
+  nil)
 
 (defn- repo-root []
   (if-let [resource (io/resource "spell/provider.clj")]
@@ -192,6 +198,8 @@
     (when (seq costs)
       (reduce + 0.0 costs))))
 
+(declare write-usage-snapshot!)
+
 (defn track-usage!
   "Add usage data to the *usage* atom if bound.
    Optional cost-table is used to freeze the per-call cost at tracking time.
@@ -233,6 +241,7 @@
                                         (assoc (with-legacy-usage-keys merged-stats) :cost merged-cost)))
                     (and cost-table (nil? (:cost-table u)))
                     (assoc :cost-table cost-table))))))
+     (write-usage-snapshot! *usage*)
      (when *budget*
        (when-let [cost (current-cost *usage*)]
          (when (> cost *budget*)
@@ -314,6 +323,39 @@
                                               :reasoning_output_tokens (:reasoning_output_tokens u 0)}
                                        cost (assoc :cost cost))))
                                  records)))))
+
+(defn- usage-snapshot-payload [usage-atom]
+  (let [records (:records @usage-atom)]
+    (cond-> {:schema "spell.usage-snapshot.v1"
+             :updated_at (str (Instant/now))
+             :usage (usage-summary usage-atom)}
+      (seq records)
+      (assoc :records
+             (mapv (fn [{:keys [model usage cost]}]
+                     (let [u (canonical-usage usage)]
+                       (cond-> {:model model
+                                :usage (with-legacy-usage-keys u)}
+                         cost (assoc :cost cost))))
+                   records)))))
+
+(defn- write-usage-snapshot! [usage-atom]
+  (when (and *usage-snapshot-path* usage-atom)
+    (try
+      (let [target (-> (io/file *usage-snapshot-path*) .toPath .toAbsolutePath)
+            parent (.getParent target)
+            tmp (.resolve parent (str (.getFileName target) ".tmp"))
+            payload (str (json/write-str (usage-snapshot-payload usage-atom)) "\n")]
+        (Files/createDirectories parent (make-array java.nio.file.attribute.FileAttribute 0))
+        (spit (.toFile tmp) payload)
+        (try
+          (Files/move tmp target
+                      (into-array CopyOption [StandardCopyOption/ATOMIC_MOVE
+                                              StandardCopyOption/REPLACE_EXISTING]))
+          (catch AtomicMoveNotSupportedException _
+            (Files/move tmp target
+                        (into-array CopyOption [StandardCopyOption/REPLACE_EXISTING])))))
+      (catch Exception _
+        nil))))
 
 ;; ---------------------------------------------------------------------------
 ;; Anthropic Provider
