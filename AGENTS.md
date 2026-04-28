@@ -69,6 +69,8 @@ See `config/CLAUDE.md` for provider/agent details. Base agents: `base-pf`, `base
 See `benchmarking/AGENTS.md` for benchmark commands, datasets, and reporting expectations.
 Use `uv run` for Python benchmark tooling.
 
+Public Terminal-Bench 2.0 submission/comparison runs must use the Harbor path in the nested repo: `uv run python bench.py harbor-terminalbench`, which shells out to `harbor run -d terminal-bench@2.0`. The legacy `bench.py terminalbench --dataset 2.0` path is for local scientific/regression runs only and is not public leaderboard-compliant.
+
 ### GCP Benchmark VM
 
 Use `scripts/gcp-benchmark.sh` to run long benchmark jobs on a GCP VM:

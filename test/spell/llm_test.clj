@@ -225,6 +225,56 @@
       ;; Should not throw
       (provider/track-usage! "model" {:input_tokens 100 :output_tokens 50}))))
 
+(deftest track-usage-writes-live-snapshot-test
+  (testing "track-usage! writes a cumulative usage snapshot before budget exceptions"
+    (let [usage-atom (atom {:by-model {}})
+          dir (java.nio.file.Files/createTempDirectory
+                "spell-usage-snapshot-"
+                (make-array java.nio.file.attribute.FileAttribute 0))
+          path (.resolve dir "spell-usage.json")]
+      (binding [provider/*usage* usage-atom
+                provider/*usage-snapshot-path* (str path)
+                provider/*budget* 0.00001]
+        (is (thrown-with-msg?
+              clojure.lang.ExceptionInfo
+              #"Budget exceeded"
+              (provider/track-usage! "gpt-5.4"
+                                     {:input_tokens 1000
+                                      :cache_read_input_tokens 25
+                                      :output_tokens 100}))))
+      (let [snapshot (json/read-str (slurp (str path)) :key-fn keyword)]
+        (is (= "spell.usage-snapshot.v1" (:schema snapshot)))
+        (is (= 1 (get-in snapshot [:usage :total :calls])))
+        (is (= 1000 (get-in snapshot [:usage :total :uncached_input_tokens])))
+        (is (= 25 (get-in snapshot [:usage :total :cached_input_tokens])))
+        (is (= 100 (get-in snapshot [:usage :total :visible_output_tokens])))
+        (is (number? (get-in snapshot [:usage :total :cost])))
+        (is (= 1 (count (:records snapshot))))))))
+
+(deftest track-usage-concurrent-snapshot-test
+  (testing "concurrent tracked calls leave the live snapshot at the latest cumulative usage"
+    (let [usage-atom (atom {:by-model {}})
+          dir (java.nio.file.Files/createTempDirectory
+                "spell-usage-snapshot-concurrent-"
+                (make-array java.nio.file.attribute.FileAttribute 0))
+          path (.resolve dir "spell-usage.json")
+          call-count 100]
+      (binding [provider/*usage* usage-atom
+                provider/*usage-snapshot-path* (str path)
+                provider/*budget* nil]
+        (doseq [fut (doall
+                      (repeatedly call-count
+                                  #(future-call
+                                     (bound-fn []
+                                       (provider/track-usage! "gpt-5.4"
+                                                              {:input_tokens 1
+                                                               :output_tokens 1})))))]
+          @fut))
+      (let [snapshot (json/read-str (slurp (str path)) :key-fn keyword)]
+        (is (= call-count (get-in @usage-atom [:by-model "gpt-5.4" :calls])))
+        (is (= call-count (get-in snapshot [:usage :total :calls])))
+        (is (= call-count (count (:records snapshot))))))))
+
 (deftest usage-summary-context-stats-test
   (testing "usage-summary reports per-model and total context mean/max"
     (let [usage-atom (atom {:by-model {}})]

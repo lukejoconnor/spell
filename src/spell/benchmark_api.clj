@@ -257,14 +257,15 @@
     (zero? budget) nil
     :else budget))
 
-(defn- run-one-shot [{:keys [prompt reasoning-effort verbosity thinking budget retries] :as req}]
+(defn- run-one-shot [{:keys [prompt reasoning-effort verbosity thinking budget retries usage-log-path] :as req}]
   (let [usage-atom (atom {:by-model {}})
         provider-inst (make-provider req)
         start-ns (System/nanoTime)]
     (try
       (binding [provider/*usage* usage-atom
                 provider/*budget* (normalize-budget budget)
-                provider/*retries* (or retries provider/*retries*)]
+                provider/*retries* (or retries provider/*retries*)
+                provider/*usage-snapshot-path* usage-log-path]
         (let [text (provider/call-llm provider-inst prompt
                                       (cond-> {}
                                         reasoning-effort (assoc :reasoning-effort reasoning-effort)
@@ -276,7 +277,7 @@
 
 (defn- run-spell [{:keys [prompt init agent budget depth trace trace-dir prefill
                           thinking reasoning-effort verbosity suffix-grammar
-                          grammar-max-chars retries format] :as req}]
+                          grammar-max-chars retries format usage-log-path] :as req}]
   (let [provider-inst (make-provider req)
         resolved-agent (or agent (default-agent-from-request req))
         normalized-format (normalize-format-spec format)
@@ -287,22 +288,23 @@
                                  (not thinking)))
         start-ns (System/nanoTime)]
     (try
-      (let [result (api/run (cond-> {:provider provider-inst
-                                     :agent resolved-agent
-                                     :budget budget
-                                     :depth depth
-                                     :trace trace
-                                     :trace-dir resolved-trace-dir
-                                     :retries retries
-                                     :thinking thinking
-                                     :reasoning-effort reasoning-effort
-                                     :verbosity verbosity
-                                     :prefill? effective-prefill
-                                     :suffix-grammar? suffix-grammar
-                                     :format normalized-format}
-                              grammar-max-chars (assoc :grammar-max-chars grammar-max-chars)
-                              prompt (assoc :prompt prompt)
-                              init (assoc :init init)))]
+      (let [result (binding [provider/*usage-snapshot-path* usage-log-path]
+                     (api/run (cond-> {:provider provider-inst
+                                       :agent resolved-agent
+                                       :budget budget
+                                       :depth depth
+                                       :trace trace
+                                       :trace-dir resolved-trace-dir
+                                       :retries retries
+                                       :thinking thinking
+                                       :reasoning-effort reasoning-effort
+                                       :verbosity verbosity
+                                       :prefill? effective-prefill
+                                       :suffix-grammar? suffix-grammar
+                                       :format normalized-format}
+                                grammar-max-chars (assoc :grammar-max-chars grammar-max-chars)
+                                prompt (assoc :prompt prompt)
+                                init (assoc :init init))))]
         (if (:error result)
           {:ok false
            :mode "spell"
