@@ -25,6 +25,7 @@ DATASET="old-core"
 N_CONCURRENT=4
 TEST_TIMEOUT_SEC=600
 MACHINE_TYPE="${SPELL_GCP_MACHINE_TYPE:-e2-standard-8}"
+NETWORK="${SPELL_GCP_NETWORK:-spell-benchmark-vpc}"
 
 cd "$(dirname "$0")/.."
 
@@ -45,6 +46,7 @@ for EFFORT in low medium high; do
     --name "${VM_NAME}" \
     --run-group "${RUN_GROUP}" \
     --machine-type "${MACHINE_TYPE}" \
+    --network "${NETWORK}" \
     --spell-ref "${SPELL_REF}" \
     --benchmarking-ref "${BENCH_REF}" \
     --command "${COMMAND}"
