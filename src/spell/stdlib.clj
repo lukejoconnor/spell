@@ -214,7 +214,7 @@ Bind the result, inspect it on the next turn, then decide what to do next."}
   {:short-docs "Context reminders for Spell program completion."
    :docs {:guide "REMINDER: This text belongs to the prefix of a Spell program that you are tasked with completing. Your entire response is code; embed all natural language within string literals. Follow the instructions on how to write correct Spell code in your system prompt.
 
-For coding tasks (bug fixes, feature implementation, test-driven work), consult (!describe reminders :coding) on the first turn for a research-plan-implement-verify-iterate workflow and concrete examples of how to use peek/persist, inspect traces, and return concise validation evidence. For SWE-bench-specific guidance, consult (!describe reminders :swe-bench)."
+For coding tasks (bug fixes, feature implementation, test-driven work), consult (!describe reminders :coding) on the first turn for a research-plan-implement-verify-iterate workflow and concrete examples of how to use peek/persist, inspect traces, and return concise validation evidence."
           :coding "CODING TASKS — Research, plan, implement, verify, iterate.
 
 Expect early verification failures. They are normal. Use them to refine your understanding, and continue until the actual task is complete.
@@ -332,48 +332,6 @@ COMPLETION:
 
 Example:
   (think \"Validation evidence: ran `python3 -m pytest tests/test_server.py::test_handles_empty_input -q` and it passed; output file `/app/out.json` now exists and contains the expected empty list.\")"
-          :swe-bench "CODING TASKS — Research, plan, implement, verify. Expect first attempts to fail; iterate until the real tests pass.
-
-RESEARCH before proposing a fix:
-- Read the actual failing test(s) in full. If the task names a test or a traceback points at a file:line, find that function and read its body entirely. The test's assertions ARE the specification.
-- Follow tracebacks to their source line. If the PR/issue description points to file X line Y, start reading there — not at the first call site you find by grep.
-- Read enough of the test file to cover test functions that the harness may have added. Do not stop a sed/read range at an arbitrary line.
-- Use !peek-now for bulk exploration reads you don't need to retain. Persist only values that are escape-fragile (multi-line regex, long verbatim strings) or expensive to recompute.
-
-PLAN before editing:
-- State the root cause in one sentence: 'The bug is in FILE at LINE because X.'
-- State the fix site: 'The minimal change is in FILE at LINE.'
-- Name the specific test function(s) you will run to verify. If you cannot name them, you have not found the spec yet — go back to research.
-- Prefer the MINIMAL change. If a traceback points at one line, fix that line. Do not restructure adjacent code. Do not add 'defensive' overrides you were not asked for. Do not fix at the consumer layer when the producer is the bug site.
-- When a helper and its caller share responsibility for a behavior (e.g. a gate condition in the caller + rendering in the helper), changes to one usually require reviewing the other. Check both.
-
-IMPLEMENT:
-- Use io/str-replace for small targeted patches and io/replace-lines for multi-line hunks with known line numbers. Reserve io/sh for running programs (tests, scripts, git) — not for file editing via sed/awk/Python heredocs.
-- Prefer io/read-file and io/read-lines over cat/sed in io/sh. Prefer io/grep over shell grep.
-
-VERIFY before declaring success:
-- Run the EXACT test function the task targets, by name, from the test file the harness will run. Not a broader -k filter. Not your own bespoke repro script. If the failing test lives in tests/test_pickle.py, run tests/test_pickle.py — not tests/test_legend.py.
-- If a test fails, READ THE ASSERTION. Compare expected vs actual byte-for-byte and adjust the patch. The normal path is: run test → see failure → read assertion → adjust patch → re-run. Three iterations is normal; giving up after one is premature.
-- 'exit 0 on a narrow test subset' is not success. A passing custom repro script you wrote is not success. Only the harness FAIL_TO_PASS tests are success.
-- Expect failure on the first attempt. Plan for iteration.
-
-DO NOT rationalize test failures away:
-- 'The test must be stale' — almost never. The task prompt says all test files are already updated. A failure after your patch IS caused by your change or by an incomplete fix.
-- 'My repro passes so the fix is correct' — the repro is not the spec; the harness test is.
-- 'The failure is in an unrelated module' — check: does your patch modify a function that module calls, directly or transitively? If yes, it is related.
-- 'I will run the concrete/algebraic suite instead to confirm the fix' — no. Run the suite that exercises the thing you changed.
-
-TOOLS AND DEPENDENCIES — install, don't stub:
-- Tool not installed (pytest, roman, etc.): install it. Use 'python -m pip install <pkg>' to avoid PATH issues. For SWE-bench the testbed python is typically /opt/miniconda3/envs/testbed/bin/python; 'which python' will show it.
-- 'python: not found': try python3. 'pytest: not found': try 'python -m pytest', or the repo's own bin/test runner, or 'python -m unittest'.
-- pip install PERSISTS through the eval boundary. PYTHONPATH=/tmp shims DO NOT — they only work inside your own session. Do not stub missing modules in /tmp. Install them for real.
-- A dependency listed in requirements.txt is NOT the same as a dependency installed in the environment. If your fix needs a package, actually install it in the session — do not just note that it needs installation.
-- If pip install fails from transient network errors: retry. If it keeps failing: try an alternate index, check if the package is importable under a different name, or use the package the repo actually vendors. Do not give up on the first failure.
-
-DIAGNOSIS IS NOT A FIX:
-- If you have diagnosed the problem, you are not done. You must implement the fix AND verify that the fix resolves the failing test.
-- If the fix requires a multi-line change, make the whole change. Do not apply part of it and assume the rest is obvious.
-- A patch that 'looks right' but was never run against the target test is not verified work."
           :context-efficiency "CONTEXT EFFICIENCY — Minimize total context window usage.
 
 Context tokens are your scarcest resource. Prune aggressively to stay effective over long tasks.
