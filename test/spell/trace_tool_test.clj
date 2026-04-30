@@ -99,13 +99,119 @@
     (let [[r1 r2 r3] (tt/collect-rethinks program)]
       (is (= 'prune (:kind r1)))
       (is (= '(prune) (:marker r1)))
+      (is (= :explicit (:trigger r1)))
       (is (= '(think "first") (:previous r1)))
+      (is (= 1 (:target-count r1)))
+      (is (= (count (pr-str '(think "first"))) (:chars-pruned r1)))
       (is (= 'rethink (:kind r2)))
       (is (= '(rethink "drop that") (:marker r2)))
+      (is (= :explicit (:trigger r2)))
       (is (= '(def x 1) (:previous r2)))
+      (is (= 1 (:target-count r2)))
+      (is (= (count (pr-str '(def x 1))) (:chars-pruned r2)))
       (is (= 'prune (:kind r3)))
       (is (= '(prune 2) (:marker r3)))
-      (is (= '(rethink "drop that") (:previous r3))))))
+      (is (= :explicit (:trigger r3)))
+      (is (= '(think "drop that") (:previous r3)))
+      (is (= 1 (:target-count r3)))
+      (is (= (count (pr-str '(think "drop that"))) (:chars-pruned r3))))))
+
+(deftest prune-accounting-stack-semantics-test
+  (testing "prune k pops the last k retained siblings from the current seq tail"
+    (let [result (tt/prune-accounting '(do (def a 1) (def b [1 2]) (prune 2)))
+          detail (first (:details result))]
+      (is (= '(do) (:form result)))
+      (is (= 2 (:target-count detail)))
+      (is (= (+ (count (pr-str '(def a 1)))
+                (count (pr-str '(def b [1 2]))))
+             (:chars-pruned detail)))))
+  (testing "the operator position is not prunable"
+    (let [result (tt/prune-accounting '(foo (def a 1) (prune 2)))
+          detail (first (:details result))]
+      (is (= '(foo) (:form result)))
+      (is (= 1 (:target-count detail)))
+      (is (= (count (pr-str '(def a 1))) (:chars-pruned detail)))))
+  (testing "quote and fn bodies are opaque to pruning markers"
+    (let [result (tt/prune-accounting '(do '(prune 1)
+                                           (fn [] (prune 1))
+                                           (def x 1)
+                                           (prune 1)))
+          details (:details result)]
+      (is (= 1 (count details)))
+      (is (= '(def x 1) (:previous (first details)))))))
+
+(deftest trace-pruning-accounting-program-prefix-test
+  (let [peek-form '(quote (!peek file-lines (io/read-lines "main.py")))
+        binding-form '(def file-lines ["L1" "L2"])
+        program (fn [& forms]
+                  (list 'quine 'completion (list 'eval (list* 'do forms))))
+        trace {:nodes [{:id 0
+                        :program (program peek-form)
+                        :response "(!peek file-lines (io/read-lines \"main.py\"))"}
+                       {:id 1
+                        :program (program peek-form
+                                          binding-form
+                                          '(prune 1)
+                                          '(def summary "L1"))
+                        :response "(def summary \"L1\")"}
+                       ;; The marker is inherited here; it should not be
+                       ;; counted again until it disappears and reappears.
+                       {:id 2
+                        :program (program peek-form
+                                          binding-form
+                                          '(prune 1)
+                                          '(def summary "L1")
+                                          '(think "continue"))
+                        :response "(think \"continue\")"}]}
+        details (tt/trace-pruning-accounting trace)]
+    (is (= 1 (count details)))
+    (is (= 1 (:node-id (first details))))
+    (is (= 'prune (:kind (first details))))
+    (is (= :peek (:trigger (first details))))
+    (is (= 1 (:target-count (first details))))
+    (is (= (count (pr-str binding-form))
+           (:chars-pruned (first details))))
+    (is (= ['def] (mapv :head-sym (:targets (first details)))))))
+
+(deftest pruning-turn-savings-test
+  (testing "explicit prune savings start on the next turn"
+    (let [pruned-form '(think "drop")
+          trace {:nodes [{:id 0
+                          :program (list 'do pruned-form)
+                          :response "aa"}
+                         {:id 1
+                          :program (list 'do pruned-form '(prune 1))
+                          :response "bbbb"}
+                         {:id 2
+                          :program '(do (think "after"))
+                          :response "c"}]}
+          pruned-chars (count (pr-str pruned-form))
+          completion-chars (+ (count "aa") (count "bbbb") (count "c"))
+          savings (tt/pruning-turn-savings trace)]
+      (is (= 3 (:turn-count savings)))
+      (is (= pruned-chars (get-in savings [:all :saved-chars])))
+      (is (= pruned-chars (get-in savings [:explicit :saved-chars])))
+      (is (= 0 (get-in savings [:peek :saved-chars])))
+      (is (= (+ pruned-chars completion-chars)
+             (get-in savings [:all :saved-plus-completion-chars])))))
+  (testing "!peek generated pruning is attributed to the turn that emitted !peek"
+    (let [peek-form '(quote (!peek file-lines (io/read-lines "main.py")))
+          binding-form '(def file-lines ["L1" "L2"])
+          trace {:nodes [{:id 0
+                          :program (list 'do peek-form)
+                          :response "(!peek file-lines (io/read-lines \"main.py\"))"}
+                         {:id 1
+                          :program (list 'do peek-form binding-form '(prune 1) '(def summary "L1"))
+                          :response "(def summary \"L1\")"}]}
+          pruned-chars (count (pr-str binding-form))
+          completion-chars (+ (count "(!peek file-lines (io/read-lines \"main.py\"))")
+                              (count "(def summary \"L1\")"))
+          savings (tt/pruning-turn-savings trace)]
+      (is (= pruned-chars (get-in savings [:all :saved-chars])))
+      (is (= pruned-chars (get-in savings [:peek :saved-chars])))
+      (is (= 0 (get-in savings [:explicit :saved-chars])))
+      (is (= (+ pruned-chars completion-chars)
+             (get-in savings [:peek :saved-plus-completion-chars]))))))
 
 (deftest collect-trace-rethinks-response-only-test
   (let [trace {:nodes [{:id 0
@@ -160,8 +266,7 @@
                         :program '(do (!print :done))
                         :response "(!print :done)"}]}
         summary (tt/trace-summary "traces/example" trace)
-        pruned-think (count (pr-str '(think "a")))
-        pruned-prune (count (pr-str '(prune)))]
+        pruned-think (count (pr-str '(think "a")))]
     (is (= "traces/example" (:trace-dir summary)))
     (is (= 4 (:node-count summary)))
     (is (= {'think 1
@@ -193,20 +298,28 @@
     (is (= {"coder" 1}
            (get-in summary [:namespace-usage "llms"])))
     (is (= {:count 2
-            :total-chars (+ pruned-think pruned-prune)
-            :mean-chars (/ (double (+ pruned-think pruned-prune)) 2.0)
+            :total-chars pruned-think
+            :mean-chars (/ (double pruned-think) 2.0)
             :max-chars pruned-think}
            (:pruning-stats summary)))
     (is (= [{:node-id 0
              :path [2]
              :kind 'prune
+             :k 1
+             :trigger :explicit
+             :target-count 1
              :chars-pruned pruned-think
-             :head-sym 'think}
+             :head-sym 'think
+             :head-syms ['think]}
             {:node-id 0
              :path [3]
              :kind 'rethink
-             :chars-pruned pruned-prune
-             :head-sym 'prune}]
+             :k 1
+             :trigger :explicit
+             :target-count 0
+             :chars-pruned 0
+             :head-sym nil
+             :head-syms []}]
            (:pruning-details summary)))
     (is (= [{:node-id 1
              :error "boom"
@@ -309,7 +422,7 @@
 (deftest run-tool-mode-validation-test
   (testing "context-management modes have coherent option validation"
     (is (= {:exit 1
-            :message "Choose at most one of --rethinks, --context-trajectory, or --summary"}
+            :message "Choose at most one of --rethinks, --context-trajectory, --pruning-accounting, --pruning-savings, or --summary"}
            (tt/run-tool {:trace-dir "unused"
                          :rethinks true
                          :context-trajectory true}

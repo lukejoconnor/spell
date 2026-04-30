@@ -10,6 +10,7 @@
             [clojure.pprint :as pp]
             [clojure.string :as str]
             [clojure.tools.cli :refer [parse-opts]]
+            [spell.macros :as macros]
             [spell.parse :as parse])
   (:gen-class))
 
@@ -67,6 +68,8 @@
    [nil "--count-all-nodes" "Count function calls across all nodes (default: selected node only)"]
    [nil "--rethinks" "Report prune/rethink forms and preceding expressions (single trace or trace root)"]
    [nil "--context-trajectory" "Report per-node context size trajectory and pruning markers (single trace or trace root)"]
+   [nil "--pruning-accounting" "Report stack-based prune/rethink target accounting over program ASTs (single trace or trace root)"]
+   [nil "--pruning-savings" "Report cumulative turn-level pruning savings in chars (single trace or trace root)"]
    [nil "--summary" "Report tracked-form, namespace, pruning, and error summary (single trace, trace root, or results JSONL)"]
    [nil "--tsv" "Print summary output as TSV rows (requires --summary with --trace-root)"]
    ["-h" "--help" "Show help"]])
@@ -81,6 +84,8 @@
     "  clj -M -m spell.trace-tool --trace-dir DIR --summary"
     "  clj -M -m spell.trace-tool --trace-root DIR --rethinks"
     "  clj -M -m spell.trace-tool --trace-root DIR --context-trajectory"
+    "  clj -M -m spell.trace-tool --trace-root DIR --pruning-accounting"
+    "  clj -M -m spell.trace-tool --trace-root DIR --pruning-savings"
     "  clj -M -m spell.trace-tool --trace-root DIR --summary [--tsv]"
     "  clj -M -m spell.trace-tool --results-jsonl FILE [--fn SYMBOL ...]"
     "  clj -M -m spell.trace-tool --results-jsonl FILE --summary"
@@ -234,6 +239,14 @@
     (let [h (first form)]
       (when (symbol? h) h))))
 
+(defn- display-head [form]
+  (if (and (seq? form)
+           (= 'quote (first form))
+           (seq? (second form))
+           (symbol? (first (second form))))
+    (first (second form))
+    (call-head form)))
+
 (defn collect-call-instances
   "Collect call instances as {:fn sym :path vec :form call-form}.
    Path is structural index path rooted at the provided form."
@@ -336,39 +349,188 @@
           (filter :forms parsed-nodes)))
 
 (defn- pruning-form? [form]
+  (or (macros/prune-form? form)
+      (macros/rethink-form? form)))
+
+(defn- pruning-n [form]
+  (cond
+    (macros/prune-form? form) (macros/prune-n form)
+    (macros/rethink-form? form) (macros/rethink-n form)
+    :else 0))
+
+(defn- opaque-prune-substitute-form? [form]
+  ;; Mirrors spell.eval/prune-substitute: quoted forms and fn bodies are not
+  ;; traversed for source-pruning markers.
   (and (seq? form)
-       (contains? #{'prune 'rethink} (first form))))
+       (contains? #{'quote 'fn 'fn*} (first form))))
+
+(defn- marker-identity
+  [{:keys [path marker kind k trigger chars-pruned]}]
+  [path marker kind k trigger chars-pruned])
+
+(defn- child-entry
+  [path form chars]
+  {:path path
+   :form form
+   :chars chars
+   :head-sym (display-head form)})
+
+(defn- entry-head? [entry sym]
+  (= sym (:head-sym entry)))
+
+(defn- peek-entry? [entry]
+  (contains? #{'!peek '!peek-now} (:head-sym entry)))
+
+(defn- peek-prune-trigger? [kept pruned]
+  (let [kept-before-target (peek kept)]
+    (or (and (peek-entry? kept-before-target)
+             (seq pruned)
+             (every? #(entry-head? % 'def) pruned))
+        (and (peek-entry? (first pruned))
+             (every? #(entry-head? % 'def) (rest pruned))))))
+
+(defn- pruning-trigger [kept pruned]
+  (if (peek-prune-trigger? kept pruned)
+    :peek
+    :explicit))
+
+(defn- pop-last-children
+  [children n]
+  (let [n (max 0 (int n))
+        n (min n (count children))
+        keep-count (- (count children) n)]
+    [(subvec children 0 keep-count)
+     (subvec children keep-count)]))
+
+(declare prune-accounting)
+
+(defn- account-seq
+  [form path]
+  (if (empty? form)
+    {:form form :chars (count (pr-str form)) :details []}
+    (let [items (vec form)
+          head (nth items 0)
+          head-result (prune-accounting head (conj path 0))]
+      ;; The operator position is not a prunable sibling. This matches
+      ;; prune-substitute, which only runs process-siblings over the seq tail.
+      (loop [idx 1
+             remaining (subvec items 1)
+             child-stack []
+             details (:details head-result)]
+        (if (empty? remaining)
+          (let [tail-forms (map :form child-stack)
+                transformed (apply list (:form head-result) tail-forms)]
+            {:form transformed
+             :chars (count (pr-str transformed))
+             :details details})
+          (let [child (first remaining)
+                child-path (conj path idx)
+                child-result (prune-accounting child child-path)
+                transformed-child (:form child-result)
+                details' (into details (:details child-result))]
+            (if (pruning-form? transformed-child)
+              (let [n (pruning-n transformed-child)
+                    [kept pruned] (pop-last-children child-stack n)
+                    chars-pruned (reduce + 0 (map :chars pruned))
+                    detail {:path child-path
+                            :marker transformed-child
+                            :kind (first transformed-child)
+                            :k n
+                            :trigger (pruning-trigger kept pruned)
+                            :target-count (count pruned)
+                            :chars-pruned chars-pruned
+                            :targets (mapv #(select-keys % [:path :form :chars :head-sym])
+                                           pruned)
+                            :previous (:form (peek pruned))}
+                    [child-stack' details'']
+                    (if (macros/rethink-form? transformed-child)
+                      (let [residual (macros/rethink->think transformed-child)]
+                        [(conj kept (child-entry child-path
+                                                 residual
+                                                 (count (pr-str residual))))
+                         (conj details' detail)])
+                      [kept (conj details' detail)])]
+                (recur (inc idx) (subvec remaining 1) child-stack' details''))
+              (recur (inc idx)
+                     (subvec remaining 1)
+                     (conj child-stack
+                           (child-entry child-path
+                                        transformed-child
+                                        (:chars child-result)))
+                     details'))))))))
+
+(defn- account-vector
+  [form path]
+  (let [children (mapv (fn [[idx child]]
+                         (prune-accounting child (conj path idx)))
+                       (map-indexed vector form))
+        transformed (mapv :form children)]
+    {:form transformed
+     :chars (count (pr-str transformed))
+     :details (mapcat :details children)}))
+
+(defn- account-map
+  [form path]
+  (let [entries (mapv (fn [[k v]]
+                        (let [k-result (prune-accounting k (conj path :k))
+                              v-result (prune-accounting v (conj path :v k))]
+                          {:entry [(:form k-result) (:form v-result)]
+                           :details (concat (:details k-result) (:details v-result))}))
+                      form)
+        transformed (into (empty form) (map :entry entries))]
+    {:form transformed
+     :chars (count (pr-str transformed))
+     :details (mapcat :details entries)}))
+
+(defn- account-set
+  [form path]
+  (let [children (mapv (fn [[idx child]]
+                         (prune-accounting child (conj path :s idx)))
+                       (map-indexed vector (sort-by pr-str form)))
+        transformed (into (empty form) (map :form children))]
+    {:form transformed
+     :chars (count (pr-str transformed))
+     :details (mapcat :details children)}))
+
+(defn prune-accounting
+  "Walk a form and account for source pruning with stack semantics.
+
+   Returns {:form transformed-form :chars retained-char-count :details [...]}
+   where :details contains one row per prune/rethink marker:
+   {:path :marker :kind :k :trigger :target-count :chars-pruned :targets ...}.
+
+   The child stack is local to each seq tail, because Spell's prune-substitute
+   processes only sibling expressions after the operator. Collections recurse
+   into their children, but only seq tails have prune/rethink sibling effects."
+  ([form] (prune-accounting form []))
+  ([form path]
+   (cond
+     (opaque-prune-substitute-form? form)
+     {:form form :chars (count (pr-str form)) :details []}
+
+     (seq? form)
+     (account-seq form path)
+
+     (vector? form)
+     (account-vector form path)
+
+     (map? form)
+     (account-map form path)
+
+     (set? form)
+     (account-set form path)
+
+     :else
+     {:form form :chars (count (pr-str form)) :details []})))
 
 (defn collect-rethinks
-  "Collect prune/rethink forms and their preceding sibling expressions.
-   Returns seq of:
-   {:path vec :marker form :kind sym :previous form-or-nil}"
+  "Collect stack-accounted prune/rethink markers in a form.
+   Keeps the historical name used by trace-tool callers, but the returned
+   entries now include full target stacks rather than only the immediately
+   preceding sibling."
   ([form] (collect-rethinks form []))
   ([form path]
-   (letfn [(walk-indexed [xs]
-             (let [v (vec xs)]
-               (mapcat
-                (fn [idx]
-                  (let [child (nth v idx)
-                        child-path (conj path idx)
-                        here (when (pruning-form? child)
-                               [{:path child-path
-                                 :marker child
-                                 :kind (first child)
-                                 :previous (when (pos? idx) (nth v (dec idx)))}])]
-                    (concat here (collect-rethinks child child-path))))
-                (range (count v)))))]
-     (cond
-       (seq? form) (walk-indexed form)
-       (vector? form) (walk-indexed form)
-       (map? form) (mapcat (fn [[k v]]
-                             (concat (collect-rethinks k (conj path :k))
-                                     (collect-rethinks v (conj path :v k))))
-                           form)
-       (set? form) (mapcat (fn [[idx child]]
-                             (collect-rethinks child (conj path :s idx)))
-                           (map-indexed vector (sort-by pr-str form)))
-       :else nil))))
+   (:details (prune-accounting form path))))
 
 (defn- collect-rethinks-in-forms
   "Collect prune/rethink forms across top-level response forms.
@@ -376,13 +538,6 @@
   [forms]
   (when (seq forms)
     (collect-rethinks (list* 'do forms))))
-
-(defn- collect-trace-rethinks-in-parsed-nodes [parsed-nodes]
-  (->> parsed-nodes
-       (filter :forms)
-       (mapcat (fn [{:keys [node-id forms]}]
-                 (map #(assoc % :node-id node-id)
-                      (collect-rethinks-in-forms forms))))))
 
 (defn collect-trace-rethinks
   "Collect prune/rethink markers from all program nodes in one trace.
@@ -393,6 +548,122 @@
        (mapcat (fn [node]
                  (map #(assoc % :node-id (:id node))
                       (collect-rethinks-in-forms (response-forms (:response node))))))))
+
+(defn- program-pruning-details
+  [node]
+  (->> (collect-rethinks (:program node))
+       (map #(assoc % :node-id (:id node)))))
+
+(defn trace-pruning-accounting
+  "Collect stack-accounted prune/rethink markers over full program ASTs.
+
+   This sees macro-injected `!peek` prune markers because those live in the
+   next node's program prefix, not in the model's response suffix. To avoid
+   counting inherited prompt prefixes repeatedly, a marker is emitted only when
+   its path/form/target-size identity was not present in the immediately
+   preceding program node."
+  [trace]
+  (let [nodes (->> (:nodes trace)
+                   (filter :program)
+                   (sort-by :id))]
+    (loop [remaining nodes
+           previous-identities #{}
+           out []]
+      (if (empty? remaining)
+        out
+        (let [node (first remaining)
+              details (vec (program-pruning-details node))
+              current-identities (set (map marker-identity details))
+              new-details (filterv #(not (contains? previous-identities
+                                                     (marker-identity %)))
+                                   details)]
+          (recur (rest remaining)
+                 current-identities
+                 (into out new-details)))))))
+
+(defn- trace-pruning-details-by-node [trace]
+  (group-by :node-id (trace-pruning-accounting trace)))
+
+(def ^:private pruning-savings-buckets
+  [:all :peek :explicit])
+
+(defn- program-nodes
+  [trace]
+  (->> (:nodes trace)
+       (filter :program)
+       (sort-by :id)
+       vec))
+
+(defn- previous-node-id-map [nodes]
+  (->> nodes
+       (map :id)
+       (partition 2 1)
+       (map (fn [[prev-id node-id]] [node-id prev-id]))
+       (into {})))
+
+(defn- pruning-emission-node-id
+  "Assign generated `!peek` prune markers to the response turn that emitted
+   the `!peek`, not the following program where the generated prune first
+   appears. Explicit prune/rethink markers stay on their own node."
+  [previous-by-node {:keys [node-id trigger]}]
+  (if (= :peek trigger)
+    (get previous-by-node node-id node-id)
+    node-id))
+
+(defn- pruning-chars-by-emission-node [nodes details]
+  (let [previous-by-node (previous-node-id-map nodes)]
+    (reduce (fn [m detail]
+              (let [node-id (pruning-emission-node-id previous-by-node detail)
+                    trigger-bucket (if (= :peek (:trigger detail)) :peek :explicit)
+                    chars (:chars-pruned detail 0)]
+                (-> m
+                    (update-in [:all node-id] (fnil + 0) chars)
+                    (update-in [trigger-bucket node-id] (fnil + 0) chars))))
+            (zipmap pruning-savings-buckets (repeat {}))
+            details)))
+
+(defn- pruning-turn-savings-for-bucket [nodes chars-by-node]
+  (loop [remaining nodes
+         accumulated 0
+         saved 0
+         completion 0]
+    (if (empty? remaining)
+      (let [denominator (+ saved completion)]
+        {:saved-chars saved
+         :saved-plus-completion-chars denominator
+         :completion-chars completion
+         :pruned-once-chars (reduce + 0 (vals chars-by-node))
+         :fraction (if (pos? denominator)
+                     (/ (double saved) denominator)
+                     0.0)})
+      (let [node (first remaining)
+            response-chars (count (or (:response node) ""))]
+        (recur (rest remaining)
+               (+ accumulated (get chars-by-node (:id node) 0))
+               (+ saved accumulated)
+               (+ completion response-chars))))))
+
+(defn pruning-turn-savings
+  "Compute cumulative turn-level source-pruning savings in chars.
+
+   For each program node t:
+   - C_t is the response char count for that turn.
+   - D_t is the char count pruned by markers emitted by that turn.
+   - A_t is the cumulative sum of D before t.
+
+   Returns per-bucket numerator/denominator stats for sum(A_t) /
+   sum(A_t + C_t). The :all bucket includes peek-triggered and explicit
+   prune/rethink markers; :peek includes generated `!peek` pruning only."
+  [trace]
+  (let [nodes (program-nodes trace)
+        details (trace-pruning-accounting trace)
+        by-bucket (pruning-chars-by-emission-node nodes details)]
+    (assoc (into {}
+                 (map (fn [bucket]
+                        [bucket (pruning-turn-savings-for-bucket nodes
+                                                                 (get by-bucket bucket {}))])
+                      pruning-savings-buckets))
+           :turn-count (count nodes))))
 
 (defn find-trace-dirs
   "Return sorted paths for directories under root containing trace.edn."
@@ -425,11 +696,6 @@
 (defn- path->str [path]
   (str "[" (str/join " " (map pr-str path)) "]"))
 
-(defn- pruned-size
-  "Size in characters of a printed pruned form."
-  [form]
-  (count (or (some-> form pr-str) "")))
-
 (defn- node-context-size
   "Estimate context size for a node by counting its node .spl file chars.
    Falls back to program form size when the file is missing."
@@ -446,7 +712,8 @@
 (defn- context-trajectory-items [trace-dir trace]
   (let [nodes (->> (:nodes trace)
                    (sort-by :id)
-                   vec)]
+                   vec)
+        pruning-by-node (trace-pruning-details-by-node trace)]
     (loop [remaining nodes
            prev-size nil
            out []]
@@ -455,8 +722,8 @@
         (let [node (first remaining)
               size (node-context-size trace-dir node)
               delta (when (some? prev-size) (- size prev-size))
-              pruning-items (collect-rethinks-in-forms (response-forms (:response node)))
-              pruned (reduce + 0 (map (comp pruned-size :previous) pruning-items))
+              pruning-items (get pruning-by-node (:id node) [])
+              pruned (reduce + 0 (map :chars-pruned pruning-items))
               row {:node-id (:id node)
                    :chars size
                    :delta delta
@@ -490,12 +757,20 @@
    counts))
 
 (defn- pruning-detail [item]
-  (let [chars-pruned (pruned-size (:previous item))]
+  (let [targets (:targets item)
+        head-syms (->> targets
+                       (map :head-sym)
+                       (remove nil?)
+                       vec)]
     {:node-id (:node-id item)
      :path (:path item)
      :kind (:kind item)
-     :chars-pruned chars-pruned
-     :head-sym (call-head (:previous item))}))
+     :k (:k item)
+     :trigger (:trigger item)
+     :target-count (:target-count item)
+     :chars-pruned (:chars-pruned item)
+     :head-sym (first head-syms)
+     :head-syms head-syms}))
 
 (defn- pruning-stats [details]
   (let [count' (count details)
@@ -569,7 +844,7 @@
                                      :error parse-error})))
                           vec)
         {:keys [counts]} (count-function-calls-in-parsed-nodes parsed-nodes {:fns nil})
-        pruning-details (->> (collect-trace-rethinks-in-parsed-nodes parsed-nodes)
+        pruning-details (->> (trace-pruning-accounting trace)
                              (map pruning-detail)
                              vec)
         summary {:trace-dir trace-dir
@@ -591,6 +866,45 @@
   (if (= n (Math/rint n))
     (format-count n)
     (format "%.1fc" (double n))))
+
+(defn- merge-pruning-savings-bucket [a b]
+  (let [saved (+ (:saved-chars a 0) (:saved-chars b 0))
+        denominator (+ (:saved-plus-completion-chars a 0)
+                       (:saved-plus-completion-chars b 0))]
+    {:saved-chars saved
+     :saved-plus-completion-chars denominator
+     :completion-chars (+ (:completion-chars a 0) (:completion-chars b 0))
+     :pruned-once-chars (+ (:pruned-once-chars a 0) (:pruned-once-chars b 0))
+     :fraction (if (pos? denominator)
+                 (/ (double saved) denominator)
+                 0.0)}))
+
+(defn- merge-pruning-savings [a b]
+  (assoc (into {}
+               (map (fn [bucket]
+                      [bucket (merge-pruning-savings-bucket (get a bucket {})
+                                                            (get b bucket {}))])
+                    pruning-savings-buckets))
+         :turn-count (+ (:turn-count a 0) (:turn-count b 0))))
+
+(defn- print-pruning-savings [label savings]
+  (println label)
+  (println "Cumulative Turn-Level Pruning Savings:")
+  (println (format "  turns: %d" (:turn-count savings 0)))
+  (doseq [[bucket title] [[:all "all"]
+                          [:peek "peek"]
+                          [:explicit "explicit"]]]
+    (let [{:keys [saved-chars saved-plus-completion-chars completion-chars
+                  pruned-once-chars fraction]}
+          (get savings bucket)]
+      (println (format "  %s: saved=%s denominator=%s fraction=%.3f completion=%s pruned-once=%s"
+                       title
+                       (format-count saved-chars)
+                       (format-count saved-plus-completion-chars)
+                       (double fraction)
+                       (format-count completion-chars)
+                       (format-count pruned-once-chars)))))
+  (println))
 
 (defn- print-error-resolution [results-file latest-error record trace-dir]
   (println (str "Results file: " results-file))
@@ -678,6 +992,33 @@
                            note-part)))))
     (println)))
 
+(defn- format-head-syms [head-syms]
+  (if (seq head-syms)
+    (str/join "," (map str head-syms))
+    "<none>"))
+
+(defn- print-pruning-accounting-for-trace [trace-dir trace]
+  (let [items (trace-pruning-accounting trace)
+        total (reduce + 0 (map :chars-pruned items))]
+    (println (str "Trace: " trace-dir))
+    (println "Stack-Based Pruning Accounting:")
+    (println (format "  markers: %d  total-pruned: %s"
+                     (count items)
+                     (format-count total)))
+    (if (empty? items)
+      (println "  (none)")
+      (doseq [{:keys [node-id path kind k trigger target-count chars-pruned targets]} items]
+        (println (format "  node=%s path=%s kind=%s trigger=%s k=%s targets=%s pruned=%s heads=%s"
+                         node-id
+                         (path->str path)
+                         (name kind)
+                         (name trigger)
+                         k
+                         target-count
+                         (format-count chars-pruned)
+                         (format-head-syms (map :head-sym targets))))))
+    (println)))
+
 (defn- print-summary [{:keys [trace-dir node-count tracked-counts pruning-stats pruning-details
                               namespace-usage errors flags]}]
   (println (str "Trace: " trace-dir))
@@ -713,13 +1054,16 @@
   (when (seq pruning-details)
     (println)
     (println "=== Pruning Details ===")
-    (doseq [{:keys [node-id path kind chars-pruned head-sym]} pruning-details]
-      (println (format "  node=%s path=%s kind=%s pruned=%s head=%s"
+    (doseq [{:keys [node-id path kind trigger k target-count chars-pruned head-syms]} pruning-details]
+      (println (format "  node=%s path=%s kind=%s trigger=%s k=%s targets=%s pruned=%s heads=%s"
                        node-id
                        (path->str path)
                        (name kind)
+                       (name trigger)
+                       k
+                       target-count
                        (format-count chars-pruned)
-                       (or head-sym "<none>")))))
+                       (format-head-syms head-syms)))))
   (println)
   (println "=== Errors ===")
   (if (seq errors)
@@ -787,16 +1131,17 @@
 
 (defn run-tool
   [{:keys [trace-dir trace-root results-jsonl node count-all-nodes rethinks
-           context-trajectory summary tsv help string-truncate]
+           context-trajectory pruning-accounting pruning-savings summary tsv help string-truncate]
     :as options}
    usage-summary]
-  (let [mode-count (count (filter true? [rethinks context-trajectory summary]))]
+  (let [mode-count (count (filter true? [rethinks context-trajectory pruning-accounting
+                                          pruning-savings summary]))]
     (cond
     help
     {:exit 0 :message (usage usage-summary)}
 
     (> mode-count 1)
-    {:exit 1 :message "Choose at most one of --rethinks, --context-trajectory, or --summary"}
+    {:exit 1 :message "Choose at most one of --rethinks, --context-trajectory, --pruning-accounting, --pruning-savings, or --summary"}
 
     (and tsv (not (and summary trace-root)))
     {:exit 1 :message "--tsv requires --summary with --trace-root"}
@@ -807,15 +1152,25 @@
          (nil? results-jsonl))
     {:exit 1 :message "Mode requires --trace-dir, --trace-root, or --results-jsonl"}
 
-    (and trace-root (not (or rethinks context-trajectory summary)))
-    {:exit 1 :message "--trace-root is currently supported with --rethinks, --context-trajectory, or --summary mode only"}
+    (and trace-root (not (or rethinks context-trajectory pruning-accounting
+                             pruning-savings summary)))
+    {:exit 1 :message "--trace-root is currently supported with --rethinks, --context-trajectory, --pruning-accounting, --pruning-savings, or --summary mode only"}
 
     (and (nil? trace-dir) (nil? results-jsonl) (nil? trace-root))
     {:exit 1 :message (str "Must provide --trace-dir, --trace-root, or --results-jsonl\n\n" (usage usage-summary))}
 
     :else
     (if trace-root
-      (do
+      (if pruning-savings
+        (let [aggregate (reduce (fn [acc d]
+                                  (let [{:keys [trace]} (load-trace d)
+                                        savings (pruning-turn-savings trace)]
+                                    (merge-pruning-savings acc savings)))
+                                {}
+                                (find-trace-dirs trace-root))]
+          (print-pruning-savings (str "Trace Root: " trace-root) aggregate)
+          {:exit 0 :message nil})
+        (do
         (when tsv
           (print-summary-tsv-header))
         (doseq [d (find-trace-dirs trace-root)]
@@ -829,9 +1184,11 @@
 
               rethinks
               (print-rethinks-for-trace dir trace (or string-truncate 32))
+              pruning-accounting
+              (print-pruning-accounting-for-trace dir trace)
               :else
               (print-context-trajectory-for-trace dir trace))))
-        {:exit 0 :message nil})
+        {:exit 0 :message nil}))
       (let [resolution (if results-jsonl
                        (if-let [{:keys [latest-error record trace-dir]} (resolve-trace-from-results results-jsonl)]
                          {:latest-error latest-error :record record :trace-dir trace-dir :from-results? true}
@@ -846,7 +1203,8 @@
                              (select-keys latest-error [:item_id :status :error_type]))}
               (let [{:keys [trace dir]} (load-trace trace-dir)
                     fn-set (parse-symbol-set (:fn options))
-                    special-mode? (or rethinks context-trajectory summary)
+                    special-mode? (or rethinks context-trajectory pruning-accounting
+                                      pruning-savings summary)
                     needs-target-node? (or (and fn-set (not count-all-nodes) (not summary))
                                            (not special-mode?))
                     target-node (when needs-target-node?
@@ -859,6 +1217,13 @@
 
                   rethinks
                   (print-rethinks-for-trace dir trace (or string-truncate 32))
+
+                  pruning-accounting
+                  (print-pruning-accounting-for-trace dir trace)
+
+                  pruning-savings
+                  (print-pruning-savings (str "Trace: " dir)
+                                         (pruning-turn-savings trace))
 
                   context-trajectory
                   (print-context-trajectory-for-trace dir trace)
