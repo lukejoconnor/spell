@@ -1398,14 +1398,6 @@
         (str think-form " " rest-text)))
     text))
 
-(defn- fireworks-reasoning-effort-value [reasoning-effort]
-  (cond
-    (and (string? reasoning-effort)
-         (re-matches #"[1-9][0-9]*" reasoning-effort))
-    (Long/parseLong reasoning-effort)
-
-    :else reasoning-effort))
-
 (defn- fireworks-reasoning-model? [model]
   (let [model (str/lower-case (or model ""))]
     (or (str/includes? model "glm-5p1")
@@ -1428,7 +1420,7 @@
                       :echo false}
                (seq (:stop-sequences template)) (assoc :stop (:stop-sequences template))
                thinking (assoc :thinking thinking)
-               reasoning-effort (assoc :reasoning_effort (fireworks-reasoning-effort-value reasoning-effort)))
+               reasoning-effort (assoc :reasoning_effort (str reasoning-effort)))
         request (-> (HttpRequest/newBuilder)
                     (.uri (URI/create (str base-url "/completions")))
                     (.header "Content-Type" "application/json")

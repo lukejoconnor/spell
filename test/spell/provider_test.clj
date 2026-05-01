@@ -361,13 +361,13 @@
       (is (= "high" (:reasoning_effort body)))
       (is (not (contains? body :thinking)))))
 
-  (testing "positive integer string budgets are emitted as JSON numbers"
+  (testing "positive integer budgets are emitted as JSON strings"
     (let [request (#'provider/fireworks-completions-request
                     "test" "https://api.fireworks.ai/inference/v1"
                     "accounts/fireworks/models/qwen3p6-plus"
                     "prompt" "system" nil nil nil nil "32000")
           body (request-json-body request)]
-      (is (= 32000 (:reasoning_effort body)))))
+      (is (= "32000" (:reasoning_effort body)))))
 
   (testing "unsupported Fireworks models reject reasoning_effort"
     (is (thrown-with-msg? Exception #"only supported for configured thinking models"
