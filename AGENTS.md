@@ -8,7 +8,7 @@ Instead of an external harness controlling an agent loop, the LLM programs its o
 
 ## Language Overview
 
-See `notebook/writeup/paper/language-design-v2.md` for full semantics. Key concepts:
+See `notebook/writeup/paper/language-design-v3.md` and the manuscript sources under `notebook/writeup/paper/` for full semantics. Key concepts:
 
 - **Self-calls**: `(!llm-self prefix)` makes an LLM call. `!call-now`, `!print`, and `!extend` wrap or expand to `!llm-self`.
 - **Quine**: `(quine name body)` binds `name` to its own source form as data, enabling self-referential LLM calls.
@@ -35,9 +35,11 @@ See `config/CLAUDE.md` for provider/agent details. Base agents: `base-pf`, `base
 
 | Path | Description |
 |------|-------------|
-| `notebook/writeup/paper/language-design-v2.md` | Main language design writeup. |
-| `notebook/writeup/paper/paper.md` | Paper draft v1. |
-| `notebook/writeup/paper/paper_v2.md` | Paper draft v2 (AI-edited, being merged with v1). |
+| `notebook/writeup/paper/language-design-v3.md` | Main language design writeup. |
+| `notebook/writeup/paper/paper_v7.tex` | Current main manuscript source for NeurIPS submission prep. |
+| `notebook/writeup/paper/paper_v7_TODO.md` | Current manuscript TODO list. |
+| `notebook/writeup/paper/appendix/appendix-a.tex`, `appendix-b.tex`, `appendix-c.tex` | Current appendix sources. |
+| `notebook/writeup/paper/figures/` | Main manuscript figure scripts, source tables, and rendered figures. |
 | `src/spell/eval.clj` | Core evaluator and special forms. |
 | `src/spell/macros.clj` | Spell macro registry and macro implementations. |
 | `src/spell/runtime.clj` | Box runtime, registry, ask/spawn/send, notifier flow. |
@@ -68,6 +70,8 @@ See `config/CLAUDE.md` for provider/agent details. Base agents: `base-pf`, `base
 `benchmarking/` is a separate nested git repository (`benchmarking/.git`).
 See `benchmarking/AGENTS.md` for benchmark commands, datasets, and reporting expectations.
 Use `uv run` for Python benchmark tooling.
+
+Current project phase: final manuscript preparation for NeurIPS submission. Paper-facing Spell work should happen on the `paper` branch/worktree, and paper-facing benchmarking work should happen on the nested benchmarking repo's `paper` branch. Benchmarking analyses for the manuscript should be reproducible from scripts committed in the benchmarking repo, not ad hoc notebook-only/manual transformations.
 
 ### GCP Benchmark VM
 

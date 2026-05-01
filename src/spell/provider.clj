@@ -1398,8 +1398,27 @@
         (str think-form " " rest-text)))
     text))
 
+(defn- fireworks-reasoning-effort-value [reasoning-effort]
+  (cond
+    (and (string? reasoning-effort)
+         (re-matches #"[1-9][0-9]*" reasoning-effort))
+    (Long/parseLong reasoning-effort)
+
+    :else reasoning-effort))
+
+(defn- fireworks-reasoning-model? [model]
+  (let [model (str/lower-case (or model ""))]
+    (or (str/includes? model "glm-5p1")
+        (str/includes? model "qwen3p6-plus"))))
+
 (defn- fireworks-completions-request
-  [api-key base-url model prompt system-prompt prefix max-tokens chat-template thinking]
+  [api-key base-url model prompt system-prompt prefix max-tokens chat-template thinking reasoning-effort]
+  (when (and thinking reasoning-effort)
+    (throw (ex-info "Fireworks request cannot include both thinking and reasoning_effort"
+                    {:model model})))
+  (when (and reasoning-effort (not (fireworks-reasoning-model? model)))
+    (throw (ex-info "Fireworks reasoning_effort is only supported for configured thinking models"
+                    {:model model :reasoning-effort reasoning-effort})))
   (let [template (resolve-chat-template chat-template model)
         body (cond-> {:model model
                       :prompt (format-completions-prompt template system-prompt prompt prefix)
@@ -1408,7 +1427,8 @@
                       :stream_options {:include_usage true}
                       :echo false}
                (seq (:stop-sequences template)) (assoc :stop (:stop-sequences template))
-               thinking (assoc :thinking thinking))
+               thinking (assoc :thinking thinking)
+               reasoning-effort (assoc :reasoning_effort (fireworks-reasoning-effort-value reasoning-effort)))
         request (-> (HttpRequest/newBuilder)
                     (.uri (URI/create (str base-url "/completions")))
                     (.header "Content-Type" "application/json")
@@ -1458,7 +1478,8 @@
                                                  (:prefix opts)
                                                  max-tokens
                                                  chat-template
-                                                 (:thinking opts))
+                                                 (:thinking opts)
+                                                 (:reasoning-effort opts))
           response (.send http-client request (HttpResponse$BodyHandlers/ofString))
           status (.statusCode response)]
       (if (<= 200 status 299)
