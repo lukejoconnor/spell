@@ -351,6 +351,31 @@
     (is (thrown-with-msg? Exception #"Unknown Fireworks chat template"
           (#'provider/resolve-chat-template :nonexistent "x")))))
 
+(deftest fireworks-reasoning-effort-request-test
+  (testing "emits Fireworks reasoning_effort on completions requests"
+    (let [request (#'provider/fireworks-completions-request
+                    "test" "https://api.fireworks.ai/inference/v1"
+                    "accounts/fireworks/models/glm-5p1"
+                    "prompt" "system" nil nil nil nil "high")
+          body (request-json-body request)]
+      (is (= "high" (:reasoning_effort body)))
+      (is (not (contains? body :thinking)))))
+
+  (testing "positive integer string budgets are emitted as JSON numbers"
+    (let [request (#'provider/fireworks-completions-request
+                    "test" "https://api.fireworks.ai/inference/v1"
+                    "accounts/fireworks/models/qwen3p6-plus"
+                    "prompt" "system" nil nil nil nil "32000")
+          body (request-json-body request)]
+      (is (= 32000 (:reasoning_effort body)))))
+
+  (testing "thinking and reasoning_effort are mutually exclusive"
+    (is (thrown-with-msg? Exception #"cannot include both thinking and reasoning_effort"
+          (#'provider/fireworks-completions-request
+            "test" "https://api.fireworks.ai/inference/v1"
+            "accounts/fireworks/models/glm-5p1"
+            "prompt" "system" nil nil nil {:type "enabled"} "high")))))
+
 ;; =============================================================================
 ;; Anthropic PF supports-prefill opus-4-6 exclusion
 ;; =============================================================================
