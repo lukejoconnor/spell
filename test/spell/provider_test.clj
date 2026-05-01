@@ -369,6 +369,13 @@
           body (request-json-body request)]
       (is (= 32000 (:reasoning_effort body)))))
 
+  (testing "unsupported Fireworks models reject reasoning_effort"
+    (is (thrown-with-msg? Exception #"only supported for configured thinking models"
+          (#'provider/fireworks-completions-request
+            "test" "https://api.fireworks.ai/inference/v1"
+            "accounts/fireworks/models/kimi-k2p5"
+            "prompt" "system" nil nil nil nil "high"))))
+
   (testing "thinking and reasoning_effort are mutually exclusive"
     (is (thrown-with-msg? Exception #"cannot include both thinking and reasoning_effort"
           (#'provider/fireworks-completions-request

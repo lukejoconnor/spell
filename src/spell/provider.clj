@@ -1406,11 +1406,19 @@
 
     :else reasoning-effort))
 
+(defn- fireworks-reasoning-model? [model]
+  (let [model (str/lower-case (or model ""))]
+    (or (str/includes? model "glm-5p1")
+        (str/includes? model "qwen3p6-plus"))))
+
 (defn- fireworks-completions-request
   [api-key base-url model prompt system-prompt prefix max-tokens chat-template thinking reasoning-effort]
   (when (and thinking reasoning-effort)
     (throw (ex-info "Fireworks request cannot include both thinking and reasoning_effort"
                     {:model model})))
+  (when (and reasoning-effort (not (fireworks-reasoning-model? model)))
+    (throw (ex-info "Fireworks reasoning_effort is only supported for configured thinking models"
+                    {:model model :reasoning-effort reasoning-effort})))
   (let [template (resolve-chat-template chat-template model)
         body (cond-> {:model model
                       :prompt (format-completions-prompt template system-prompt prompt prefix)
