@@ -7,6 +7,7 @@
    - openai-provider: Calls OpenAI API
    - codex-tc-provider: ChatGPT Codex Responses with mandatory custom tool output
    - fireworks-provider: Calls Fireworks Completions API with raw prompt templates
+   - fireworks-tc-provider: Fireworks Anthropic-compatible Messages API with mandatory spell_suffix tool output
    - ollama-provider: Calls local Ollama API
    - test-provider: Declarative test provider with flexible response matching"
   (:require [clojure.data.json :as json]
@@ -546,6 +547,14 @@
                             request-timeout-sec
                             costs))))
 
+(def ^:private spell-suffix-tool
+  {:name "spell_suffix"
+   :description "Return the full Spell suffix in input.suffix"
+   :input_schema {:type "object"
+                  :properties {:suffix {:type "string"}}
+                  :required ["suffix"]
+                  :additionalProperties false}})
+
 (defn- anthropic-tc-request
   [api-key model prompt system-prompt max-tokens stream? thinking reasoning-effort
    cache-prefix request-timeout-sec]
@@ -565,12 +574,7 @@
                                     (or max-tokens 32768)
                                     (or max-tokens 16384))
                       :messages [{:role "user" :content user-content}]
-                      :tools [{:name "spell_suffix"
-                               :description "Return the full Spell suffix in input.suffix"
-                               :input_schema {:type "object"
-                                              :properties {:suffix {:type "string"}}
-                                              :required ["suffix"]
-                                              :additionalProperties false}}]
+                      :tools [spell-suffix-tool]
                       ;; thinking forbids forced tool use; use "auto" instead of "any"
                       :tool_choice {:type (if thinking-enabled? "auto" "any")}}
                cached-system (assoc :system cached-system)
@@ -1332,6 +1336,11 @@
 ;; Fireworks Provider (Completions API with true prefill)
 ;; ---------------------------------------------------------------------------
 
+(defn- fireworks-model-id [model]
+  (if (str/starts-with? model "accounts/")
+    model
+    (str "accounts/fireworks/models/" model)))
+
 (def fireworks-chat-templates
   {:chatml
    {:system-start "<|im_start|>system\n"
@@ -1501,15 +1510,296 @@
           base-url "https://api.fireworks.ai/inference/v1"
           convert-think? true}}]
    (let [key (or api-key (System/getenv "FIREWORKS_API_KEY"))
-         effective-model (if (str/starts-with? model "accounts/")
-                           model
-                           (str "accounts/fireworks/models/" model))
+         effective-model (fireworks-model-id model)
          url (str/replace (or base-url "https://api.fireworks.ai/inference/v1") #"/$" "")]
      (when-not key
        (throw (ex-info "No API key provided. Set FIREWORKS_API_KEY or pass :api-key"
                        {:env "FIREWORKS_API_KEY"})))
      (->FireworksProvider key url effective-model max-tokens (make-http-client) costs
                           chat-template convert-think?))))
+
+;; ---------------------------------------------------------------------------
+;; Fireworks Tool-Call Provider (Anthropic-compatible Messages API)
+;; ---------------------------------------------------------------------------
+
+(def ^:private fireworks-reasoning-efforts
+  #{"low" "medium" "high" "max"})
+
+(def ^:private fireworks-non-stream-max-tokens 4096)
+
+(defn- parse-int-string [s]
+  (when (and (string? s) (re-matches #"\d+" s))
+    (Long/parseLong s)))
+
+(defn- fireworks-tc-thinking-config [thinking reasoning-effort]
+  (cond
+    (map? thinking) thinking
+    (number? thinking) {:type "enabled" :budget_tokens thinking}
+    (parse-int-string reasoning-effort) {:type "enabled"
+                                         :budget_tokens (parse-int-string reasoning-effort)}
+    (contains? fireworks-reasoning-efforts reasoning-effort) {:type "enabled"
+                                                              :budget_tokens 1024}
+    :else nil))
+
+(defn- fireworks-tc-output-config [reasoning-effort]
+  (when (contains? fireworks-reasoning-efforts reasoning-effort)
+    {:effort (if (= "max" reasoning-effort) "high" reasoning-effort)}))
+
+(defn- fireworks-tc-request-body
+  [model prompt system-prompt max-tokens stream? thinking reasoning-effort]
+  (let [thinking-config (fireworks-tc-thinking-config thinking reasoning-effort)
+        output-config (fireworks-tc-output-config reasoning-effort)]
+    (cond-> {:model model
+             :max_tokens (or max-tokens 16384)
+             :messages [{:role "user" :content prompt}]
+             :tools [spell-suffix-tool]
+             :tool_choice {:type "tool" :name "spell_suffix"}}
+      (not (str/blank? system-prompt)) (assoc :system system-prompt)
+      stream? (assoc :stream true)
+      thinking-config (assoc :thinking thinking-config)
+      output-config (assoc :output_config output-config))))
+
+(defn- fireworks-tc-request
+  [api-key base-url model prompt system-prompt max-tokens stream? thinking reasoning-effort]
+  (let [body (fireworks-tc-request-body model prompt system-prompt max-tokens stream?
+                                        thinking reasoning-effort)]
+    (-> (HttpRequest/newBuilder)
+        (.uri (URI/create (str base-url "/messages")))
+        (.header "Content-Type" "application/json")
+        (.header "Authorization" (str "Bearer " api-key))
+        (.POST (HttpRequest$BodyPublishers/ofString (json/write-str body)))
+        (.build))))
+
+(defn- parse-fireworks-messages-usage [usage]
+  (let [cached-tokens (or (:cache_read_input_tokens usage)
+                          (:cached_tokens usage)
+                          (get-in usage [:input_tokens_details :cached_tokens])
+                          0)
+        input-tokens (:input_tokens usage 0)]
+    (with-legacy-usage-keys
+      {:uncached_input_tokens (max 0 (- input-tokens cached-tokens))
+       :visible_output_tokens (:output_tokens usage 0)
+       :cached_input_tokens cached-tokens
+       :cache_write_input_tokens (:cache_creation_input_tokens usage 0)})))
+
+(defn- parse-fireworks-tc-response
+  [response-body]
+  (let [parsed (json/read-str response-body :key-fn keyword)]
+    (if-let [error (:error parsed)]
+      (throw (ex-info "Fireworks Messages API error" {:error error}))
+      (let [usage (some-> (:usage parsed) parse-fireworks-messages-usage)
+            tool-use (some (fn [block]
+                             (when (and (= "tool_use" (:type block))
+                                        (= "spell_suffix" (:name block)))
+                               block))
+                           (:content parsed))
+            suffix (tool-use->suffix tool-use)]
+        (when (nil? suffix)
+          (throw (ex-info "Fireworks mandatory tool-call response missing spell_suffix tool_use"
+                          {:type :missing-tool-call
+                           :provider :fireworks-tc
+                           :content (:content parsed)
+                           :usage usage})))
+        {:text suffix
+         :usage usage}))))
+
+(defn- parse-fireworks-tc-stream
+  "Parse a Fireworks Anthropic-compatible SSE stream for spell_suffix input.
+   Fireworks reports final metering usage on message_delta, so message_start
+   usage is intentionally ignored."
+  [response-body]
+  (let [usage (atom {:uncached_input_tokens 0 :visible_output_tokens 0
+                     :cache_write_input_tokens 0 :cached_input_tokens 0})
+        tool-blocks (atom {})]
+    (doseq [line (str/split-lines response-body)]
+      (when (str/starts-with? line "data: ")
+        (let [data (subs line 6)]
+          (when (and (not (str/blank? data))
+                     (not= data "[DONE]"))
+            (try
+              (let [parsed (json/read-str data :key-fn keyword)]
+                (case (:type parsed)
+                  "content_block_start"
+                  (let [idx (:index parsed)
+                        block (:content_block parsed)]
+                    (swap! tool-blocks assoc idx {:name (:name block)
+                                                  :input (:input block)
+                                                  :partial (StringBuilder.)}))
+
+                  "content_block_delta"
+                  (when (= "input_json_delta" (get-in parsed [:delta :type]))
+                    (let [idx (:index parsed)
+                          partial-json (get-in parsed [:delta :partial_json])]
+                      (when (string? partial-json)
+                        (when-let [sb (:partial (get @tool-blocks idx))]
+                          (.append ^StringBuilder sb partial-json)))))
+
+                  "message_delta"
+                  (when-let [u (:usage parsed)]
+                    (reset! usage (parse-fireworks-messages-usage u)))
+
+                  nil))
+              (catch Exception _ nil))))))
+    (let [tool-use (some (fn [[_ {:keys [name input partial]}]]
+                           (when (= "spell_suffix" name)
+                             (let [partial-json (when partial (.toString ^StringBuilder partial))
+                                   parsed-input (when (and partial-json (not (str/blank? partial-json)))
+                                                  (json/read-str partial-json :key-fn keyword))
+                                   effective-input (if (and (map? input) (map? parsed-input))
+                                                     (merge input parsed-input)
+                                                     (or parsed-input input))]
+                               {:input effective-input})))
+                         @tool-blocks)
+          suffix (tool-use->suffix tool-use)]
+      (when (nil? suffix)
+        (throw (ex-info "Fireworks mandatory tool-call stream missing spell_suffix tool_use"
+                        {:type :missing-tool-call
+                         :provider :fireworks-tc
+                         :body (subs response-body 0 (min 1000 (count response-body)))})))
+      {:text suffix :usage @usage})))
+
+(defn- fireworks-tc-chat-tool []
+  {:type "function"
+   :function {:name "spell_suffix"
+              :description "Return the full Spell suffix in arguments.suffix"
+              :parameters (:input_schema spell-suffix-tool)}})
+
+(defn- fireworks-tc-chat-request-body
+  [model prompt system-prompt max-tokens reasoning-effort]
+  (let [messages (cond-> []
+                   (not (str/blank? system-prompt))
+                   (conj {:role "system" :content system-prompt})
+                   true
+                   (conj {:role "user" :content prompt}))
+        effective-reasoning-effort (or (parse-int-string reasoning-effort)
+                                       reasoning-effort)]
+    (cond-> {:model model
+             :messages messages
+             :max_tokens (min (or max-tokens fireworks-non-stream-max-tokens)
+                              fireworks-non-stream-max-tokens)
+             :tools [(fireworks-tc-chat-tool)]
+             :tool_choice {:type "function"
+                           :function {:name "spell_suffix"}}}
+      effective-reasoning-effort (assoc :reasoning_effort effective-reasoning-effort))))
+
+(defn- fireworks-tc-chat-request
+  [api-key base-url model prompt system-prompt max-tokens reasoning-effort]
+  (let [body (fireworks-tc-chat-request-body model prompt system-prompt max-tokens reasoning-effort)]
+    (-> (HttpRequest/newBuilder)
+        (.uri (URI/create (str base-url "/chat/completions")))
+        (.header "Content-Type" "application/json")
+        (.header "Authorization" (str "Bearer " api-key))
+        (.POST (HttpRequest$BodyPublishers/ofString (json/write-str body)))
+        (.build))))
+
+(defn- parse-fireworks-chat-usage [usage]
+  (let [cached-tokens (or (get-in usage [:prompt_tokens_details :cached_tokens])
+                          (:cache_read_input_tokens usage)
+                          (:cached_tokens usage)
+                          0)
+        prompt-tokens (:prompt_tokens usage 0)]
+    (with-legacy-usage-keys
+      {:uncached_input_tokens (max 0 (- prompt-tokens cached-tokens))
+       :visible_output_tokens (:completion_tokens usage 0)
+       :cached_input_tokens cached-tokens})))
+
+(defn- fireworks-chat-tool-arguments->suffix [arguments]
+  (cond
+    (map? arguments) (:suffix arguments)
+    (string? arguments)
+    (try
+      (:suffix (json/read-str arguments :key-fn keyword))
+      (catch Exception _
+        nil))
+    :else nil))
+
+(defn- parse-fireworks-tc-chat-response
+  [response-body]
+  (let [parsed (json/read-str response-body :key-fn keyword)]
+    (if-let [error (:error parsed)]
+      (throw (ex-info "Fireworks chat completions API error" {:error error}))
+      (let [usage (some-> (:usage parsed) parse-fireworks-chat-usage)
+            tool-call (some (fn [tool-call]
+                              (when (= "spell_suffix" (get-in tool-call [:function :name]))
+                                tool-call))
+                            (get-in parsed [:choices 0 :message :tool_calls]))
+            suffix (fireworks-chat-tool-arguments->suffix
+                    (get-in tool-call [:function :arguments]))]
+        (when (nil? suffix)
+          (throw (ex-info "Fireworks chat fallback missing spell_suffix function call"
+                          {:type :missing-tool-call
+                           :provider :fireworks-tc
+                           :choices (:choices parsed)
+                           :usage usage})))
+        {:text suffix :usage usage}))))
+
+(defn- fireworks-tc-chat-fallback
+  [api-key base-url model prompt system-prompt max-tokens reasoning-effort http-client costs]
+  (let [request (fireworks-tc-chat-request api-key base-url model prompt system-prompt
+                                           max-tokens reasoning-effort)
+        response (.send http-client request (HttpResponse$BodyHandlers/ofString))
+        status (.statusCode response)]
+    (if (<= 200 status 299)
+      (let [{:keys [text usage]} (parse-fireworks-tc-chat-response (.body response))]
+        (track-usage! model usage costs)
+        text)
+      (throw (ex-info "Fireworks chat fallback request failed"
+                      {:status status :body (.body response)})))))
+
+(defrecord FireworksTcProvider [api-key base-url model max-tokens http-client costs]
+  LLMProvider
+  (call-llm [this prompt] (call-llm this prompt {}))
+  (call-llm [_ prompt opts]
+    (let [effective-model (or (:model opts) model)
+          thinking (:thinking opts)
+          reasoning-effort (:reasoning-effort opts)
+          effective-max-tokens (or max-tokens 16384)
+          stream? (or thinking (> effective-max-tokens fireworks-non-stream-max-tokens))
+          request (fireworks-tc-request api-key base-url effective-model prompt
+                                        (:system opts) effective-max-tokens stream?
+                                        thinking reasoning-effort)
+          response (.send http-client request (HttpResponse$BodyHandlers/ofString))
+          status (.statusCode response)]
+      (if (<= 200 status 299)
+        (try
+          (let [{:keys [text usage]} (if stream?
+                                       (parse-fireworks-tc-stream (.body response))
+                                       (parse-fireworks-tc-response (.body response)))]
+            (track-usage! effective-model usage costs)
+            text)
+          (catch clojure.lang.ExceptionInfo ex
+            (if (= :missing-tool-call (:type (ex-data ex)))
+              (fireworks-tc-chat-fallback api-key base-url effective-model prompt
+                                          (:system opts) effective-max-tokens
+                                          reasoning-effort http-client costs)
+              (throw ex))))
+        (throw (ex-info "Fireworks mandatory tool-call request failed"
+                        {:status status :body (.body response)})))))
+  (plain-text-provider [_]
+    (->FireworksProvider api-key base-url model max-tokens http-client costs nil true))
+  (supports-prefill [_] false))
+
+(defn fireworks-tc-provider
+  "Create a Fireworks provider using the Anthropic-compatible Messages API
+   with mandatory spell_suffix tool output.
+
+   Options:
+   - :api-key    - API key (default: FIREWORKS_API_KEY env var)
+   - :base-url   - API base URL (default: https://api.fireworks.ai/inference/v1)
+   - :model      - Model name or Fireworks account path (default: kimi-k2p6)
+   - :max-tokens - Max tokens per response
+   - :costs      - Cost table {model-prefix price-spec}"
+  ([] (fireworks-tc-provider {}))
+  ([{:keys [api-key base-url model max-tokens costs]
+     :or {model "kimi-k2p6"
+          base-url "https://api.fireworks.ai/inference/v1"}}]
+   (let [key (or api-key (System/getenv "FIREWORKS_API_KEY"))
+         effective-model (fireworks-model-id model)
+         url (str/replace (or base-url "https://api.fireworks.ai/inference/v1") #"/$" "")]
+     (when-not key
+       (throw (ex-info "No API key provided. Set FIREWORKS_API_KEY or pass :api-key"
+                       {:env "FIREWORKS_API_KEY"})))
+     (->FireworksTcProvider key url effective-model max-tokens (make-http-client) costs))))
 
 ;; ---------------------------------------------------------------------------
 ;; Test Provider (declarative testing)
@@ -1714,6 +2004,7 @@
       :openai    (openai-provider opts)
       :codex-tc  (codex-tc-provider opts)
       :fireworks (fireworks-provider opts)
+      :fireworks-tc (fireworks-tc-provider opts)
       :ollama    (ollama-provider opts)
       :test      (test-provider {:responses responses :response-rules response-rules
                                  :response response :prefill? prefill?})
@@ -1755,6 +2046,7 @@
       :openai    (openai-provider opts)
       :codex-tc  (codex-tc-provider opts)
       :fireworks (fireworks-provider opts)
+      :fireworks-tc (fireworks-tc-provider opts)
       :ollama    (ollama-provider opts)
       :test      (test-provider {:responses responses :response-rules response-rules
                                  :response response :prefill? prefill?})

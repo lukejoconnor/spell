@@ -11,7 +11,7 @@ This directory contains runtime configuration used by Spell execution and benchm
 
 ## Providers
 
-Primary providers: Anthropic tool-call (`anthropic-tc`) and Codex tool-call (`codex-tc`). Test provider for unit tests. See `config/providers/` for all `.provider.edn` files.
+Primary providers: Anthropic tool-call (`anthropic-tc`), Codex tool-call (`codex-tc`), and Fireworks tool-call (`fireworks-tc`) for Fireworks models that support mandatory tool output. Test provider for unit tests. See `config/providers/` for all `.provider.edn` files.
 
 ## How Config Is Loaded
 
@@ -58,6 +58,7 @@ Supported `:type` values:
 - `:openai`
 - `:codex-tc`
 - `:fireworks`
+- `:fireworks-tc`
 - `:ollama`
 - `:test`
 
@@ -65,6 +66,7 @@ Rules:
 - Keep model names and cost keys in sync with current provider routing.
 - Keep explicit `:cache-read-input` values aligned with providers that expose cached prompt token pricing.
 - Keep API key env var names accurate (`:api-key-env`).
+- `:fireworks` remains the completions/prefill transport. Use explicit `fireworks-tc:<model>` / `:fireworks-tc` for Fireworks Anthropic-compatible Messages requests with mandatory `spell_suffix` tool output. If Fireworks returns no `spell_suffix` tool block on that primary path, the provider retries the same prompt once through Fireworks' OpenAI-compatible chat-completions function-tool surface.
 - Use toolcall provider only where mandatory tool output is intended.
 - OpenAI toolcall configs still use `:type :openai`; set `:force-tool-call true` and a tc base agent instead of inventing a separate provider type.
 
