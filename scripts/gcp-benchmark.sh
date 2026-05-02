@@ -28,6 +28,7 @@ BENCHMARKING_REPO_URL="${SPELL_GCP_BENCHMARKING_REPO_URL:-https://github.com/luk
 BENCHMARKING_REF="${SPELL_GCP_BENCHMARKING_REF:-main}"
 ANTHROPIC_SECRET="${SPELL_GCP_ANTHROPIC_SECRET:-ANTHROPIC_API_KEY}"
 OPENAI_SECRET="${SPELL_GCP_OPENAI_SECRET:-OPENAI_API_KEY}"
+FIREWORKS_SECRET="${SPELL_GCP_FIREWORKS_SECRET:-FIREWORKS_API_KEY}"
 GITHUB_TOKEN_SECRET="${SPELL_GCP_GITHUB_TOKEN_SECRET:-GITHUB_TOKEN}"
 CODEX_AUTH_SECRET="${SPELL_GCP_CODEX_AUTH_SECRET:-CODEX_AUTH_JSON_B64}"
 CLAUDE_AUTH_SECRET="${SPELL_GCP_CLAUDE_AUTH_SECRET:-CLAUDE_JSON_B64}"
@@ -102,6 +103,7 @@ Options:
   --benchmarking-repo-url URL     Override spell-benchmarking repo URL
   --anthropic-secret NAME         Secret Manager secret name (default: ANTHROPIC_API_KEY)
   --openai-secret NAME            Secret Manager secret name (default: OPENAI_API_KEY)
+  --fireworks-secret NAME         Secret Manager secret name (default: FIREWORKS_API_KEY)
   --github-token-secret NAME      Secret Manager secret name (default: GITHUB_TOKEN)
   --codex-auth-secret NAME        Secret Manager secret name for Codex auth (default: CODEX_AUTH_JSON_B64)
   --claude-auth-secret NAME       Secret Manager secret name for Claude Code auth (default: CLAUDE_JSON_B64)
@@ -268,6 +270,10 @@ parse_args() {
         ;;
       --openai-secret)
         OPENAI_SECRET="$2"
+        shift 2
+        ;;
+      --fireworks-secret)
+        FIREWORKS_SECRET="$2"
         shift 2
         ;;
       --github-token-secret)
@@ -458,6 +464,7 @@ metadata_values() {
     "benchmarking-ref=${BENCHMARKING_REF}" \
     "anthropic-secret=${ANTHROPIC_SECRET}" \
     "openai-secret=${OPENAI_SECRET}" \
+    "fireworks-secret=${FIREWORKS_SECRET}" \
     "github-token-secret=${GITHUB_TOKEN_SECRET}" \
     "codex-auth-secret=${CODEX_AUTH_SECRET}" \
     "claude-auth-secret=${CLAUDE_AUTH_SECRET}" \

@@ -203,6 +203,7 @@ materialize_secrets_and_env() {
   echo "[spell-benchmark] fetching secrets from Secret Manager"
   local anthropic_api_key
   local openai_api_key
+  local fireworks_api_key=""
   local github_token
   local codex_auth_b64=""
   local claude_json_b64=""
@@ -210,6 +211,9 @@ materialize_secrets_and_env() {
 
   anthropic_api_key="$(fetch_secret "$PROJECT_ID" "$ANTHROPIC_SECRET")"
   openai_api_key="$(fetch_secret "$PROJECT_ID" "$OPENAI_SECRET")"
+  if [[ -n "$FIREWORKS_SECRET" ]]; then
+    fireworks_api_key="$(fetch_secret "$PROJECT_ID" "$FIREWORKS_SECRET" 2>/dev/null || true)"
+  fi
   github_token="$(fetch_secret "$PROJECT_ID" "$GITHUB_TOKEN_SECRET")"
   if [[ -n "$CODEX_AUTH_SECRET" ]]; then
     codex_auth_b64="$(fetch_secret "$PROJECT_ID" "$CODEX_AUTH_SECRET" 2>/dev/null || true)"
@@ -230,6 +234,9 @@ export HF_HUB_ETAG_TIMEOUT=30
 export HF_HUB_DOWNLOAD_TIMEOUT=60
 export HF_HUB_ENABLE_HF_TRANSFER=0
 EOF
+  if [[ -n "$fireworks_api_key" ]]; then
+    printf 'export FIREWORKS_API_KEY=%q\n' "$fireworks_api_key" >>"$USER_HOME/.config/spell-benchmark/env.sh"
+  fi
   if [[ -n "$codex_auth_b64" ]]; then
     printf 'export CODEX_AUTH_JSON_B64=%q\n' "$codex_auth_b64" >>"$USER_HOME/.config/spell-benchmark/env.sh"
     mkdir -p "$USER_HOME/.codex"
@@ -303,6 +310,7 @@ BENCHMARKING_REPO_URL="$(metadata_attr benchmarking-repo-url)"
 BENCHMARKING_REF="$(metadata_attr benchmarking-ref)"
 ANTHROPIC_SECRET="$(metadata_attr anthropic-secret)"
 OPENAI_SECRET="$(metadata_attr openai-secret)"
+FIREWORKS_SECRET="$(metadata_attr fireworks-secret || true)"
 GITHUB_TOKEN_SECRET="$(metadata_attr github-token-secret)"
 CODEX_AUTH_SECRET="$(metadata_attr codex-auth-secret || true)"
 CLAUDE_AUTH_SECRET="$(metadata_attr claude-auth-secret || true)"
