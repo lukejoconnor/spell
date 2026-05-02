@@ -1553,7 +1553,11 @@
              :max_tokens (or max-tokens 16384)
              :messages [{:role "user" :content prompt}]
              :tools [spell-suffix-tool]
-             :tool_choice {:type "tool" :name "spell_suffix"}}
+             ;; Fireworks rejects forced tool use when thinking is enabled.
+             ;; Keep the suffix mandatory in our parser/fallback path.
+             :tool_choice (if thinking-config
+                            {:type "auto"}
+                            {:type "tool" :name "spell_suffix"})}
       (not (str/blank? system-prompt)) (assoc :system system-prompt)
       stream? (assoc :stream true)
       thinking-config (assoc :thinking thinking-config)

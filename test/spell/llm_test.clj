@@ -928,6 +928,7 @@
                 nil
                 "high")]
       (is (= true (:stream body)))
+      (is (= {:type "auto"} (:tool_choice body)))
       (is (= {:type "enabled" :budget_tokens 1024} (:thinking body)))
       (is (= {:effort "high"} (:output_config body)))))
 
