@@ -1681,6 +1681,8 @@
     (cond-> {:model model
              :messages messages
              :max_tokens (or max-tokens fireworks-non-stream-max-tokens)
+             :stream true
+             :stream_options {:include_usage true}
              :tools [(fireworks-tc-chat-tool)]
              :tool_choice {:type "function"
                            :function {:name "spell_suffix"}}}
@@ -1737,6 +1739,46 @@
                            :usage usage})))
         {:text suffix :usage usage}))))
 
+(defn- merge-fireworks-chat-tool-delta
+  [tool-calls tool-call]
+  (let [idx (or (:index tool-call) 0)
+        function (:function tool-call)]
+    (update tool-calls idx
+            (fn [current]
+              (-> (or current {})
+                  (update :name #(or % (:name function)))
+                  (update :arguments str (or (:arguments function) "")))))))
+
+(defn- parse-fireworks-tc-chat-stream
+  "Parse OpenAI-compatible Fireworks chat-completions SSE for spell_suffix."
+  [response-body]
+  (let [tool-calls (atom {})
+        usage (atom nil)]
+    (doseq [line (str/split-lines response-body)]
+      (when (str/starts-with? line "data: ")
+        (let [data (subs line 6)]
+          (when (and (not (str/blank? data))
+                     (not= data "[DONE]"))
+            (let [parsed (json/read-str data :key-fn keyword)]
+              (when-let [error (:error parsed)]
+                (throw (ex-info "Fireworks chat completions API error" {:error error})))
+              (when-let [u (:usage parsed)]
+                (reset! usage (parse-fireworks-chat-usage u)))
+              (doseq [tool-call (get-in parsed [:choices 0 :delta :tool_calls])]
+                (swap! tool-calls merge-fireworks-chat-tool-delta tool-call)))))))
+    (let [suffix (some (fn [[_ {:keys [name arguments]}]]
+                         (when (= "spell_suffix" name)
+                           (fireworks-chat-tool-arguments->suffix arguments)))
+                       @tool-calls)]
+      (when (nil? suffix)
+        (throw (ex-info "Fireworks chat fallback stream missing spell_suffix function call"
+                        {:type :missing-tool-call
+                         :provider :fireworks-tc
+                         :tool-calls @tool-calls
+                         :usage @usage
+                         :body (subs response-body 0 (min 1000 (count response-body)))})))
+      {:text suffix :usage @usage})))
+
 (defn- fireworks-tc-chat-fallback
   [api-key base-url model prompt system-prompt max-tokens reasoning-effort http-client costs]
   (let [request (fireworks-tc-chat-request api-key base-url model prompt system-prompt
@@ -1744,7 +1786,7 @@
         response (.send http-client request (HttpResponse$BodyHandlers/ofString))
         status (.statusCode response)]
     (if (<= 200 status 299)
-      (let [{:keys [text usage]} (parse-fireworks-tc-chat-response (.body response))]
+      (let [{:keys [text usage]} (parse-fireworks-tc-chat-stream (.body response))]
         (track-usage! model usage costs)
         text)
       (throw (ex-info "Fireworks chat fallback request failed"

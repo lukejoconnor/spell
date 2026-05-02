@@ -1015,6 +1015,8 @@
       (is (= "spell_suffix" (get-in body [:tools 0 :function :name])))
       (is (= {:type "function" :function {:name "spell_suffix"}}
              (:tool_choice body)))
+      (is (= true (:stream body)))
+      (is (= {:include_usage true} (:stream_options body)))
       (is (= 32000 (:reasoning_effort body)))))
 
   (testing "fireworks-tc chat fallback preserves requested max tokens"
@@ -1024,7 +1026,8 @@
                 nil
                 8192
                 nil)]
-      (is (= 8192 (:max_tokens body)))))
+      (is (= 8192 (:max_tokens body)))
+      (is (= true (:stream body)))))
 
   (testing "fireworks-tc chat fallback parses function arguments"
     (let [body (json/write-str {:choices [{:message
@@ -1041,18 +1044,51 @@
       (is (= 2 (get-in result [:usage :cache_read_input_tokens])))
       (is (= 6 (get-in result [:usage :output_tokens])))))
 
+  (testing "fireworks-tc chat fallback parses streamed function arguments"
+    (let [sse (str "data: "
+                   (json/write-str {:choices [{:delta {:tool_calls
+                                                        [{:index 0
+                                                          :type "function"
+                                                          :function {:name "spell_suffix"
+                                                                     :arguments "{\"suffix\":\"(def"}}]}}]})
+                   "\n\n"
+                   "data: "
+                   (json/write-str {:choices [{:delta {:tool_calls
+                                                        [{:index 0
+                                                          :function {:arguments " streamed true)\"}"}}]}}]})
+                   "\n\n"
+                   "data: "
+                   (json/write-str {:choices []
+                                    :usage {:prompt_tokens 12
+                                            :completion_tokens 6
+                                            :prompt_tokens_details {:cached_tokens 2}}})
+                   "\n\n"
+                   "data: [DONE]\n\n")
+          result (#'provider/parse-fireworks-tc-chat-stream sse)]
+      (is (= "(def streamed true)" (:text result)))
+      (is (= 10 (get-in result [:usage :input_tokens])))
+      (is (= 2 (get-in result [:usage :cache_read_input_tokens])))
+      (is (= 6 (get-in result [:usage :output_tokens])))))
+
   (testing "fireworks-tc fallback tracks usage from both primary and fallback calls"
     (let [calls (atom [])
           primary-body (json/write-str {:content [{:type "text" :text "no tool call"}]
                                         :usage {:input_tokens 10
                                                 :output_tokens 2}})
-          fallback-body (json/write-str {:choices [{:message
-                                                    {:tool_calls
-                                                     [{:type "function"
-                                                       :function {:name "spell_suffix"
-                                                                  :arguments "{\"suffix\":\"(def ok true)\"}"}}]}}]
-                                         :usage {:prompt_tokens 5
-                                                 :completion_tokens 3}})
+          fallback-body (str "data: "
+                             (json/write-str {:choices [{:delta
+                                                         {:tool_calls
+                                                          [{:index 0
+                                                            :type "function"
+                                                            :function {:name "spell_suffix"
+                                                                       :arguments "{\"suffix\":\"(def ok true)\"}"}}]}}]})
+                             "\n\n"
+                             "data: "
+                             (json/write-str {:choices []
+                                              :usage {:prompt_tokens 5
+                                                      :completion_tokens 3}})
+                             "\n\n"
+                             "data: [DONE]\n\n")
           responses (atom [[200 primary-body] [200 fallback-body]])
           fake-response (fn [status body request]
                           (reify java.net.http.HttpResponse
