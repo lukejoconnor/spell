@@ -13,7 +13,7 @@
 
 (def provider-prefixes
   #{"ollama" "codex-tc" "openai-tc"
-    "anthropic-pf" "anthropic-tc" "fireworks" "test"})
+    "anthropic-pf" "anthropic-tc" "fireworks" "fireworks-tc" "test"})
 
 (def cli-options
   [["-r" "--request FILE" "Request JSON path, or '-' for stdin" :default "-"]
@@ -59,6 +59,7 @@
    "anthropic-tc"  "config/providers/anthropic-tc.provider.edn"
    "codex-tc"      "config/providers/codex-tc.provider.edn"
    "fireworks"     "config/providers/fireworks.provider.edn"
+   "fireworks-tc"  "config/providers/fireworks-tc.provider.edn"
    "openai-tc"     "config/providers/openai-tc.provider.edn"
    "ollama"        "config/providers/ollama.provider.edn"})
 
@@ -165,6 +166,9 @@
 
       "fireworks"
       (provider/fireworks-provider base-opts)
+
+      "fireworks-tc"
+      (provider/fireworks-tc-provider base-opts)
 
       "test"
       (provider/test-provider {:response "\"hello world\""})

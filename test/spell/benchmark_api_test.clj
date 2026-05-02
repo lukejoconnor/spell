@@ -71,6 +71,18 @@
     (is (= "config/providers/fireworks.provider.edn"
            (get benchmark-api/provider-edn-by-prefix "fireworks")))))
 
+(deftest fireworks-tc-model-spec-and-default-agent-test
+  (testing "parse-model-spec accepts fireworks-tc prefix"
+    (is (= {:provider "fireworks-tc" :model "kimi-k2p6"}
+           ((var benchmark-api/parse-model-spec) "fireworks-tc:kimi-k2p6"))))
+
+  (testing "default-agent resolution uses the fireworks-tc provider config"
+    (is (= "config/providers/fireworks-tc.provider.edn"
+           (get benchmark-api/provider-edn-by-prefix "fireworks-tc")))
+    (is (str/ends-with? ((var benchmark-api/default-agent-from-request)
+                         {:model "fireworks-tc:kimi-k2p6"})
+                        "config/providers/../agents/base-tc.agent.edn"))))
+
 (deftest openai-tc-model-spec-and-default-agent-test
   (testing "parse-model-spec accepts openai-tc prefix"
     (is (= {:provider "openai-tc" :model "gpt-5.4"}

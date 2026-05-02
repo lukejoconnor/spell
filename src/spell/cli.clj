@@ -20,7 +20,7 @@
 
 (def provider-prefixes
   #{"ollama" "codex-tc" "openai-tc"
-    "anthropic-pf" "anthropic-tc" "fireworks" "test"})
+    "anthropic-pf" "anthropic-tc" "fireworks" "fireworks-tc" "test"})
 
 (defn parse-model-spec
   "Parse 'provider:model' into {:provider str :model str}.
@@ -83,7 +83,7 @@
   [["-t" "--test" "Use dummy LLM provider (returns 'hello world')"]
    ["-e" "--example NAME" "Run a named example from examples/"]
    ["-a" "--agent FILE" "Use agent definition from .agent.edn file"]
-   ["-m" "--model MODEL" "Model spec: haiku, sonnet, opus, opus45, ollama:<model>, codex-tc:<model>, openai-tc:<model>, anthropic-pf:<model>, anthropic-tc:<model>, fireworks:<model>, user (default: codex-tc:gpt-5.3)"]
+   ["-m" "--model MODEL" "Model spec: haiku, sonnet, opus, opus45, ollama:<model>, codex-tc:<model>, openai-tc:<model>, anthropic-pf:<model>, anthropic-tc:<model>, fireworks:<model>, fireworks-tc:<model>, user (default: codex-tc:gpt-5.3)"]
    ["-d" "--depth DEPTH" "Max recursion depth (default: unlimited, 0 = unlimited)"
     :parse-fn #(Integer/parseInt %)
     :validate [#(>= % 0) "Must be non-negative"]]
@@ -135,6 +135,7 @@
           "  spell -m ollama:llama3.2 'Return 42'"
           "  spell -m openai-tc:gpt-5.4 'Return 42'"
           "  spell -m fireworks:glm-5 'Return 42'"
+          "  spell -m fireworks-tc:kimi-k2p6 'Return 42'"
           "  spell examples/hello-world.spl"
           "  spell -e hello-world"
           "  spell -e twenty-questions -m opus -d 40"
@@ -215,6 +216,9 @@
 
         "fireworks"
         (provider/fireworks-provider base-opts)
+
+        "fireworks-tc"
+        (provider/fireworks-tc-provider base-opts)
 
         ;; anthropic-tc is the default for bare model names
         ("anthropic-tc" nil)

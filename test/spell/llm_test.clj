@@ -892,6 +892,216 @@
       (is (= 25 (get-in result [:usage :output_tokens])))
       (is (= 20 (get-in result [:usage :cache_read_input_tokens]))))))
 
+(deftest fireworks-tc-provider-construction-request-and-parse-test
+  (testing "fireworks-tc-provider defaults and expands short model ids"
+    (let [p (provider/fireworks-tc-provider {:api-key "fw-test"})]
+      (is (instance? spell.provider.FireworksTcProvider p))
+      (is (= "https://api.fireworks.ai/inference/v1" (:base-url p)))
+      (is (= "accounts/fireworks/models/kimi-k2p6" (:model p)))
+      (is (false? (provider/supports-prefill p)))
+      (is (instance? spell.provider.FireworksProvider (provider/plain-text-provider p)))))
+
+  (testing "fireworks-tc request uses Anthropic-compatible messages and forces spell_suffix"
+    (let [body (#'provider/fireworks-tc-request-body
+                "accounts/fireworks/models/qwen3p6-plus"
+                "(quine completion"
+                "system prompt"
+                4096
+                false
+                nil
+                nil)]
+      (is (= "accounts/fireworks/models/qwen3p6-plus" (:model body)))
+      (is (= [{:role "user" :content "(quine completion"}] (:messages body)))
+      (is (= "system prompt" (:system body)))
+      (is (= {:type "tool" :name "spell_suffix"} (:tool_choice body)))
+      (is (= "spell_suffix" (get-in body [:tools 0 :name])))
+      (is (= ["suffix"] (get-in body [:tools 0 :input_schema :required])))
+      (is (not (contains? body :stream)))))
+
+  (testing "fireworks-tc request maps reasoning effort to Anthropic-compatible thinking"
+    (let [body (#'provider/fireworks-tc-request-body
+                "accounts/fireworks/models/glm-5p1"
+                "prompt"
+                nil
+                4096
+                true
+                nil
+                "high")]
+      (is (= true (:stream body)))
+      (is (= {:type "auto"} (:tool_choice body)))
+      (is (= {:type "enabled" :budget_tokens 1024} (:thinking body)))
+      (is (= {:effort "high"} (:output_config body)))))
+
+  (testing "fireworks-tc request streams above Fireworks non-streaming max"
+    (let [body (#'provider/fireworks-tc-request-body
+                "accounts/fireworks/models/kimi-k2p6"
+                "prompt"
+                nil
+                8192
+                true
+                nil
+                nil)]
+      (is (= true (:stream body)))
+      (is (= 8192 (:max_tokens body)))))
+
+  (testing "fireworks-tc parses completed response with spell_suffix tool_use"
+    (let [body (json/write-str {:content [{:type "tool_use"
+                                           :name "spell_suffix"
+                                           :input {:suffix "(def x 1)"}}]
+                                :usage {:input_tokens 11
+                                        :output_tokens 5
+                                        :cache_read_input_tokens 3}})
+          result (#'provider/parse-fireworks-tc-response body)]
+      (is (= "(def x 1)" (:text result)))
+      (is (= 8 (get-in result [:usage :input_tokens])))
+      (is (= 5 (get-in result [:usage :output_tokens])))
+      (is (= 3 (get-in result [:usage :cache_read_input_tokens])))))
+
+  (testing "fireworks-tc throws provider-specific missing tool-call errors"
+    (let [body (json/write-str {:content [{:type "text" :text "no tool call"}]
+                                :usage {:input_tokens 1 :output_tokens 1}})]
+      (try
+        (#'provider/parse-fireworks-tc-response body)
+        (is false "expected missing tool-call")
+        (catch clojure.lang.ExceptionInfo ex
+          (is (= :missing-tool-call (:type (ex-data ex))))
+          (is (= :fireworks-tc (:provider (ex-data ex))))))))
+
+  (testing "fireworks-tc stream uses final message_delta usage"
+    (let [sse (str "event: message_start\n"
+                   "data: "
+                   (json/write-str {:type "message_start"
+                                    :message {:usage {:input_tokens 0
+                                                      :output_tokens 0}}})
+                   "\n\n"
+                   "event: content_block_start\n"
+                   "data: "
+                   (json/write-str {:type "content_block_start"
+                                    :index 0
+                                    :content_block {:type "tool_use"
+                                                    :name "spell_suffix"
+                                                    :input {}}})
+                   "\n\n"
+                   "event: content_block_delta\n"
+                   "data: "
+                   (json/write-str {:type "content_block_delta"
+                                    :index 0
+                                    :delta {:type "input_json_delta"
+                                            :partial_json "{\"suffix\":\"(def y 2)\"}"}})
+                   "\n\n"
+                   "event: message_delta\n"
+                   "data: "
+                   (json/write-str {:type "message_delta"
+                                    :usage {:input_tokens 8
+                                            :output_tokens 4
+                                            :cache_read_input_tokens 1}})
+                   "\n\n")
+          result (#'provider/parse-fireworks-tc-stream sse)]
+      (is (= "(def y 2)" (:text result)))
+      (is (= 7 (get-in result [:usage :input_tokens])))
+      (is (= 4 (get-in result [:usage :output_tokens])))
+      (is (= 1 (get-in result [:usage :cache_read_input_tokens])))))
+
+  (testing "fireworks-tc chat fallback request uses OpenAI-compatible function tools"
+    (let [body (#'provider/fireworks-tc-chat-request-body
+                "accounts/fireworks/models/kimi-k2p6"
+                "prompt"
+                "system"
+                1024
+                "32000")]
+      (is (= [{:role "system" :content "system"}
+              {:role "user" :content "prompt"}]
+             (:messages body)))
+      (is (= "spell_suffix" (get-in body [:tools 0 :function :name])))
+      (is (= {:type "function" :function {:name "spell_suffix"}}
+             (:tool_choice body)))
+      (is (= 32000 (:reasoning_effort body)))))
+
+  (testing "fireworks-tc chat fallback preserves requested max tokens"
+    (let [body (#'provider/fireworks-tc-chat-request-body
+                "accounts/fireworks/models/kimi-k2p6"
+                "prompt"
+                nil
+                8192
+                nil)]
+      (is (= 8192 (:max_tokens body)))))
+
+  (testing "fireworks-tc chat fallback parses function arguments"
+    (let [body (json/write-str {:choices [{:message
+                                           {:tool_calls
+                                            [{:type "function"
+                                              :function {:name "spell_suffix"
+                                                         :arguments "{\"suffix\":\"(def z 3)\"}"}}]}}]
+                                :usage {:prompt_tokens 12
+                                        :completion_tokens 6
+                                        :prompt_tokens_details {:cached_tokens 2}}})
+          result (#'provider/parse-fireworks-tc-chat-response body)]
+      (is (= "(def z 3)" (:text result)))
+      (is (= 10 (get-in result [:usage :input_tokens])))
+      (is (= 2 (get-in result [:usage :cache_read_input_tokens])))
+      (is (= 6 (get-in result [:usage :output_tokens])))))
+
+  (testing "fireworks-tc fallback tracks usage from both primary and fallback calls"
+    (let [calls (atom [])
+          primary-body (json/write-str {:content [{:type "text" :text "no tool call"}]
+                                        :usage {:input_tokens 10
+                                                :output_tokens 2}})
+          fallback-body (json/write-str {:choices [{:message
+                                                    {:tool_calls
+                                                     [{:type "function"
+                                                       :function {:name "spell_suffix"
+                                                                  :arguments "{\"suffix\":\"(def ok true)\"}"}}]}}]
+                                         :usage {:prompt_tokens 5
+                                                 :completion_tokens 3}})
+          responses (atom [[200 primary-body] [200 fallback-body]])
+          fake-response (fn [status body request]
+                          (reify java.net.http.HttpResponse
+                            (statusCode [_] status)
+                            (body [_] body)
+                            (request [_] request)
+                            (previousResponse [_] (java.util.Optional/empty))
+                            (headers [_] nil)
+                            (sslSession [_] (java.util.Optional/empty))
+                            (uri [_] (.uri request))
+                            (version [_] java.net.http.HttpClient$Version/HTTP_1_1)))
+          fake-client (proxy [java.net.http.HttpClient] []
+                        (send [request _body-handler]
+                          (swap! calls conj (str (.uri request)))
+                          (let [[[status body] & more] @responses]
+                            (reset! responses (vec more))
+                            (fake-response status body request)))
+                        (sendAsync
+                          ([request body-handler]
+                           (throw (UnsupportedOperationException. "sendAsync not used")))
+                          ([request body-handler push-promise-handler]
+                           (throw (UnsupportedOperationException. "sendAsync not used"))))
+                        (cookieHandler [] (java.util.Optional/empty))
+                        (connectTimeout [] (java.util.Optional/empty))
+                        (followRedirects [] java.net.http.HttpClient$Redirect/NEVER)
+                        (proxy [] (java.util.Optional/empty))
+                        (sslContext [] nil)
+                        (sslParameters [] nil)
+                        (authenticator [] (java.util.Optional/empty))
+                        (version [] java.net.http.HttpClient$Version/HTTP_1_1)
+                        (executor [] (java.util.Optional/empty)))
+          usage (atom {})
+          p (assoc (provider/fireworks-tc-provider {:api-key "fw-test"
+                                                    :model "kimi-k2p6"
+                                                    :max-tokens 4096
+                                                    :costs {"accounts/fireworks/models/kimi-k2p6"
+                                                            {"input" 1.0
+                                                             "output" 2.0}}})
+                   :http-client fake-client)]
+      (binding [provider/*usage* usage
+                provider/*budget* nil]
+        (is (= "(def ok true)" (provider/call-llm p "prompt" {:system "system"}))))
+      (is (= ["https://api.fireworks.ai/inference/v1/messages"
+              "https://api.fireworks.ai/inference/v1/chat/completions"]
+             @calls))
+      (is (= 2 (get-in @usage [:by-model "accounts/fireworks/models/kimi-k2p6" :calls])))
+      (is (= 15 (get-in @usage [:by-model "accounts/fireworks/models/kimi-k2p6" :input_tokens])))
+      (is (= 5 (get-in @usage [:by-model "accounts/fireworks/models/kimi-k2p6" :output_tokens]))))))
+
 (deftest anthropic-tc-provider-constructor-test
   (testing "constructs with explicit api-key and model"
     (let [p (provider/anthropic-tc-provider {:api-key "anthropic-key"
@@ -1176,6 +1386,10 @@
   (testing "fireworks provider prefix"
     (is (= {:provider "fireworks" :model "glm-5"}
            (cli/parse-model-spec "fireworks:glm-5"))))
+
+  (testing "fireworks-tc provider prefix"
+    (is (= {:provider "fireworks-tc" :model "kimi-k2p6"}
+           (cli/parse-model-spec "fireworks-tc:kimi-k2p6"))))
 
   (testing "anthropic-tc provider prefix"
     (is (= {:provider "anthropic-tc" :model "claude-sonnet-4-5-20250929"}
@@ -1711,7 +1925,11 @@
 
   (testing "Fireworks provider supports prefill"
     (let [p (provider/fireworks-provider {:api-key "test"})]
-      (is (true? (provider/supports-prefill p))))))
+      (is (true? (provider/supports-prefill p)))))
+
+  (testing "Fireworks tc provider does not support prefill"
+    (let [p (provider/fireworks-tc-provider {:api-key "test"})]
+      (is (false? (provider/supports-prefill p))))))
 
 ;; =============================================================================
 ;; User provider display tests
