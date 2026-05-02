@@ -1655,6 +1655,7 @@
         (throw (ex-info "Fireworks mandatory tool-call stream missing spell_suffix tool_use"
                         {:type :missing-tool-call
                          :provider :fireworks-tc
+                         :usage @usage
                          :body (subs response-body 0 (min 1000 (count response-body)))})))
       {:text suffix :usage @usage})))
 
@@ -1675,8 +1676,7 @@
                                        reasoning-effort)]
     (cond-> {:model model
              :messages messages
-             :max_tokens (min (or max-tokens fireworks-non-stream-max-tokens)
-                              fireworks-non-stream-max-tokens)
+             :max_tokens (or max-tokens fireworks-non-stream-max-tokens)
              :tools [(fireworks-tc-chat-tool)]
              :tool_choice {:type "function"
                            :function {:name "spell_suffix"}}}
@@ -1768,15 +1768,19 @@
             (track-usage! effective-model usage costs)
             text)
           (catch clojure.lang.ExceptionInfo ex
-            (if (= :missing-tool-call (:type (ex-data ex)))
-              (fireworks-tc-chat-fallback api-key base-url effective-model prompt
-                                          (:system opts) effective-max-tokens
-                                          reasoning-effort http-client costs)
-              (throw ex))))
+            (let [data (ex-data ex)]
+              (if (= :missing-tool-call (:type data))
+                (do
+                  (when-let [usage (:usage data)]
+                    (track-usage! effective-model usage costs))
+                  (fireworks-tc-chat-fallback api-key base-url effective-model prompt
+                                              (:system opts) effective-max-tokens
+                                              reasoning-effort http-client costs))
+                (throw ex)))))
         (throw (ex-info "Fireworks mandatory tool-call request failed"
                         {:status status :body (.body response)})))))
   (plain-text-provider [_]
-    (->FireworksProvider api-key base-url model max-tokens http-client costs nil true))
+    (->FireworksProvider api-key base-url model max-tokens http-client costs nil false))
   (supports-prefill [_] false))
 
 (defn fireworks-tc-provider

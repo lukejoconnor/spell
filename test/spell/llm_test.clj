@@ -1016,14 +1016,14 @@
              (:tool_choice body)))
       (is (= 32000 (:reasoning_effort body)))))
 
-  (testing "fireworks-tc chat fallback caps non-streaming max tokens"
+  (testing "fireworks-tc chat fallback preserves requested max tokens"
     (let [body (#'provider/fireworks-tc-chat-request-body
                 "accounts/fireworks/models/kimi-k2p6"
                 "prompt"
                 nil
                 8192
                 nil)]
-      (is (= 4096 (:max_tokens body)))))
+      (is (= 8192 (:max_tokens body)))))
 
   (testing "fireworks-tc chat fallback parses function arguments"
     (let [body (json/write-str {:choices [{:message
@@ -1038,7 +1038,68 @@
       (is (= "(def z 3)" (:text result)))
       (is (= 10 (get-in result [:usage :input_tokens])))
       (is (= 2 (get-in result [:usage :cache_read_input_tokens])))
-      (is (= 6 (get-in result [:usage :output_tokens]))))))
+      (is (= 6 (get-in result [:usage :output_tokens])))))
+
+  (testing "fireworks-tc fallback tracks usage from both primary and fallback calls"
+    (let [calls (atom [])
+          primary-body (json/write-str {:content [{:type "text" :text "no tool call"}]
+                                        :usage {:input_tokens 10
+                                                :output_tokens 2}})
+          fallback-body (json/write-str {:choices [{:message
+                                                    {:tool_calls
+                                                     [{:type "function"
+                                                       :function {:name "spell_suffix"
+                                                                  :arguments "{\"suffix\":\"(def ok true)\"}"}}]}}]
+                                         :usage {:prompt_tokens 5
+                                                 :completion_tokens 3}})
+          responses (atom [[200 primary-body] [200 fallback-body]])
+          fake-response (fn [status body request]
+                          (reify java.net.http.HttpResponse
+                            (statusCode [_] status)
+                            (body [_] body)
+                            (request [_] request)
+                            (previousResponse [_] (java.util.Optional/empty))
+                            (headers [_] nil)
+                            (sslSession [_] (java.util.Optional/empty))
+                            (uri [_] (.uri request))
+                            (version [_] java.net.http.HttpClient$Version/HTTP_1_1)))
+          fake-client (proxy [java.net.http.HttpClient] []
+                        (send [request _body-handler]
+                          (swap! calls conj (str (.uri request)))
+                          (let [[[status body] & more] @responses]
+                            (reset! responses (vec more))
+                            (fake-response status body request)))
+                        (sendAsync
+                          ([request body-handler]
+                           (throw (UnsupportedOperationException. "sendAsync not used")))
+                          ([request body-handler push-promise-handler]
+                           (throw (UnsupportedOperationException. "sendAsync not used"))))
+                        (cookieHandler [] (java.util.Optional/empty))
+                        (connectTimeout [] (java.util.Optional/empty))
+                        (followRedirects [] java.net.http.HttpClient$Redirect/NEVER)
+                        (proxy [] (java.util.Optional/empty))
+                        (sslContext [] nil)
+                        (sslParameters [] nil)
+                        (authenticator [] (java.util.Optional/empty))
+                        (version [] java.net.http.HttpClient$Version/HTTP_1_1)
+                        (executor [] (java.util.Optional/empty)))
+          usage (atom {})
+          p (assoc (provider/fireworks-tc-provider {:api-key "fw-test"
+                                                    :model "kimi-k2p6"
+                                                    :max-tokens 4096
+                                                    :costs {"accounts/fireworks/models/kimi-k2p6"
+                                                            {"input" 1.0
+                                                             "output" 2.0}}})
+                   :http-client fake-client)]
+      (binding [provider/*usage* usage
+                provider/*budget* nil]
+        (is (= "(def ok true)" (provider/call-llm p "prompt" {:system "system"}))))
+      (is (= ["https://api.fireworks.ai/inference/v1/messages"
+              "https://api.fireworks.ai/inference/v1/chat/completions"]
+             @calls))
+      (is (= 2 (get-in @usage [:by-model "accounts/fireworks/models/kimi-k2p6" :calls])))
+      (is (= 15 (get-in @usage [:by-model "accounts/fireworks/models/kimi-k2p6" :input_tokens])))
+      (is (= 5 (get-in @usage [:by-model "accounts/fireworks/models/kimi-k2p6" :output_tokens]))))))
 
 (deftest anthropic-tc-provider-constructor-test
   (testing "constructs with explicit api-key and model"
