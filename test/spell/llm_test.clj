@@ -26,6 +26,26 @@
   [& forms]
   (#'runtime/append-forms-macro forms))
 
+(deftest recovery-prompt-effect-ns-hint-test
+  (testing "io/ effect-namespace error appends a corrective leading-quote example"
+    (let [text (#'llm/recovery-prompt-text
+                "io/grep is an effect namespace - use it in the trailing expression via eval")]
+      (is (str/includes? text "Hint — effect-namespace placement"))
+      (is (str/includes? text "io/"))
+      (is (str/includes? text "MISSING LEADING QUOTE"))
+      (is (str/includes? text "'(!call-now"))))
+
+  (testing "agents/ effect-namespace error also produces the hint"
+    (let [text (#'llm/recovery-prompt-text
+                "agents/spawn is an effect namespace - use it in the trailing expression via eval")]
+      (is (str/includes? text "agents/"))
+      (is (str/includes? text "MISSING LEADING QUOTE"))))
+
+  (testing "unrelated errors do NOT trigger the hint"
+    (let [text (#'llm/recovery-prompt-text "Unbound symbol: foo-bar")]
+      (is (not (str/includes? text "MISSING LEADING QUOTE")))
+      (is (not (str/includes? text "Hint — effect-namespace"))))))
+
 (deftest llm-basic-test
   (testing "llm evaluates response and extracts return"
     ;; Prompt: "(do " -> Response: "(def return 42))"
@@ -898,8 +918,14 @@
       (is (instance? spell.provider.FireworksTcProvider p))
       (is (= "https://api.fireworks.ai/inference/v1" (:base-url p)))
       (is (= "accounts/fireworks/models/kimi-k2p6" (:model p)))
+      (is (= 600 (:request-timeout-sec p))
+          "Default request-timeout-sec is 600 seconds, matching anthropic-tc")
       (is (false? (provider/supports-prefill p)))
       (is (instance? spell.provider.FireworksProvider (provider/plain-text-provider p)))))
+
+  (testing "fireworks-tc-provider accepts custom request-timeout-sec"
+    (let [p (provider/fireworks-tc-provider {:api-key "fw-test" :request-timeout-sec 120})]
+      (is (= 120 (:request-timeout-sec p)))))
 
   (testing "fireworks-tc request uses Anthropic-compatible messages and forces spell_suffix"
     (let [body (#'provider/fireworks-tc-request-body
