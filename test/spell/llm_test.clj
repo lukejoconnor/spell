@@ -29,15 +29,20 @@
 (deftest recovery-prompt-effect-ns-hint-test
   (testing "io/ effect-namespace error appends a corrective leading-quote example"
     (let [text (#'llm/recovery-prompt-text
-                "io/grep is an effect namespace - use it in the trailing expression via eval")]
+                "io/ is an effect namespace - use it in the trailing expression via eval")]
       (is (str/includes? text "Hint — effect-namespace placement"))
       (is (str/includes? text "io/"))
       (is (str/includes? text "MISSING LEADING QUOTE"))
       (is (str/includes? text "'(!call-now"))))
 
-  (testing "agents/ effect-namespace error also produces the hint"
+  (testing "function-prefixed effect-namespace error (the form the eval reporter emits) also fires"
     (let [text (#'llm/recovery-prompt-text
-                "agents/spawn is an effect namespace - use it in the trailing expression via eval")]
+                "io/read-lines: io/ is an effect namespace - use it in the trailing expression via eval")]
+      (is (str/includes? text "MISSING LEADING QUOTE"))))
+
+  (testing "agents/ effect-namespace error (eval-reporter prefix form) also produces the hint"
+    (let [text (#'llm/recovery-prompt-text
+                "agents/spawn: agents/ is an effect namespace - use it in the trailing expression via eval")]
       (is (str/includes? text "agents/"))
       (is (str/includes? text "MISSING LEADING QUOTE"))))
 

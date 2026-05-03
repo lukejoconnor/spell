@@ -49,7 +49,9 @@
                       (assoc (if (= phase :reader) :parse-error :error) error-msg))))))
 
 (def ^:private effect-ns-error-pattern
-  #"^([a-zA-Z][a-zA-Z0-9_-]*)/[^ ]* is an effect namespace - use it in the trailing expression via eval")
+  ;; Matches either bare `<ns>/ is an effect namespace ...` or the
+  ;; eval-reporter form `<ns>/<fn>: <ns>/ is an effect namespace ...`.
+  #"([a-zA-Z][a-zA-Z0-9_-]*)/ is an effect namespace - use it in the trailing expression via eval")
 
 (defn- effect-ns-recovery-hint
   "Concrete corrective example for the most common GLM-5.1 mistake:
