@@ -923,6 +923,7 @@
       (is (instance? spell.provider.FireworksTcProvider p))
       (is (= "https://api.fireworks.ai/inference/v1" (:base-url p)))
       (is (= "accounts/fireworks/models/kimi-k2p6" (:model p)))
+      (is (= 32768 (:max-tokens p)))
       (is (= 600 (:request-timeout-sec p))
           "Default request-timeout-sec is 600 seconds, matching anthropic-tc")
       (is (false? (provider/supports-prefill p)))
@@ -974,6 +975,17 @@
                 nil)]
       (is (= true (:stream body)))
       (is (= 8192 (:max_tokens body)))))
+
+  (testing "fireworks-tc request defaults to 32768 max tokens"
+    (let [body (#'provider/fireworks-tc-request-body
+                "accounts/fireworks/models/kimi-k2p6"
+                "prompt"
+                nil
+                nil
+                true
+                nil
+                nil)]
+      (is (= 32768 (:max_tokens body)))))
 
   (testing "fireworks-tc parses completed response with spell_suffix tool_use"
     (let [body (json/write-str {:content [{:type "tool_use"
@@ -1060,6 +1072,16 @@
       (is (= 8192 (:max_tokens body)))
       (is (= true (:stream body)))))
 
+  (testing "fireworks-tc chat fallback defaults to 32768 max tokens"
+    (let [body (#'provider/fireworks-tc-chat-request-body
+                "accounts/fireworks/models/kimi-k2p6"
+                "prompt"
+                nil
+                nil
+                nil)]
+      (is (= 32768 (:max_tokens body)))
+      (is (= true (:stream body)))))
+
   (testing "fireworks-tc chat fallback parses function arguments"
     (let [body (json/write-str {:choices [{:message
                                            {:tool_calls
@@ -1133,13 +1155,14 @@
                             (version [_] java.net.http.HttpClient$Version/HTTP_1_1)))
           fake-client (proxy [java.net.http.HttpClient] []
                         (send [request _body-handler]
-                          (swap! calls conj (str (.uri request)))
-                          (let [[[status body] & more] @responses]
-                            (reset! responses (vec more))
-                            (fake-response status body request)))
+                          (throw (UnsupportedOperationException. "send not used")))
                         (sendAsync
                           ([request body-handler]
-                           (throw (UnsupportedOperationException. "sendAsync not used")))
+                           (swap! calls conj (str (.uri request)))
+                           (let [[[status body] & more] @responses]
+                             (reset! responses (vec more))
+                             (java.util.concurrent.CompletableFuture/completedFuture
+                              (fake-response status body request))))
                           ([request body-handler push-promise-handler]
                            (throw (UnsupportedOperationException. "sendAsync not used"))))
                         (cookieHandler [] (java.util.Optional/empty))

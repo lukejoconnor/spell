@@ -1526,6 +1526,7 @@
   #{"low" "medium" "high" "max"})
 
 (def ^:private fireworks-non-stream-max-tokens 4096)
+(def ^:private fireworks-tc-default-max-tokens 32768)
 
 (defn- parse-int-string [s]
   (when (and (string? s) (re-matches #"\d+" s))
@@ -1550,7 +1551,7 @@
   (let [thinking-config (fireworks-tc-thinking-config thinking reasoning-effort)
         output-config (fireworks-tc-output-config reasoning-effort)]
     (cond-> {:model model
-             :max_tokens (or max-tokens 16384)
+             :max_tokens (or max-tokens fireworks-tc-default-max-tokens)
              :messages [{:role "user" :content prompt}]
              :tools [spell-suffix-tool]
              ;; Fireworks rejects forced tool use when thinking is enabled.
@@ -1683,7 +1684,7 @@
                                        reasoning-effort)]
     (cond-> {:model model
              :messages messages
-             :max_tokens (or max-tokens fireworks-non-stream-max-tokens)
+             :max_tokens (or max-tokens fireworks-tc-default-max-tokens)
              :stream true
              :stream_options {:include_usage true}
              :tools [(fireworks-tc-chat-tool)]
@@ -1789,7 +1790,8 @@
    request-timeout-sec]
   (let [request (fireworks-tc-chat-request api-key base-url model prompt system-prompt
                                            max-tokens reasoning-effort request-timeout-sec)
-        response (.send http-client request (HttpResponse$BodyHandlers/ofString))
+        response (send-http-request http-client request (HttpResponse$BodyHandlers/ofString)
+                                    request-timeout-sec)
         status (.statusCode response)]
     (if (<= 200 status 299)
       (let [{:keys [text usage]} (parse-fireworks-tc-chat-stream (.body response))]
@@ -1805,12 +1807,13 @@
     (let [effective-model (or (:model opts) model)
           thinking (:thinking opts)
           reasoning-effort (:reasoning-effort opts)
-          effective-max-tokens (or max-tokens 16384)
+          effective-max-tokens (or max-tokens fireworks-tc-default-max-tokens)
           stream? (or thinking (> effective-max-tokens fireworks-non-stream-max-tokens))
           request (fireworks-tc-request api-key base-url effective-model prompt
                                         (:system opts) effective-max-tokens stream?
                                         thinking reasoning-effort request-timeout-sec)
-          response (.send http-client request (HttpResponse$BodyHandlers/ofString))
+          response (send-http-request http-client request (HttpResponse$BodyHandlers/ofString)
+                                      request-timeout-sec)
           status (.statusCode response)]
       (if (<= 200 status 299)
         (try
@@ -1851,6 +1854,7 @@
   ([{:keys [api-key base-url model max-tokens request-timeout-sec costs]
      :or {model "kimi-k2p6"
           base-url "https://api.fireworks.ai/inference/v1"
+          max-tokens fireworks-tc-default-max-tokens
           request-timeout-sec 600}}]
    (let [key (or api-key (System/getenv "FIREWORKS_API_KEY"))
          effective-model (fireworks-model-id model)
