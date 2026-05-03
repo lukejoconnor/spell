@@ -707,6 +707,7 @@ Common mistakes:
 2. forgetting !call-now when you need the result: '(io/read-file \"x\") evaluates but the result is lost
 3. using io/sh for everything — use io/str-replace to patch files, io/read-file to read them, io/grep to search them
 4. grep-then-read in two turns when one grep with :context N would suffice — prefer `(io/grep pat path {:context 20})` for \"find + see context\"
+5. constructing `(first-line N [...])` or `(stored \"id\")` literals by hand — these are SERIALIZATION OUTPUT FORMS the runtime emits when displaying tool results. They are not constructors; you cannot reconstruct or slice a file by writing one. To slice a file, use `(io/read-lines path start end)` for a line range, or `(io/grep pat path {:context N})` for a context window, or `(io/sh \"sed -n '1,80p' path\")` for a shell-based slice.
 
 In examples, ▌ marks cursor position in a completion.
 

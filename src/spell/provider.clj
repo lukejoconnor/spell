@@ -1526,6 +1526,7 @@
   #{"low" "medium" "high" "max"})
 
 (def ^:private fireworks-non-stream-max-tokens 4096)
+(def ^:private fireworks-tc-default-max-tokens 32768)
 
 (defn- parse-int-string [s]
   (when (and (string? s) (re-matches #"\d+" s))
@@ -1550,7 +1551,7 @@
   (let [thinking-config (fireworks-tc-thinking-config thinking reasoning-effort)
         output-config (fireworks-tc-output-config reasoning-effort)]
     (cond-> {:model model
-             :max_tokens (or max-tokens 16384)
+             :max_tokens (or max-tokens fireworks-tc-default-max-tokens)
              :messages [{:role "user" :content prompt}]
              :tools [spell-suffix-tool]
              ;; Fireworks rejects forced tool use when thinking is enabled.
@@ -1564,11 +1565,14 @@
       output-config (assoc :output_config output-config))))
 
 (defn- fireworks-tc-request
-  [api-key base-url model prompt system-prompt max-tokens stream? thinking reasoning-effort]
+  [api-key base-url model prompt system-prompt max-tokens stream? thinking reasoning-effort
+   request-timeout-sec]
   (let [body (fireworks-tc-request-body model prompt system-prompt max-tokens stream?
-                                        thinking reasoning-effort)]
-    (-> (HttpRequest/newBuilder)
-        (.uri (URI/create (str base-url "/messages")))
+                                        thinking reasoning-effort)
+        builder (cond-> (HttpRequest/newBuilder)
+                  true (.uri (URI/create (str base-url "/messages")))
+                  request-timeout-sec (.timeout (Duration/ofSeconds (long request-timeout-sec))))]
+    (-> builder
         (.header "Content-Type" "application/json")
         (.header "Authorization" (str "Bearer " api-key))
         (.POST (HttpRequest$BodyPublishers/ofString (json/write-str body)))
@@ -1680,7 +1684,7 @@
                                        reasoning-effort)]
     (cond-> {:model model
              :messages messages
-             :max_tokens (or max-tokens fireworks-non-stream-max-tokens)
+             :max_tokens (or max-tokens fireworks-tc-default-max-tokens)
              :stream true
              :stream_options {:include_usage true}
              :tools [(fireworks-tc-chat-tool)]
@@ -1689,10 +1693,12 @@
       effective-reasoning-effort (assoc :reasoning_effort effective-reasoning-effort))))
 
 (defn- fireworks-tc-chat-request
-  [api-key base-url model prompt system-prompt max-tokens reasoning-effort]
-  (let [body (fireworks-tc-chat-request-body model prompt system-prompt max-tokens reasoning-effort)]
-    (-> (HttpRequest/newBuilder)
-        (.uri (URI/create (str base-url "/chat/completions")))
+  [api-key base-url model prompt system-prompt max-tokens reasoning-effort request-timeout-sec]
+  (let [body (fireworks-tc-chat-request-body model prompt system-prompt max-tokens reasoning-effort)
+        builder (cond-> (HttpRequest/newBuilder)
+                  true (.uri (URI/create (str base-url "/chat/completions")))
+                  request-timeout-sec (.timeout (Duration/ofSeconds (long request-timeout-sec))))]
+    (-> builder
         (.header "Content-Type" "application/json")
         (.header "Authorization" (str "Bearer " api-key))
         (.POST (HttpRequest$BodyPublishers/ofString (json/write-str body)))
@@ -1780,10 +1786,12 @@
       {:text suffix :usage @usage})))
 
 (defn- fireworks-tc-chat-fallback
-  [api-key base-url model prompt system-prompt max-tokens reasoning-effort http-client costs]
+  [api-key base-url model prompt system-prompt max-tokens reasoning-effort http-client costs
+   request-timeout-sec]
   (let [request (fireworks-tc-chat-request api-key base-url model prompt system-prompt
-                                           max-tokens reasoning-effort)
-        response (.send http-client request (HttpResponse$BodyHandlers/ofString))
+                                           max-tokens reasoning-effort request-timeout-sec)
+        response (send-http-request http-client request (HttpResponse$BodyHandlers/ofString)
+                                    request-timeout-sec)
         status (.statusCode response)]
     (if (<= 200 status 299)
       (let [{:keys [text usage]} (parse-fireworks-tc-chat-stream (.body response))]
@@ -1792,19 +1800,20 @@
       (throw (ex-info "Fireworks chat fallback request failed"
                       {:status status :body (.body response)})))))
 
-(defrecord FireworksTcProvider [api-key base-url model max-tokens http-client costs]
+(defrecord FireworksTcProvider [api-key base-url model max-tokens http-client request-timeout-sec costs]
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt opts]
     (let [effective-model (or (:model opts) model)
           thinking (:thinking opts)
           reasoning-effort (:reasoning-effort opts)
-          effective-max-tokens (or max-tokens 16384)
+          effective-max-tokens (or max-tokens fireworks-tc-default-max-tokens)
           stream? (or thinking (> effective-max-tokens fireworks-non-stream-max-tokens))
           request (fireworks-tc-request api-key base-url effective-model prompt
                                         (:system opts) effective-max-tokens stream?
-                                        thinking reasoning-effort)
-          response (.send http-client request (HttpResponse$BodyHandlers/ofString))
+                                        thinking reasoning-effort request-timeout-sec)
+          response (send-http-request http-client request (HttpResponse$BodyHandlers/ofString)
+                                      request-timeout-sec)
           status (.statusCode response)]
       (if (<= 200 status 299)
         (try
@@ -1821,7 +1830,8 @@
                     (track-usage! effective-model usage costs))
                   (fireworks-tc-chat-fallback api-key base-url effective-model prompt
                                               (:system opts) effective-max-tokens
-                                              reasoning-effort http-client costs))
+                                              reasoning-effort http-client costs
+                                              request-timeout-sec))
                 (throw ex)))))
         (throw (ex-info "Fireworks mandatory tool-call request failed"
                         {:status status :body (.body response)})))))
@@ -1834,22 +1844,28 @@
    with mandatory spell_suffix tool output.
 
    Options:
-   - :api-key    - API key (default: FIREWORKS_API_KEY env var)
-   - :base-url   - API base URL (default: https://api.fireworks.ai/inference/v1)
-   - :model      - Model name or Fireworks account path (default: kimi-k2p6)
-   - :max-tokens - Max tokens per response
-   - :costs      - Cost table {model-prefix price-spec}"
+   - :api-key             - API key (default: FIREWORKS_API_KEY env var)
+   - :base-url            - API base URL (default: https://api.fireworks.ai/inference/v1)
+   - :model               - Model name or Fireworks account path (default: kimi-k2p6)
+   - :max-tokens          - Max tokens per response
+   - :request-timeout-sec - Per-HTTP-call timeout in seconds (default: 600)
+   - :costs               - Cost table {model-prefix price-spec}"
   ([] (fireworks-tc-provider {}))
-  ([{:keys [api-key base-url model max-tokens costs]
+  ([{:keys [api-key base-url model max-tokens request-timeout-sec costs]
      :or {model "kimi-k2p6"
-          base-url "https://api.fireworks.ai/inference/v1"}}]
+          base-url "https://api.fireworks.ai/inference/v1"
+          max-tokens fireworks-tc-default-max-tokens
+          request-timeout-sec 600}}]
    (let [key (or api-key (System/getenv "FIREWORKS_API_KEY"))
          effective-model (fireworks-model-id model)
          url (str/replace (or base-url "https://api.fireworks.ai/inference/v1") #"/$" "")]
      (when-not key
        (throw (ex-info "No API key provided. Set FIREWORKS_API_KEY or pass :api-key"
                        {:env "FIREWORKS_API_KEY"})))
-     (->FireworksTcProvider key url effective-model max-tokens (make-http-client) costs))))
+     (->FireworksTcProvider key url effective-model max-tokens
+                            (make-http-client {:connect-timeout-sec request-timeout-sec})
+                            request-timeout-sec
+                            costs))))
 
 ;; ---------------------------------------------------------------------------
 ;; Test Provider (declarative testing)

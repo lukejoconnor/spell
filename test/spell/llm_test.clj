@@ -26,6 +26,31 @@
   [& forms]
   (#'runtime/append-forms-macro forms))
 
+(deftest recovery-prompt-effect-ns-hint-test
+  (testing "io/ effect-namespace error appends a corrective leading-quote example"
+    (let [text (#'llm/recovery-prompt-text
+                "io/ is an effect namespace - use it in the trailing expression via eval")]
+      (is (str/includes? text "Hint — effect-namespace placement"))
+      (is (str/includes? text "io/"))
+      (is (str/includes? text "MISSING LEADING QUOTE"))
+      (is (str/includes? text "'(!call-now"))))
+
+  (testing "function-prefixed effect-namespace error (the form the eval reporter emits) also fires"
+    (let [text (#'llm/recovery-prompt-text
+                "io/read-lines: io/ is an effect namespace - use it in the trailing expression via eval")]
+      (is (str/includes? text "MISSING LEADING QUOTE"))))
+
+  (testing "agents/ effect-namespace error (eval-reporter prefix form) also produces the hint"
+    (let [text (#'llm/recovery-prompt-text
+                "agents/spawn: agents/ is an effect namespace - use it in the trailing expression via eval")]
+      (is (str/includes? text "agents/"))
+      (is (str/includes? text "MISSING LEADING QUOTE"))))
+
+  (testing "unrelated errors do NOT trigger the hint"
+    (let [text (#'llm/recovery-prompt-text "Unbound symbol: foo-bar")]
+      (is (not (str/includes? text "MISSING LEADING QUOTE")))
+      (is (not (str/includes? text "Hint — effect-namespace"))))))
+
 (deftest llm-basic-test
   (testing "llm evaluates response and extracts return"
     ;; Prompt: "(do " -> Response: "(def return 42))"
@@ -898,8 +923,15 @@
       (is (instance? spell.provider.FireworksTcProvider p))
       (is (= "https://api.fireworks.ai/inference/v1" (:base-url p)))
       (is (= "accounts/fireworks/models/kimi-k2p6" (:model p)))
+      (is (= 32768 (:max-tokens p)))
+      (is (= 600 (:request-timeout-sec p))
+          "Default request-timeout-sec is 600 seconds, matching anthropic-tc")
       (is (false? (provider/supports-prefill p)))
       (is (instance? spell.provider.FireworksProvider (provider/plain-text-provider p)))))
+
+  (testing "fireworks-tc-provider accepts custom request-timeout-sec"
+    (let [p (provider/fireworks-tc-provider {:api-key "fw-test" :request-timeout-sec 120})]
+      (is (= 120 (:request-timeout-sec p)))))
 
   (testing "fireworks-tc request uses Anthropic-compatible messages and forces spell_suffix"
     (let [body (#'provider/fireworks-tc-request-body
@@ -943,6 +975,17 @@
                 nil)]
       (is (= true (:stream body)))
       (is (= 8192 (:max_tokens body)))))
+
+  (testing "fireworks-tc request defaults to 32768 max tokens"
+    (let [body (#'provider/fireworks-tc-request-body
+                "accounts/fireworks/models/kimi-k2p6"
+                "prompt"
+                nil
+                nil
+                true
+                nil
+                nil)]
+      (is (= 32768 (:max_tokens body)))))
 
   (testing "fireworks-tc parses completed response with spell_suffix tool_use"
     (let [body (json/write-str {:content [{:type "tool_use"
@@ -1029,6 +1072,16 @@
       (is (= 8192 (:max_tokens body)))
       (is (= true (:stream body)))))
 
+  (testing "fireworks-tc chat fallback defaults to 32768 max tokens"
+    (let [body (#'provider/fireworks-tc-chat-request-body
+                "accounts/fireworks/models/kimi-k2p6"
+                "prompt"
+                nil
+                nil
+                nil)]
+      (is (= 32768 (:max_tokens body)))
+      (is (= true (:stream body)))))
+
   (testing "fireworks-tc chat fallback parses function arguments"
     (let [body (json/write-str {:choices [{:message
                                            {:tool_calls
@@ -1102,13 +1155,14 @@
                             (version [_] java.net.http.HttpClient$Version/HTTP_1_1)))
           fake-client (proxy [java.net.http.HttpClient] []
                         (send [request _body-handler]
-                          (swap! calls conj (str (.uri request)))
-                          (let [[[status body] & more] @responses]
-                            (reset! responses (vec more))
-                            (fake-response status body request)))
+                          (throw (UnsupportedOperationException. "send not used")))
                         (sendAsync
                           ([request body-handler]
-                           (throw (UnsupportedOperationException. "sendAsync not used")))
+                           (swap! calls conj (str (.uri request)))
+                           (let [[[status body] & more] @responses]
+                             (reset! responses (vec more))
+                             (java.util.concurrent.CompletableFuture/completedFuture
+                              (fake-response status body request))))
                           ([request body-handler push-promise-handler]
                            (throw (UnsupportedOperationException. "sendAsync not used"))))
                         (cookieHandler [] (java.util.Optional/empty))
