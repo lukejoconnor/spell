@@ -369,6 +369,14 @@
           body (request-json-body request)]
       (is (= "32000" (:reasoning_effort body)))))
 
+  (testing "DeepSeek V4 Pro is configured as a Fireworks reasoning model"
+    (let [request (#'provider/fireworks-completions-request
+                    "test" "https://api.fireworks.ai/inference/v1"
+                    "accounts/fireworks/models/deepseek-v4-pro"
+                    "prompt" "system" nil nil nil nil "high")
+          body (request-json-body request)]
+      (is (= "high" (:reasoning_effort body)))))
+
   (testing "unsupported Fireworks models reject reasoning_effort"
     (is (thrown-with-msg? Exception #"only supported for configured thinking models"
           (#'provider/fireworks-completions-request
