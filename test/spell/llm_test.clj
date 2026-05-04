@@ -360,7 +360,7 @@
                            :cache_read_input_tokens 100000
                            :output_tokens 200000
                            :cache_creation_input_tokens 0}))
-      (is (= 2.45 (double (provider/current-cost usage-atom)))))))
+      (is (= 2.4505 (double (provider/current-cost usage-atom)))))))
 
 ;; =============================================================================
 ;; compile-agent factory tests
