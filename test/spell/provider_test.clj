@@ -105,7 +105,7 @@
           writer (future
                    (try
                      (loop []
-                       (.write output (.getBytes ": ping\n\n" "UTF-8"))
+                       (.write output (.getBytes "data: {\"ping\":true}\n\n" "UTF-8"))
                        (.flush output)
                        (Thread/sleep 10)
                        (recur))
@@ -121,7 +121,42 @@
           (is (false? (provider/retryable? ex))))
         (finally
           (future-cancel writer)
-          (.close output))))))
+          (.close output)))))
+
+  (testing "heartbeat comments do not reset the data-event idle timeout"
+    (let [input (PipedInputStream.)
+          output (PipedOutputStream. input)
+          writer (future
+                   (try
+                     (loop []
+                       (.write output (.getBytes ": ping\n\n" "UTF-8"))
+                       (.flush output)
+                       (Thread/sleep 10)
+                       (recur))
+                     (catch Exception _ nil)))]
+      (try
+        (let [ex (thrown-ex
+                  #(-> input
+                       (#'provider/read-sse-body
+                         {:provider :test-provider
+                          :sse-idle-timeout-sec 0.08
+                          :sse-completion-timeout-sec 1})))]
+          (is (= :sse-idle-timeout (:type (ex-data ex))))
+          (is (true? (provider/retryable? ex))))
+        (finally
+          (future-cancel writer)
+          (.close output)))))
+
+  (testing "header wait timeout is classified as first-event idle timeout"
+    (with-redefs [provider/send-http-request
+                  (fn [& _]
+                    (throw (java.net.http.HttpTimeoutException. "headers stalled")))]
+      (let [ex (thrown-ex
+                #(#'provider/send-sse-request
+                   nil nil 600 0.05 1 :test-provider))]
+        (is (= :sse-idle-timeout (:type (ex-data ex))))
+        (is (= :test-provider (:provider (ex-data ex))))
+        (is (true? (provider/retryable? ex)))))))
 
 (deftest sse-timeout-config-test
   (testing "streaming provider constructors install SSE timeout defaults"

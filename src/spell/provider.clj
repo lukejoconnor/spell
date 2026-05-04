@@ -367,6 +367,28 @@
             :elapsed-ms elapsed-ms
             :timeout-sec timeout-sec}))
 
+(defn- sse-data-event?
+  [event-text]
+  (boolean
+   (some (fn [line]
+           (when (str/starts-with? line "data:")
+             (not (str/blank? (subs line 5)))))
+         (str/split-lines event-text))))
+
+(defn- split-sse-events
+  [pending chunk]
+  (let [combined (str pending
+                      (-> chunk
+                          (str/replace "\r\n" "\n")
+                          (str/replace "\r" "\n")))]
+    (loop [s combined
+           events []]
+      (let [idx (str/index-of s "\n\n")]
+        (if (nil? idx)
+          [events s]
+          (recur (subs s (+ idx 2))
+                 (conj events (subs s 0 idx))))))))
+
 (defn- read-sse-body
   "Read an SSE response body incrementally, enforcing idle and completion deadlines.
    Returns the complete body as a string so provider-specific parsers stay unchanged."
@@ -395,9 +417,10 @@
     (.setDaemon reader true)
     (.start reader)
     (try
-      (loop [last-progress-ms start-ms]
+      (loop [last-event-ms start-ms
+             pending-event ""]
         (let [now-ms (System/currentTimeMillis)
-              idle-deadline-ms (+ last-progress-ms idle-timeout-ms)
+              idle-deadline-ms (+ last-event-ms idle-timeout-ms)
               completion-deadline-ms (+ start-ms completion-timeout-ms)
               idle-remaining-ms (- idle-deadline-ms now-ms)
               completion-remaining-ms (- completion-deadline-ms now-ms)]
@@ -414,10 +437,15 @@
             (let [wait-ms (max 1 (min idle-remaining-ms completion-remaining-ms))
                   [kind payload] (.poll queue wait-ms TimeUnit/MILLISECONDS)]
               (case kind
-                nil (recur last-progress-ms)
+                nil (recur last-event-ms pending-event)
                 :bytes (do
                          (.write body ^bytes payload 0 (alength ^bytes payload))
-                         (recur (System/currentTimeMillis)))
+                         (let [[events pending-event]
+                               (split-sse-events pending-event (String. ^bytes payload "UTF-8"))
+                               saw-data-event? (some sse-data-event? events)
+                               now-ms (System/currentTimeMillis)]
+                           (recur (if saw-data-event? now-ms last-event-ms)
+                                  pending-event)))
                 :eof (.toString body "UTF-8")
                 :error (throw payload))))))
       (catch Throwable t
@@ -428,9 +456,15 @@
 
 (defn- send-sse-request
   [http-client request request-timeout-sec sse-idle-timeout-sec sse-completion-timeout-sec provider]
-  (let [response (send-http-request http-client request
-                                    (HttpResponse$BodyHandlers/ofInputStream)
-                                    request-timeout-sec)
+  (let [idle-timeout-sec (or sse-idle-timeout-sec default-sse-idle-timeout-sec)
+        response (try
+                   (send-http-request http-client request
+                                      (HttpResponse$BodyHandlers/ofInputStream)
+                                      idle-timeout-sec)
+                   (catch java.net.http.HttpTimeoutException _
+                     (throw (sse-timeout-ex :sse-idle-timeout provider
+                                            (timeout-sec->millis idle-timeout-sec)
+                                            idle-timeout-sec))))
         body (.body response)]
     {:status (.statusCode response)
      :body (if (string? body)

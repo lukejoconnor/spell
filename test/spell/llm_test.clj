@@ -1161,11 +1161,16 @@
                           (throw (UnsupportedOperationException. "send not used")))
                         (sendAsync
                           ([request body-handler]
-                           (swap! calls conj (str (.uri request)))
-                           (let [[[status body] & more] @responses]
-                             (reset! responses (vec more))
-                             (java.util.concurrent.CompletableFuture/completedFuture
-                              (fake-response status body request))))
+                           (let [uri (str (.uri request))]
+                             (swap! calls conj uri)
+                             (let [[[status body] & more] @responses
+                                   body (if (str/ends-with? uri "/chat/completions")
+                                          (java.io.ByteArrayInputStream.
+                                           (.getBytes ^String body "UTF-8"))
+                                          body)]
+                               (reset! responses (vec more))
+                               (java.util.concurrent.CompletableFuture/completedFuture
+                                (fake-response status body request)))))
                           ([request body-handler push-promise-handler]
                            (throw (UnsupportedOperationException. "sendAsync not used"))))
                         (cookieHandler [] (java.util.Optional/empty))
