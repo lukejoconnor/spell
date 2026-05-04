@@ -693,12 +693,15 @@
 
 (deftest plain-text-provider-mapping-test
   (testing "anthropic tool-call resolves to prefill sibling with same model"
-    (let [prov (provider/->AnthropicTcProvider "k" "claude-sonnet-4-5-20250929" 16384 nil 600 {"claude" [1 1]})
+    (let [prov (provider/->AnthropicTcProvider "k" "claude-sonnet-4-5-20250929" 16384 nil
+                                               600 100 1000 {"claude" [1 1]})
           leaf (provider/plain-text-provider prov)]
       (is (instance? spell.provider.AnthropicPfProvider leaf))
       (is (= "claude-sonnet-4-5-20250929" (:model leaf)))
       (is (= 16384 (:max-tokens leaf)))
       (is (= 600 (:request-timeout-sec leaf)))
+      (is (= 100 (:sse-idle-timeout-sec leaf)))
+      (is (= 1000 (:sse-completion-timeout-sec leaf)))
       (is (= {"claude" [1 1]} (:costs leaf)))))
 
   (testing "codex tool-call resolves to message sibling with same model"
