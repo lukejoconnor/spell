@@ -3,7 +3,7 @@
             [clojure.data.json :as json]
             [clojure.string :as str]
             [spell.provider :as provider])
-  (:import [java.io ByteArrayOutputStream]
+  (:import [java.io ByteArrayInputStream ByteArrayOutputStream PipedInputStream PipedOutputStream]
            [java.nio ByteBuffer]
            [java.util.concurrent CompletableFuture Flow$Subscriber Flow$Subscription]))
 
@@ -38,6 +38,185 @@
 (defn- repeated-string
   [n s]
   (apply str (repeat n s)))
+
+(defn- thrown-ex
+  [f]
+  (try
+    (f)
+    nil
+    (catch Exception e
+      e)))
+
+;; =============================================================================
+;; SSE body timeout reader
+;; =============================================================================
+
+(deftest read-sse-body-test
+  (testing "successful SSE body is preserved"
+    (let [body (str "event: message_start\n"
+                    "data: {\"type\":\"message_start\"}\n\n"
+                    "data: [DONE]\n\n")
+          input (ByteArrayInputStream. (.getBytes body "UTF-8"))]
+      (is (= body (#'provider/read-sse-body
+                    input
+                    {:provider :test
+                     :sse-idle-timeout-sec 1
+                     :sse-completion-timeout-sec 1})))))
+
+  (testing "idle timeout fires before first event and is retryable"
+    (let [input (PipedInputStream.)
+          output (PipedOutputStream. input)]
+      (try
+        (let [ex (thrown-ex
+                  #(-> input
+                       (#'provider/read-sse-body
+                         {:provider :test-provider
+                          :sse-idle-timeout-sec 0.05
+                          :sse-completion-timeout-sec 1})))]
+          (is (= :sse-idle-timeout (:type (ex-data ex))))
+          (is (= :test-provider (:provider (ex-data ex))))
+          (is (true? (provider/retryable? ex))))
+        (finally
+          (.close output)))))
+
+  (testing "idle timeout fires after a partial stream goes silent"
+    (let [input (PipedInputStream.)
+          output (PipedOutputStream. input)
+          writer (future
+                   (.write output (.getBytes "data: {\"partial\":true}\n\n" "UTF-8"))
+                   (.flush output)
+                   (Thread/sleep 1000))]
+      (try
+        (let [ex (thrown-ex
+                  #(-> input
+                       (#'provider/read-sse-body
+                         {:provider :test-provider
+                          :sse-idle-timeout-sec 0.05
+                          :sse-completion-timeout-sec 1})))]
+          (is (= :sse-idle-timeout (:type (ex-data ex))))
+          (is (true? (provider/retryable? ex))))
+        (finally
+          (future-cancel writer)
+          (.close output)))))
+
+  (testing "completion timeout is a non-retryable hard cap while bytes keep arriving"
+    (let [input (PipedInputStream.)
+          output (PipedOutputStream. input)
+          writer (future
+                   (try
+                     (loop []
+                       (.write output (.getBytes "data: {\"ping\":true}\n\n" "UTF-8"))
+                       (.flush output)
+                       (Thread/sleep 10)
+                       (recur))
+                     (catch Exception _ nil)))]
+      (try
+        (let [ex (thrown-ex
+                  #(-> input
+                       (#'provider/read-sse-body
+                         {:provider :test-provider
+                          :sse-idle-timeout-sec 0.5
+                          :sse-completion-timeout-sec 0.08})))]
+          (is (= :sse-completion-timeout (:type (ex-data ex))))
+          (is (false? (provider/retryable? ex))))
+        (finally
+          (future-cancel writer)
+          (.close output)))))
+
+  (testing "heartbeat comments do not reset the data-event idle timeout"
+    (let [input (PipedInputStream.)
+          output (PipedOutputStream. input)
+          writer (future
+                   (try
+                     (loop []
+                       (.write output (.getBytes ": ping\n\n" "UTF-8"))
+                       (.flush output)
+                       (Thread/sleep 10)
+                       (recur))
+                     (catch Exception _ nil)))]
+      (try
+        (let [ex (thrown-ex
+                  #(-> input
+                       (#'provider/read-sse-body
+                         {:provider :test-provider
+                          :sse-idle-timeout-sec 0.08
+                          :sse-completion-timeout-sec 1})))]
+          (is (= :sse-idle-timeout (:type (ex-data ex))))
+          (is (true? (provider/retryable? ex))))
+        (finally
+          (future-cancel writer)
+          (.close output)))))
+
+  (testing "header wait timeout is classified as first-event idle timeout"
+    (with-redefs [provider/send-http-request
+                  (fn [& _]
+                    (throw (java.net.http.HttpTimeoutException. "headers stalled")))]
+      (let [ex (thrown-ex
+                #(#'provider/send-sse-request
+                   nil nil 600 0.05 1 :test-provider))]
+        (is (= :sse-idle-timeout (:type (ex-data ex))))
+        (is (= :test-provider (:provider (ex-data ex))))
+        (is (true? (provider/retryable? ex)))))))
+
+(deftest sse-timeout-config-test
+  (testing "streaming provider constructors install SSE timeout defaults"
+    (let [anthropic-pf (provider/anthropic-pf-provider {:api-key "test"})
+          anthropic-tc (provider/anthropic-tc-provider {:api-key "test"})
+          fireworks (provider/fireworks-provider {:api-key "test"})
+          fireworks-tc (provider/fireworks-tc-provider {:api-key "test"})]
+      (doseq [p [anthropic-pf anthropic-tc fireworks fireworks-tc]]
+        (is (= 100 (:sse-idle-timeout-sec p)))
+        (is (= 1000 (:sse-completion-timeout-sec p))))))
+
+  (testing "streaming provider constructors accept custom SSE timeouts"
+    (let [opts {:api-key "test"
+                :sse-idle-timeout-sec 7
+                :sse-completion-timeout-sec 77}
+          providers [(provider/anthropic-pf-provider opts)
+                     (provider/anthropic-tc-provider opts)
+                     (provider/fireworks-provider opts)
+                     (provider/fireworks-tc-provider opts)]]
+      (doseq [p providers]
+        (is (= 7 (:sse-idle-timeout-sec p)))
+        (is (= 77 (:sse-completion-timeout-sec p))))))
+
+  (testing "plain-text siblings preserve SSE timeouts"
+    (let [anthropic-leaf (provider/plain-text-provider
+                           (provider/anthropic-tc-provider
+                             {:api-key "test"
+                              :sse-idle-timeout-sec 8
+                              :sse-completion-timeout-sec 88}))
+          fireworks-leaf (provider/plain-text-provider
+                           (provider/fireworks-tc-provider
+                             {:api-key "test"
+                              :sse-idle-timeout-sec 9
+                              :sse-completion-timeout-sec 99}))]
+      (is (= 8 (:sse-idle-timeout-sec anthropic-leaf)))
+      (is (= 88 (:sse-completion-timeout-sec anthropic-leaf)))
+      (is (= 9 (:sse-idle-timeout-sec fireworks-leaf)))
+      (is (= 99 (:sse-completion-timeout-sec fireworks-leaf)))))
+
+  (testing "inline provider maps thread SSE timeout options"
+    (with-redefs [provider/anthropic-pf-provider identity]
+      (let [opts (#'provider/load-provider-from-map
+                   {:type :anthropic-pf
+                    :sse-idle-timeout-sec 12
+                    :sse-completion-timeout-sec 120})]
+        (is (= 12 (:sse-idle-timeout-sec opts)))
+        (is (= 120 (:sse-completion-timeout-sec opts))))))
+
+  (testing "provider EDN files thread SSE timeout options"
+    (let [tmp (java.io.File/createTempFile "provider-sse-timeouts" ".edn")]
+      (try
+        (spit tmp (pr-str {:type :fireworks-tc
+                           :sse-idle-timeout-sec 13
+                           :sse-completion-timeout-sec 130}))
+        (with-redefs [provider/fireworks-tc-provider identity]
+          (let [opts (provider/load-provider (.getPath tmp))]
+            (is (= 13 (:sse-idle-timeout-sec opts)))
+            (is (= 130 (:sse-completion-timeout-sec opts)))))
+        (finally
+          (.delete tmp))))))
 
 ;; =============================================================================
 ;; Anthropic PF response parsing
@@ -356,7 +535,7 @@
     (let [request (#'provider/fireworks-completions-request
                     "test" "https://api.fireworks.ai/inference/v1"
                     "accounts/fireworks/models/glm-5p1"
-                    "prompt" "system" nil nil nil nil "high")
+                    "prompt" "system" nil nil nil nil "high" 600)
           body (request-json-body request)]
       (is (= "high" (:reasoning_effort body)))
       (is (not (contains? body :thinking)))))
@@ -365,7 +544,7 @@
     (let [request (#'provider/fireworks-completions-request
                     "test" "https://api.fireworks.ai/inference/v1"
                     "accounts/fireworks/models/qwen3p6-plus"
-                    "prompt" "system" nil nil nil nil "32000")
+                    "prompt" "system" nil nil nil nil "32000" 600)
           body (request-json-body request)]
       (is (= "32000" (:reasoning_effort body)))))
 
@@ -382,14 +561,14 @@
           (#'provider/fireworks-completions-request
             "test" "https://api.fireworks.ai/inference/v1"
             "accounts/fireworks/models/kimi-k2p5"
-            "prompt" "system" nil nil nil nil "high"))))
+            "prompt" "system" nil nil nil nil "high" 600))))
 
   (testing "thinking and reasoning_effort are mutually exclusive"
     (is (thrown-with-msg? Exception #"cannot include both thinking and reasoning_effort"
           (#'provider/fireworks-completions-request
             "test" "https://api.fireworks.ai/inference/v1"
             "accounts/fireworks/models/glm-5p1"
-            "prompt" "system" nil nil nil {:type "enabled"} "high")))))
+            "prompt" "system" nil nil nil {:type "enabled"} "high" 600)))))
 
 ;; =============================================================================
 ;; Anthropic PF supports-prefill opus-4-6 exclusion

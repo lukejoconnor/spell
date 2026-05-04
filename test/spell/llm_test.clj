@@ -705,12 +705,15 @@
 
 (deftest plain-text-provider-mapping-test
   (testing "anthropic tool-call resolves to prefill sibling with same model"
-    (let [prov (provider/->AnthropicTcProvider "k" "claude-sonnet-4-5-20250929" 16384 nil 600 {"claude" [1 1]})
+    (let [prov (provider/->AnthropicTcProvider "k" "claude-sonnet-4-5-20250929" 16384 nil
+                                               600 100 1000 {"claude" [1 1]})
           leaf (provider/plain-text-provider prov)]
       (is (instance? spell.provider.AnthropicPfProvider leaf))
       (is (= "claude-sonnet-4-5-20250929" (:model leaf)))
       (is (= 16384 (:max-tokens leaf)))
       (is (= 600 (:request-timeout-sec leaf)))
+      (is (= 100 (:sse-idle-timeout-sec leaf)))
+      (is (= 1000 (:sse-completion-timeout-sec leaf)))
       (is (= {"claude" [1 1]} (:costs leaf)))))
 
   (testing "codex tool-call resolves to message sibling with same model"
@@ -1188,11 +1191,16 @@
                           (throw (UnsupportedOperationException. "send not used")))
                         (sendAsync
                           ([request body-handler]
-                           (swap! calls conj (str (.uri request)))
-                           (let [[[status body] & more] @responses]
-                             (reset! responses (vec more))
-                             (java.util.concurrent.CompletableFuture/completedFuture
-                              (fake-response status body request))))
+                           (let [uri (str (.uri request))]
+                             (swap! calls conj uri)
+                             (let [[[status body] & more] @responses
+                                   body (if (str/ends-with? uri "/chat/completions")
+                                          (java.io.ByteArrayInputStream.
+                                           (.getBytes ^String body "UTF-8"))
+                                          body)]
+                               (reset! responses (vec more))
+                               (java.util.concurrent.CompletableFuture/completedFuture
+                                (fake-response status body request)))))
                           ([request body-handler push-promise-handler]
                            (throw (UnsupportedOperationException. "sendAsync not used"))))
                         (cookieHandler [] (java.util.Optional/empty))

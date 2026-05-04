@@ -17,8 +17,10 @@
   (:import [java.net URI]
            [java.net.http HttpClient HttpClient$Version HttpRequest HttpRequest$BodyPublishers
                           HttpResponse$BodyHandlers]
+           [java.io ByteArrayOutputStream]
            [java.time Duration]
-           [java.util.concurrent ExecutionException TimeUnit TimeoutException]))
+           [java.util Arrays]
+           [java.util.concurrent ExecutionException LinkedBlockingQueue TimeUnit TimeoutException]))
 
 ;; ---------------------------------------------------------------------------
 ;; Protocol
@@ -61,6 +63,9 @@
    Each element is one retry attempt; the value is how long to sleep before retrying.
    Default [0 10] = instant retry, then retry after 10s. nil or [] = no retries."
   [0 10])
+
+(def ^:private default-sse-idle-timeout-sec 100)
+(def ^:private default-sse-completion-timeout-sec 1000)
 
 (defn- repo-root []
   (if-let [resource (io/resource "spell/provider.clj")]
@@ -346,6 +351,129 @@
   [http-client request body-handler timeout-sec]
   (await-http-response (.sendAsync http-client request body-handler) timeout-sec))
 
+(defn- timeout-sec->millis
+  [seconds]
+  (long (max 1 (Math/ceil (* 1000.0 (double seconds))))))
+
+(defn- sse-timeout-ex
+  [timeout-type provider elapsed-ms timeout-sec]
+  (ex-info (str "SSE stream "
+                (case timeout-type
+                  :sse-idle-timeout "idle"
+                  :sse-completion-timeout "completion")
+                " timeout after " timeout-sec "s")
+           {:type timeout-type
+            :provider provider
+            :elapsed-ms elapsed-ms
+            :timeout-sec timeout-sec}))
+
+(defn- sse-data-event?
+  [event-text]
+  (boolean
+   (some (fn [line]
+           (when (str/starts-with? line "data:")
+             (not (str/blank? (subs line 5)))))
+         (str/split-lines event-text))))
+
+(defn- split-sse-events
+  [pending chunk]
+  (let [combined (str pending
+                      (-> chunk
+                          (str/replace "\r\n" "\n")
+                          (str/replace "\r" "\n")))]
+    (loop [s combined
+           events []]
+      (let [idx (str/index-of s "\n\n")]
+        (if (nil? idx)
+          [events s]
+          (recur (subs s (+ idx 2))
+                 (conj events (subs s 0 idx))))))))
+
+(defn- read-sse-body
+  "Read an SSE response body incrementally, enforcing idle and completion deadlines.
+   Returns the complete body as a string so provider-specific parsers stay unchanged."
+  [input-stream {:keys [provider sse-idle-timeout-sec sse-completion-timeout-sec]}]
+  (let [idle-timeout-sec (or sse-idle-timeout-sec default-sse-idle-timeout-sec)
+        completion-timeout-sec (or sse-completion-timeout-sec default-sse-completion-timeout-sec)
+        idle-timeout-ms (timeout-sec->millis idle-timeout-sec)
+        completion-timeout-ms (timeout-sec->millis completion-timeout-sec)
+        queue (LinkedBlockingQueue.)
+        reader (Thread.
+                (fn []
+                  (try
+                    (let [buf (byte-array 8192)]
+                      (loop []
+                        (let [n (.read input-stream buf)]
+                          (if (neg? n)
+                            (.put queue [:eof])
+                            (do
+                              (.put queue [:bytes (Arrays/copyOf buf n)])
+                              (recur))))))
+                    (catch Throwable t
+                      (.put queue [:error t]))))
+                (str "spell-sse-reader-" (name (or provider :unknown))))
+        body (ByteArrayOutputStream.)
+        start-ms (System/currentTimeMillis)]
+    (.setDaemon reader true)
+    (.start reader)
+    (try
+      (loop [last-event-ms start-ms
+             pending-event ""]
+        (let [now-ms (System/currentTimeMillis)
+              idle-deadline-ms (+ last-event-ms idle-timeout-ms)
+              completion-deadline-ms (+ start-ms completion-timeout-ms)
+              idle-remaining-ms (- idle-deadline-ms now-ms)
+              completion-remaining-ms (- completion-deadline-ms now-ms)]
+          (cond
+            (not (pos? completion-remaining-ms))
+            (throw (sse-timeout-ex :sse-completion-timeout provider
+                                   (- now-ms start-ms) completion-timeout-sec))
+
+            (not (pos? idle-remaining-ms))
+            (throw (sse-timeout-ex :sse-idle-timeout provider
+                                   (- now-ms start-ms) idle-timeout-sec))
+
+            :else
+            (let [wait-ms (max 1 (min idle-remaining-ms completion-remaining-ms))
+                  [kind payload] (.poll queue wait-ms TimeUnit/MILLISECONDS)]
+              (case kind
+                nil (recur last-event-ms pending-event)
+                :bytes (do
+                         (.write body ^bytes payload 0 (alength ^bytes payload))
+                         (let [[events pending-event]
+                               (split-sse-events pending-event (String. ^bytes payload "UTF-8"))
+                               saw-data-event? (some sse-data-event? events)
+                               now-ms (System/currentTimeMillis)]
+                           (recur (if saw-data-event? now-ms last-event-ms)
+                                  pending-event)))
+                :eof (.toString body "UTF-8")
+                :error (throw payload))))))
+      (catch Throwable t
+        (try (.close input-stream) (catch Exception _))
+        (throw t))
+      (finally
+        (try (.close input-stream) (catch Exception _))))))
+
+(defn- send-sse-request
+  [http-client request request-timeout-sec sse-idle-timeout-sec sse-completion-timeout-sec provider]
+  (let [idle-timeout-sec (or sse-idle-timeout-sec default-sse-idle-timeout-sec)
+        response (try
+                   (send-http-request http-client request
+                                      (HttpResponse$BodyHandlers/ofInputStream)
+                                      idle-timeout-sec)
+                   (catch java.net.http.HttpTimeoutException _
+                     (throw (sse-timeout-ex :sse-idle-timeout provider
+                                            (timeout-sec->millis idle-timeout-sec)
+                                            idle-timeout-sec))))
+        body (.body response)]
+    {:status (.statusCode response)
+     :body (if (string? body)
+             body
+             (read-sse-body body
+                            {:provider provider
+                             :sse-idle-timeout-sec sse-idle-timeout-sec
+                             :sse-completion-timeout-sec sse-completion-timeout-sec}))}))
+
 (defn- cache-min-chars
   "Minimum character count for caching to be worthwhile on a given model.
    Based on Anthropic's minimum cacheable token thresholds (~4 chars/token):
@@ -493,7 +621,8 @@
       (and (anthropic-adaptive-thinking-model? model)
            (anthropic-output-effort reasoning-effort))))
 
-(defrecord AnthropicPfProvider [api-key model max-tokens http-client request-timeout-sec costs]
+(defrecord AnthropicPfProvider [api-key model max-tokens http-client request-timeout-sec
+                                sse-idle-timeout-sec sse-completion-timeout-sec costs]
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt opts]
@@ -508,17 +637,24 @@
           request (anthropic-pf-request api-key effective-model prompt (:system opts) (:prefix opts)
                                        effective-max-tokens stream? thinking reasoning-effort
                                        cache-prefix request-timeout-sec)
-          response (send-http-request http-client request (HttpResponse$BodyHandlers/ofString)
-                                      request-timeout-sec)
-          status (.statusCode response)]
+          response (if stream?
+                     (send-sse-request http-client request request-timeout-sec
+                                       sse-idle-timeout-sec sse-completion-timeout-sec
+                                       :anthropic-pf)
+                     (let [response (send-http-request http-client request
+                                                       (HttpResponse$BodyHandlers/ofString)
+                                                       request-timeout-sec)]
+                       {:status (.statusCode response)
+                        :body (.body response)}))
+          status (:status response)]
       (if (<= 200 status 299)
         (let [{:keys [text usage]} (if stream?
-                                     (parse-anthropic-pf-stream (.body response))
-                                     (parse-anthropic-pf-response (.body response)))]
+                                     (parse-anthropic-pf-stream (:body response))
+                                     (parse-anthropic-pf-response (:body response)))]
           (track-usage! effective-model usage costs)
           text)
         (throw (ex-info "Anthropic API request failed"
-                        {:status status :body (.body response)})))))
+                        {:status status :body (:body response)})))))
   (plain-text-provider [this] this)
   (supports-prefill [_]
     ;; Opus 4.6+ does not support assistant prefill (returns 400 error)
@@ -533,11 +669,16 @@
    - :model - Model name (default: claude-sonnet-4-20250514)
    - :max-tokens - Max tokens per response (default: 16384)
    - :request-timeout-sec - Per-HTTP-call timeout in seconds (default: 600)
+   - :sse-idle-timeout-sec - Max seconds without stream bytes (default: 100)
+   - :sse-completion-timeout-sec - Max seconds until stream body completes (default: 1000)
    - :costs - Cost table {model-prefix [input-per-M output-per-M]}"
   ([] (anthropic-pf-provider {}))
-  ([{:keys [api-key model max-tokens request-timeout-sec costs]
+  ([{:keys [api-key model max-tokens request-timeout-sec sse-idle-timeout-sec
+            sse-completion-timeout-sec costs]
      :or {model "claude-sonnet-4-5-20250929"
-          request-timeout-sec 600}}]
+          request-timeout-sec 600
+          sse-idle-timeout-sec default-sse-idle-timeout-sec
+          sse-completion-timeout-sec default-sse-completion-timeout-sec}}]
    (let [key (or api-key (System/getenv "ANTHROPIC_API_KEY"))]
      (when-not key
        (throw (ex-info "No API key provided. Set ANTHROPIC_API_KEY or pass :api-key"
@@ -545,6 +686,8 @@
      (->AnthropicPfProvider key model max-tokens
                             (make-http-client {:connect-timeout-sec request-timeout-sec})
                             request-timeout-sec
+                            sse-idle-timeout-sec
+                            sse-completion-timeout-sec
                             costs))))
 
 (def ^:private spell-suffix-tool
@@ -692,7 +835,8 @@
                          :body (subs response-body 0 (min 1000 (count response-body)))})))
       {:text suffix :usage (with-legacy-usage-keys @usage)})))
 
-(defrecord AnthropicTcProvider [api-key model max-tokens http-client request-timeout-sec costs]
+(defrecord AnthropicTcProvider [api-key model max-tokens http-client request-timeout-sec
+                                sse-idle-timeout-sec sse-completion-timeout-sec costs]
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt opts]
@@ -707,19 +851,27 @@
           request (anthropic-tc-request api-key effective-model prompt (:system opts)
                                         effective-max-tokens stream? thinking
                                         reasoning-effort cache-prefix request-timeout-sec)
-          response (send-http-request http-client request (HttpResponse$BodyHandlers/ofString)
-                                      request-timeout-sec)
-          status (.statusCode response)]
+          response (if stream?
+                     (send-sse-request http-client request request-timeout-sec
+                                       sse-idle-timeout-sec sse-completion-timeout-sec
+                                       :anthropic-tc)
+                     (let [response (send-http-request http-client request
+                                                       (HttpResponse$BodyHandlers/ofString)
+                                                       request-timeout-sec)]
+                       {:status (.statusCode response)
+                        :body (.body response)}))
+          status (:status response)]
       (if (<= 200 status 299)
         (let [{:keys [text usage]} (if stream?
-                                     (parse-anthropic-tc-stream (.body response))
-                                     (parse-anthropic-tc-response (.body response)))]
+                                     (parse-anthropic-tc-stream (:body response))
+                                     (parse-anthropic-tc-response (:body response)))]
           (track-usage! effective-model usage costs)
           text)
         (throw (ex-info "Anthropic mandatory tool-call request failed"
-                        {:status status :body (.body response)})))))
+                        {:status status :body (:body response)})))))
   (plain-text-provider [_]
-    (->AnthropicPfProvider api-key model max-tokens http-client request-timeout-sec costs))
+    (->AnthropicPfProvider api-key model max-tokens http-client request-timeout-sec
+                           sse-idle-timeout-sec sse-completion-timeout-sec costs))
   (supports-prefill [_] false))
 
 (defn anthropic-tc-provider
@@ -730,11 +882,16 @@
    - :model - Model name (default: claude-sonnet-4-5-20250929)
    - :max-tokens - Max tokens per response (default: 16384)
    - :request-timeout-sec - Per-HTTP-call timeout in seconds (default: 600)
+   - :sse-idle-timeout-sec - Max seconds without stream bytes (default: 100)
+   - :sse-completion-timeout-sec - Max seconds until stream body completes (default: 1000)
    - :costs - Cost table {model-prefix [input-per-M output-per-M]}"
   ([] (anthropic-tc-provider {}))
-  ([{:keys [api-key model max-tokens request-timeout-sec costs]
+  ([{:keys [api-key model max-tokens request-timeout-sec sse-idle-timeout-sec
+            sse-completion-timeout-sec costs]
      :or {model "claude-sonnet-4-5-20250929"
-          request-timeout-sec 600}}]
+          request-timeout-sec 600
+          sse-idle-timeout-sec default-sse-idle-timeout-sec
+          sse-completion-timeout-sec default-sse-completion-timeout-sec}}]
    (let [key (or api-key (System/getenv "ANTHROPIC_API_KEY"))]
      (when-not key
        (throw (ex-info "No API key provided. Set ANTHROPIC_API_KEY or pass :api-key"
@@ -742,6 +899,8 @@
      (->AnthropicTcProvider key model max-tokens
                             (make-http-client {:connect-timeout-sec request-timeout-sec})
                             request-timeout-sec
+                            sse-idle-timeout-sec
+                            sse-completion-timeout-sec
                             costs))))
 
 ;; ---------------------------------------------------------------------------
@@ -1414,7 +1573,8 @@
         (str/includes? model "qwen3p6-plus"))))
 
 (defn- fireworks-completions-request
-  [api-key base-url model prompt system-prompt prefix max-tokens chat-template thinking reasoning-effort]
+  [api-key base-url model prompt system-prompt prefix max-tokens chat-template thinking reasoning-effort
+   request-timeout-sec]
   (when (and thinking reasoning-effort)
     (throw (ex-info "Fireworks request cannot include both thinking and reasoning_effort"
                     {:model model})))
@@ -1431,8 +1591,10 @@
                (seq (:stop-sequences template)) (assoc :stop (:stop-sequences template))
                thinking (assoc :thinking thinking)
                reasoning-effort (assoc :reasoning_effort (str reasoning-effort)))
-        request (-> (HttpRequest/newBuilder)
-                    (.uri (URI/create (str base-url "/completions")))
+        builder (cond-> (HttpRequest/newBuilder)
+                  true (.uri (URI/create (str base-url "/completions")))
+                  request-timeout-sec (.timeout (Duration/ofSeconds (long request-timeout-sec))))
+        request (-> builder
                     (.header "Content-Type" "application/json")
                     (.header "Authorization" (str "Bearer " api-key))
                     (.POST (HttpRequest$BodyPublishers/ofString (json/write-str body)))
@@ -1467,7 +1629,9 @@
                  :visible_output_tokens (:completion_tokens u 0)
                  :cached_input_tokens cached-tokens})})))
 
-(defrecord FireworksProvider [api-key base-url model max-tokens http-client costs chat-template convert-think?]
+(defrecord FireworksProvider [api-key base-url model max-tokens http-client request-timeout-sec
+                              sse-idle-timeout-sec sse-completion-timeout-sec costs
+                              chat-template convert-think?]
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt opts]
@@ -1481,16 +1645,19 @@
                                                  max-tokens
                                                  chat-template
                                                  (:thinking opts)
-                                                 (:reasoning-effort opts))
-          response (.send http-client request (HttpResponse$BodyHandlers/ofString))
-          status (.statusCode response)]
+                                                 (:reasoning-effort opts)
+                                                 request-timeout-sec)
+          response (send-sse-request http-client request request-timeout-sec
+                                     sse-idle-timeout-sec sse-completion-timeout-sec
+                                     :fireworks)
+          status (:status response)]
       (if (<= 200 status 299)
-        (let [{:keys [text usage]} (parse-fireworks-sse-stream (.body response))
+        (let [{:keys [text usage]} (parse-fireworks-sse-stream (:body response))
               text (cond-> text convert-think? convert-think-tags)]
           (track-usage! effective-model usage costs)
           text)
         (throw (ex-info "Fireworks completions request failed"
-                        {:status status :body (.body response)})))))
+                        {:status status :body (:body response)})))))
   (plain-text-provider [this] this)
   (supports-prefill [_] true))
 
@@ -1504,19 +1671,31 @@
    - :max-tokens     - Max tokens per response
    - :chat-template  - Keyword in `fireworks-chat-templates` or explicit template map
    - :convert-think? - Convert leading <think>...</think> to Spell `(think ...)`
+   - :request-timeout-sec - Per-HTTP-call timeout in seconds (default: 600)
+   - :sse-idle-timeout-sec - Max seconds without stream bytes (default: 100)
+   - :sse-completion-timeout-sec - Max seconds until stream body completes (default: 1000)
    - :costs          - Cost table {model-prefix price-spec}"
   ([] (fireworks-provider {}))
-  ([{:keys [api-key base-url model max-tokens costs chat-template convert-think?]
+  ([{:keys [api-key base-url model max-tokens costs chat-template convert-think?
+            request-timeout-sec sse-idle-timeout-sec sse-completion-timeout-sec]
      :or {model "glm-5"
           base-url "https://api.fireworks.ai/inference/v1"
-          convert-think? true}}]
+          convert-think? true
+          request-timeout-sec 600
+          sse-idle-timeout-sec default-sse-idle-timeout-sec
+          sse-completion-timeout-sec default-sse-completion-timeout-sec}}]
    (let [key (or api-key (System/getenv "FIREWORKS_API_KEY"))
          effective-model (fireworks-model-id model)
          url (str/replace (or base-url "https://api.fireworks.ai/inference/v1") #"/$" "")]
      (when-not key
        (throw (ex-info "No API key provided. Set FIREWORKS_API_KEY or pass :api-key"
                        {:env "FIREWORKS_API_KEY"})))
-     (->FireworksProvider key url effective-model max-tokens (make-http-client) costs
+     (->FireworksProvider key url effective-model max-tokens
+                          (make-http-client {:connect-timeout-sec request-timeout-sec})
+                          request-timeout-sec
+                          sse-idle-timeout-sec
+                          sse-completion-timeout-sec
+                          costs
                           chat-template convert-think?))))
 
 ;; ---------------------------------------------------------------------------
@@ -1788,20 +1967,22 @@
 
 (defn- fireworks-tc-chat-fallback
   [api-key base-url model prompt system-prompt max-tokens reasoning-effort http-client costs
-   request-timeout-sec]
+   request-timeout-sec sse-idle-timeout-sec sse-completion-timeout-sec]
   (let [request (fireworks-tc-chat-request api-key base-url model prompt system-prompt
                                            max-tokens reasoning-effort request-timeout-sec)
-        response (send-http-request http-client request (HttpResponse$BodyHandlers/ofString)
-                                    request-timeout-sec)
-        status (.statusCode response)]
+        response (send-sse-request http-client request request-timeout-sec
+                                   sse-idle-timeout-sec sse-completion-timeout-sec
+                                   :fireworks-tc-chat-fallback)
+        status (:status response)]
     (if (<= 200 status 299)
-      (let [{:keys [text usage]} (parse-fireworks-tc-chat-stream (.body response))]
+      (let [{:keys [text usage]} (parse-fireworks-tc-chat-stream (:body response))]
         (track-usage! model usage costs)
         text)
       (throw (ex-info "Fireworks chat fallback request failed"
-                      {:status status :body (.body response)})))))
+                      {:status status :body (:body response)})))))
 
-(defrecord FireworksTcProvider [api-key base-url model max-tokens http-client request-timeout-sec costs]
+(defrecord FireworksTcProvider [api-key base-url model max-tokens http-client request-timeout-sec
+                                sse-idle-timeout-sec sse-completion-timeout-sec costs]
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt opts]
@@ -1813,14 +1994,21 @@
           request (fireworks-tc-request api-key base-url effective-model prompt
                                         (:system opts) effective-max-tokens stream?
                                         thinking reasoning-effort request-timeout-sec)
-          response (send-http-request http-client request (HttpResponse$BodyHandlers/ofString)
-                                      request-timeout-sec)
-          status (.statusCode response)]
+          response (if stream?
+                     (send-sse-request http-client request request-timeout-sec
+                                       sse-idle-timeout-sec sse-completion-timeout-sec
+                                       :fireworks-tc)
+                     (let [response (send-http-request http-client request
+                                                       (HttpResponse$BodyHandlers/ofString)
+                                                       request-timeout-sec)]
+                       {:status (.statusCode response)
+                        :body (.body response)}))
+          status (:status response)]
       (if (<= 200 status 299)
         (try
           (let [{:keys [text usage]} (if stream?
-                                       (parse-fireworks-tc-stream (.body response))
-                                       (parse-fireworks-tc-response (.body response)))]
+                                       (parse-fireworks-tc-stream (:body response))
+                                       (parse-fireworks-tc-response (:body response)))]
             (track-usage! effective-model usage costs)
             text)
           (catch clojure.lang.ExceptionInfo ex
@@ -1832,12 +2020,15 @@
                   (fireworks-tc-chat-fallback api-key base-url effective-model prompt
                                               (:system opts) effective-max-tokens
                                               reasoning-effort http-client costs
-                                              request-timeout-sec))
+                                              request-timeout-sec
+                                              sse-idle-timeout-sec
+                                              sse-completion-timeout-sec))
                 (throw ex)))))
         (throw (ex-info "Fireworks mandatory tool-call request failed"
-                        {:status status :body (.body response)})))))
+                        {:status status :body (:body response)})))))
   (plain-text-provider [_]
-    (->FireworksProvider api-key base-url model max-tokens http-client costs nil false))
+    (->FireworksProvider api-key base-url model max-tokens http-client request-timeout-sec
+                         sse-idle-timeout-sec sse-completion-timeout-sec costs nil false))
   (supports-prefill [_] false))
 
 (defn fireworks-tc-provider
@@ -1850,13 +2041,18 @@
    - :model               - Model name or Fireworks account path (default: kimi-k2p6)
    - :max-tokens          - Max tokens per response
    - :request-timeout-sec - Per-HTTP-call timeout in seconds (default: 600)
+   - :sse-idle-timeout-sec - Max seconds without stream bytes (default: 100)
+   - :sse-completion-timeout-sec - Max seconds until stream body completes (default: 1000)
    - :costs               - Cost table {model-prefix price-spec}"
   ([] (fireworks-tc-provider {}))
-  ([{:keys [api-key base-url model max-tokens request-timeout-sec costs]
+  ([{:keys [api-key base-url model max-tokens request-timeout-sec sse-idle-timeout-sec
+            sse-completion-timeout-sec costs]
      :or {model "kimi-k2p6"
           base-url "https://api.fireworks.ai/inference/v1"
           max-tokens fireworks-tc-default-max-tokens
-          request-timeout-sec 600}}]
+          request-timeout-sec 600
+          sse-idle-timeout-sec default-sse-idle-timeout-sec
+          sse-completion-timeout-sec default-sse-completion-timeout-sec}}]
    (let [key (or api-key (System/getenv "FIREWORKS_API_KEY"))
          effective-model (fireworks-model-id model)
          url (str/replace (or base-url "https://api.fireworks.ai/inference/v1") #"/$" "")]
@@ -1866,6 +2062,8 @@
      (->FireworksTcProvider key url effective-model max-tokens
                             (make-http-client {:connect-timeout-sec request-timeout-sec})
                             request-timeout-sec
+                            sse-idle-timeout-sec
+                            sse-completion-timeout-sec
                             costs))))
 
 ;; ---------------------------------------------------------------------------
@@ -2005,8 +2203,8 @@
 
 (defn retryable?
   "Returns true if the exception looks like a transient API failure worth retrying.
-   Rate limits (429), server errors (5xx), network errors, and missing tool-call
-   responses (empty/truncated/incomplete) are retryable.
+   Rate limits (429), server errors (5xx), network errors, idle SSE stalls, and
+   missing tool-call responses (empty/truncated/incomplete) are retryable.
    HttpTimeoutException / HttpConnectTimeoutException are NOT retryable —
    retrying a 600s timeout consumes 1800s and exhausts the harness budget."
   [ex]
@@ -2015,6 +2213,7 @@
     (or (= status 429)
         (and status (>= status 500))
         (= (:type data) :missing-tool-call)
+        (= (:type data) :sse-idle-timeout)
         (instance? java.net.ConnectException ex)
         (and (instance? java.io.IOException ex)
              (not (instance? java.net.http.HttpTimeoutException ex))
@@ -2048,7 +2247,8 @@
   [path]
   (let [{:keys [type api-key-env base-url model max-tokens costs use-responses-api auth-file account-id
                 responses response-rules response prefill? chat-template convert-think?
-                force-tool-call cache-read-ratio prompt-cache-key request-timeout-sec]}
+                force-tool-call cache-read-ratio prompt-cache-key request-timeout-sec
+                sse-idle-timeout-sec sse-completion-timeout-sec]}
         (edn/read-string (slurp path))
         api-key (when api-key-env (System/getenv api-key-env))
         opts (cond-> {:costs (cond-> (merge default-costs (or costs {}))
@@ -2064,6 +2264,8 @@
                account-id (assoc :account-id account-id)
                chat-template (assoc :chat-template chat-template)
                request-timeout-sec (assoc :request-timeout-sec request-timeout-sec)
+               sse-idle-timeout-sec (assoc :sse-idle-timeout-sec sse-idle-timeout-sec)
+               sse-completion-timeout-sec (assoc :sse-completion-timeout-sec sse-completion-timeout-sec)
                (some? convert-think?) (assoc :convert-think? convert-think?))]
     (case type
       :anthropic-pf (anthropic-pf-provider opts)
@@ -2091,7 +2293,8 @@
   "Create a provider from an inline config map (same keys as .provider.edn)."
   [{:keys [type api-key-env base-url model max-tokens costs use-responses-api auth-file account-id
            responses response-rules response prefill? chat-template convert-think?
-           force-tool-call cache-read-ratio prompt-cache-key request-timeout-sec] :as spec}]
+           force-tool-call cache-read-ratio prompt-cache-key request-timeout-sec
+           sse-idle-timeout-sec sse-completion-timeout-sec] :as spec}]
   (let [api-key (when api-key-env (System/getenv api-key-env))
         opts (cond-> {:costs (cond-> (merge default-costs (or costs {}))
                                cache-read-ratio (assoc :cache-read-ratio cache-read-ratio))}
@@ -2106,6 +2309,8 @@
                account-id (assoc :account-id account-id)
                chat-template (assoc :chat-template chat-template)
                request-timeout-sec (assoc :request-timeout-sec request-timeout-sec)
+               sse-idle-timeout-sec (assoc :sse-idle-timeout-sec sse-idle-timeout-sec)
+               sse-completion-timeout-sec (assoc :sse-completion-timeout-sec sse-completion-timeout-sec)
                (some? convert-think?) (assoc :convert-think? convert-think?))]
     (case type
       :anthropic-pf (anthropic-pf-provider opts)
