@@ -1410,6 +1410,7 @@
 (defn- fireworks-reasoning-model? [model]
   (let [model (str/lower-case (or model ""))]
     (or (str/includes? model "glm-5p1")
+        (str/includes? model "deepseek-v4-pro")
         (str/includes? model "qwen3p6-plus"))))
 
 (defn- fireworks-completions-request

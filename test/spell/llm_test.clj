@@ -350,6 +350,18 @@
                            :cache_read_input_tokens 0}))
       (is (= 30.0 (double (provider/current-cost usage-atom)))))))
 
+(deftest current-cost-prices-fireworks-deepseek-v4-pro-test
+  (testing "current-cost uses the shared DeepSeek V4 Pro Fireworks pricing row"
+    (let [usage-atom (atom {:by-model {}})]
+      (binding [provider/*usage* usage-atom
+                provider/*budget* nil]
+        (provider/track-usage! "accounts/fireworks/models/deepseek-v4-pro"
+                          {:input_tokens 1000000
+                           :cache_read_input_tokens 100000
+                           :output_tokens 200000
+                           :cache_creation_input_tokens 0}))
+      (is (= 2.45 (double (provider/current-cost usage-atom)))))))
+
 ;; =============================================================================
 ;; compile-agent factory tests
 ;; =============================================================================
@@ -890,6 +902,11 @@
       (is (= "https://api.fireworks.ai/inference/v1" (:base-url p)))
       (is (= "accounts/fireworks/models/deepseek-v3p1" (:model p)))))
 
+  (testing "fireworks-provider expands DeepSeek V4 Pro short model ids"
+    (let [p (provider/fireworks-provider {:api-key "fw-test"
+                                          :model "deepseek-v4-pro"})]
+      (is (= "accounts/fireworks/models/deepseek-v4-pro" (:model p)))))
+
   (testing "format-completions-prompt leaves assistant prefix open"
     (is (= "<|im_start|>system\nsys<|im_end|>\n<|im_start|>user\nuser<|im_end|>\n<|im_start|>assistant\n(prefill"
            (#'provider/format-completions-prompt
@@ -960,6 +977,19 @@
                 nil
                 "high")]
       (is (= true (:stream body)))
+      (is (= {:type "auto"} (:tool_choice body)))
+      (is (= {:type "enabled" :budget_tokens 1024} (:thinking body)))
+      (is (= {:effort "high"} (:output_config body)))))
+
+  (testing "fireworks-tc request maps DeepSeek V4 Pro reasoning effort"
+    (let [body (#'provider/fireworks-tc-request-body
+                "accounts/fireworks/models/deepseek-v4-pro"
+                "prompt"
+                nil
+                4096
+                true
+                nil
+                "high")]
       (is (= {:type "auto"} (:tool_choice body)))
       (is (= {:type "enabled" :budget_tokens 1024} (:thinking body)))
       (is (= {:effort "high"} (:output_config body)))))
