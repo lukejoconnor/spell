@@ -93,14 +93,13 @@
 (def telephone-agents-prompt
   (str
    "Play a game of telephone using agents/. Initial message: \"The museum "
-   "closes at five because the winter storm is approaching.\" Use "
-   "agents/!spawn-ask to create relay agents :relay-1 through :relay-8. You "
-   "may seed :relay-1 and wait for the final result, but do not mediate "
-   "intermediate hops. Each relay must receive the previous wording directly "
-   "from relay k-1, rephrase it while preserving the meaning, and send the new "
-   "wording directly to relay k+1. :relay-8 returns the final wording. Report "
-   "the initial and final wordings. The "
-   "rephrasing must come from the relay agents, not from you."))
+   "closes at five because the winter storm is approaching.\" Create relay "
+   "agents :relay-1 through :relay-8. Each relay receives the previous "
+   "wording, rephrases it while preserving the meaning, and returns only its "
+   "new wording. The orchestrator may transport each returned wording to the "
+   "next relay but must not perform any rephrasing itself. Report the initial "
+   "and final wordings. The rephrasing must come from the relay agents, not "
+   "from you."))
 
 (def telephone-llm-self-prompt
   (str
@@ -399,33 +398,21 @@
   (direct-value-prefix (relay-value-task "a relay" wording)))
 
 (defn- relay-agent-init [n]
-  (let [next-handle (when (< n 8) (str ":relay-" (inc n)))
-        prompt (str "You are relay " n " in a telephone game.\n\n"
-                    "Initial setup turn: return exactly this Spell map and "
-                    "nothing else: {:ready true :relay " n "}.\n\n"
-                    "Later, when awakened by a message, inspect the newest "
-                    "msg-* binding. Its :body is the previous wording, sent directly by "
-                    (if (= n 1) "the starter" "relay k-1")
-                    ". Rephrase that wording while preserving the meaning.\n\n"
-                    (if next-handle
-                      (str "Your whole response must be exactly two Spell "
-                           "forms and no prose:\n"
-                           "(def new-wording \"your rephrased sentence\")\n"
-                           "'(do (agents/send "
-                           next-handle
-                           " new-wording) new-wording)\n\n"
-                           "The agents/send call must stay inside the quoted "
-                           "trailing do form.\n")
-                      (str "Your whole response must be exactly one Spell "
-                           "string literal: \"your rephrased sentence\". "
-                           "Do not send it through the main agent.\n"))
-                    "The new wording must contain a sentence about the "
-                    "museum, five o'clock, and the approaching winter storm. "
-                    "Do not emit think forms, markdown, XML tags, or prose.")]
+  (let [prompt (str "You are relay " n " in a telephone game.\n\n"
+                    "On wake, inspect the newest msg-* binding. Its :body is "
+                    "the previous wording. Rephrase that wording while "
+                    "preserving the meaning.\n\n"
+                    "Return exactly one Spell string literal and nothing "
+                    "else. Do not call agents functions. Do not write prose, "
+                    "markdown, XML tags, comments, think forms, !call-now, "
+                    "or !extend.\n\n"
+                    "The returned sentence must mention the museum, five "
+                    "o'clock, and the approaching winter storm. Example "
+                    "completion: \"Because a winter storm is approaching, "
+                    "the museum will close at five o'clock.\"")]
     (str "(quine completion (eval (do "
          "(quine prompt " (pr-str prompt) ") "
          "(def relay-number " n ") "
-         "(think " (pr-str (str "SETUP: Return exactly {:ready true :relay " n "} now. Later, if awakened by msg-*, follow the relay instructions in prompt.")) ") "
          "'(!extend))))")))
 
 (def initial-message
@@ -479,16 +466,36 @@
 
 (defn- telephone-agents-code []
   (str "(do "
-       "(agents/!spawn-ask ["
        (apply str
               (for [n (range 1 9)]
-                (str "[" (spell-string (relay-agent-init n)) " :relay-" n "] ")))
-       "]) "
+                (str "(agents/register :relay-" n " "
+                     (spell-string (relay-agent-init n)) ") ")))
        "(!ask-await "
        "(future "
-       "(let [final-token (blocking/completion-promise :relay-8) "
+       "(let [t1 (blocking/completion-promise :relay-1) "
        "_ (agents/send :relay-1 " (spell-string initial-message) ") "
-       "final-wording (blocking/await final-token)] "
+       "w1 (blocking/await t1) "
+       "t2 (blocking/completion-promise :relay-2) "
+       "_ (agents/send :relay-2 w1) "
+       "w2 (blocking/await t2) "
+       "t3 (blocking/completion-promise :relay-3) "
+       "_ (agents/send :relay-3 w2) "
+       "w3 (blocking/await t3) "
+       "t4 (blocking/completion-promise :relay-4) "
+       "_ (agents/send :relay-4 w3) "
+       "w4 (blocking/await t4) "
+       "t5 (blocking/completion-promise :relay-5) "
+       "_ (agents/send :relay-5 w4) "
+       "w5 (blocking/await t5) "
+       "t6 (blocking/completion-promise :relay-6) "
+       "_ (agents/send :relay-6 w5) "
+       "w6 (blocking/await t6) "
+       "t7 (blocking/completion-promise :relay-7) "
+       "_ (agents/send :relay-7 w6) "
+       "w7 (blocking/await t7) "
+       "t8 (blocking/completion-promise :relay-8) "
+       "_ (agents/send :relay-8 w7) "
+       "final-wording (blocking/await t8)] "
        "{:kind :telephone-final "
        ":initial " (spell-string initial-message) " "
        ":final final-wording}))))"))
@@ -583,8 +590,15 @@
                    (str "After the seeded orchestration call returns, inspect "
                         "the child message/result bindings already in scope. "
                         "Use those child outputs to continue or finish the "
-                        "game. Do not restart the program, and do not say no "
-                        "prefix was provided."))
+                        "game. If the result is enough to answer, return a "
+                        "plain final string or map as the last expression. "
+                        "For a msg whose :body has :kind :telephone-final, "
+                        "return exactly one string in this format: "
+                        "Initial wording: <initial> Final wording after relay 8: <final>. "
+                        "Do not use !print, !extend, !call-now, markdown, "
+                        "comments, cursor markers, or prose outside think "
+                        "strings. Do not restart the program, and do not say "
+                        "no prefix was provided."))
         trailing (init-trailing game)]
     (str "(quine completion (eval (do "
          "(quine prompt \"" escaped-prompt "\") "

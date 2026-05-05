@@ -49,11 +49,12 @@
       (is (str/includes? (:init scaffold) "TASK:"))
       (is (str/includes? (:init scaffold) "agents/!spawn-ask"))
       (is (str/includes? (:init scaffold) ":bidder-a")))
-    (testing "telephone agents scaffold uses direct !spawn-ask relay handoff"
-      (is (str/includes? (:init telephone-agents) "agents/!spawn-ask"))
+    (testing "telephone agents scaffold registers dormant relays and transports returned wording"
+      (is (str/includes? (:init telephone-agents) "agents/register :relay-1"))
       (is (str/includes? (:init telephone-agents) ":relay-1"))
       (is (str/includes? (:init telephone-agents) "blocking/completion-promise :relay-8"))
       (is (str/includes? (:init telephone-agents) "agents/send :relay-1"))
+      (is (str/includes? (:init telephone-agents) "agents/send :relay-8"))
       (is (not (str/includes? (:init telephone-agents) "The museum will shut at five because a winter storm is coming."))))
     (testing "telephone llm-self scaffold feeds each stage from the previous returned wording"
       (is (str/includes? (:prompt telephone-llm-self) "call k-1"))
