@@ -12,7 +12,7 @@ Options:
   --models CSV          Model specs. Default: fireworks:glm-5p1
   --games CSV           Game names or all. Default: all
   --attempts N          Attempts per game/model. Default: 4
-  --parallel N          Concurrent trial processes. Default: 4
+  --parallel N|all      Concurrent trial processes. Default: all
   --output-root DIR     Output root. Default: logs/orchestration-games-<timestamp>
   --agent FILE          Override Spell agent config. Default: per-game harness profile
   --prompt-profile P    Prompt profile: scaffold or minimal. Default: scaffold
@@ -31,7 +31,7 @@ EOF
 models="fireworks:glm-5p1"
 games="all"
 attempts=4
-parallel=4
+parallel=all
 output_root="logs/orchestration-games-$(date +%Y%m%d-%H%M%S)"
 agent=""
 prompt_profile="scaffold"
@@ -71,6 +71,14 @@ else
 fi
 
 IFS=',' read -r -a model_list <<< "$models"
+total_trials=$((${#model_list[@]} * ${#game_list[@]} * attempts))
+if [[ "$parallel" == "all" ]]; then
+  parallel="$total_trials"
+fi
+if ! [[ "$parallel" =~ ^[0-9]+$ ]] || [[ "$parallel" -lt 1 ]]; then
+  echo "--parallel must be a positive integer or 'all'" >&2
+  exit 2
+fi
 mkdir -p "$output_root"
 
 model_label() {
@@ -182,21 +190,37 @@ run_one() {
 failures=0
 pids=()
 
-wait_oldest() {
-  local pid="${pids[0]}"
+wait_pid_index() {
+  local idx="$1"
+  local pid="${pids[$idx]}"
   local rest=()
   local i
   if ! wait "$pid"; then
     failures=$((failures + 1))
   fi
-  for ((i = 1; i < ${#pids[@]}; i++)); do
-    rest+=("${pids[$i]}")
+  for ((i = 0; i < ${#pids[@]}; i++)); do
+    if [[ "$i" -ne "$idx" ]]; then
+      rest+=("${pids[$i]}")
+    fi
   done
   if [[ "${#rest[@]}" -gt 0 ]]; then
     pids=("${rest[@]}")
   else
     pids=()
   fi
+}
+
+wait_any() {
+  local i
+  while true; do
+    for ((i = 0; i < ${#pids[@]}; i++)); do
+      if ! kill -0 "${pids[$i]}" 2>/dev/null; then
+        wait_pid_index "$i"
+        return
+      fi
+    done
+    sleep 1
+  done
 }
 
 for model in "${model_list[@]}"; do
@@ -207,14 +231,14 @@ for model in "${model_list[@]}"; do
       run_one "$game" "$model" "$attempt" &
       pids+=("$!")
       if [[ "${#pids[@]}" -ge "$parallel" ]]; then
-        wait_oldest
+        wait_any
       fi
     done
   done
 done
 
 while [[ "${#pids[@]}" -gt 0 ]]; do
-  wait_oldest
+  wait_any
 done
 
 if [[ "$dry_run" -eq 0 ]]; then
