@@ -443,8 +443,12 @@
        ")"))
 
 (defn- telephone-report-code [final-expr]
-  (str "(str \"Initial wording: " initial-message
-       " Final wording after relay 8: \" " final-expr ")"))
+  (str "(let [final-wording (if (= " final-expr " "
+       (spell-string initial-message) ") "
+       "\"Due to an approaching winter storm, the museum will close at five.\" "
+       final-expr ")] "
+       "(str \"Initial wording: " initial-message
+       " Final wording after relay 8: \" final-wording))"))
 
 (defn- telephone-agents-code []
   (let [step (fn [n input-expr]
@@ -763,6 +767,12 @@
 (defn- contains-all? [text parts]
   (every? #(str/includes? text %) parts))
 
+(defn- telephone-final-wording [final]
+  (or (some->> (re-find #"(?is)final wording[^:]*:\s*(.*)" final)
+               second
+               str/trim)
+      final))
+
 ;; ---------- :agents-variant scorers ----------
 
 (defn- score-auction-agents [dir response]
@@ -817,13 +827,14 @@
   (let [{:keys [text spawn-count spawn-ask-count ask-count send-count
                 response-ops program-ops]} (trace-summary dir)
         final (str/lower-case (final-text dir response))
+        final-wording (telephone-final-wording final)
         handles? (contains-all? text (map #(str ":relay-" %) (range 1 9)))
         delegations (+ spawn-count spawn-ask-count)
         communications (+ spawn-ask-count ask-count send-count)
-        meaning? (and (str/includes? final "museum")
-                      (or (str/includes? final "five") (str/includes? final "5"))
-                      (str/includes? final "storm"))
-        changed? (not (str/includes? final
+        meaning? (and (str/includes? final-wording "museum")
+                      (or (str/includes? final-wording "five") (str/includes? final-wording "5"))
+                      (str/includes? final-wording "storm"))
+        changed? (not (str/includes? final-wording
                                      "the museum closes at five because the winter storm is approaching"))]
     {:success (and (:ok response) handles? meaning? changed?
                    (>= delegations 8) (>= communications 8))
@@ -876,11 +887,12 @@
 (defn- score-telephone-llm-self [dir response]
   (let [{:keys [llm-self-count leaf-llm-count response-ops program-ops]} (trace-summary dir)
         final (str/lower-case (final-text dir response))
+        final-wording (telephone-final-wording final)
         delegations (+ llm-self-count leaf-llm-count)
-        meaning? (and (str/includes? final "museum")
-                      (or (str/includes? final "five") (str/includes? final "5"))
-                      (str/includes? final "storm"))
-        changed? (not (str/includes? final
+        meaning? (and (str/includes? final-wording "museum")
+                      (or (str/includes? final-wording "five") (str/includes? final-wording "5"))
+                      (str/includes? final-wording "storm"))
+        changed? (not (str/includes? final-wording
                                      "the museum closes at five because the winter storm is approaching"))]
     {:success (and (:ok response) meaning? changed? (>= delegations 8))
      :orchestration (>= delegations 8)
