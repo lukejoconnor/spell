@@ -2023,9 +2023,61 @@
             opts (first @received-opts)]
         (is (not= "(do " provider-msg))
         (is (str/starts-with? provider-msg "Continue the exact Spell program prefix below."))
-        (is (str/includes? provider-msg "Return only the raw suffix for the spell_suffix tool."))
+        (is (str/includes? provider-msg "Return only the raw suffix that continues this prefix."))
         (is (str/includes? provider-msg "\n<spell-prefix>\n(do \n</spell-prefix>"))
         (is (not (contains? opts :prefix))))))
+
+  (testing "compile-agent with prefill?=false strips labelled provider-message echo"
+    (let [prov (reify provider/LLMProvider
+                 (plain-text-provider [this] this)
+                 (supports-prefill [_] false)
+                 (call-llm [_ prompt] (provider/call-llm _ prompt {}))
+                 (call-llm [_ prompt _opts]
+                   (str prompt "\n(def x 42))")))
+          agent-fn (llm/compile-agent {:namespaces {}
+                                       :provider prov
+                                       :prefill? false
+                                       :recover false})]
+      (is (= 42 (th/run-agent-prefix agent-fn "(do ")))))
+
+  (testing "compile-agent with prefill?=false strips labelled block echo"
+    (let [prov (reify provider/LLMProvider
+                 (plain-text-provider [this] this)
+                 (supports-prefill [_] false)
+                 (call-llm [_ prompt] (provider/call-llm _ prompt {}))
+                 (call-llm [_ _prompt _opts]
+                   "<spell-prefix>\n(do \n</spell-prefix>\n(def x 42))"))
+          agent-fn (llm/compile-agent {:namespaces {}
+                                       :provider prov
+                                       :prefill? false
+                                       :recover false})]
+      (is (= 42 (th/run-agent-prefix agent-fn "(do ")))))
+
+  (testing "compile-agent with prefill?=false caches provider-facing prefix"
+    (let [call-count (atom 0)
+          received-prompts (atom [])
+          received-opts (atom [])
+          prov (reify provider/LLMProvider
+                 (plain-text-provider [this] this)
+                 (supports-prefill [_] false)
+                 (call-llm [_ prompt] (provider/call-llm _ prompt {}))
+                 (call-llm [_ prompt opts]
+                   (swap! received-prompts conj prompt)
+                   (swap! received-opts conj opts)
+                   (if (= 1 (swap! call-count inc))
+                     "(think \"Need one more turn.\") '(!extend)"
+                     "(def return 42) return")))
+          agent-fn (llm/compile-agent {:namespaces {}
+                                       :provider prov
+                                       :prefill? false
+                                       :recover false})]
+      (is (= 42 (th/run-agent-init agent-fn (llm/build-init "Return 42."))))
+      (is (= 2 @call-count))
+      (is (nil? (:cache-prefix (first @received-opts))))
+      (is (= (first @received-prompts)
+             (:cache-prefix (second @received-opts))))
+      (is (str/starts-with? (:cache-prefix (second @received-opts))
+                            "Continue the exact Spell program prefix below."))))
 
   (testing "compile-agent with prefill?=true (default) passes prefix normally"
     (let [llm (th/make-test-runner {:response "(def x 42))" :prefill? true}

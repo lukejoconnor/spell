@@ -91,7 +91,7 @@
    The runtime still concatenates the raw prefix with the returned suffix."
   [prompt-str]
   (str "Continue the exact Spell program prefix below.\n"
-       "Return only the raw suffix for the spell_suffix tool.\n"
+       "Return only the raw suffix that continues this prefix.\n"
        "Do not restate the prefix, tags, or instructions.\n\n"
        "<spell-prefix>\n"
        prompt-str
@@ -133,6 +133,16 @@
       (subs trimmed (count (str/trim prompt-str)))
       ;; No echo — return cleaned (fences stripped)
       :else cleaned)))
+
+(defn- strip-no-prefill-echo
+  "Strip echoes of either the raw prefix or the provider-facing labelled prefix."
+  [prompt-str provider-msg response]
+  (let [cleaned (strip-code-fences response)
+        labelled-block (str "<spell-prefix>\n" prompt-str "\n</spell-prefix>")]
+    (->> cleaned
+         (strip-prefix-echo provider-msg)
+         (strip-prefix-echo labelled-block)
+         (strip-prefix-echo prompt-str))))
 
 ;; ---------------------------------------------------------------------------
 ;; LLM Engine
@@ -491,6 +501,13 @@
         prev-prompt-atom (atom nil)
         call-fn (fn [prompt-str]
                   (let [prev-prompt @prev-prompt-atom
+                        provider-user-msg (if prefill?
+                                            "Continue this Spell program."
+                                            (no-prefill-provider-message prompt-str))
+                        provider-cache-prefix (when prev-prompt
+                                                (if prefill?
+                                                  prev-prompt
+                                                  (no-prefill-provider-message prev-prompt)))
                         grammar-format (when suffix-grammar?
                                          (let [{:keys [definition over-limit?]}
                                                (grammar/suffix-lark-grammar-stats prompt-str
@@ -504,23 +521,20 @@
                                reasoning-effort (assoc :reasoning-effort reasoning-effort)
                                verbosity (assoc :verbosity verbosity)
                                grammar-format (assoc :grammar-format grammar-format)
-                               prev-prompt (assoc :cache-prefix prev-prompt))
-                        base-user-msg (if prefill?
-                                        "Continue this Spell program."
-                                        (no-prefill-provider-message prompt-str))
+                               provider-cache-prefix (assoc :cache-prefix provider-cache-prefix))
                         response (provider/call-with-retries
                                    (fn [err]
                                      (let [user-msg (if (and err (= :missing-tool-call (:type (ex-data err))))
-                                                      (str base-user-msg
+                                                      (str provider-user-msg
                                                            (missing-tool-call-retry-message))
-                                                      base-user-msg)]
+                                                      provider-user-msg)]
                                        (provider/strip-code-fences
                                          (provider/call-llm provider user-msg opts))))
                                    provider/*retries*)]
                     (reset! prev-prompt-atom prompt-str)
                     (if prefill?
                       response
-                      (strip-prefix-echo prompt-str response))))
+                      (strip-no-prefill-echo prompt-str provider-user-msg response))))
         ns-recover (recovery/make-namespace-recover-fn (merge core-namespaces ns-builtins))
         recover-fn (cond
                      (false? recover) nil
