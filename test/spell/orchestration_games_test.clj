@@ -100,3 +100,22 @@
       (is (not (:orchestration score)))
       (is (= 0 (get-in score [:evidence :spawn-ask-count])))
       (is (pos? (get-in score [:evidence :response-ops :spawn-ask-count]))))))
+
+(deftest audit-prompt-markdown-test
+  (let [audit-prompt-markdown #'og/audit-prompt-markdown
+        text (audit-prompt-markdown
+              "/tmp/og"
+              [{:model "fireworks-tc:glm-5p1"
+                :prompt-profile "scaffold"
+                :game "auction-agents"
+                :attempt 0
+                :success true
+                :orchestration true
+                :scheme true
+                :dir "/tmp/og/runs/auction-agents/glm51/attempt-00"
+                :evidence {:spawn-ask-count 3}
+                :notes nil}])]
+    (is (str/includes? text "Do not trust the agent's self-report"))
+    (is (str/includes? text "real agents/ orchestration"))
+    (is (str/includes? text "/tmp/og/runs/auction-agents/glm51/attempt-00"))
+    (is (str/includes? text "Genuine success"))))

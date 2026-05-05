@@ -194,6 +194,7 @@
     "Usage:"
     "  clj -M -m spell.orchestration-games run [options]"
     "  clj -M -m spell.orchestration-games score [--output-root DIR]"
+    "  clj -M -m spell.orchestration-games audit-prompt [--output-root DIR]"
     "  clj -M -m spell.orchestration-games prompts [--output-root DIR]"
     ""
     summary]))
@@ -880,6 +881,67 @@
     (println (markdown-summary summary scores))
     {:scores scores :summary summary}))
 
+(defn- audit-criteria [game]
+  (cond
+    (str/ends-with? game "-agents")
+    (str
+     "The trace must show real agents/ orchestration, not only prose. "
+     "Look for parsed program forms that spawn or spawn-ask the required "
+     "children, messages/results returning from those children, and a final "
+     "answer that uses those child outputs.")
+
+    (str/ends-with? game "-llm-self")
+    (str
+     "The trace must show real !llm-self or leaf-llm subcalls, not only prose. "
+     "Look for parsed program forms that call the child model(s), returned "
+     "values bound in the parent, and a final answer that uses those returned "
+     "values.")
+
+    :else
+    "Verify actual orchestration from parsed trace programs and returned values."))
+
+(defn- audit-prompt-markdown [output-root scores]
+  (str
+   "# Orchestration Games Manual Audit Prompt\n\n"
+   "You are manually auditing Spell orchestration-game traces. The helper "
+   "score is only a coarse filter; your job is to decide whether each marked "
+   "success is a genuine success and whether the required orchestration "
+   "approach actually happened.\n\n"
+   "Output root: `" output-root "`\n\n"
+   "## Rules\n\n"
+   "- Do not trust the agent's self-report or the helper score by itself.\n"
+   "- Cite file paths and line numbers for every substantive claim.\n"
+   "- Inspect `response.json`, `prompt.txt`, `trace/trace.edn`, `trace/tree.txt`, "
+   "and any per-node trace files needed to verify execution.\n"
+   "- Count a trial as genuine only if the required orchestration primitive "
+   "actually executed and the game result depends on child outputs.\n"
+   "- Mark apparent/prose-only orchestration as not genuine.\n\n"
+   "## Trials To Audit\n\n"
+   (apply str
+          (for [{:keys [model prompt-profile game attempt success orchestration
+                        scheme dir evidence notes]} scores]
+            (format
+             "### `%s` %s %s attempt %s\n\n- Helper: success=%s orchestration=%s scheme=%s\n- Directory: `%s`\n- Evidence: `%s`\n- Notes: %s\n- Audit criterion: %s\n\n"
+             model (or prompt-profile "") game attempt
+             success orchestration scheme dir (pr-str evidence) (pr-str notes)
+             (audit-criteria game))))
+   "## Required Output Format\n\n"
+   "For each audited trial, report:\n\n"
+   "- **Trial:** model / profile / game / attempt\n"
+   "- **Genuine success:** yes | no | uncertain\n"
+   "- **Actual orchestration:** yes | no | uncertain\n"
+   "- **What happened:** 1-3 sentences\n"
+   "- **Evidence:** `path:line` plus a short quote or paraphrase\n"
+   "- **Reason for rejection:** if not genuine, explain the exact missing piece\n"))
+
+(defn audit-prompt! [output-root]
+  (let [{:keys [scores]} (score! output-root)
+        text (audit-prompt-markdown output-root scores)
+        path (str (io/file output-root "audit-prompt.md"))]
+    (spit path text)
+    (println "wrote audit prompt to" path)
+    path))
+
 (defn run-command! [opts]
   (let [profile (prompt-profile-key opts)
         prompts (prompts-for-profile profile)]
@@ -918,6 +980,12 @@
       (= command "score")
       (do
         (score! (:output-root options))
+        (shutdown-agents)
+        (System/exit 0))
+
+      (= command "audit-prompt")
+      (do
+        (audit-prompt! (:output-root options))
         (shutdown-agents)
         (System/exit 0))
 
