@@ -552,7 +552,7 @@
     (let [request (#'provider/fireworks-completions-request
                     "test" "https://api.fireworks.ai/inference/v1"
                     "accounts/fireworks/models/deepseek-v4-pro"
-                    "prompt" "system" nil nil nil nil "high")
+                    "prompt" "system" nil nil nil nil "high" 600)
           body (request-json-body request)]
       (is (= "high" (:reasoning_effort body)))))
 

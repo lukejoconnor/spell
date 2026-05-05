@@ -417,16 +417,10 @@
                         base-user-msg (if prefill?
                                         "Continue this Spell program."
                                         prompt-str)
-                        max-tok (:max-tokens provider)
                         response (provider/call-with-retries
-                                   (fn [err]
-                                     (let [user-msg (if (and err (= :missing-tool-call (:type (ex-data err))))
-                                                      (str base-user-msg
-                                                           "\n;; system: retrying — previous response was truncated or empty"
-                                                           (when max-tok (str ", max output tokens " max-tok)))
-                                                      base-user-msg)]
-                                       (provider/strip-code-fences
-                                         (provider/call-llm provider user-msg opts))))
+                                   (fn [_err]
+                                     (provider/strip-code-fences
+                                       (provider/call-llm provider base-user-msg opts)))
                                    provider/*retries*)]
                     (reset! prev-prompt-atom prompt-str)
                     (if prefill?
@@ -565,16 +559,10 @@
                           (eval/vlog (str indent "Prompt: " (pr-str prompt))))
                opts     (cond-> {:system system}
                           model (assoc :model model))
-               max-tok  (:max-tokens leaf-provider)
                response (provider/call-with-retries
-                          (fn [err]
-                            (let [msg (if (and err (= :missing-tool-call (:type (ex-data err))))
-                                       (str prompt-str
-                                            "\n;; system: retrying — previous response was truncated or empty"
-                                            (when max-tok (str ", max output tokens " max-tok)))
-                                       prompt-str)]
-                              (provider/strip-code-fences
-                                (provider/call-llm leaf-provider msg opts))))
+                          (fn [_err]
+                            (provider/strip-code-fences
+                              (provider/call-llm leaf-provider prompt-str opts)))
                           provider/*retries*)
                _        (eval/vlog (str indent "Response: " response))
                _        (when node-id
