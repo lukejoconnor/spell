@@ -86,6 +86,17 @@
        "\n;; Respond with exactly one spell_suffix tool call. Do not send assistant text, markdown, or a thinking-only response."
        "\n;; The raw Spell suffix must be in the spell_suffix tool input."))
 
+(defn- no-prefill-provider-message
+  "Wrap a raw Spell prefix with provider-facing instructions.
+   The runtime still concatenates the raw prefix with the returned suffix."
+  [prompt-str]
+  (str "Continue the exact Spell program prefix below.\n"
+       "Return only the raw suffix for the spell_suffix tool.\n"
+       "Do not restate the prefix, tags, or instructions.\n\n"
+       "<spell-prefix>\n"
+       prompt-str
+       "\n</spell-prefix>"))
+
 ;; ---------------------------------------------------------------------------
 ;; Prefix Echo Deduplication
 ;; ---------------------------------------------------------------------------
@@ -496,7 +507,7 @@
                                prev-prompt (assoc :cache-prefix prev-prompt))
                         base-user-msg (if prefill?
                                         "Continue this Spell program."
-                                        prompt-str)
+                                        (no-prefill-provider-message prompt-str))
                         response (provider/call-with-retries
                                    (fn [err]
                                      (let [user-msg (if (and err (= :missing-tool-call (:type (ex-data err))))

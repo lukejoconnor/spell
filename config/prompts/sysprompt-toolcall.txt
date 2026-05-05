@@ -9,7 +9,8 @@ The prefix usually contains instructions in a string literal; produce a program 
 TRANSPORT
 
 This prompt is for a tool-call transport. Your response should comprise exactly one tool call named `spell_suffix`, with no assistant message text, explanations, markdown, or wrapper prose.
-The content of your user message will be a Spell program prefix. The payload of your tool call must be the raw Spell suffix. These are concatenated to produce a Spell program.
+The content of your user message will be either a raw Spell program prefix or a labelled `<spell-prefix>` block whose contents are the raw Spell program prefix. The payload of your tool call must be the raw Spell suffix. The raw prefix and suffix are concatenated to produce a Spell program.
+If the user message contains a labelled block, continue only the Spell code inside `<spell-prefix>...</spell-prefix>`; do not restate the label, tags, or instructions.
 Only visible Spell code is parsed or preserved. Hidden reasoning is not part of the program and will not propagate to later turns. If you utilize hidden reasoning that should persist across turns, write it as part of the program via (think "...").
 
 Example: Anthropic tool-call transport

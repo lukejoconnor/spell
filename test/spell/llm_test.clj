@@ -1787,7 +1787,39 @@
       (is (clojure.string/includes? (second @received-prompts)
                                      "Do not send assistant text, markdown, or a thinking-only response"))
       (is (clojure.string/includes? (second @received-prompts)
-                                     "The raw Spell suffix must be in the spell_suffix tool input")))))
+                                     "The raw Spell suffix must be in the spell_suffix tool input"))))
+
+  (testing "retry hint is appended after labelled no-prefill Spell prefix"
+    (let [call-count (atom 0)
+          received-prompts (atom [])
+          prov (reify provider/LLMProvider
+                 (plain-text-provider [this] this)
+                 (supports-prefill [_] false)
+                 (call-llm [_ prompt] (provider/call-llm _ prompt {}))
+                 (call-llm [_ prompt opts]
+                   (swap! received-prompts conj prompt)
+                   (swap! call-count inc)
+                   (is (not (contains? opts :prefix)))
+                   (if (= 1 @call-count)
+                     (throw (ex-info "missing tool call"
+                                     {:type :missing-tool-call :provider :openai-tc}))
+                     "(def return 42))")))
+          agent-fn (llm/compile-agent {:namespaces {}
+                                       :provider prov
+                                       :prefill? false
+                                       :recover false})]
+      (binding [provider/*retries* [0]]
+        (is (= 42 (th/run-agent-prefix agent-fn "(do "))))
+      (is (= 2 @call-count))
+      (is (str/includes? (first @received-prompts) "<spell-prefix>\n(do "))
+      (is (not (str/includes? (first @received-prompts)
+                              "retrying because the previous response did not call the required spell_suffix tool")))
+      (let [retry-prompt (second @received-prompts)
+            prefix-end (.indexOf retry-prompt "</spell-prefix>")
+            retry-start (.indexOf retry-prompt "retrying because the previous response did not call the required spell_suffix tool")]
+        (is (pos? prefix-end))
+        (is (< prefix-end retry-start))
+        (is (str/includes? retry-prompt "The raw Spell suffix must be in the spell_suffix tool input"))))))
 
 (deftest missing-tool-call-retry-hint-in-leaf-llm
   (testing "retry hint is appended in leaf-llm on missing-tool-call retry"
@@ -1971,10 +2003,53 @@
                                    :namespaces {} :prefill? false)]
       (is (= 42 (llm "(do ")))))
 
+  (testing "compile-agent with prefill?=false sends labelled provider message but evaluates raw prefix"
+    (let [received-prompts (atom [])
+          received-opts (atom [])
+          prov (reify provider/LLMProvider
+                 (plain-text-provider [this] this)
+                 (supports-prefill [_] false)
+                 (call-llm [_ prompt] (provider/call-llm _ prompt {}))
+                 (call-llm [_ prompt opts]
+                   (swap! received-prompts conj prompt)
+                   (swap! received-opts conj opts)
+                   "(def x 42))"))
+          agent-fn (llm/compile-agent {:namespaces {}
+                                       :provider prov
+                                       :prefill? false
+                                       :recover false})]
+      (is (= 42 (th/run-agent-prefix agent-fn "(do ")))
+      (let [provider-msg (first @received-prompts)
+            opts (first @received-opts)]
+        (is (not= "(do " provider-msg))
+        (is (str/starts-with? provider-msg "Continue the exact Spell program prefix below."))
+        (is (str/includes? provider-msg "Return only the raw suffix for the spell_suffix tool."))
+        (is (str/includes? provider-msg "\n<spell-prefix>\n(do \n</spell-prefix>"))
+        (is (not (contains? opts :prefix))))))
+
   (testing "compile-agent with prefill?=true (default) passes prefix normally"
     (let [llm (th/make-test-runner {:response "(def x 42))" :prefill? true}
                                    :namespaces {})]
-      (is (= 42 (llm "(do "))))))
+      (is (= 42 (llm "(do ")))))
+
+  (testing "compile-agent with prefill?=true leaves user message and prefix opts unchanged"
+    (let [received-prompts (atom [])
+          received-opts (atom [])
+          prov (reify provider/LLMProvider
+                 (plain-text-provider [this] this)
+                 (supports-prefill [_] true)
+                 (call-llm [_ prompt] (provider/call-llm _ prompt {}))
+                 (call-llm [_ prompt opts]
+                   (swap! received-prompts conj prompt)
+                   (swap! received-opts conj opts)
+                   "(def x 42))"))
+          agent-fn (llm/compile-agent {:namespaces {}
+                                       :provider prov
+                                       :prefill? true
+                                       :recover false})]
+      (is (= 42 (th/run-agent-prefix agent-fn "(do ")))
+      (is (= ["Continue this Spell program."] @received-prompts))
+      (is (= "(do " (:prefix (first @received-opts)))))))
 
 (deftest suffix-grammar-option-test
   (testing "compile-agent passes generated grammar-format when enabled"
