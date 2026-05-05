@@ -529,24 +529,79 @@
          (keep :response)
          (str/join "\n"))))
 
+(defn- trace-program-text [dir]
+  (let [trace (read-trace dir)]
+    (->> (:nodes trace)
+         (keep :program)
+         (map pr-str)
+         (str/join "\n"))))
+
 (defn- bool-count [re text]
   (count (re-seq re text)))
+
+(def op-symbols
+  {'agents/spawn :spawn-count
+   'agents/!spawn-ask :spawn-ask-count
+   'agents/!ask :ask-count
+   'agents/!reply-ask :reply-ask-count
+   'agents/send :send-count
+   '!llm-self :llm-self-count
+   'leaf-llm :leaf-llm-count})
+
+(def zero-ops
+  {:spawn-count 0
+   :spawn-ask-count 0
+   :ask-count 0
+   :reply-ask-count 0
+   :send-count 0
+   :llm-self-count 0
+   :leaf-llm-count 0})
 
 (defn- final-text [dir response]
   (str (:result response) "\n" (trace-response-text dir)))
 
+(defn- count-ops [text]
+  (merge zero-ops
+         {:spawn-count (bool-count #"agents/spawn" text)
+          :spawn-ask-count (bool-count #"agents/!spawn-ask" text)
+          :ask-count (bool-count #"agents/!ask" text)
+          :reply-ask-count (bool-count #"agents/!reply-ask" text)
+          :send-count (bool-count #"agents/send" text)
+          :llm-self-count (bool-count #"!llm-self" text)
+          :leaf-llm-count (bool-count #"leaf-llm" text)}))
+
+(defn- count-program-ops [programs]
+  (reduce
+   (fn [acc program]
+     (reduce
+      (fn [ops form]
+        (if-let [k (and (symbol? form) (op-symbols form))]
+          (update ops k inc)
+          ops))
+      acc
+      (tree-seq coll? seq program)))
+   zero-ops
+   programs))
+
+(defn- merge-ops [& ops-colls]
+  (apply merge-with + zero-ops ops-colls))
+
 (defn- trace-summary [dir]
   (let [trace (read-trace dir)
-        text (trace-response-text dir)]
-    {:node-count (count (:nodes trace))
-     :spawn-count (+ (bool-count #"agents/spawn" text)
-                     (bool-count #"agents/!spawn-ask" text))
-     :ask-count (bool-count #"agents/!ask" text)
-     :reply-ask-count (bool-count #"agents/!reply-ask" text)
-     :send-count (bool-count #"agents/send" text)
-     :llm-self-count (bool-count #"!llm-self" text)
-     :leaf-llm-count (bool-count #"leaf-llm" text)
-     :text text}))
+        response-text (trace-response-text dir)
+        program-text (trace-program-text dir)
+        response-ops (count-ops response-text)
+        programs (keep :program (:nodes trace))
+        program-ops (count-program-ops programs)
+        combined-ops (merge-ops response-ops program-ops)]
+    (merge
+     {:node-count (count (:nodes trace))
+      :text (str program-text "\n" response-text)
+      :response-text response-text
+      :program-text program-text
+      :response-ops response-ops
+      :program-ops program-ops}
+     combined-ops)))
 
 (defn- contains-all? [text parts]
   (every? #(str/includes? text %) parts))
@@ -554,67 +609,85 @@
 ;; ---------- :agents-variant scorers ----------
 
 (defn- score-auction-agents [dir response]
-  (let [{:keys [text spawn-count ask-count send-count]} (trace-summary dir)
+  (let [{:keys [text spawn-count spawn-ask-count ask-count send-count
+                response-ops program-ops]} (trace-summary dir)
         all-handles? (contains-all? text [":bidder-a" ":bidder-b" ":bidder-c"])
+        delegations (+ spawn-count spawn-ask-count)
+        communications (+ spawn-ask-count ask-count send-count)
         winner? (boolean (re-find #"(?i)winner|winning" (final-text dir response)))]
     {:success (and (:ok response) all-handles? winner?
-                   (>= spawn-count 3)
-                   (>= (+ ask-count send-count) 3))
-     :orchestration (and all-handles? (>= spawn-count 3)
-                         (>= (+ ask-count send-count) 3))
-     :scheme (and all-handles? (>= spawn-count 3))
+                   (>= delegations 3)
+                   (>= communications 3))
+     :orchestration (and all-handles? (>= delegations 3)
+                         (>= communications 3))
+     :scheme (and all-handles? (>= delegations 3))
      :evidence {:all-bidder-handles all-handles?
                 :spawn-count spawn-count
+                :spawn-ask-count spawn-ask-count
                 :ask-count ask-count
                 :send-count send-count
-                :winner-mentioned winner?}
+                :winner-mentioned winner?
+                :response-ops response-ops
+                :program-ops program-ops}
      :notes (when-not (:ok response) (:error response))}))
 
 (defn- score-twenty-questions-agents [dir response]
-  (let [{:keys [text spawn-count ask-count reply-ask-count send-count]} (trace-summary dir)
+  (let [{:keys [text spawn-count spawn-ask-count ask-count reply-ask-count
+                send-count response-ops program-ops]} (trace-summary dir)
         final (str/lower-case (final-text dir response))
         worker? (str/includes? text ":worker")
+        delegations (+ spawn-count spawn-ask-count)
+        communications (+ spawn-ask-count ask-count reply-ask-count send-count)
         guessed? (and (str/includes? final "elephant")
                       (boolean (re-find #"guess|guessed|worker-guessed" final)))]
-    {:success (and (:ok response) worker? guessed? (>= spawn-count 1)
-                   (>= (+ ask-count reply-ask-count) 1))
-     :orchestration (and worker? (>= spawn-count 1)
-                         (>= (+ ask-count reply-ask-count send-count) 1))
-     :scheme (and worker? (>= (+ ask-count reply-ask-count) 1))
+    {:success (and (:ok response) worker? guessed? (>= delegations 1)
+                   (>= communications 1))
+     :orchestration (and worker? (>= delegations 1)
+                         (>= communications 1))
+     :scheme (and worker? (>= communications 1))
      :evidence {:worker-handle worker?
                 :spawn-count spawn-count
+                :spawn-ask-count spawn-ask-count
                 :ask-count ask-count
                 :reply-ask-count reply-ask-count
                 :send-count send-count
-                :elephant-and-guess-mentioned guessed?}
+                :elephant-and-guess-mentioned guessed?
+                :response-ops response-ops
+                :program-ops program-ops}
      :notes (when-not (:ok response) (:error response))}))
 
 (defn- score-telephone-agents [dir response]
-  (let [{:keys [text spawn-count ask-count send-count]} (trace-summary dir)
+  (let [{:keys [text spawn-count spawn-ask-count ask-count send-count
+                response-ops program-ops]} (trace-summary dir)
         final (str/lower-case (final-text dir response))
         handles? (contains-all? text (map #(str ":relay-" %) (range 1 9)))
+        delegations (+ spawn-count spawn-ask-count)
+        communications (+ spawn-ask-count ask-count send-count)
         meaning? (and (str/includes? final "museum")
                       (or (str/includes? final "five") (str/includes? final "5"))
                       (str/includes? final "storm"))
         changed? (not (str/includes? final
                                      "the museum closes at five because the winter storm is approaching"))]
     {:success (and (:ok response) handles? meaning? changed?
-                   (>= spawn-count 8) (>= (+ ask-count send-count) 8))
-     :orchestration (and handles? (>= spawn-count 8)
-                         (>= (+ ask-count send-count) 8))
-     :scheme (and handles? (>= spawn-count 8))
+                   (>= delegations 8) (>= communications 8))
+     :orchestration (and handles? (>= delegations 8)
+                         (>= communications 8))
+     :scheme (and handles? (>= delegations 8))
      :evidence {:all-relay-handles handles?
                 :spawn-count spawn-count
+                :spawn-ask-count spawn-ask-count
                 :ask-count ask-count
                 :send-count send-count
                 :meaning-keywords meaning?
-                :not-identical changed?}
+                :not-identical changed?
+                :response-ops response-ops
+                :program-ops program-ops}
      :notes (when-not (:ok response) (:error response))}))
 
 ;; ---------- :llm-self-variant scorers ----------
 
 (defn- score-auction-llm-self [dir response]
-  (let [{:keys [llm-self-count leaf-llm-count]} (trace-summary dir)
+  (let [{:keys [llm-self-count leaf-llm-count response-ops program-ops]} (trace-summary dir)
         delegations (+ llm-self-count leaf-llm-count)
         winner? (boolean (re-find #"(?i)winner|winning" (final-text dir response)))]
     {:success (and (:ok response) winner? (>= delegations 3))
@@ -622,11 +695,13 @@
      :scheme (>= delegations 3)
      :evidence {:llm-self-count llm-self-count
                 :leaf-llm-count leaf-llm-count
-                :winner-mentioned winner?}
+                :winner-mentioned winner?
+                :response-ops response-ops
+                :program-ops program-ops}
      :notes (when-not (:ok response) (:error response))}))
 
 (defn- score-twenty-questions-llm-self [dir response]
-  (let [{:keys [llm-self-count leaf-llm-count]} (trace-summary dir)
+  (let [{:keys [llm-self-count leaf-llm-count response-ops program-ops]} (trace-summary dir)
         final (str/lower-case (final-text dir response))
         delegations (+ llm-self-count leaf-llm-count)
         guessed? (and (str/includes? final "elephant")
@@ -636,11 +711,13 @@
      :scheme (>= delegations 1)
      :evidence {:llm-self-count llm-self-count
                 :leaf-llm-count leaf-llm-count
-                :elephant-and-guess-mentioned guessed?}
+                :elephant-and-guess-mentioned guessed?
+                :response-ops response-ops
+                :program-ops program-ops}
      :notes (when-not (:ok response) (:error response))}))
 
 (defn- score-telephone-llm-self [dir response]
-  (let [{:keys [llm-self-count leaf-llm-count]} (trace-summary dir)
+  (let [{:keys [llm-self-count leaf-llm-count response-ops program-ops]} (trace-summary dir)
         final (str/lower-case (final-text dir response))
         delegations (+ llm-self-count leaf-llm-count)
         meaning? (and (str/includes? final "museum")
@@ -654,7 +731,9 @@
      :evidence {:llm-self-count llm-self-count
                 :leaf-llm-count leaf-llm-count
                 :meaning-keywords meaning?
-                :not-identical changed?}
+                :not-identical changed?
+                :response-ops response-ops
+                :program-ops program-ops}
      :notes (when-not (:ok response) (:error response))}))
 
 (def scorers
