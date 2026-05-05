@@ -15,6 +15,7 @@ Options:
   --parallel N          Concurrent trial processes. Default: 4
   --output-root DIR     Output root. Default: logs/orchestration-games-<timestamp>
   --agent FILE          Override Spell agent config. Default: per-game harness profile
+  --prompt-profile P    Prompt profile: scaffold or minimal. Default: scaffold
   --reasoning-effort E  Provider reasoning effort. Default: high
   --budget USD          Per-trial Spell budget; 0 means unlimited. Default: 0
   --depth N             Per-trial recursion depth. Default: 80
@@ -33,6 +34,7 @@ attempts=4
 parallel=4
 output_root="logs/orchestration-games-$(date +%Y%m%d-%H%M%S)"
 agent=""
+prompt_profile="scaffold"
 reasoning_effort="high"
 budget=0
 depth=80
@@ -49,6 +51,7 @@ while [[ $# -gt 0 ]]; do
     --parallel) parallel="$2"; shift 2 ;;
     --output-root) output_root="$2"; shift 2 ;;
     --agent) agent="$2"; shift 2 ;;
+    --prompt-profile) prompt_profile="$2"; shift 2 ;;
     --reasoning-effort) reasoning_effort="$2"; shift 2 ;;
     --budget) budget="$2"; shift 2 ;;
     --depth) depth="$2"; shift 2 ;;
@@ -139,6 +142,7 @@ run_one() {
     --attempts 1
     --attempt-offset "$attempt"
     --output-root "$output_root"
+    --prompt-profile "$prompt_profile"
     --reasoning-effort "$reasoning_effort"
     --budget "$budget"
     --depth "$depth"

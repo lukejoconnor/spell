@@ -113,6 +113,32 @@
    :telephone-agents        telephone-agents-prompt
    :telephone-llm-self      telephone-llm-self-prompt})
 
+(def minimal-prompts
+  "Less-instructive ablation prompts for the required scaffold-vs-minimal
+   comparison. These keep the game/namespace requirement but omit the v4/v5
+   executable scaffolding and child-return protocol."
+  {:auction-agents
+   "Run a sealed-bid auction for a painting. Use agents/ to get bids from three bidder agents, then announce the winner."
+
+   :auction-llm-self
+   "Run a sealed-bid auction for a painting. Use !llm-self to get three independent bidder bids, then announce the winner."
+
+   :twenty-questions-agents
+   "Play 20 questions with secret animal elephant. Use an agents/ worker that asks questions or guesses while you answer truthfully."
+
+   :twenty-questions-llm-self
+   "Play 20 questions with secret animal elephant. Use !llm-self calls as the worker that asks questions or guesses while you answer truthfully."
+
+   :telephone-agents
+   "Play telephone with 8 relay agents using agents/. Start with: The museum closes at five because the winter storm is approaching. Report the final wording."
+
+   :telephone-llm-self
+   "Play telephone with 8 !llm-self stages. Start with: The museum closes at five because the winter storm is approaching. Report the final wording."})
+
+(def prompt-profiles
+  {:scaffold prompts
+   :minimal minimal-prompts})
+
 (def default-agent-by-game
   {:auction-agents            "config/agents/io-tc.agent.edn"
    :auction-llm-self          "config/agents/base-tc.agent.edn"
@@ -140,6 +166,8 @@
    ["-o" "--output-root DIR" "Output root"
     :default default-output-root]
    [nil "--agent FILE" "Override Spell agent config (default per-game)"]
+   [nil "--prompt-profile PROFILE" "Prompt profile: scaffold or minimal"
+    :default "scaffold"]
    [nil "--only-missing" "Skip trials with existing response.json"]
    [nil "--budget USD" "Per-trial budget; 0 means unlimited"
     :parse-fn parse-double
@@ -175,6 +203,15 @@
        (map str/trim)
        (remove str/blank?)
        vec))
+
+(defn- prompt-profile-key [opts]
+  (keyword (or (:prompt-profile opts) "scaffold")))
+
+(defn- prompts-for-profile [profile]
+  (or (get prompt-profiles profile)
+      (throw (ex-info (str "Unknown prompt profile: " (name profile))
+                      {:profile profile
+                       :known (sort (map name (keys prompt-profiles)))}))))
 
 (defn- parse-games [s]
   (if (or (nil? s) (= "all" (str/lower-case s)))
@@ -409,15 +446,33 @@
          "'" trailing
          ")))")))
 
+(defn- build-minimal-init
+  "Build the less-instructive ablation init: prompt quine plus plain extend.
+   This intentionally omits task-note and first-action scaffolding."
+  [prompt]
+  (str "(quine completion (eval (do "
+       "(quine prompt \"" (escape-spell-string prompt) "\") "
+       "'(!extend))))"))
+
+(defn- build-init-for-profile [profile game prompt]
+  (case profile
+    :scaffold (build-seeded-init game prompt)
+    :minimal (build-minimal-init prompt)
+    (throw (ex-info (str "Unknown prompt profile: " (name profile))
+                    {:profile profile}))))
+
 (defn- request-map [opts game model attempt dir]
-  (let [prompt (get prompts game)
+  (let [profile (prompt-profile-key opts)
+        prompts (prompts-for-profile profile)
+        prompt (get prompts game)
         agent (or (:agent opts)
                   (default-agent-by-game game)
                   "config/agents/io-tc.agent.edn")
-        init (build-seeded-init game prompt)]
+        init (build-init-for-profile profile game prompt)]
     {:game (name game)
      :model model
      :attempt attempt
+     :prompt-profile (name profile)
      :prompt prompt
      :init init
      :agent agent
@@ -490,6 +545,7 @@
                               :game (name game)
                               :model model
                               :attempt attempt
+                              :prompt-profile (:prompt-profile request)
                               :started-ms started
                               :finished-ms finished
                               :latency-ms (- finished started)
@@ -504,7 +560,7 @@
                        (+ (:attempt-offset opts) (:attempts opts)))]
     [game model attempt]))
 
-(defn- write-prompts! [output-root]
+(defn- write-prompts! [output-root prompts]
   (doseq [[game prompt] prompts]
     (let [path (io/file output-root "prompts" (str (name game) ".txt"))]
       (mkdirs! (.getParent path))
@@ -759,6 +815,7 @@
         (merge {:game (:game response)
                 :model (:model response)
                 :attempt (:attempt response)
+                :prompt-profile (:prompt-profile response)
                 :ok (:ok response)
                 :dir dir
                 :trace-dir (:trace-dir response)
@@ -778,9 +835,10 @@
 
 (defn- summarize [scores]
   (->> scores
-       (group-by (juxt :model :game))
-       (map (fn [[[model game] rows]]
+       (group-by (juxt :model :prompt-profile :game))
+       (map (fn [[[model prompt-profile game] rows]]
               {:model model
+               :prompt-profile prompt-profile
                :game game
                :attempts (count rows)
                :successes (count (filter :success rows))
@@ -788,7 +846,7 @@
                :scheme (count (filter :scheme rows))
                :errors (count (remove :ok rows))
                :cost-usd (reduce + 0.0 (keep :cost-usd rows))}))
-       (sort-by (juxt :model :game))
+       (sort-by (juxt :model :prompt-profile :game))
        vec))
 
 (defn- markdown-summary [summary scores]
@@ -797,18 +855,18 @@
    "Scores are computed from saved responses and traces. Treat the helper score "
    "as conservative preliminary scoring; raw evidence is retained beside each "
    "trial for manual audit.\n\n"
-   "| Model | Game | Success | Orchestration | Scheme | Errors | Cost |\n"
-   "|---|---:|---:|---:|---:|---:|---:|\n"
+   "| Model | Profile | Game | Success | Orchestration | Scheme | Errors | Cost |\n"
+   "|---|---|---:|---:|---:|---:|---:|---:|\n"
    (apply str
-          (for [{:keys [model game attempts successes orchestration scheme errors cost-usd]} summary]
-            (format "| `%s` | %s | %d/%d | %d/%d | %d/%d | %d | $%.4f |\n"
-                    model game successes attempts orchestration attempts scheme attempts
+          (for [{:keys [model prompt-profile game attempts successes orchestration scheme errors cost-usd]} summary]
+            (format "| `%s` | %s | %s | %d/%d | %d/%d | %d/%d | %d | $%.4f |\n"
+                    model (or prompt-profile "") game successes attempts orchestration attempts scheme attempts
                     errors (double (or cost-usd 0.0)))))
    "\n## Trial Evidence\n\n"
    (apply str
-          (for [{:keys [model game attempt success orchestration scheme dir evidence notes]} scores]
-            (format "- `%s` %s attempt %s: success=%s orchestration=%s scheme=%s evidence=`%s` dir=`%s`%s\n"
-                    model game attempt success orchestration scheme (pr-str evidence) dir
+          (for [{:keys [model prompt-profile game attempt success orchestration scheme dir evidence notes]} scores]
+            (format "- `%s` %s %s attempt %s: success=%s orchestration=%s scheme=%s evidence=`%s` dir=`%s`%s\n"
+                    model (or prompt-profile "") game attempt success orchestration scheme (pr-str evidence) dir
                     (if notes (str " notes=" (pr-str notes)) ""))))))
 
 (defn score! [output-root]
@@ -821,13 +879,15 @@
     {:scores scores :summary summary}))
 
 (defn run-command! [opts]
-  (write-prompts! (:output-root opts))
-  (doseq [[game model attempt] (planned-trials opts)]
-    (when-not (contains? prompts game)
-      (throw (ex-info (str "Unknown game: " game) {:game game})))
-    (run-trial! opts game model attempt))
-  (when-not (or (:dry-run opts) (:no-score opts))
-    (score! (:output-root opts))))
+  (let [profile (prompt-profile-key opts)
+        prompts (prompts-for-profile profile)]
+    (write-prompts! (:output-root opts) prompts)
+    (doseq [[game model attempt] (planned-trials opts)]
+      (when-not (contains? prompts game)
+        (throw (ex-info (str "Unknown game: " game) {:game game})))
+      (run-trial! opts game model attempt))
+    (when-not (or (:dry-run opts) (:no-score opts))
+      (score! (:output-root opts)))))
 
 (defn -main [& args]
   (let [command (if (or (empty? args)
@@ -861,7 +921,8 @@
 
       (= command "prompts")
       (do
-        (write-prompts! (:output-root options))
+        (write-prompts! (:output-root options)
+                        (prompts-for-profile (prompt-profile-key options)))
         (shutdown-agents)
         (System/exit 0))
 
