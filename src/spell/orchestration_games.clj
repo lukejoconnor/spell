@@ -406,16 +406,20 @@
                     (if (= n 1) "the starter" "relay k-1")
                     ". Rephrase that wording while preserving the meaning.\n\n"
                     (if next-handle
-                      (str "Then send the new wording directly to "
+                      (str "Your whole response must be exactly two Spell "
+                           "forms and no prose:\n"
+                           "(def new-wording \"your rephrased sentence\")\n"
+                           "'(do (agents/send "
                            next-handle
-                           " with (agents/send "
-                           next-handle
-                           " new-wording), and return the same new wording "
-                           "as your completion value.\n")
-                      "Return the new wording as your completion value. Do not send it through the main agent.\n")
-                    "Return only executable Spell. The new wording must be a "
-                    "single string value containing a sentence about the "
-                    "museum, five o'clock, and the approaching winter storm.")]
+                           " new-wording) new-wording)\n\n"
+                           "The agents/send call must stay inside the quoted "
+                           "trailing do form.\n")
+                      (str "Your whole response must be exactly one Spell "
+                           "string literal: \"your rephrased sentence\". "
+                           "Do not send it through the main agent.\n"))
+                    "The new wording must contain a sentence about the "
+                    "museum, five o'clock, and the approaching winter storm. "
+                    "Do not emit think forms, markdown, XML tags, or prose.")]
     (str "(quine completion (eval (do "
          "(quine prompt " (pr-str prompt) ") "
          "{:ready true :relay " n "}))))")))
@@ -487,24 +491,48 @@
 
 (defn- telephone-llm-self-code []
   (str "(let [rephrase-prefix "
-       "(fn [relay-name wording] "
+       "(fn [relay-name wording warning] "
        "(let [task (str \"You are \" relay-name "
        "\" in a telephone game. Rephrase this wording while preserving the meaning: \\\"\" "
        "wording "
        "\"\\\". Return exactly one Spell string literal with only the rephrased sentence. "
-       "Do not write prose. Example completion: \\\"The museum will shut at 5 because a winter storm is coming.\\\"\")] "
+       "Do not write prose, think forms, XML tags, or code. "
+       "The sentence must still mention the museum, five o'clock, and the approaching winter storm. \" "
+       "warning "
+       "\" Example completion: \\\"The museum will shut at 5 because a winter storm is coming.\\\"\")] "
        "(str \"(quine completion (eval (do \" "
        "\"(quine prompt \" (pr-str task) \") \" "
        "\"(def task \" (pr-str task) \") \" "
-       "\"(think \" (pr-str (str \"TASK: \" task)) \") \"))) "
-       "w1 (!llm-self (rephrase-prefix \"relay 1\" " (spell-string initial-message) ")) "
-       "w2 (!llm-self (rephrase-prefix \"relay 2\" w1)) "
-       "w3 (!llm-self (rephrase-prefix \"relay 3\" w2)) "
-       "w4 (!llm-self (rephrase-prefix \"relay 4\" w3)) "
-       "w5 (!llm-self (rephrase-prefix \"relay 5\" w4)) "
-       "w6 (!llm-self (rephrase-prefix \"relay 6\" w5)) "
-       "w7 (!llm-self (rephrase-prefix \"relay 7\" w6)) "
-       "w8 (!llm-self (rephrase-prefix \"relay 8\" w7))] "
+       "\"(think \" (pr-str (str \"TASK: \" task \" The next token must be a double quote.\")) \") \"))) "
+       "valid-wording? "
+       "(fn [wording] "
+       "(let [s (strings/lower-case (str wording))] "
+       "(and (not (strings/blank? s)) "
+       "(strings/includes? s \"museum\") "
+       "(strings/includes? s \"storm\") "
+       "(or (strings/includes? s \"five\") (strings/includes? s \"5\"))))) "
+       "ensure-wording "
+       "(fn [relay-name previous candidate] "
+       "(if (valid-wording? candidate) "
+       "candidate "
+       "(!llm-self (rephrase-prefix relay-name previous "
+       "(str \"The previous attempt returned invalid output: \" (pr-str candidate) \". Try again.\"))))) "
+       "raw1 (!llm-self (rephrase-prefix \"relay 1\" " (spell-string initial-message) " \"\")) "
+       "w1 (ensure-wording \"relay 1\" " (spell-string initial-message) " raw1) "
+       "raw2 (!llm-self (rephrase-prefix \"relay 2\" w1 \"\")) "
+       "w2 (ensure-wording \"relay 2\" w1 raw2) "
+       "raw3 (!llm-self (rephrase-prefix \"relay 3\" w2 \"\")) "
+       "w3 (ensure-wording \"relay 3\" w2 raw3) "
+       "raw4 (!llm-self (rephrase-prefix \"relay 4\" w3 \"\")) "
+       "w4 (ensure-wording \"relay 4\" w3 raw4) "
+       "raw5 (!llm-self (rephrase-prefix \"relay 5\" w4 \"\")) "
+       "w5 (ensure-wording \"relay 5\" w4 raw5) "
+       "raw6 (!llm-self (rephrase-prefix \"relay 6\" w5 \"\")) "
+       "w6 (ensure-wording \"relay 6\" w5 raw6) "
+       "raw7 (!llm-self (rephrase-prefix \"relay 7\" w6 \"\")) "
+       "w7 (ensure-wording \"relay 7\" w6 raw7) "
+       "raw8 (!llm-self (rephrase-prefix \"relay 8\" w7 \"\")) "
+       "w8 (ensure-wording \"relay 8\" w7 raw8)] "
        (telephone-report-code "w8")
        ")"))
 

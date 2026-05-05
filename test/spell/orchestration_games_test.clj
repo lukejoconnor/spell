@@ -57,8 +57,9 @@
       (is (not (str/includes? (:init telephone-agents) "The museum will shut at five because a winter storm is coming."))))
     (testing "telephone llm-self scaffold feeds each stage from the previous returned wording"
       (is (str/includes? (:prompt telephone-llm-self) "call k-1"))
-      (is (str/includes? (:init telephone-llm-self) "w2 (!llm-self (rephrase-prefix \"relay 2\" w1))"))
-      (is (str/includes? (:init telephone-llm-self) "w8 (!llm-self (rephrase-prefix \"relay 8\" w7))")))
+      (is (str/includes? (:init telephone-llm-self) "raw2 (!llm-self (rephrase-prefix \"relay 2\" w1 \"\"))"))
+      (is (str/includes? (:init telephone-llm-self) "raw8 (!llm-self (rephrase-prefix \"relay 8\" w7 \"\"))"))
+      (is (str/includes? (:init telephone-llm-self) "ensure-wording")))
     (testing "minimal profile is the less-instructive ablation"
       (is (= "minimal" (:prompt-profile minimal)))
       (is (str/includes? (:prompt minimal) "Use agents/"))
