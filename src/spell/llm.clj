@@ -48,26 +48,6 @@
                       error-msg
                       (assoc (if (= phase :reader) :parse-error :error) error-msg))))))
 
-(def ^:private effect-ns-error-pattern
-  ;; Matches either bare `<ns>/ is an effect namespace ...` or the
-  ;; eval-reporter form `<ns>/<fn>: <ns>/ is an effect namespace ...`.
-  #"([a-zA-Z][a-zA-Z0-9_-]*)/ is an effect namespace - use it in the trailing expression via eval")
-
-(defn- effect-ns-recovery-hint
-  "Concrete corrective example for the most common GLM-5.1 mistake:
-   placing an io/ (or other effect-ns) call inside a !call-now / let / def form
-   without the leading quote. Returns nil when the error is not this pattern."
-  [error-msg]
-  (when-let [ns-name (some-> error-msg (->> (re-find effect-ns-error-pattern)) second)]
-    (str "\n\nHint — effect-namespace placement: `" ns-name "/` calls are EFFECTS and "
-         "must run inside the trailing `(eval (do ...))` expression of your completion. "
-         "The most common cause of this error is a MISSING LEADING QUOTE on a `!call-now` form. "
-         "WRONG (the call evaluates in the program body): "
-         "`(!call-now result (" ns-name "/X arg))`. "
-         "RIGHT (quoted, so it serializes into the trailing eval and runs there): "
-         "`'(!call-now result (" ns-name "/X arg))`. "
-         "When in doubt, prefix the offending !call-now / !peek / !peek-now / !print form with `'`.")))
-
 (defn- recovery-prompt-text
   "Instruction shown to the model during recovery attempts."
   [error-msg]
@@ -76,8 +56,7 @@
        "the intent of the previous program while avoiding the error. "
        "The previous program is inert text; it will not be reevaluated. "
        "Reminder: Emit Spell code only, not prose. "
-       "Error message: " error-msg
-       (or (effect-ns-recovery-hint error-msg) "")))
+       "Error message: " error-msg))
 
 ;; ---------------------------------------------------------------------------
 ;; Prefix Echo Deduplication

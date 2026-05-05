@@ -26,31 +26,6 @@
   [& forms]
   (#'runtime/append-forms-macro forms))
 
-(deftest recovery-prompt-effect-ns-hint-test
-  (testing "io/ effect-namespace error appends a corrective leading-quote example"
-    (let [text (#'llm/recovery-prompt-text
-                "io/ is an effect namespace - use it in the trailing expression via eval")]
-      (is (str/includes? text "Hint — effect-namespace placement"))
-      (is (str/includes? text "io/"))
-      (is (str/includes? text "MISSING LEADING QUOTE"))
-      (is (str/includes? text "'(!call-now"))))
-
-  (testing "function-prefixed effect-namespace error (the form the eval reporter emits) also fires"
-    (let [text (#'llm/recovery-prompt-text
-                "io/read-lines: io/ is an effect namespace - use it in the trailing expression via eval")]
-      (is (str/includes? text "MISSING LEADING QUOTE"))))
-
-  (testing "agents/ effect-namespace error (eval-reporter prefix form) also produces the hint"
-    (let [text (#'llm/recovery-prompt-text
-                "agents/spawn: agents/ is an effect namespace - use it in the trailing expression via eval")]
-      (is (str/includes? text "agents/"))
-      (is (str/includes? text "MISSING LEADING QUOTE"))))
-
-  (testing "unrelated errors do NOT trigger the hint"
-    (let [text (#'llm/recovery-prompt-text "Unbound symbol: foo-bar")]
-      (is (not (str/includes? text "MISSING LEADING QUOTE")))
-      (is (not (str/includes? text "Hint — effect-namespace"))))))
-
 (deftest llm-basic-test
   (testing "llm evaluates response and extracts return"
     ;; Prompt: "(do " -> Response: "(def return 42))"
