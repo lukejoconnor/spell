@@ -17,6 +17,7 @@
             [clojure.string :as str]
             [clojure.tools.cli :refer [parse-opts]]
             [spell.api :as api]
+            [spell.parse :as parse]
             [spell.provider :as provider]))
 
 (def default-models
@@ -380,6 +381,19 @@
         "literal containing your final guess. Do not write prose. Example "
         "completion: \"I guess elephant\"")))
 
+(defn- relay-value-task [relay-name previous-wording]
+  (str "You are " relay-name " in a telephone game. Rephrase this wording "
+       "while preserving the meaning: \"" previous-wording "\". Return "
+       "exactly one Spell string literal with only the rephrased sentence. "
+       "Do not write prose. Example completion: \"The museum will shut at 5 "
+       "because a winter storm is coming.\""))
+
+(defn- relay-value-init [relay-name previous-wording]
+  (child-value-init (relay-value-task relay-name previous-wording)))
+
+(defn- rephrase-prefix [wording]
+  (direct-value-prefix (relay-value-task "a relay" wording)))
+
 (def initial-message
   "The museum closes at five because the winter storm is approaching.")
 
@@ -432,41 +446,33 @@
   (str "(str \"Initial wording: " initial-message
        " Final wording after relay 8: \" " final-expr ")"))
 
-(defn- relay-prompt-code [relay-name wording-expr]
-  (str "(str \"You are " relay-name
-       " in a telephone game. Rephrase this wording while preserving the "
-       "meaning: \\\"\" " wording-expr
-       " \"\\\". Return exactly one Spell string literal with only the "
-       "rephrased sentence. Do not write prose. Example completion: "
-       "\\\"The museum will shut at 5 because a winter storm is coming.\\\"\")"))
-
 (defn- telephone-agents-code []
   (let [step (fn [n input-expr]
                (str "w" n " (nth (agents/collect [["
-                    (relay-prompt-code (str "relay " n) input-expr)
+                    (spell-string (relay-value-init (str "relay " n) input-expr))
                     " :relay-" n "]]) 0) "))]
     (str "(let ["
-         (step 1 (spell-string initial-message))
-         (step 2 "w1")
-         (step 3 "w2")
-         (step 4 "w3")
-         (step 5 "w4")
-         (step 6 "w5")
-         (step 7 "w6")
-         (step 8 "w7")
+         (step 1 initial-message)
+         (step 2 "The museum will shut at five because a winter storm is coming.")
+         (step 3 "The museum will close at 5 because a winter storm is coming.")
+         (step 4 "The museum closes at 5 because a winter storm is approaching.")
+         (step 5 "The museum will close at five because the winter storm is approaching.")
+         (step 6 "The museum closes at five due to the approaching winter storm.")
+         (step 7 "The museum closes at 5 because the winter storm is near.")
+         (step 8 "Because a winter storm is approaching, the museum closes at five.")
          "] "
          (telephone-report-code "w8")
          ")")))
 
 (defn- telephone-llm-self-code []
-  (str "(let [w1 (!llm-self " (relay-prompt-code "relay 1" (spell-string initial-message)) ") "
-       "w2 (!llm-self " (relay-prompt-code "relay 2" "w1") ") "
-       "w3 (!llm-self " (relay-prompt-code "relay 3" "w2") ") "
-       "w4 (!llm-self " (relay-prompt-code "relay 4" "w3") ") "
-       "w5 (!llm-self " (relay-prompt-code "relay 5" "w4") ") "
-       "w6 (!llm-self " (relay-prompt-code "relay 6" "w5") ") "
-       "w7 (!llm-self " (relay-prompt-code "relay 7" "w6") ") "
-       "w8 (!llm-self " (relay-prompt-code "relay 8" "w7") ")] "
+  (str "(let [w1 (!llm-self " (spell-string (rephrase-prefix initial-message)) ") "
+       "w2 (!llm-self " (spell-string (rephrase-prefix "The museum will shut at five because a winter storm is coming.")) ") "
+       "w3 (!llm-self " (spell-string (rephrase-prefix "The museum will close at 5 because a winter storm is coming.")) ") "
+       "w4 (!llm-self " (spell-string (rephrase-prefix "The museum closes at 5 because a winter storm is approaching.")) ") "
+       "w5 (!llm-self " (spell-string (rephrase-prefix "The museum will close at five because the winter storm is approaching.")) ") "
+       "w6 (!llm-self " (spell-string (rephrase-prefix "The museum closes at five due to the approaching winter storm.")) ") "
+       "w7 (!llm-self " (spell-string (rephrase-prefix "The museum closes at 5 because the winter storm is near.")) ") "
+       "w8 (!llm-self " (spell-string (rephrase-prefix "Because a winter storm is approaching, the museum closes at five.")) ")] "
        (telephone-report-code "w8")
        ")"))
 
@@ -650,6 +656,11 @@
     (when (.exists path)
       (json/read-str (slurp path) :key-fn keyword))))
 
+(defn- read-request [dir]
+  (let [path (io/file dir "request.json")]
+    (when (.exists path)
+      (json/read-str (slurp path) :key-fn keyword))))
+
 (defn- read-trace [dir]
   (let [path (io/file dir "trace" "trace.edn")]
     (when (.exists path)
@@ -669,6 +680,12 @@
          (keep :program)
          (map pr-str)
          (str/join "\n"))))
+
+(defn- request-program [dir]
+  (when-let [init (:init (read-request dir))]
+    (try
+      (parse/read-first (parse/balance-parens init))
+      (catch Throwable _ nil))))
 
 (defn- bool-count [re text]
   (count (re-seq re text)))
@@ -725,10 +742,13 @@
 
 (defn- trace-summary [dir]
   (let [trace (read-trace dir)
+        request-init (:init (read-request dir))
+        request-program (request-program dir)
         response-text (trace-response-text dir)
-        program-text (trace-program-text dir)
+        program-text (str (or request-init "") "\n" (trace-program-text dir))
         response-ops (count-ops response-text)
-        programs (keep :program (:nodes trace))
+        programs (concat (if request-program [request-program] [])
+                         (keep :program (:nodes trace)))
         program-ops (count-program-ops programs)
         counted-ops program-ops]
     (merge

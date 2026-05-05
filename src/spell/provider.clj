@@ -1558,13 +1558,14 @@
          (or prefix ""))))
 
 (defn- convert-think-tags [text]
-  (if-let [[match think-text] (re-find #"(?s)^\s*<think>(.*?)</think>\s*" (or text ""))]
+  (let [text (str/replace (or text "") #"(?s)^\s*</think>\s*" "")]
+    (if-let [[match think-text] (re-find #"(?s)^\s*<think>(.*?)</think>\s*" text)]
     (let [rest-text (subs text (count match))
           think-form (str "(think " (pr-str think-text) ")")]
       (if (str/blank? rest-text)
         think-form
         (str think-form " " rest-text)))
-    text))
+      text)))
 
 (defn- fireworks-reasoning-model? [model]
   (let [model (str/lower-case (or model ""))]
