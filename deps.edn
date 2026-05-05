@@ -22,6 +22,7 @@
                                    "-n" "spell.web-test"
                                    "-n" "spell.api-test"
                                    "-n" "spell.trace-test"
+                                   "-n" "spell.orchestration-games-test"
                                    "-n" "spell.macros-test"
                                    "-n" "spell.provider-test"]}
            ;; Slow tests — concurrency, I/O, filesystem watchers (~12s)

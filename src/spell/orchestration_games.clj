@@ -627,20 +627,22 @@
           :leaf-llm-count (bool-count #"leaf-llm" text)}))
 
 (defn- count-program-ops [programs]
-  (reduce
-   (fn [acc program]
-     (reduce
-      (fn [ops form]
-        (if-let [k (and (symbol? form) (op-symbols form))]
-          (update ops k inc)
-          ops))
-      acc
-      (tree-seq coll? seq program)))
-   zero-ops
-   programs))
-
-(defn- merge-ops [& ops-colls]
-  (apply merge-with + zero-ops ops-colls))
+  (letfn [(op-amount [form]
+            (if (and (seq? form) (= 'agents/!spawn-ask (first form)))
+              (let [arg (second form)]
+                (if (vector? arg) (count arg) 1))
+              1))]
+    (reduce
+     (fn [acc program]
+       (reduce
+        (fn [ops form]
+          (if-let [k (and (seq? form) (op-symbols (first form)))]
+            (update ops k + (op-amount form))
+            ops))
+        acc
+        (tree-seq coll? seq program)))
+     zero-ops
+     programs)))
 
 (defn- trace-summary [dir]
   (let [trace (read-trace dir)
@@ -649,7 +651,7 @@
         response-ops (count-ops response-text)
         programs (keep :program (:nodes trace))
         program-ops (count-program-ops programs)
-        combined-ops (merge-ops response-ops program-ops)]
+        counted-ops program-ops]
     (merge
      {:node-count (count (:nodes trace))
       :text (str program-text "\n" response-text)
@@ -657,7 +659,7 @@
       :program-text program-text
       :response-ops response-ops
       :program-ops program-ops}
-     combined-ops)))
+     counted-ops)))
 
 (defn- contains-all? [text parts]
   (every? #(str/includes? text %) parts))
