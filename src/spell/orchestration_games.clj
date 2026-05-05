@@ -328,8 +328,11 @@
    the final value expression directly, which avoids asking GLM to infer the
    task from a passive quine binding."
   [task]
-  (str "(quine completion (eval (do "
-       "(think \"" (escape-spell-string task) "\") "))
+  (let [escaped-task (escape-spell-string task)]
+    (str "(quine completion (eval (do "
+         "(quine prompt \"" escaped-task "\") "
+         "(def task \"" escaped-task "\") "
+         "(think \"TASK: " escaped-task "\") ")))
 
 (defn- child-send-init
   "Build an explicit init program for spawned children. Natural-language child
@@ -337,9 +340,12 @@
    that. This makes the child task visible as executable context and tells the
    child exactly how to return a value."
   [task]
-  (str "(quine completion (eval (do "
-       "(think \"" (escape-spell-string task) "\") "
-       "'(!extend))))"))
+  (let [escaped-task (escape-spell-string task)]
+    (str "(quine completion (eval (do "
+         "(quine prompt \"" escaped-task "\") "
+         "(def child-task \"" escaped-task "\") "
+         "(think \"TASK: " escaped-task "\") "
+         "'(!extend))))")))
 
 (defn- bidder-child-init [label]
   (child-send-init
@@ -440,9 +446,17 @@
                         "say no prefix was provided. Continue this game from "
                         "the current bindings and finish with the requested "
                         "result."))
+        next-step (escape-spell-string
+                   (str "After the seeded orchestration call returns, inspect "
+                        "the child message/result bindings already in scope. "
+                        "Use those child outputs to continue or finish the "
+                        "game. Do not restart the program, and do not say no "
+                        "prefix was provided."))
         trailing (init-trailing game)]
     (str "(quine completion (eval (do "
          "(quine prompt \"" escaped-prompt "\") "
+         "(def task \"" escaped-prompt "\") "
+         "(def next-step \"" next-step "\") "
          "(think \"" task-note "\") "
          "'" trailing
          ")))")))
