@@ -26,6 +26,18 @@
                                :reasoning-effort "high"
                                :prompt-profile "scaffold"}
                               :auction-agents "test:dummy" 0 "/tmp/og")
+        telephone-agents (request-map {:output-root "/tmp/og"
+                                       :depth 80
+                                       :budget 0.0
+                                       :reasoning-effort "high"
+                                       :prompt-profile "scaffold"}
+                                      :telephone-agents "test:dummy" 0 "/tmp/og")
+        telephone-llm-self (request-map {:output-root "/tmp/og"
+                                         :depth 80
+                                         :budget 0.0
+                                         :reasoning-effort "high"
+                                         :prompt-profile "scaffold"}
+                                        :telephone-llm-self "test:dummy" 0 "/tmp/og")
         minimal (request-map {:output-root "/tmp/og"
                               :depth 80
                               :budget 0.0
@@ -35,14 +47,24 @@
     (testing "scaffold profile records and seeds executable orchestration"
       (is (= "scaffold" (:prompt-profile scaffold)))
       (is (str/includes? (:init scaffold) "TASK:"))
-      (is (str/includes? (:init scaffold) "agents/collect"))
+      (is (str/includes? (:init scaffold) "agents/!spawn-ask"))
       (is (str/includes? (:init scaffold) ":bidder-a")))
+    (testing "telephone agents scaffold uses direct !spawn-ask relay handoff"
+      (is (str/includes? (:init telephone-agents) "agents/!spawn-ask"))
+      (is (str/includes? (:init telephone-agents) ":relay-1"))
+      (is (str/includes? (:init telephone-agents) "blocking/completion-promise :relay-8"))
+      (is (str/includes? (:init telephone-agents) "agents/send :relay-1"))
+      (is (not (str/includes? (:init telephone-agents) "The museum will shut at five because a winter storm is coming."))))
+    (testing "telephone llm-self scaffold feeds each stage from the previous returned wording"
+      (is (str/includes? (:prompt telephone-llm-self) "call k-1"))
+      (is (str/includes? (:init telephone-llm-self) "w2 (!llm-self (rephrase-prefix \"relay 2\" w1))"))
+      (is (str/includes? (:init telephone-llm-self) "w8 (!llm-self (rephrase-prefix \"relay 8\" w7))")))
     (testing "minimal profile is the less-instructive ablation"
       (is (= "minimal" (:prompt-profile minimal)))
       (is (str/includes? (:prompt minimal) "Use agents/"))
       (is (str/includes? (:init minimal) "'(!extend)"))
       (is (not (str/includes? (:init minimal) "TASK:")))
-      (is (not (str/includes? (:init minimal) "agents/collect")))
+      (is (not (str/includes? (:init minimal) "agents/!spawn-ask")))
       (is (not (str/includes? (:init minimal) ":bidder-a"))))))
 
 (deftest scorer-counts-parsed-program-ops-test

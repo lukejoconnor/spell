@@ -54,8 +54,9 @@
   (str
    "Run a sealed-bid auction for a painting using agents/. You are the "
    "orchestrator, not a bidder. Create three bidder agents with handles "
-   ":bidder-a, :bidder-b, and :bidder-c. Use agents/collect to get a "
-   "completion value from each child. Each child must choose one integer "
+   ":bidder-a, :bidder-b, and :bidder-c. Use agents/!spawn-ask to spawn "
+   "the children and wait through the normal message-wakeup path. Each child "
+   "must choose one integer "
    "bid from 100 to 1000. Bind the bids, compare them, and return a "
    "short final report naming the winner and all three bids. Do not invent "
    "bids in the main agent; the bids must come from the children."))
@@ -73,7 +74,7 @@
   (str
    "Play 20 questions using agents/. The secret animal is elephant, but the "
    ":worker child must not be told the secret. Spawn one worker agent with "
-   "agents/collect. The "
+   "agents/!spawn-ask. The "
    "worker asks yes/no questions or makes guesses; you answer truthfully. "
    "Keep the transcript in bindings. Stop when the worker guesses elephant "
    "or after 8 guesses. The worker's questions and guesses must arrive from "
@@ -93,18 +94,21 @@
   (str
    "Play a game of telephone using agents/. Initial message: \"The museum "
    "closes at five because the winter storm is approaching.\" Use "
-   "agents/collect to create relay agents :relay-1 through :relay-8. Each "
-   "relay receives the previous "
-   "wording, rephrases it while preserving the meaning, and sends the new "
-   "wording back to you. You then pass that wording to the next relay. "
-   "After :relay-8, report the initial and final wordings. The rephrasing "
-   "must come from the relay agents, not from you."))
+   "agents/!spawn-ask to create relay agents :relay-1 through :relay-8. You "
+   "may seed :relay-1 and wait for the final result, but do not mediate "
+   "intermediate hops. Each relay must receive the previous wording directly "
+   "from relay k-1, rephrase it while preserving the meaning, and send the new "
+   "wording directly to relay k+1. :relay-8 returns the final wording. Report "
+   "the initial and final wordings. The "
+   "rephrasing must come from the relay agents, not from you."))
 
 (def telephone-llm-self-prompt
   (str
    "Play a game of telephone using !llm-self. Initial message: \"The "
    "museum closes at five because the winter storm is approaching.\" Make "
-   "8 sequential !llm-self calls. Each child receives only the previous "
+   "8 sequential !llm-self calls. Each call k must receive the exact wording "
+   "returned by call k-1; do not prewrite or hard-code later-stage wordings. "
+   "Each child receives only the previous "
    "wording and returns one rephrased wording that preserves the meaning. "
    "Bind each stage. After stage 8, report the initial and final wordings. "
    "The rephrasing must come from the !llm-self calls, not from you."))
@@ -134,10 +138,10 @@
    "Play 20 questions with secret animal elephant. Use !llm-self calls as the worker that asks questions or guesses while you answer truthfully."
 
    :telephone-agents
-   "Play telephone with 8 relay agents using agents/. Start with: The museum closes at five because the winter storm is approaching. Report the final wording."
+   "Play telephone with 8 relay agents using agents/. Relay workers pass messages directly to the next worker. Start with: The museum closes at five because the winter storm is approaching. Report the final wording."
 
    :telephone-llm-self
-   "Play telephone with 8 !llm-self stages. Start with: The museum closes at five because the winter storm is approaching. Report the final wording."})
+   "Play telephone with 8 !llm-self stages. Each stage gets the previous stage's returned wording. Start with: The museum closes at five because the winter storm is approaching. Report the final wording."})
 
 (def prompt-profiles
   {:scaffold prompts
@@ -340,7 +344,7 @@
 
 (defn- child-value-init
   "Build an init program for a spawned child that should return one value as
-   its completion result. The parent collects the value with agents/collect."
+   its completion result. The parent receives the value through agents/!spawn-ask."
   [task]
   (let [escaped-task (escape-spell-string task)]
     (str "(quine completion (eval (do "
@@ -394,6 +398,28 @@
 (defn- rephrase-prefix [wording]
   (direct-value-prefix (relay-value-task "a relay" wording)))
 
+(defn- relay-agent-init [n]
+  (let [next-handle (when (< n 8) (str ":relay-" (inc n)))
+        prompt (str "You are relay " n " in a telephone game.\n\n"
+                    "On each wake, inspect the newest msg-* binding. Its "
+                    ":body is the previous wording, sent directly by "
+                    (if (= n 1) "the starter" "relay k-1")
+                    ". Rephrase that wording while preserving the meaning.\n\n"
+                    (if next-handle
+                      (str "Then send the new wording directly to "
+                           next-handle
+                           " with (agents/send "
+                           next-handle
+                           " new-wording), and return the same new wording "
+                           "as your completion value.\n")
+                      "Return the new wording as your completion value. Do not send it through the main agent.\n")
+                    "Return only executable Spell. The new wording must be a "
+                    "single string value containing a sentence about the "
+                    "museum, five o'clock, and the approaching winter storm.")]
+    (str "(quine completion (eval (do "
+         "(quine prompt " (pr-str prompt) ") "
+         "{:ready true :relay " n "}))))")))
+
 (def initial-message
   "The museum closes at five because the winter storm is approaching.")
 
@@ -410,12 +436,10 @@
        "\", bidder-c=\" bid-c \".\"))"))
 
 (defn- auction-agents-code []
-  (str "(let [bids (agents/collect [["
+  (str "(agents/!spawn-ask [["
        (spell-string (bidder-value-init "bidder A")) " :bidder-a] ["
        (spell-string (bidder-value-init "bidder B")) " :bidder-b] ["
-       (spell-string (bidder-value-init "bidder C")) " :bidder-c]])] "
-       (auction-report-code "(nth bids 0)" "(nth bids 1)" "(nth bids 2)")
-       ")"))
+       (spell-string (bidder-value-init "bidder C")) " :bidder-c]])"))
 
 (defn- auction-llm-self-code []
   (str "(let [bid-a (!llm-self " (spell-string (bid-prefix "bidder A")) ") "
@@ -431,10 +455,8 @@
        " Worker final guess: \" worker-guess))"))
 
 (defn- twenty-agents-code []
-  (str "(let [answers (agents/collect [["
-       (spell-string (worker-guess-init)) " :worker]])] "
-       (twenty-final-report-code "(nth answers 0)")
-       ")"))
+  (str "(agents/!spawn-ask [["
+       (spell-string (worker-guess-init)) " :worker]])"))
 
 (defn- twenty-llm-self-code []
   (str "(let [worker-guess (!llm-self "
@@ -443,47 +465,53 @@
        ")"))
 
 (defn- telephone-report-code [final-expr]
-  (str "(let [final-wording (if (= " final-expr " "
-       (spell-string initial-message) ") "
-       "\"Due to an approaching winter storm, the museum will close at five.\" "
-       final-expr ")] "
+  (str "(let [final-wording " final-expr "] "
        "(str \"Initial wording: " initial-message
        " Final wording after relay 8: \" final-wording))"))
 
 (defn- telephone-agents-code []
-  (let [step (fn [n input-expr]
-               (str "w" n " (nth (agents/collect [["
-                    (spell-string (relay-value-init (str "relay " n) input-expr))
-                    " :relay-" n "]]) 0) "))]
-    (str "(let ["
-         (step 1 initial-message)
-         (step 2 "The museum will shut at five because a winter storm is coming.")
-         (step 3 "The museum will close at 5 because a winter storm is coming.")
-         (step 4 "The museum closes at 5 because a winter storm is approaching.")
-         (step 5 "The museum will close at five because the winter storm is approaching.")
-         (step 6 "The museum closes at five due to the approaching winter storm.")
-         (step 7 "The museum closes at 5 because the winter storm is near.")
-         (step 8 "Because a winter storm is approaching, the museum closes at five.")
-         "] "
-         (telephone-report-code "w8")
-         ")")))
+  (str "(do "
+       "(agents/!spawn-ask ["
+       (apply str
+              (for [n (range 1 9)]
+                (str "[" (spell-string (relay-agent-init n)) " :relay-" n "] ")))
+       "]) "
+       "(!ask-await "
+       "(future "
+       "(let [final-token (blocking/completion-promise :relay-8) "
+       "_ (agents/send :relay-1 " (spell-string initial-message) ") "
+       "final-wording (blocking/await final-token)] "
+       "{:kind :telephone-final "
+       ":initial " (spell-string initial-message) " "
+       ":final final-wording}))))"))
 
 (defn- telephone-llm-self-code []
-  (str "(let [w1 (!llm-self " (spell-string (rephrase-prefix initial-message)) ") "
-       "w2 (!llm-self " (spell-string (rephrase-prefix "The museum will shut at five because a winter storm is coming.")) ") "
-       "w3 (!llm-self " (spell-string (rephrase-prefix "The museum will close at 5 because a winter storm is coming.")) ") "
-       "w4 (!llm-self " (spell-string (rephrase-prefix "The museum closes at 5 because a winter storm is approaching.")) ") "
-       "w5 (!llm-self " (spell-string (rephrase-prefix "The museum will close at five because the winter storm is approaching.")) ") "
-       "w6 (!llm-self " (spell-string (rephrase-prefix "The museum closes at five due to the approaching winter storm.")) ") "
-       "w7 (!llm-self " (spell-string (rephrase-prefix "The museum closes at 5 because the winter storm is near.")) ") "
-       "w8 (!llm-self " (spell-string (rephrase-prefix "Because a winter storm is approaching, the museum closes at five.")) ")] "
+  (str "(let [rephrase-prefix "
+       "(fn [relay-name wording] "
+       "(let [task (str \"You are \" relay-name "
+       "\" in a telephone game. Rephrase this wording while preserving the meaning: \\\"\" "
+       "wording "
+       "\"\\\". Return exactly one Spell string literal with only the rephrased sentence. "
+       "Do not write prose. Example completion: \\\"The museum will shut at 5 because a winter storm is coming.\\\"\")] "
+       "(str \"(quine completion (eval (do \" "
+       "\"(quine prompt \" (pr-str task) \") \" "
+       "\"(def task \" (pr-str task) \") \" "
+       "\"(think \" (pr-str (str \"TASK: \" task)) \") \"))) "
+       "w1 (!llm-self (rephrase-prefix \"relay 1\" " (spell-string initial-message) ")) "
+       "w2 (!llm-self (rephrase-prefix \"relay 2\" w1)) "
+       "w3 (!llm-self (rephrase-prefix \"relay 3\" w2)) "
+       "w4 (!llm-self (rephrase-prefix \"relay 4\" w3)) "
+       "w5 (!llm-self (rephrase-prefix \"relay 5\" w4)) "
+       "w6 (!llm-self (rephrase-prefix \"relay 6\" w5)) "
+       "w7 (!llm-self (rephrase-prefix \"relay 7\" w6)) "
+       "w8 (!llm-self (rephrase-prefix \"relay 8\" w7))] "
        (telephone-report-code "w8")
        ")"))
 
 (defn- init-trailing [game]
   ;; v7: provide a complete orchestration template. GLM still supplies child
-  ;; content through agents/collect or !llm-self, but the parent glue is no
-  ;; longer left to a fragile follow-up continuation.
+  ;; content through agents/!spawn-ask or !llm-self; the agents path still
+  ;; resumes through the normal message-wakeup continuation.
   (case game
     :auction-agents
     (auction-agents-code)
@@ -696,8 +724,8 @@
 
 (def op-symbols
   {'agents/spawn :spawn-count
+   'agents/register :register-count
    'agents/!spawn-ask :spawn-ask-count
-   'agents/collect :spawn-ask-count
    'agents/!ask :ask-count
    'agents/!reply-ask :reply-ask-count
    'agents/send :send-count
@@ -706,6 +734,7 @@
 
 (def zero-ops
   {:spawn-count 0
+   :register-count 0
    :spawn-ask-count 0
    :ask-count 0
    :reply-ask-count 0
@@ -719,6 +748,7 @@
 (defn- count-ops [text]
   (merge zero-ops
          {:spawn-count (bool-count #"agents/spawn" text)
+          :register-count (bool-count #"agents/register" text)
           :spawn-ask-count (bool-count #"agents/!spawn-ask" text)
           :ask-count (bool-count #"agents/!ask" text)
           :reply-ask-count (bool-count #"agents/!reply-ask" text)
@@ -728,7 +758,7 @@
 
 (defn- count-program-ops [programs]
   (letfn [(op-amount [form]
-            (if (and (seq? form) (#{'agents/!spawn-ask 'agents/collect} (first form)))
+            (if (and (seq? form) (= 'agents/!spawn-ask (first form)))
               (let [arg (second form)]
                 (if (vector? arg) (count arg) 1))
               1))]
@@ -824,12 +854,12 @@
      :notes (when-not (:ok response) (:error response))}))
 
 (defn- score-telephone-agents [dir response]
-  (let [{:keys [text spawn-count spawn-ask-count ask-count send-count
+  (let [{:keys [text spawn-count register-count spawn-ask-count ask-count send-count
                 response-ops program-ops]} (trace-summary dir)
         final (str/lower-case (final-text dir response))
         final-wording (telephone-final-wording final)
         handles? (contains-all? text (map #(str ":relay-" %) (range 1 9)))
-        delegations (+ spawn-count spawn-ask-count)
+        delegations (+ spawn-count register-count spawn-ask-count)
         communications (+ spawn-ask-count ask-count send-count)
         meaning? (and (str/includes? final-wording "museum")
                       (or (str/includes? final-wording "five") (str/includes? final-wording "5"))
@@ -843,6 +873,7 @@
      :scheme (and handles? (>= delegations 8))
      :evidence {:all-relay-handles handles?
                 :spawn-count spawn-count
+                :register-count register-count
                 :spawn-ask-count spawn-ask-count
                 :ask-count ask-count
                 :send-count send-count

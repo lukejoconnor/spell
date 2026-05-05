@@ -582,23 +582,6 @@
      (install-completion-notifier child)
      (block-for-message))))
 
-(defn collect
-  "Spawn child agent(s), wait for their completion values, and return them.
-   Prompt-only forms default the compiled agent to the current agent.
-   Vector form mirrors agents/!spawn-ask and returns a vector of child
-   completion values in the same order. Non-vector form returns one value."
-  [arg]
-  (assert-agent-context! "collect")
-  (let [multi? (vector? arg)
-        children (if multi?
-                   (mapv spawn-from-multi-spec arg)
-                   [(spawn-from-multi-spec arg)])
-        ;; Capture the current completion promises immediately after spawning;
-        ;; children reset their completion promise after delivery.
-        completions (mapv #(-> @registry (get %) :completed deref) children)
-        results (mapv deref completions)]
-    (if multi? results (first results))))
-
 ;; =============================================================================
 ;; Namespace maps
 ;; =============================================================================
@@ -863,20 +846,6 @@ Example:
 	  '(agents/!spawn-ask \"Compute 6*7 and (agents/send (agents/parent-handle) result)\")
 	  ;; next turn: (def msg-0 {:from :spawn-42 :body 42})"
 
-    :collect
-    "Spawn child agent(s) and return their completion values in the same turn.
-
-(agents/collect prompt)
-(agents/collect [prompt-a [prompt-b :b] ...])
-
-Like agents/!spawn-ask, prompt-only forms use the current agent, and vector
-entries may name children with [prompt :name]. Unlike agents/!spawn-ask, this
-does not wake the parent through an inbox message; it waits for child
-completion values and returns them directly.
-
-Example:
-  '(agents/collect [[\"Return 1\" :a] [\"Return 2\" :b]])"
-
     :current-handle
     "Returns your handle as a keyword.
 
@@ -907,7 +876,6 @@ Internal plumbing for the communication layer."}
    :!ask ask-builtin
    :spawn spawn
     :!spawn-ask spawn-ask
-    :collect collect
     :current-handle (fn [] *current-handle*)
    :parent-handle (fn [] (:parent-handle (get @registry *current-handle*)))
    :send-msg-fn send-msg-fn})
