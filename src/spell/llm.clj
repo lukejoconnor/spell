@@ -79,13 +79,6 @@
        "Reminder: Emit Spell code only, not prose. "
        "Error message: " error-msg))
 
-(defn- missing-tool-call-retry-message
-  "Instruction appended after a tool-call transport response omitted spell_suffix."
-  []
-  (str "\n;; system: retrying because the previous response did not call the required spell_suffix tool."
-       "\n;; Respond with exactly one spell_suffix tool call. Do not send assistant text, markdown, or a thinking-only response."
-       "\n;; The raw Spell suffix must be in the spell_suffix tool input."))
-
 ;; ---------------------------------------------------------------------------
 ;; Prefix Echo Deduplication
 ;; ---------------------------------------------------------------------------
@@ -498,13 +491,9 @@
                                         "Continue this Spell program."
                                         prompt-str)
                         response (provider/call-with-retries
-                                   (fn [err]
-                                     (let [user-msg (if (and err (= :missing-tool-call (:type (ex-data err))))
-                                                      (str base-user-msg
-                                                           (missing-tool-call-retry-message))
-                                                      base-user-msg)]
-                                       (provider/strip-code-fences
-                                         (provider/call-llm provider user-msg opts))))
+                                   (fn [_err]
+                                     (provider/strip-code-fences
+                                       (provider/call-llm provider base-user-msg opts)))
                                    provider/*retries*)]
                     (reset! prev-prompt-atom prompt-str)
                     (if prefill?
@@ -644,13 +633,9 @@
                opts     (cond-> {:system system}
                           model (assoc :model model))
                response (provider/call-with-retries
-                          (fn [err]
-                            (let [msg (if (and err (= :missing-tool-call (:type (ex-data err))))
-                                       (str prompt-str
-                                            (missing-tool-call-retry-message))
-                                       prompt-str)]
-                              (provider/strip-code-fences
-                                (provider/call-llm leaf-provider msg opts))))
+                          (fn [_err]
+                            (provider/strip-code-fences
+                              (provider/call-llm leaf-provider prompt-str opts)))
                           provider/*retries*)
                _        (eval/vlog (str indent "Response: " response))
                _        (when node-id

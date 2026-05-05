@@ -1757,16 +1757,18 @@
       (is (nil? (first @received-errs)) "first call should receive nil")
       (is (= missing-ex (second @received-errs)) "retry should receive the previous exception"))))
 
-(deftest missing-tool-call-retry-hint-in-compile-agent
-  (testing "retry hint is appended to user message on missing-tool-call retry"
+(deftest missing-tool-call-literal-retry-in-compile-agent
+  (testing "missing-tool-call retry repeats the same provider call"
     (let [call-count (atom 0)
           received-prompts (atom [])
+          received-opts (atom [])
           prov (reify provider/LLMProvider
                  (plain-text-provider [this] this)
                  (supports-prefill [_] true)
                  (call-llm [_ prompt] (provider/call-llm _ prompt {}))
                  (call-llm [_ prompt opts]
                    (swap! received-prompts conj prompt)
+                   (swap! received-opts conj opts)
                    (swap! call-count inc)
                    (if (= 1 @call-count)
                      (throw (ex-info "missing tool call"
@@ -1781,24 +1783,23 @@
       (is (= 2 @call-count))
       ;; First call: plain user message (prefill mode = "Continue this Spell program.")
       (is (= "Continue this Spell program." (first @received-prompts)))
-      ;; Second call: user message with retry hint appended
-      (is (clojure.string/includes? (second @received-prompts)
-                                     "retrying because the previous response did not call the required spell_suffix tool"))
-      (is (clojure.string/includes? (second @received-prompts)
-                                     "Do not send assistant text, markdown, or a thinking-only response"))
-      (is (clojure.string/includes? (second @received-prompts)
-                                     "The raw Spell suffix must be in the spell_suffix tool input")))))
+      (is (= [(first @received-prompts) (first @received-prompts)]
+             @received-prompts))
+      (is (= [(first @received-opts) (first @received-opts)]
+             @received-opts)))))
 
-(deftest missing-tool-call-retry-hint-in-leaf-llm
-  (testing "retry hint is appended in leaf-llm on missing-tool-call retry"
+(deftest missing-tool-call-literal-retry-in-leaf-llm
+  (testing "missing-tool-call retry repeats the same leaf provider call"
     (let [call-count (atom 0)
           received-prompts (atom [])
+          received-opts (atom [])
           prov (reify provider/LLMProvider
                  (plain-text-provider [this] this)
                  (supports-prefill [_] false)
                  (call-llm [_ prompt] (provider/call-llm _ prompt {}))
                  (call-llm [_ prompt opts]
                    (swap! received-prompts conj prompt)
+                   (swap! received-opts conj opts)
                    (swap! call-count inc)
                    (if (= 1 @call-count)
                      (throw (ex-info "missing tool call"
@@ -1810,13 +1811,9 @@
       (is (= 2 @call-count))
       ;; First call: plain prompt
       (is (= "hi" (first @received-prompts)))
-      ;; Second call: prompt with retry hint
-      (is (clojure.string/includes? (second @received-prompts)
-                                     "retrying because the previous response did not call the required spell_suffix tool"))
-      (is (clojure.string/includes? (second @received-prompts)
-                                     "Do not send assistant text, markdown, or a thinking-only response"))
-      (is (clojure.string/includes? (second @received-prompts)
-                                     "The raw Spell suffix must be in the spell_suffix tool input"))))
+      (is (= ["hi" "hi"] @received-prompts))
+      (is (= [(first @received-opts) (first @received-opts)]
+             @received-opts))))
 
   (testing "leaf-llm uses the provider's plain-text sibling instead of the parent transport"
     (let [main-calls (atom 0)
