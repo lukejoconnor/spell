@@ -50,61 +50,60 @@
 
 (def auction-agents-prompt
   (str
-   "Run a sealed-bid auction for a painting. Spawn three bidder agents "
-   "(handles :bidder-a, :bidder-b, :bidder-c) using the agents/ namespace. "
-   "Each bidder independently picks one integer bid in 100-1000 and sends "
-   "it back to you. Collect the three bids and announce the winner. The "
-   "bids must come from the bidder agents, not from you."))
+   "Run a sealed-bid auction for a painting using agents/. You are the "
+   "orchestrator, not a bidder. Create three bidder agents with handles "
+   ":bidder-a, :bidder-b, and :bidder-c. Each child must choose one integer "
+   "bid from 100 to 1000 and send it to you with agents/send. After you "
+   "receive all three messages, bind the bids, compare them, and return a "
+   "short final report naming the winner and all three bids. Do not invent "
+   "bids in the main agent; the bids must arrive from the children."))
 
 (def auction-llm-self-prompt
   (str
-   "Run a sealed-bid auction for a painting. Pick three bids by making "
-   "three independent !llm-self subcalls — one per bidder. Each subcall "
-   "should return an integer bid in 100-1000. Capture the three bids and "
-   "announce the winner. The bids must come from the !llm-self children, "
-   "not from you."))
+   "Run a sealed-bid auction for a painting using !llm-self. You are the "
+   "orchestrator, not a bidder. Make three independent !llm-self calls, one "
+   "per bidder; each child call must return one integer bid from 100 to "
+   "1000. Bind the three returned bids, compare them, and return a short "
+   "final report naming the winner and all three bids. Do not invent bids "
+   "in the main agent; the bids must be returned by the !llm-self calls."))
 
 (def twenty-questions-agents-prompt
   (str
-   "Play 20 questions, with a guess limit of 8. The secret animal is "
-   "elephant. Spawn one worker agent (handle :worker) using the agents/ "
-   "namespace; the worker does NOT know the answer, only that it is an "
-   "animal. Drive the conversation: the worker asks yes/no questions or "
-   "makes a guess; you reply yes/no truthfully. Stop when the worker "
-   "guesses elephant or runs out of guesses. The worker's questions and "
-   "guesses must come from the worker agent, not from you."))
+   "Play 20 questions using agents/. The secret animal is elephant, but the "
+   ":worker child must not be told the secret. Spawn one worker agent. The "
+   "worker asks yes/no questions or makes guesses; you answer truthfully. "
+   "Keep the transcript in bindings. Stop when the worker guesses elephant "
+   "or after 8 guesses. The worker's questions and guesses must arrive from "
+   "the worker agent, not from you."))
 
 (def twenty-questions-llm-self-prompt
   (str
-   "Play 20 questions, with a guess limit of 8. The secret animal is "
-   "elephant. Use !llm-self subcalls to act as a single worker that does "
-   "NOT see the answer. Each round, !llm-self with the question/answer "
-   "history so far; the child returns its next yes/no question or final "
-   "guess. You answer yes/no truthfully and check guesses against "
-   "elephant. Stop when the worker guesses elephant or runs out of "
-   "guesses. The worker's outputs must come from !llm-self children, not "
-   "from you."))
+   "Play 20 questions using !llm-self. The secret animal is elephant, but "
+   "the !llm-self worker calls must not be told the secret. Each round, call "
+   "!llm-self with only the public transcript so far; the child returns one "
+   "yes/no question or a final guess. You answer truthfully and keep the "
+   "transcript in bindings. Stop when the worker guesses elephant or after "
+   "8 guesses. The worker's questions and guesses must be returned by "
+   "!llm-self calls, not invented by you."))
 
 (def telephone-agents-prompt
   (str
-   "Play a game of telephone with 8 relay agents. Initial message: "
-   "\"The museum closes at five because the winter storm is approaching.\" "
-   "Spawn :relay-1 through :relay-8 using the agents/ namespace. Each "
-   "relay receives the previous wording, rephrases it (preserve the "
-   "meaning, change the words), and forwards to the next relay. "
-   ":relay-8 sends the final wording back to you. Report the initial "
-   "and final wordings. The rephrasing must come from the relay agents, "
-   "not from you."))
+   "Play a game of telephone using agents/. Initial message: \"The museum "
+   "closes at five because the winter storm is approaching.\" Create relay "
+   "agents :relay-1 through :relay-8. Each relay receives the previous "
+   "wording, rephrases it while preserving the meaning, and sends the new "
+   "wording back to you. You then pass that wording to the next relay. "
+   "After :relay-8, report the initial and final wordings. The rephrasing "
+   "must come from the relay agents, not from you."))
 
 (def telephone-llm-self-prompt
   (str
-   "Play a game of telephone with 8 stages. Initial message: "
-   "\"The museum closes at five because the winter storm is approaching.\" "
-   "Make 8 sequential !llm-self subcalls; each takes the previous "
-   "wording and returns a rephrased wording that preserves the meaning. "
-   "Capture each wording in a Spell binding. Report the initial and "
-   "final wordings. The rephrasing must come from the !llm-self "
-   "children, not from you."))
+   "Play a game of telephone using !llm-self. Initial message: \"The "
+   "museum closes at five because the winter storm is approaching.\" Make "
+   "8 sequential !llm-self calls. Each child receives only the previous "
+   "wording and returns one rephrased wording that preserves the meaning. "
+   "Bind each stage. After stage 8, report the initial and final wordings. "
+   "The rephrasing must come from the !llm-self calls, not from you."))
 
 (def prompts
   {:auction-agents          auction-agents-prompt
@@ -283,55 +282,133 @@
       (clojure.string/replace "\"" "\\\"")
       (clojure.string/replace "\n" "\\n")))
 
-(def init-trailing-by-game
-  "Per-game seed for the init program's trailing expression. This kicks the
-   first turn off with a real first-step action, so the model arrives mid-
-   task with concrete state in scope rather than facing an empty prefix.
-   Empirically the bare `(!extend)` default is too weak — GLM-5.1 (and even
-   gpt-5.4) fall back to greeting/nil responses on it."
-  {:auction-agents
-   (str "(!call-now bid-a (agents/!spawn-ask "
-        "\"Pick a single integer bid in the range 100 to 1000. "
-        "Send only that integer back to the parent (no prose).\" "
-        ":bidder-a))")
-   :auction-llm-self
-   (str "(!call-now bid-a (!llm-self (wrap-cat "
-        "\"Pick a single integer bid in the range 100 to 1000. "
-        "Return only that integer as the trailing expression value (no prose).\")))")
-   :twenty-questions-agents
-   (str "(!call-now msg-0 (agents/!spawn-ask "
-        "\"You are the worker in a 20-questions game. The answer is an animal "
-        "(8 guesses max). You do NOT know the answer. Ask one yes/no question, "
-        "or guess the animal. Send your question or guess back to the parent.\" "
-        ":worker))")
-   :twenty-questions-llm-self
-   (str "(!call-now first-question (!llm-self (wrap-cat "
-        "\"You are the worker in a 20-questions game. The answer is an animal "
-        "(8 guesses max). You do NOT know the answer. Ask one yes/no question, "
-        "or guess the animal. Return only your question or guess as the "
-        "trailing expression value (a string).\")))")
-   :telephone-agents
-   (str "(!call-now wording-1 (agents/!spawn-ask "
-        "\"Rephrase this sentence (preserve meaning, change wording): "
-        "'The museum closes at five because the winter storm is approaching.' "
-        "Send only the rephrased sentence back to the parent.\" "
-        ":relay-1))")
-   :telephone-llm-self
-   (str "(!call-now wording-1 (!llm-self (wrap-cat "
-        "\"Rephrase this sentence (preserve meaning, change wording): "
-        "'The museum closes at five because the winter storm is approaching.' "
-        "Return only the rephrased sentence as the trailing expression value (a string).\")))")})
+(defn- spell-string [s]
+  (str "\"" (escape-spell-string s) "\""))
+
+(defn- direct-value-prefix
+  "Build an incomplete Spell prefix for !llm-self. The child model completes
+   the final value expression directly, which avoids asking GLM to infer the
+   task from a passive quine binding."
+  [task]
+  (str "(quine completion (eval (do "
+       "(think \"" (escape-spell-string task) "\") "))
+
+(defn- child-send-init
+  "Build an explicit init program for spawned children. Natural-language child
+   prompts get wrapped as a passive `(quine prompt ...)`; GLM often ignores
+   that. This makes the child task visible as executable context and tells the
+   child exactly how to return a value."
+  [task]
+  (str "(quine completion (eval (do "
+       "(think \"" (escape-spell-string task) "\") "
+       "'(!extend))))"))
+
+(defn- bidder-child-init [label]
+  (child-send-init
+   (str "You are " label " in a sealed-bid auction. Choose one integer bid "
+        "from 100 to 1000. Complete this Spell program with exactly one "
+        "quoted trailing expression that sends the integer to your parent: "
+        "'(agents/send (agents/parent-handle) 437). Replace 437 with your "
+        "chosen bid. Do not write prose.")))
+
+(defn- worker-child-init []
+  (child-send-init
+   (str "You are the worker in a 20-questions game. The secret is an animal, "
+        "but you are not told which animal. Complete this Spell program with "
+        "exactly one quoted trailing expression that sends one yes/no question "
+        "or one final guess to your parent, for example: "
+        "'(agents/send (agents/parent-handle) \"Is it a mammal?\"). Do not "
+        "write prose.")))
+
+(defn- relay-child-init [relay-name previous-wording]
+  (child-send-init
+   (str "You are " relay-name " in a telephone game. Rephrase this wording "
+        "while preserving the meaning: \"" previous-wording "\". Complete "
+        "this Spell program with exactly one quoted trailing expression that "
+        "sends only the rephrased sentence to your parent, for example: "
+        "'(agents/send (agents/parent-handle) \"The museum will shut at 5 "
+        "because a winter storm is coming.\"). Do not write prose.")))
+
+(defn- bid-prefix [label]
+  (direct-value-prefix
+   (str "You are " label " in a sealed-bid auction. Return exactly one Spell "
+        "integer literal from 100 to 1000. Do not write prose, do not call "
+        "tools, and do not wrap it in a list. Example completion: 437")))
+
+(defn- question-prefix [history]
+  (direct-value-prefix
+   (str "You are the worker in a 20-questions game. The answer is an animal, "
+        "but you do not know which animal. Public history so far: " history
+        ". Return exactly one Spell string literal containing your next "
+        "yes/no question or final guess. Example completion: \"Is it a "
+        "mammal?\"")))
+
+(defn- rephrase-prefix [wording]
+  (direct-value-prefix
+   (str "Rephrase this sentence while preserving the meaning: \"" wording
+        "\". Return exactly one Spell string literal with only the rephrased "
+        "sentence. Example completion: \"The museum will shut at 5 because "
+        "a winter storm is coming.\"")))
+
+(def initial-message
+  "The museum closes at five because the winter storm is approaching.")
+
+(defn- init-trailing [game]
+  ;; v4: seed a concrete orchestration step and make child tasks explicit
+  ;; enough that GLM can execute the protocol instead of treating the prompt
+  ;; quine as inert context.
+  (case game
+    :auction-agents
+    (str "(do "
+         "(agents/spawn " (spell-string (bidder-child-init "bidder A")) " :bidder-a) "
+         "(agents/spawn " (spell-string (bidder-child-init "bidder B")) " :bidder-b) "
+         "(agents/spawn " (spell-string (bidder-child-init "bidder C")) " :bidder-c) "
+         "(agents/!ask [:bidder-a :bidder-b :bidder-c]))")
+
+    :auction-llm-self
+    (str "(!call-now "
+         "bid-a (!llm-self " (spell-string (bid-prefix "bidder A")) ") "
+         "bid-b (!llm-self " (spell-string (bid-prefix "bidder B")) ") "
+         "bid-c (!llm-self " (spell-string (bid-prefix "bidder C")) "))")
+
+    :twenty-questions-agents
+    (str "(do "
+         "(agents/spawn " (spell-string (worker-child-init)) " :worker) "
+         "(agents/!ask :worker))")
+
+    :twenty-questions-llm-self
+    (str "(!call-now first-question "
+         "(!llm-self " (spell-string (question-prefix "none")) "))")
+
+    :telephone-agents
+    (str "(do "
+         "(agents/spawn " (spell-string (relay-child-init "relay 1" initial-message)) " :relay-1) "
+         "(agents/!ask :relay-1))")
+
+    :telephone-llm-self
+    (str "(!call-now wording-1 "
+         "(!llm-self " (spell-string (rephrase-prefix initial-message)) "))")
+
+    "(!extend)"))
 
 (defn- build-seeded-init
   "Build a Spell init program. The init seeds the program's trailing
-   expression with a real first-step action for the game (see
-   init-trailing-by-game). After the first action evaluates, the model is
-   handed the prefix in mid-task with concrete state already in scope."
+   expression with a real first-step action for the game (see init-trailing).
+   After the first action evaluates, the model is handed the prefix in
+   mid-task with concrete state already in scope."
   [game prompt]
   (let [escaped-prompt (escape-spell-string prompt)
-        trailing (or (get init-trailing-by-game game) "(!extend)")]
+        task-note (escape-spell-string
+                   (str "TASK: " prompt
+                        " You are inside an existing Spell program. Do not "
+                        "restart, do not solve a different task, and do not "
+                        "say no prefix was provided. Continue this game from "
+                        "the current bindings and finish with the requested "
+                        "result."))
+        trailing (init-trailing game)]
     (str "(quine completion (eval (do "
          "(quine prompt \"" escaped-prompt "\") "
+         "(think \"" task-note "\") "
          "'" trailing
          ")))")))
 
