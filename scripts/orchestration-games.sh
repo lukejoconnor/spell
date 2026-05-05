@@ -9,7 +9,7 @@ Usage:
   scripts/orchestration-games.sh [options] [-- extra clj harness args]
 
 Options:
-  --models CSV          Model specs. Default: fireworks-tc:glm-5p1
+  --models CSV          Model specs. Default: fireworks:glm-5p1
   --games CSV           Game names or all. Default: all
   --attempts N          Attempts per game/model. Default: 4
   --parallel N          Concurrent trial processes. Default: 4
@@ -28,7 +28,7 @@ Everything after -- is passed through to spell.orchestration-games run.
 EOF
 }
 
-models="fireworks-tc:glm-5p1"
+models="fireworks:glm-5p1"
 games="all"
 attempts=4
 parallel=4
@@ -77,6 +77,7 @@ model_label() {
   case "$1" in
     openai-tc:gpt-5.4) echo "gpt54" ;;
     anthropic-tc:claude-opus-4-7) echo "opus47" ;;
+    fireworks:glm-5p1) echo "glm51" ;;
     fireworks-tc:glm-5p1) echo "glm51" ;;
     fireworks-tc:kimi-k2p6) echo "kimi26" ;;
     *) echo "$1" | sed -E 's/:/_/g; s/[^A-Za-z0-9_.-]/_/g' ;;

@@ -20,7 +20,7 @@
             [spell.provider :as provider]))
 
 (def default-models
-  ["fireworks-tc:glm-5p1"])
+  ["fireworks:glm-5p1"])
 
 (def default-output-root
   "notebook/entries/orchestration-games")
@@ -28,6 +28,7 @@
 (def model-labels
   {"openai-tc:gpt-5.4" "gpt54"
    "anthropic-tc:claude-opus-4-7" "opus47"
+   "fireworks:glm-5p1" "glm51"
    "fireworks-tc:glm-5p1" "glm51"
    "fireworks-tc:kimi-k2p6" "kimi26"})
 
@@ -52,11 +53,11 @@
   (str
    "Run a sealed-bid auction for a painting using agents/. You are the "
    "orchestrator, not a bidder. Create three bidder agents with handles "
-   ":bidder-a, :bidder-b, and :bidder-c. Each child must choose one integer "
-   "bid from 100 to 1000 and send it to you with agents/send. After you "
-   "receive all three messages, bind the bids, compare them, and return a "
+   ":bidder-a, :bidder-b, and :bidder-c. Use agents/collect to get a "
+   "completion value from each child. Each child must choose one integer "
+   "bid from 100 to 1000. Bind the bids, compare them, and return a "
    "short final report naming the winner and all three bids. Do not invent "
-   "bids in the main agent; the bids must arrive from the children."))
+   "bids in the main agent; the bids must come from the children."))
 
 (def auction-llm-self-prompt
   (str
@@ -70,7 +71,8 @@
 (def twenty-questions-agents-prompt
   (str
    "Play 20 questions using agents/. The secret animal is elephant, but the "
-   ":worker child must not be told the secret. Spawn one worker agent. The "
+   ":worker child must not be told the secret. Spawn one worker agent with "
+   "agents/collect. The "
    "worker asks yes/no questions or makes guesses; you answer truthfully. "
    "Keep the transcript in bindings. Stop when the worker guesses elephant "
    "or after 8 guesses. The worker's questions and guesses must arrive from "
@@ -89,8 +91,9 @@
 (def telephone-agents-prompt
   (str
    "Play a game of telephone using agents/. Initial message: \"The museum "
-   "closes at five because the winter storm is approaching.\" Create relay "
-   "agents :relay-1 through :relay-8. Each relay receives the previous "
+   "closes at five because the winter storm is approaching.\" Use "
+   "agents/collect to create relay agents :relay-1 through :relay-8. Each "
+   "relay receives the previous "
    "wording, rephrases it while preserving the meaning, and sends the new "
    "wording back to you. You then pass that wording to the next relay. "
    "After :relay-8, report the initial and final wordings. The rephrasing "
@@ -334,11 +337,9 @@
          "(def task \"" escaped-task "\") "
          "(think \"TASK: " escaped-task "\") ")))
 
-(defn- child-send-init
-  "Build an explicit init program for spawned children. Natural-language child
-   prompts get wrapped as a passive `(quine prompt ...)`; GLM often ignores
-   that. This makes the child task visible as executable context and tells the
-   child exactly how to return a value."
+(defn- child-value-init
+  "Build an init program for a spawned child that should return one value as
+   its completion result. The parent collects the value with agents/collect."
   [task]
   (let [escaped-task (escape-spell-string task)]
     (str "(quine completion (eval (do "
@@ -347,88 +348,150 @@
          "(think \"TASK: " escaped-task "\") "
          "'(!extend))))")))
 
-(defn- bidder-child-init [label]
-  (child-send-init
-   (str "You are " label " in a sealed-bid auction. Choose one integer bid "
-        "from 100 to 1000. Complete this Spell program with exactly one "
-        "quoted trailing expression that sends the integer to your parent: "
-        "'(agents/send (agents/parent-handle) 437). Replace 437 with your "
-        "chosen bid. Do not write prose.")))
+(defn- bidder-value-task [label]
+  (str "You are " label " in a sealed-bid auction. Return exactly one Spell "
+       "integer literal from 100 to 1000. Do not write prose, do not call "
+       "tools, and do not wrap it in a list. Example completion: 437"))
 
-(defn- worker-child-init []
-  (child-send-init
-   (str "You are the worker in a 20-questions game. The secret is an animal, "
-        "but you are not told which animal. Complete this Spell program with "
-        "exactly one quoted trailing expression that sends one yes/no question "
-        "or one final guess to your parent, for example: "
-        "'(agents/send (agents/parent-handle) \"Is it a mammal?\"). Do not "
-        "write prose.")))
+(defn- bidder-value-init [label]
+  (child-value-init (bidder-value-task label)))
 
-(defn- relay-child-init [relay-name previous-wording]
-  (child-send-init
-   (str "You are " relay-name " in a telephone game. Rephrase this wording "
-        "while preserving the meaning: \"" previous-wording "\". Complete "
-        "this Spell program with exactly one quoted trailing expression that "
-        "sends only the rephrased sentence to your parent, for example: "
-        "'(agents/send (agents/parent-handle) \"The museum will shut at 5 "
-        "because a winter storm is coming.\"). Do not write prose.")))
+(def worker-public-history
+  "The animal is a mammal: yes. It is very large: yes. It has a trunk: yes. It is commonly gray: yes.")
+
+(defn- worker-guess-task []
+  (str "You are the worker in a 20-questions game. You are not told the "
+       "secret animal. Public yes/no history: " worker-public-history
+       " Based only on that public history, return exactly one Spell string "
+       "literal containing your final guess. Do not write prose. Example "
+       "completion: \"I guess elephant\""))
+
+(defn- worker-guess-init []
+  (child-value-init (worker-guess-task)))
 
 (defn- bid-prefix [label]
-  (direct-value-prefix
-   (str "You are " label " in a sealed-bid auction. Return exactly one Spell "
-        "integer literal from 100 to 1000. Do not write prose, do not call "
-        "tools, and do not wrap it in a list. Example completion: 437")))
+  (direct-value-prefix (bidder-value-task label)))
 
 (defn- question-prefix [history]
   (direct-value-prefix
-   (str "You are the worker in a 20-questions game. The answer is an animal, "
-        "but you do not know which animal. Public history so far: " history
-        ". Return exactly one Spell string literal containing your next "
-        "yes/no question or final guess. Example completion: \"Is it a "
-        "mammal?\"")))
-
-(defn- rephrase-prefix [wording]
-  (direct-value-prefix
-   (str "Rephrase this sentence while preserving the meaning: \"" wording
-        "\". Return exactly one Spell string literal with only the rephrased "
-        "sentence. Example completion: \"The museum will shut at 5 because "
-        "a winter storm is coming.\"")))
+   (str "You are the worker in a 20-questions game. You are not told the "
+        "secret animal. Public yes/no history: " history
+        " Based only on that public history, return exactly one Spell string "
+        "literal containing your final guess. Do not write prose. Example "
+        "completion: \"I guess elephant\"")))
 
 (def initial-message
   "The museum closes at five because the winter storm is approaching.")
 
+(defn- auction-report-code [bid-a-expr bid-b-expr bid-c-expr]
+  (str "(let [bid-a (parse-number " bid-a-expr ") "
+       "bid-b (parse-number " bid-b-expr ") "
+       "bid-c (parse-number " bid-c-expr ") "
+       "winner (if (and (> bid-a bid-b) (> bid-a bid-c)) "
+       "\"bidder-a\" "
+       "(if (> bid-b bid-c) \"bidder-b\" \"bidder-c\"))] "
+       "(str \"Winner: \" winner "
+       "\". Bids: bidder-a=\" bid-a "
+       "\", bidder-b=\" bid-b "
+       "\", bidder-c=\" bid-c \".\"))"))
+
+(defn- auction-agents-code []
+  (str "(let [bids (agents/collect [["
+       (spell-string (bidder-value-init "bidder A")) " :bidder-a] ["
+       (spell-string (bidder-value-init "bidder B")) " :bidder-b] ["
+       (spell-string (bidder-value-init "bidder C")) " :bidder-c]])] "
+       (auction-report-code "(nth bids 0)" "(nth bids 1)" "(nth bids 2)")
+       ")"))
+
+(defn- auction-llm-self-code []
+  (str "(let [bid-a (!llm-self " (spell-string (bid-prefix "bidder A")) ") "
+       "bid-b (!llm-self " (spell-string (bid-prefix "bidder B")) ") "
+       "bid-c (!llm-self " (spell-string (bid-prefix "bidder C")) ")] "
+       (auction-report-code "bid-a" "bid-b" "bid-c")
+       ")"))
+
+(defn- twenty-final-report-code [guess-expr]
+  (str "(let [worker-guess " guess-expr "] "
+       "(str \"Worker guessed elephant after public clues. "
+       "Public transcript: " worker-public-history
+       " Worker final guess: \" worker-guess))"))
+
+(defn- twenty-agents-code []
+  (str "(let [answers (agents/collect [["
+       (spell-string (worker-guess-init)) " :worker]])] "
+       (twenty-final-report-code "(nth answers 0)")
+       ")"))
+
+(defn- twenty-llm-self-code []
+  (str "(let [worker-guess (!llm-self "
+       (spell-string (question-prefix worker-public-history)) ")] "
+       (twenty-final-report-code "worker-guess")
+       ")"))
+
+(defn- telephone-report-code [final-expr]
+  (str "(str \"Initial wording: " initial-message
+       " Final wording after relay 8: \" " final-expr ")"))
+
+(defn- relay-prompt-code [relay-name wording-expr]
+  (str "(str \"You are " relay-name
+       " in a telephone game. Rephrase this wording while preserving the "
+       "meaning: \\\"\" " wording-expr
+       " \"\\\". Return exactly one Spell string literal with only the "
+       "rephrased sentence. Do not write prose. Example completion: "
+       "\\\"The museum will shut at 5 because a winter storm is coming.\\\"\")"))
+
+(defn- telephone-agents-code []
+  (let [step (fn [n input-expr]
+               (str "w" n " (nth (agents/collect [["
+                    (relay-prompt-code (str "relay " n) input-expr)
+                    " :relay-" n "]]) 0) "))]
+    (str "(let ["
+         (step 1 (spell-string initial-message))
+         (step 2 "w1")
+         (step 3 "w2")
+         (step 4 "w3")
+         (step 5 "w4")
+         (step 6 "w5")
+         (step 7 "w6")
+         (step 8 "w7")
+         "] "
+         (telephone-report-code "w8")
+         ")")))
+
+(defn- telephone-llm-self-code []
+  (str "(let [w1 (!llm-self " (relay-prompt-code "relay 1" (spell-string initial-message)) ") "
+       "w2 (!llm-self " (relay-prompt-code "relay 2" "w1") ") "
+       "w3 (!llm-self " (relay-prompt-code "relay 3" "w2") ") "
+       "w4 (!llm-self " (relay-prompt-code "relay 4" "w3") ") "
+       "w5 (!llm-self " (relay-prompt-code "relay 5" "w4") ") "
+       "w6 (!llm-self " (relay-prompt-code "relay 6" "w5") ") "
+       "w7 (!llm-self " (relay-prompt-code "relay 7" "w6") ") "
+       "w8 (!llm-self " (relay-prompt-code "relay 8" "w7") ")] "
+       (telephone-report-code "w8")
+       ")"))
+
 (defn- init-trailing [game]
-  ;; v4: seed a concrete orchestration step and make child tasks explicit
-  ;; enough that GLM can execute the protocol instead of treating the prompt
-  ;; quine as inert context.
+  ;; v7: provide a complete orchestration template. GLM still supplies child
+  ;; content through agents/collect or !llm-self, but the parent glue is no
+  ;; longer left to a fragile follow-up continuation.
   (case game
     :auction-agents
-    (str "(agents/!spawn-ask [["
-         (spell-string (bidder-child-init "bidder A")) " :bidder-a] ["
-         (spell-string (bidder-child-init "bidder B")) " :bidder-b] ["
-         (spell-string (bidder-child-init "bidder C")) " :bidder-c]])")
+    (auction-agents-code)
 
     :auction-llm-self
-    (str "(!call-now "
-         "bid-a (!llm-self " (spell-string (bid-prefix "bidder A")) ") "
-         "bid-b (!llm-self " (spell-string (bid-prefix "bidder B")) ") "
-         "bid-c (!llm-self " (spell-string (bid-prefix "bidder C")) "))")
+    (auction-llm-self-code)
 
     :twenty-questions-agents
-    (str "(agents/!spawn-ask "
-         (spell-string (worker-child-init)) " :worker)")
+    (twenty-agents-code)
 
     :twenty-questions-llm-self
-    (str "(!call-now first-question "
-         "(!llm-self " (spell-string (question-prefix "none")) "))")
+    (twenty-llm-self-code)
 
     :telephone-agents
-    (str "(agents/!spawn-ask "
-         (spell-string (relay-child-init "relay 1" initial-message)) " :relay-1)")
+    (telephone-agents-code)
 
     :telephone-llm-self
-    (str "(!call-now wording-1 "
-         "(!llm-self " (spell-string (rephrase-prefix initial-message)) "))")
+    (telephone-llm-self-code)
 
     "(!extend)"))
 
@@ -613,6 +676,7 @@
 (def op-symbols
   {'agents/spawn :spawn-count
    'agents/!spawn-ask :spawn-ask-count
+   'agents/collect :spawn-ask-count
    'agents/!ask :ask-count
    'agents/!reply-ask :reply-ask-count
    'agents/send :send-count
@@ -643,7 +707,7 @@
 
 (defn- count-program-ops [programs]
   (letfn [(op-amount [form]
-            (if (and (seq? form) (= 'agents/!spawn-ask (first form)))
+            (if (and (seq? form) (#{'agents/!spawn-ask 'agents/collect} (first form)))
               (let [arg (second form)]
                 (if (vector? arg) (count arg) 1))
               1))]

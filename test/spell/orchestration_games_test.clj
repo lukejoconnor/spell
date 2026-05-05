@@ -35,15 +35,15 @@
     (testing "scaffold profile records and seeds executable orchestration"
       (is (= "scaffold" (:prompt-profile scaffold)))
       (is (str/includes? (:init scaffold) "TASK:"))
-      (is (str/includes? (:init scaffold) "agents/!spawn-ask"))
-      (is (str/includes? (:init scaffold) "agents/parent-handle")))
+      (is (str/includes? (:init scaffold) "agents/collect"))
+      (is (str/includes? (:init scaffold) ":bidder-a")))
     (testing "minimal profile is the less-instructive ablation"
       (is (= "minimal" (:prompt-profile minimal)))
       (is (str/includes? (:prompt minimal) "Use agents/"))
       (is (str/includes? (:init minimal) "'(!extend)"))
       (is (not (str/includes? (:init minimal) "TASK:")))
-      (is (not (str/includes? (:init minimal) "agents/!spawn-ask")))
-      (is (not (str/includes? (:init minimal) "agents/parent-handle"))))))
+      (is (not (str/includes? (:init minimal) "agents/collect")))
+      (is (not (str/includes? (:init minimal) ":bidder-a"))))))
 
 (deftest scorer-counts-parsed-program-ops-test
   (let [score-dir #'og/score-dir
