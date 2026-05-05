@@ -359,11 +359,10 @@
   ;; quine as inert context.
   (case game
     :auction-agents
-    (str "(do "
-         "(agents/spawn " (spell-string (bidder-child-init "bidder A")) " :bidder-a) "
-         "(agents/spawn " (spell-string (bidder-child-init "bidder B")) " :bidder-b) "
-         "(agents/spawn " (spell-string (bidder-child-init "bidder C")) " :bidder-c) "
-         "(agents/!ask [:bidder-a :bidder-b :bidder-c]))")
+    (str "(agents/!spawn-ask [["
+         (spell-string (bidder-child-init "bidder A")) " :bidder-a] ["
+         (spell-string (bidder-child-init "bidder B")) " :bidder-b] ["
+         (spell-string (bidder-child-init "bidder C")) " :bidder-c]])")
 
     :auction-llm-self
     (str "(!call-now "
@@ -372,18 +371,16 @@
          "bid-c (!llm-self " (spell-string (bid-prefix "bidder C")) "))")
 
     :twenty-questions-agents
-    (str "(do "
-         "(agents/spawn " (spell-string (worker-child-init)) " :worker) "
-         "(agents/!ask :worker))")
+    (str "(agents/!spawn-ask "
+         (spell-string (worker-child-init)) " :worker)")
 
     :twenty-questions-llm-self
     (str "(!call-now first-question "
          "(!llm-self " (spell-string (question-prefix "none")) "))")
 
     :telephone-agents
-    (str "(do "
-         "(agents/spawn " (spell-string (relay-child-init "relay 1" initial-message)) " :relay-1) "
-         "(agents/!ask :relay-1))")
+    (str "(agents/!spawn-ask "
+         (spell-string (relay-child-init "relay 1" initial-message)) " :relay-1)")
 
     :telephone-llm-self
     (str "(!call-now wording-1 "
