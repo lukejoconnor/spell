@@ -401,8 +401,10 @@
 (defn- relay-agent-init [n]
   (let [next-handle (when (< n 8) (str ":relay-" (inc n)))
         prompt (str "You are relay " n " in a telephone game.\n\n"
-                    "On each wake, inspect the newest msg-* binding. Its "
-                    ":body is the previous wording, sent directly by "
+                    "Initial setup turn: return exactly this Spell map and "
+                    "nothing else: {:ready true :relay " n "}.\n\n"
+                    "Later, when awakened by a message, inspect the newest "
+                    "msg-* binding. Its :body is the previous wording, sent directly by "
                     (if (= n 1) "the starter" "relay k-1")
                     ". Rephrase that wording while preserving the meaning.\n\n"
                     (if next-handle
@@ -422,7 +424,9 @@
                     "Do not emit think forms, markdown, XML tags, or prose.")]
     (str "(quine completion (eval (do "
          "(quine prompt " (pr-str prompt) ") "
-         "{:ready true :relay " n "}))))")))
+         "(def relay-number " n ") "
+         "(think " (pr-str (str "SETUP: Return exactly {:ready true :relay " n "} now. Later, if awakened by msg-*, follow the relay instructions in prompt.")) ") "
+         "'(!extend))))")))
 
 (def initial-message
   "The museum closes at five because the winter storm is approaching.")
