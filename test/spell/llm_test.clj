@@ -1894,16 +1894,18 @@
       (is (nil? (first @received-errs)) "first call should receive nil")
       (is (= missing-ex (second @received-errs)) "retry should receive the previous exception"))))
 
-(deftest missing-tool-call-retry-hint-in-compile-agent
-  (testing "retry hint is appended to user message on missing-tool-call retry"
+(deftest missing-tool-call-literal-retry-in-compile-agent
+  (testing "missing-tool-call retries repeat the same provider message"
     (let [call-count (atom 0)
           received-prompts (atom [])
+          received-opts (atom [])
           prov (reify provider/LLMProvider
                  (plain-text-provider [this] this)
                  (supports-prefill [_] true)
                  (call-llm [_ prompt] (provider/call-llm _ prompt {}))
                  (call-llm [_ prompt opts]
                    (swap! received-prompts conj prompt)
+                   (swap! received-opts conj opts)
                    (swap! call-count inc)
                    (if (= 1 @call-count)
                      (throw (ex-info "missing tool call"
@@ -1916,22 +1918,25 @@
       (binding [provider/*retries* [0]]
         (is (= 42 (th/run-agent-prefix agent-fn "(do "))))
       (is (= 2 @call-count))
-      ;; First call: plain user message (prefill mode = "Continue this Spell program.")
-      (is (= "Continue this Spell program." (first @received-prompts)))
-      ;; Second call: user message with retry hint appended
-      (is (clojure.string/includes? (second @received-prompts)
-                                     "retrying")))))
+      (is (= ["Continue this Spell program."
+              "Continue this Spell program."]
+             @received-prompts))
+      (is (= 2 (count @received-opts)))
+      (is (= (first @received-opts) (second @received-opts)))
+      (is (= "(do " (:prefix (first @received-opts)))))))
 
-(deftest missing-tool-call-retry-hint-in-leaf-llm
-  (testing "retry hint is appended in leaf-llm on missing-tool-call retry"
+(deftest missing-tool-call-literal-retry-in-leaf-llm
+  (testing "missing-tool-call retries repeat the same leaf prompt"
     (let [call-count (atom 0)
           received-prompts (atom [])
+          received-opts (atom [])
           prov (reify provider/LLMProvider
                  (plain-text-provider [this] this)
                  (supports-prefill [_] false)
                  (call-llm [_ prompt] (provider/call-llm _ prompt {}))
                  (call-llm [_ prompt opts]
                    (swap! received-prompts conj prompt)
+                   (swap! received-opts conj opts)
                    (swap! call-count inc)
                    (if (= 1 @call-count)
                      (throw (ex-info "missing tool call"
@@ -1941,11 +1946,10 @@
         (binding [provider/*retries* [0]]
           (is (= "hello world" (leaf "hi")))))
       (is (= 2 @call-count))
-      ;; First call: plain prompt
-      (is (= "hi" (first @received-prompts)))
-      ;; Second call: prompt with retry hint
-      (is (clojure.string/includes? (second @received-prompts)
-                                     "retrying"))))
+      (is (= ["hi" "hi"] @received-prompts))
+      (is (= [{:system "You are a helpful assistant. Respond concisely."}
+              {:system "You are a helpful assistant. Respond concisely."}]
+             @received-opts))))
 
   (testing "leaf-llm uses the provider's plain-text sibling instead of the parent transport"
     (let [main-calls (atom 0)
