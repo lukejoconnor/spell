@@ -277,15 +277,75 @@
                 (model-label model)
                 (format "attempt-%02d" attempt))))
 
+(defn- escape-spell-string [s]
+  (-> s
+      (clojure.string/replace "\\" "\\\\")
+      (clojure.string/replace "\"" "\\\"")
+      (clojure.string/replace "\n" "\\n")))
+
+(def init-trailing-by-game
+  "Per-game seed for the init program's trailing expression. This kicks the
+   first turn off with a real first-step action, so the model arrives mid-
+   task with concrete state in scope rather than facing an empty prefix.
+   Empirically the bare `(!extend)` default is too weak — GLM-5.1 (and even
+   gpt-5.4) fall back to greeting/nil responses on it."
+  {:auction-agents
+   (str "(!call-now bid-a (agents/!spawn-ask "
+        "\"Pick a single integer bid in the range 100 to 1000. "
+        "Send only that integer back to the parent (no prose).\" "
+        ":bidder-a))")
+   :auction-llm-self
+   (str "(!call-now bid-a (!llm-self (wrap-cat "
+        "\"Pick a single integer bid in the range 100 to 1000. "
+        "Return only that integer as the trailing expression value (no prose).\")))")
+   :twenty-questions-agents
+   (str "(!call-now msg-0 (agents/!spawn-ask "
+        "\"You are the worker in a 20-questions game. The answer is an animal "
+        "(8 guesses max). You do NOT know the answer. Ask one yes/no question, "
+        "or guess the animal. Send your question or guess back to the parent.\" "
+        ":worker))")
+   :twenty-questions-llm-self
+   (str "(!call-now first-question (!llm-self (wrap-cat "
+        "\"You are the worker in a 20-questions game. The answer is an animal "
+        "(8 guesses max). You do NOT know the answer. Ask one yes/no question, "
+        "or guess the animal. Return only your question or guess as the "
+        "trailing expression value (a string).\")))")
+   :telephone-agents
+   (str "(!call-now wording-1 (agents/!spawn-ask "
+        "\"Rephrase this sentence (preserve meaning, change wording): "
+        "'The museum closes at five because the winter storm is approaching.' "
+        "Send only the rephrased sentence back to the parent.\" "
+        ":relay-1))")
+   :telephone-llm-self
+   (str "(!call-now wording-1 (!llm-self (wrap-cat "
+        "\"Rephrase this sentence (preserve meaning, change wording): "
+        "'The museum closes at five because the winter storm is approaching.' "
+        "Return only the rephrased sentence as the trailing expression value (a string).\")))")})
+
+(defn- build-seeded-init
+  "Build a Spell init program. The init seeds the program's trailing
+   expression with a real first-step action for the game (see
+   init-trailing-by-game). After the first action evaluates, the model is
+   handed the prefix in mid-task with concrete state already in scope."
+  [game prompt]
+  (let [escaped-prompt (escape-spell-string prompt)
+        trailing (or (get init-trailing-by-game game) "(!extend)")]
+    (str "(quine completion (eval (do "
+         "(quine prompt \"" escaped-prompt "\") "
+         "'" trailing
+         ")))")))
+
 (defn- request-map [opts game model attempt dir]
   (let [prompt (get prompts game)
         agent (or (:agent opts)
                   (default-agent-by-game game)
-                  "config/agents/io-tc.agent.edn")]
+                  "config/agents/io-tc.agent.edn")
+        init (build-seeded-init game prompt)]
     {:game (name game)
      :model model
      :attempt attempt
      :prompt prompt
+     :init init
      :agent agent
      :trace (not (:no-trace opts))
      :trace-dir (str (io/file dir "trace"))
@@ -323,7 +383,7 @@
                        (with-open [writer (io/writer verbose-path)]
                          (let [api-result (api/run (cond-> {:provider (provider-for-model model)
                                                             :agent (:agent request)
-                                                            :prompt (:prompt request)
+                                                            :init (:init request)
                                                             :trace (:trace request)
                                                             :trace-dir (:trace-dir request)
                                                             :budget (:budget request)
