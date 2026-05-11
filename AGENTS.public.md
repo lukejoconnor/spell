@@ -1,6 +1,6 @@
 # Spell Source Guide
 
-This file is a public orientation guide for readers and contributors working through the Spell source tree. Start with `README.md` for setup and CLI usage, then use this file as a map of the implementation, configuration, examples, and tests.
+This file is a public orientation guide for readers and contributors working through the Spell source tree. Start with `README.md` for setup and CLI usage, read `docs/language-overview.md` for the core language ideas, then use this file as a map of the implementation, configuration, examples, and tests.
 
 Spell is a Lisp dialect for LLM self-orchestration. A Spell completion is itself a program: the evaluator runs the program, and the program can call back into an LLM, spawn sub-agents, manage context, and use configured namespaces such as `io`, `web`, `agents`, `globals`, and `patterns`.
 
@@ -16,6 +16,7 @@ Spell is a Lisp dialect for LLM self-orchestration. A Spell completion is itself
 | `test/` | Unit and integration tests. |
 | `data/pricing.edn` | Model pricing table used for usage and cost reporting. |
 | `docs/` | Public documentation for the release. |
+| `docs/language-overview.md` | Short conceptual guide to completions, self-calls, quines, context management, and agents. |
 
 ## Core Runtime Files
 
