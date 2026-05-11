@@ -1,1 +1,0 @@
-Fix the bug in examples/buggy/calculator.py. Run tests with "python3 examples/buggy/calculator.py" (not pytest). Read the file. Ask a child LLM to analyze and return {:old "..." :new "..."} data. Apply fix with str-replace. Return before/after test results.

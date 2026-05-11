@@ -1,35 +1,26 @@
-# Hello World (2-Step Delegation)
+# Hello World
 
-The classic "Hello World" implemented with LLM delegation.
+`hello-world.spl` is the smallest bundled delegation example. The parent model asks a child model for `World`, then combines that result with `Hello`.
+
+## Run It
+
+```bash
+bin/spell -e hello-world
+bin/spell -v -e hello-world
+```
 
 ## Prompt
 
-```
+```text
 Return Hello concatenated with child returning World
 ```
 
-## Expected Behavior
+## What To Expect
 
-1. **LLM 1** receives the task and delegates "Return World" to a child
-2. **LLM 2** returns "World"
-3. **LLM 1** concatenates "Hello" + "World" = "HelloWorld"
+The model should produce a short Spell program that calls `!llm-self` for the child task and concatenates the child result with `Hello`. The final result is usually `HelloWorld` or the same words with spacing.
 
-## Example Output
+## Concepts
 
-```
-=== LLM Call (depth 0) ===
-Prompt: (quine completion (eval (do (quine prompt "Return Hello concatenated with child returning World")
-Response: (def thought "delegate World to child") (cat "Hello" (!llm-self "Return World"))))
-
-  === LLM Call (depth 1) ===
-  Prompt: (quine completion (eval (do (quine prompt "Return World")
-  Response: "World")))
-
-Result: HelloWorld
-```
-
-## Key Concepts
-
-- **Delegation**: `(!llm-self "task")` calls a child LLM
-- **Concatenation**: `(cat str1 str2)` joins strings
-- **Implicit return**: The last expression in the `do` block is the return value
+- `!llm-self` asks a fresh model call to solve a subtask.
+- `cat` joins strings.
+- The final expression in a Spell form is the returned value.

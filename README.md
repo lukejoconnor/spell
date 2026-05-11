@@ -50,10 +50,10 @@ The `-t` flag uses a dummy provider and is useful for checking that Java, Clojur
 bin/spell -e hello-world
 
 # Show raw LLM responses while running an example
-bin/spell -v -m haiku -e coin-flip
+bin/spell -v -e coin-flip
 
 # Run a .spl file directly
-bin/spell examples/twenty-questions.spl -m opus -d 40
+bin/spell examples/twenty-questions.spl -d 40
 ```
 
 More examples are listed in `examples/README.md`. Good first examples are:
@@ -61,6 +61,7 @@ More examples are listed in `examples/README.md`. Good first examples are:
 - `examples/hello-world.spl`: minimal self-call example.
 - `examples/coin-flip.spl`: recursive control flow.
 - `examples/twenty-questions.spl`: multi-agent worker/checker loop.
+- `examples/telephone.spl`: sequential relay loop.
 - `examples/chat.spl`: simple interactive communication pattern.
 
 ### Talk To The Spell Agent
@@ -71,8 +72,8 @@ The default CLI agent is `config/agents/cli.agent.edn`. It exposes the core lang
 # Default model is codex-tc:gpt-5.3
 bin/spell "Inspect the examples directory and suggest one example to run next."
 
-# Use an Anthropic model alias
-bin/spell -m sonnet "Explain this repository in three bullets."
+# Use an explicit provider-prefixed model spec
+bin/spell -m openai-tc:gpt-5.4 "Explain this repository in three bullets."
 
 # Let yourself provide the next suffix manually instead of using an LLM
 bin/spell -m user "Hello me!"
@@ -112,7 +113,6 @@ Options:
 
 Common model specs:
 
-- Aliases: `haiku`, `sonnet`, `opus`, `opus45`, `gpt52`, `gpt53`, `gpt54`.
 - Provider-prefixed specs: `codex-tc:<model>`, `openai-tc:<model>`, `anthropic-tc:<model>`, `anthropic-pf:<model>`, `fireworks:<model>`, `fireworks-tc:<model>`, `ollama:<model>`.
 
 Run `bin/spell -h` for the authoritative CLI help from the checked-out code.
