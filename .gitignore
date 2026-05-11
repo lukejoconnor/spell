@@ -33,11 +33,9 @@ data/*
 !data/pricing.edn
 results/
 
-# Claude Code worktrees
-.claude/worktrees/
+# Local Claude/Codex workspace
+.claude/
 .worktrees/
-.claude/plan.md
-.claude/scheduled_tasks.lock
 
 # Scratch/temp files
 .__tmp_*

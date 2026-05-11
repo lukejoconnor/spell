@@ -1,9 +1,9 @@
-;; Benchmark/runtime profile for mandatory tool-call transport providers.
-;; Web is intentionally omitted; benchmark web access should be opt-in.
+;; I/O runtime profile for mandatory tool-call transport providers.
+;; Web is intentionally omitted; web access should be opt-in.
 
 {:base base-tc.agent.edn
  :name io-tc
- :doc "Tool-call transport benchmark agent with io namespace (web disabled by default)"
+ :doc "Tool-call transport I/O agent with io namespace (web disabled by default)"
  :llms {explore explore.agent.edn}
 
  :namespaces

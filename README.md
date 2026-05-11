@@ -133,7 +133,7 @@ Run `bin/spell -h` for the authoritative CLI help from the checked-out code.
 - `examples/`: runnable `.spl` examples.
 - `test/`: Clojure test suite.
 
-`AGENTS.public.md` gives a more detailed orientation for AI agents or reviewers navigating the source tree.
+`AGENTS.public.md` gives a more detailed orientation for AI agents or readers navigating the source tree.
 
 ## Tests
 
