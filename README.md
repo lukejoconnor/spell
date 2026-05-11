@@ -1,8 +1,8 @@
-# Spell
+# Self-programmed execution language for LMs
 
-Spell is a Lisp dialect for LLM self-orchestration: instead of an external harness driving an agent loop, the LLM writes and executes its own program. The language provides primitives for self-calls, context management, concurrency, and multi-agent communication, all evaluated by a minimal Clojure runtime.
+Self-programmed execution is an architecture for LM agents in which a LM-written program, not a fixed agent loop, is responsible for orchestration policy. Spell (self-programmed execution language for LMs) is a language designed for SPE. SPE and Spell are described in [this paper](https://arxiv.org/abs/2605.06898).  The language provides primitives for self-calls, program self-reference, context management, and concurrency, and multi-agent communication. It is based upon and embedded within Clojure.
 
-## Reviewer Quick Start
+## Quick Start
 
 ### Prerequisites
 
@@ -73,9 +73,6 @@ bin/spell "Inspect the examples directory and suggest one example to run next."
 
 # Use an Anthropic model alias
 bin/spell -m sonnet "Explain this repository in three bullets."
-
-# Use OpenAI API tool-call transport
-bin/spell -m openai-tc:gpt-5.4 "Write and evaluate a tiny Spell expression."
 
 # Let yourself provide the next suffix manually instead of using an LLM
 bin/spell -m user "Hello me!"

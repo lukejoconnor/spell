@@ -10,6 +10,13 @@ target/
 .lsp/
 ~$*
 
+# Local agent guidance
+AGENTS.md
+CLAUDE.md
+config/CLAUDE.md
+examples/CLAUDE.md
+test/CLAUDE.md
+
 # Local development
 bin/
 dev/
@@ -57,3 +64,7 @@ writeup/
 
 # OS junk
 .DS_Store
+
+# Local agent skills
+.codex/skills/run-benchmark/
+.claude/skills/run-benchmark/

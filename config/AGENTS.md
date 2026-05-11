@@ -1,58 +1,61 @@
 # Config Directory Guide
 
-This directory contains runtime configuration used by Spell execution and benchmark harnesses.
+This directory contains runtime configuration used by Spell execution.
 
 ## Scope
 
-- `agents/`: `.agent.edn` agent definitions (base + capability profiles).
+- `agents/`: `.agent.edn` agent definitions.
 - `prompts/`: system prompt text variants.
 - `providers/`: declarative provider specs (`.provider.edn`).
-- `spl-lib/`: reusable Spell library files (`patterns.spl`, `react.spl`).
+- `spl-lib/`: reusable Spell library files.
+- `web.edn`: optional defaults for web search and fetch behavior.
 
 ## Providers
 
-Primary providers: Anthropic tool-call (`anthropic-tc`), Codex tool-call (`codex-tc`), and Fireworks tool-call (`fireworks-tc`) for Fireworks models that support mandatory tool output. Test provider for unit tests. See `config/providers/` for all `.provider.edn` files.
+First-class public provider paths are:
 
-## How Config Is Loaded
+- OpenAI tool-call mode, configured by `providers/openai-tc.provider.edn` and `OPENAI_API_KEY`.
+- Anthropic tool-call mode, configured by `providers/anthropic-tc.provider.edn` and `ANTHROPIC_API_KEY`.
+- Fireworks, configured by `providers/fireworks.provider.edn` or `providers/fireworks-tc.provider.edn` and `FIREWORKS_API_KEY`.
+- Codex CLI, configured by `providers/codex-tc.provider.edn` and local Codex authentication. Treat this path as experimental.
 
-### Agent Files (`config/agents/*.agent.edn`)
+The `:test` provider is used by the test suite. Other provider files may exist for local development, but they are not the primary public path for this release.
 
-Loaded by `src/spell/agent.clj`.
+## Agent Files
 
-**Base agents** (one per transport mode, no effect namespaces):
-- `base-pf.agent.edn` — prefill providers, uses `sysprompt-prefill.txt`
-- `base-msg.agent.edn` — message providers (no prefill), uses `sysprompt-message.txt`
-- `base-tc.agent.edn` — tool-call providers, uses `sysprompt-toolcall.txt`
+Agent files are loaded by `src/spell/agent.clj`.
 
-**Specialized agents** inherit from a base and add namespaces:
-- `cli.agent.edn` — CLI default (base-tc + io, web, patterns, agents, globals)
-- `io-pf.agent.edn` — benchmark/runtime prefill profile with io, patterns, agents, globals (web disabled by default)
-- `io-msg.agent.edn` — benchmark/runtime message profile with io, patterns, agents, globals (web disabled by default)
-- `io-tc.agent.edn` — benchmark/runtime toolcall profile with io, patterns, agents, globals (web disabled by default)
-- `explore.agent.edn` — read-only codebase exploration (io-read namespace only)
-- `react.agent.edn` — hidden ReAct loop profile (`react` + `io-exec`)
+Base agents define transport-level behavior and do not add effect namespaces:
+
+- `base-pf.agent.edn`: prefill providers, using `prompts/sysprompt-prefill.txt`.
+- `base-msg.agent.edn`: message providers, using `prompts/sysprompt-message.txt`.
+- `base-tc.agent.edn`: tool-call providers, using `prompts/sysprompt-toolcall.txt`.
+
+Public runtime profiles inherit from a base agent and add namespaces:
+
+- `cli.agent.edn`: CLI default; enables `io`, `web`, `patterns`, `agents`, and `globals`.
+- `io-pf.agent.edn`: I/O-capable prefill profile with `io`, `patterns`, `agents`, and `globals`; web is disabled by default.
+- `io-msg.agent.edn`: I/O-capable message profile with `io`, `patterns`, `agents`, and `globals`; web is disabled by default.
+- `io-tc.agent.edn`: I/O-capable tool-call profile with `io`, `patterns`, `agents`, and `globals`; web is disabled by default.
 
 Key semantics:
-- `:base` supports file-based inheritance; paths resolved relative to the current agent file.
+
+- `:base` supports file-based inheritance; paths are resolved relative to the current agent file.
 - `:system {:file ...}` and `:provider {:file ...}` paths are resolved relative to the current agent file.
-- `:namespaces` values support:
-  - `stdlib/X` and `stdlib/X/Y`
-  - `file.clj/var`
-  - `file.agent.edn` (sub-agent)
-  - `{:file f}` and `{:file f :items {...}}`.
+- `:namespaces` values support `stdlib/X`, `stdlib/X/Y`, `file.clj/var`, `file.agent.edn`, `{:file f}`, and `{:file f :items {...}}`.
 
 Rules:
-- Keep all relative paths valid from the file that references them.
-- Keep message/toolcall pairs aligned (same base behavior, different base agent).
+
+- Keep relative paths valid from the file that references them.
+- Keep transport variants aligned unless the transport requires a difference.
 - Avoid inheritance cycles.
 
-### Provider Files (`config/providers/*.provider.edn`)
+## Provider Files
 
-Loaded by `spell.provider/load-provider`.
+Provider files are loaded by `spell.provider/load-provider`.
 
-Each provider .edn file includes a `:default-agent` key pointing to the transport-appropriate base agent. This is used by `spell.provider/provider-edn-default-agent` for API-level default resolution.
+Each `.provider.edn` file includes a `:default-agent` key pointing to the transport-appropriate base agent. Supported `:type` values include:
 
-Supported `:type` values:
 - `:anthropic-pf`
 - `:anthropic-tc`
 - `:openai`
@@ -63,56 +66,43 @@ Supported `:type` values:
 - `:test`
 
 Rules:
-- Keep model names and cost keys in sync with current provider routing.
-- Keep explicit `:cache-read-input` values aligned with providers that expose cached prompt token pricing.
-- Keep API key env var names accurate (`:api-key-env`).
-- `:fireworks` remains the completions/prefill transport. Use explicit `fireworks-tc:<model>` / `:fireworks-tc` for Fireworks Anthropic-compatible Messages requests with mandatory `spell_suffix` tool output. If Fireworks returns no `spell_suffix` tool block on that primary path, the provider retries the same prompt once through Fireworks' OpenAI-compatible chat-completions function-tool surface.
-- Use toolcall provider only where mandatory tool output is intended.
-- OpenAI toolcall configs still use `:type :openai`; set `:force-tool-call true` and a tc base agent instead of inventing a separate provider type.
 
-### Prompt Files (`config/prompts/*.txt`)
+- Keep model names and cost keys in sync with provider routing and `data/pricing.edn`.
+- Keep explicit `:cache-read-input` values aligned with providers that expose cached prompt-token pricing.
+- Keep API key environment variable names accurate.
+- `:fireworks` is the completions/prefill transport. Use explicit `fireworks-tc:<model>` or `:fireworks-tc` for Fireworks Anthropic-compatible Messages requests with mandatory `spell_suffix` tool output.
+- Use a tool-call provider only where mandatory tool output is intended.
+- OpenAI tool-call configs still use `:type :openai`; set `:force-tool-call true` and a tool-call base agent rather than adding a separate provider type.
+
+## Prompt Files
 
 Current variants:
+
 - `sysprompt-prefill.txt`
 - `sysprompt-message.txt`
 - `sysprompt-toolcall.txt`
 
-Rules:
-- The main system prompt is single-track. Variation should be transport-specific only (prefill, message, tool-call).
-- Provider-agnostic behavior changes should normally be reflected across the three transport files.
-- Intentional divergences should be transport-motivated and explicit in file comments or nearby docs.
+The main system prompt is intentionally single-track. Variation should be transport-specific only: prefill, message, or tool-call. Provider-agnostic behavior changes should normally be reflected across all three files.
 
-### Pattern Library (`config/spl-lib/patterns.spl`)
+## Pattern Library
 
-Reusable Spell patterns loaded through namespace wiring (`stdlib/patterns`).
+`spl-lib/patterns.spl` contains reusable Spell patterns loaded through namespace wiring.
 
 Rules:
+
 - Keep patterns pure unless a side effect is required by design.
-- Document expected return shape in comments for downstream agent usage.
+- Document expected return shape in comments when downstream agents depend on it.
 
-### React Library (`config/spl-lib/react.spl`)
+## Web Configuration
 
-Hidden ReAct loop loaded through namespace wiring (`stdlib/react`).
+`web.edn` configures the `web` namespace.
 
-Rules:
-- Keep the inner model prompt plain-text only; do not expose Spell syntax inside leaf-llm prompts, and preserve the genuine plain-text leaf transport contract.
-- Preserve the public entrypoint as `react/run` from an `:init` trailing expression.
-
-## Benchmarking Config Coupling
-
-Benchmark default agent selection is centralized in:
-- `benchmarking/src/agent_policy.py` (`DEFAULT_AGENT_POLICY` + provider/transport resolution).
-
-The policy selects from generic I/O profiles in `config/agents/` based on model/provider transport.
-
-When changing benchmark agent config:
-1. Update `config/agents/io-*.agent.edn` files if profile capabilities change.
-2. Update `benchmarking/src/agent_policy.py` defaults if paths or policy change.
-3. Keep transport variants aligned unless intentionally different.
-4. Verify both `bench.py` dry-run output and actual run resolution.
+- Search defaults to Serper when `SERPER_API_KEY` is present; otherwise it falls back to DuckDuckGo.
+- Fetch defaults to the configured fetch backend and character limit.
+- `SERPER_API_KEY` is web/search configuration only. It is not required for examples that do not use the `web` namespace.
 
 ## Important Gotchas
 
-- CLI default agent is `config/agents/cli.agent.edn` (inherits from `base-tc.agent.edn`).
-- `spell.api/run` requires an explicit `:agent` argument — there is no built-in fallback.
-- `benchmarking/` is a separate nested git repo (`benchmarking/.git`), so config changes affecting benchmark defaults may require coordinated commits in both repos.
+- CLI default agent is `config/agents/cli.agent.edn`.
+- Agent and provider paths are mostly relative to the file that declares them, not the process working directory.
+- Prompt behavior is transport-sensitive; update all prompt variants when changing provider-agnostic model instructions.
