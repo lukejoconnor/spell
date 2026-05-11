@@ -83,7 +83,7 @@
   [["-t" "--test" "Use dummy LLM provider (returns 'hello world')"]
    ["-e" "--example NAME" "Run a named example from examples/"]
    ["-a" "--agent FILE" "Use agent definition from .agent.edn file"]
-   ["-m" "--model MODEL" "Model spec: haiku, sonnet, opus, opus45, ollama:<model>, codex-tc:<model>, openai-tc:<model>, anthropic-pf:<model>, anthropic-tc:<model>, fireworks:<model>, fireworks-tc:<model>, user (default: codex-tc:gpt-5.3)"]
+   ["-m" "--model MODEL" "Model/provider spec: codex-tc:<model>, openai-tc:<model>, anthropic-pf:<model>, anthropic-tc:<model>, fireworks:<model>, fireworks-tc:<model>, ollama:<model>, user (default: codex-tc:gpt-5.3)"]
    ["-d" "--depth DEPTH" "Max recursion depth (default: unlimited, 0 = unlimited)"
     :parse-fn #(Integer/parseInt %)
     :validate [#(>= % 0) "Must be non-negative"]]
@@ -131,14 +131,13 @@
           "Examples:"
           "  spell 'Return 42'"
           "  spell -t 'Test prompt'"
-          "  spell -m haiku 'Add 1 and 2'"
-          "  spell -m ollama:llama3.2 'Return 42'"
+          "  spell -m codex-tc:gpt-5.3 'Return 42'"
           "  spell -m openai-tc:gpt-5.4 'Return 42'"
           "  spell -m fireworks:glm-5 'Return 42'"
           "  spell -m fireworks-tc:kimi-k2p6 'Return 42'"
           "  spell examples/hello-world.spl"
           "  spell -e hello-world"
-          "  spell -e twenty-questions -m opus -d 40"
+          "  spell -e twenty-questions -d 40"
           "  spell -a config/agents/coder.agent.edn 'Fix the bug'"]
          (when-let [examples (seq (list-examples))]
            [""

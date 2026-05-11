@@ -18,7 +18,8 @@ examples/CLAUDE.md
 test/CLAUDE.md
 
 # Local development
-bin/
+bin/*
+!bin/spell
 dev/
 traces/
 logs/

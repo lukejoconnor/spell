@@ -1,2 +1,0 @@
-Spell enables recursive self-calls for context engineering.
-This is file A.

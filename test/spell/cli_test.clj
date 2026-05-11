@@ -38,3 +38,16 @@
     (let [result (cli/validate-args ["--reasoning-effort" "none" "Return 42"])]
       (is (= "Return 42" (:prompt result)))
       (is (= "none" (get-in result [:options :reasoning-effort]))))))
+
+(deftest help-text-uses-public-provider-specs-and-curated-examples
+  (let [{:keys [exit-message ok?]} (cli/validate-args ["--help"])]
+    (is ok?)
+    (is (str/includes? exit-message "codex-tc:<model>"))
+    (is (str/includes? exit-message "openai-tc:gpt-5.4"))
+    (is (str/includes? exit-message "fireworks-tc:kimi-k2p6"))
+    (doseq [example ["hello-world" "coin-flip" "twenty-questions"
+                     "telephone" "auction" "chat"]]
+      (is (str/includes? exit-message example)))
+    (doseq [removed ["famous-greeting" "fix-bug" "comm-ask"
+                     "globals-basic" "negotiate" "test-compact"]]
+      (is (not (str/includes? exit-message removed))))))

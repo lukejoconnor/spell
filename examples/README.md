@@ -1,49 +1,34 @@
 # Spell Examples
 
-Example prompts demonstrating Spell's LLM self-orchestration capabilities.
+This directory contains the public examples for the v0.2 Spell release. Each `.spl` file is a natural-language prompt that asks the model to write and run a Spell program.
 
 ## Running Examples
 
 ```bash
-# Set your API key
-export ANTHROPIC_API_KEY=sk-...
+# Smoke-test the CLI without a live provider call.
+bin/spell -t "Return a short greeting"
 
-# Run with default model (GPT-5.2)
-spell "Your prompt here"
+# Run examples with the default provider.
+bin/spell -e hello-world
+bin/spell examples/coin-flip.spl
 
-# Run with a specific model
-spell -m opus "Your prompt here"
-spell -m haiku "Your prompt here"
-spell -m ollama:llama3.2 "Your prompt here"
-
-# Run a .spl file directly
-spell examples/hello-world.spl
-
-# Run a named example
-spell -e hello-world
-
-# Verbose mode shows LLM calls
-spell -v -m opus "Your prompt here"
+# Show model calls while running a live example.
+bin/spell -v -e auction
 ```
 
-## Examples
+Most examples make live provider calls, and recursive or multi-agent examples can make several calls. Use `-b` to cap spend and `-d` to cap recursion depth while experimenting.
 
-| File | Description | Recommended Model |
-|------|-------------|-------------------|
-| `hello-world.spl` | Simple 2-step delegation | Haiku |
-| `coin-flip.spl` | Recursive coin flipping | Sonnet |
-| `famous-greeting.spl` | Tool use + delegation | Sonnet |
-| `fix-bug.spl` | Multi-step bug fixing with delegation | Sonnet |
-| `twenty-questions.spl` | Worker/checker loop (Ralph pattern) | Opus |
-| `explain-spell.spl` | Self-reflection + multi-agent orchestration | Opus |
-| `plet-basic.spl` | Parallel evaluation with plet | Sonnet |
-| `think-rethink.spl` | CoT pruning with think/rethink/extend | Sonnet |
-| `comm-handle.spl` | Return your own agent handle | Sonnet |
-| `comm-ask.spl` | Spawn child + ask for result | Sonnet |
-| `comm-spawn-basic.spl` | Fire-and-forget spawn | Sonnet |
-| `negotiate.spl` | Multi-turn negotiation with ask/reply | Opus |
-| `auction.spl` | Sealed-bid auction with parallel bidders | Opus |
-| `globals-basic.spl` | Store/read global shared state | Sonnet |
-| `globals-roles.spl` | Role registration + spawn-ask | Opus |
+Spell accepts provider-prefixed model specs such as `codex-tc:<model>`, `openai-tc:<model>`, `anthropic-tc:<model>`, `anthropic-pf:<model>`, `fireworks:<model>`, `fireworks-tc:<model>`, and `ollama:<model>`. The unprefixed CLI default uses the Codex CLI tool-call provider.
 
-Some examples have companion `.md` files with detailed writeups and expected output.
+## Public Example Set
+
+| Example | What it demonstrates | Try it |
+| --- | --- | --- |
+| `hello-world.spl` | Minimal self-call and string composition. | `bin/spell -e hello-world` |
+| `coin-flip.spl` | Recursive self-calls with a programmatic stopping condition. | `bin/spell -e coin-flip -d 20` |
+| `twenty-questions.spl` | A host/worker game loop with limited turns. | `bin/spell -e twenty-questions -d 40` |
+| `telephone.spl` | Sequential relay loop using fresh self-calls. | `bin/spell -e telephone -d 30` |
+| `auction.spl` | Parallel bidder agents and result collection. | `bin/spell -e auction -d 20` |
+| `chat.spl` | Interactive conversation through the agent communication namespace. | `bin/spell -e chat` |
+
+Each example has a companion `.md` file with a short explanation and expected behavior.

@@ -80,10 +80,11 @@ Start with:
 - `examples/hello-world.spl`: small self-call.
 - `examples/coin-flip.spl`: recursion and branching.
 - `examples/twenty-questions.spl`: multi-agent loop.
+- `examples/telephone.spl`: sequential relay loop.
 - `examples/auction.spl`: parallel agent pattern.
 - `examples/chat.spl`: interactive communication.
 
-Some examples have companion `.md` files with expected behavior and explanation.
+Each public example has a companion `.md` file with expected behavior and explanation.
 
 ## Running And Testing
 
@@ -91,7 +92,7 @@ Some examples have companion `.md` files with expected behavior and explanation.
 bin/spell -h
 bin/spell -t "Return a greeting"
 bin/spell -e hello-world
-bin/spell -m openai-tc:gpt-5.4 "Explain the examples directory."
+bin/spell "Explain the examples directory."
 clj -M:test-fast
 clj -M:test-slow
 ```
@@ -128,7 +129,8 @@ For examples:
 2. `examples/hello-world.spl`
 3. `examples/coin-flip.spl`
 4. `examples/twenty-questions.spl`
-5. `src/spell/runtime.clj`
+5. `examples/telephone.spl`
+6. `src/spell/runtime.clj`
 
 ## Notes For Readers
 
