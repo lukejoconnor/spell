@@ -437,7 +437,9 @@
    common llms namespace for circular references."
   [spec compile-runtime-agent-fn compile-agent-fn model parent-provider extra-namespaces base-dir]
   (let [spec-base-dir (or (:base-dir spec) base-dir)
-        spec-model (or (:model spec) model)
+        spec-has-provider? (contains? spec :provider)
+        spec-model (or (:model spec)
+                       (when-not spec-has-provider? model))
         spec-provider (if (contains? spec :provider)
                         (provider/resolve-provider (:provider spec) spec-base-dir)
                         parent-provider)

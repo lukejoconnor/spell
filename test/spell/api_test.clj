@@ -92,7 +92,14 @@
   (testing "throws when :lm-profile missing"
     (is (thrown-with-msg? Exception #"Must specify :lm-profile"
           (api/run {:prompt "hello"
-                    :agent test-agent})))))
+                    :agent test-agent}))))
+
+  (testing "throws on unknown public option"
+    (is (thrown-with-msg? Exception #"Unknown public run option"
+          (api/run {:prompt "hello"
+                    :lm-profile (provider/test-provider {:response "unused"})
+                    :agent test-agent
+                    :bogus true})))))
 
 ;; =============================================================================
 ;; Init program tests

@@ -350,7 +350,8 @@
                                       (println (format "\nCost: $%.4f" c))))))))]
         (.addShutdownHook (Runtime/getRuntime) shutdown-hook)
         (run-shell (:setup options))
-        (let [{:keys [result error error-data usage trace-dir]} (run-prompt prompt options usage-atom)]
+        (let [{:keys [result error error-data usage-tracker trace-dir]} (run-prompt prompt options usage-atom)
+              usage usage-tracker]
           (run-shell (:cleanup options))
           (when trace-dir
             (binding [*out* *err*]

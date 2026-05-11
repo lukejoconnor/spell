@@ -84,7 +84,24 @@
           llms-map {'helper {:doc "Helper"}}
           llms-ns (agent/resolve-llms llms-map llm/compile-agent agent/compile-agent-spec "claude-sonnet-4-5-20250929" prov nil)]
       (is (runtime/compiled-agent? (:helper llms-ns)))
-      (is (= "inherited" (th/run-agent-prefix (:helper llms-ns) "(do "))))))
+      (is (= "inherited" (th/run-agent-prefix (:helper llms-ns) "(do ")))))
+
+  (testing "sub-agent with its own LM profile does not inherit parent model override"
+    (let [seen-opts (atom nil)
+          child-prov (reify provider/LLMProvider
+                       (plain-text-provider [this] this)
+                       (call-llm [this prompt]
+                         (provider/call-llm this prompt {}))
+                       (call-llm [_ _prompt opts]
+                         (reset! seen-opts opts)
+                         "\"child\")")
+                       (supports-prefill [_] true))
+          llms-map {'helper {:doc "Helper"
+                             :default-lm-profile child-prov}}
+          llms-ns (agent/resolve-llms llms-map llm/compile-agent agent/compile-agent-spec
+                                      "parent-model" (provider/test-provider {:response "\"parent\")"}) nil)]
+      (is (= "child" (th/run-agent-prefix (:helper llms-ns) "(do ")))
+      (is (nil? (:model @seen-opts))))))
 
 (deftest resolve-llms-docs-populated-test
   (testing ":docs populated from :doc fields"

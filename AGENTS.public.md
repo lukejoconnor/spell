@@ -65,7 +65,7 @@ See `config/AGENTS.md` for a directory-specific guide.
 | `config/prompts/sysprompt-prefill.txt` | System prompt for prefill-style providers. |
 | `config/prompts/sysprompt-message.txt` | System prompt for message-style providers. |
 | `config/prompts/sysprompt-toolcall.txt` | System prompt for mandatory tool-call providers. |
-| `config/providers/*.provider.edn` | Declarative provider defaults and routing metadata. |
+| `config/lm-profiles/*.edn` | Declarative LM provider defaults and routing metadata. |
 | `config/spl-lib/patterns.spl` | Reusable Spell pattern library. |
 | `config/web.edn` | Web/search configuration. |
 
@@ -120,7 +120,7 @@ For CLI and provider behavior:
 1. `bin/spell`
 2. `src/spell/cli.clj`
 3. `src/spell/provider.clj`
-4. `config/providers/*.provider.edn`
+4. `config/lm-profiles/*.edn`
 5. `config/agents/*.agent.edn`
 
 For examples:
