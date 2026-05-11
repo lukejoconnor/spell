@@ -221,7 +221,7 @@
   (testing "react agent exposes describe docs for react/run"
     (let [prov (provider/test-provider {:response "unused"})
           result (api/run {:init "(eval (do '(describe-fn react :run)))"
-                           :provider prov
+                           :lm-profile prov
                            :agent "config/agents/react.agent.edn"})]
       (is (string? (:result result)))
       (is (str/includes? (:result result) "react/run"))))
@@ -245,7 +245,7 @@
                      2 "Thought: The command succeeded.\nAction: Finish[done]"
                      (throw (ex-info "Unexpected react leaf call" {:prompt prompt}))))})
           result (api/run {:init "(eval (do (def prompt \"Say hello by running a shell command, then finish.\") '(react/run prompt)))"
-                           :provider prov
+                           :lm-profile prov
                            :agent "config/agents/react.agent.edn"})]
       (is (= "done" (:result result)))
       (is (= 2 @calls))
@@ -268,7 +268,7 @@
                    (swap! calls inc)
                    "Thought: Still working.\nAction: Command[printf hello]")})
           result (api/run {:init "(eval (do '(react/run {:task \"Say hello\" :max-steps 1})))"
-                           :provider prov
+                           :lm-profile prov
                            :agent "config/agents/react.agent.edn"})]
       (is (= "React loop reached max steps without a final answer." (:result result)))
       (is (= 1 @calls))))
@@ -291,7 +291,7 @@
                      (throw (ex-info "Unexpected react leaf call" {:prompt prompt}))))})]
       (try
         (let [result (api/run {:init "(eval (do '(react/run \"Create a temp file, then finish.\")))"
-                               :provider prov
+                               :lm-profile prov
                                :agent "config/agents/react.agent.edn"})]
           (is (= "safe" (:result result)))
           (is (= 2 @calls))

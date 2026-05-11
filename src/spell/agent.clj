@@ -259,6 +259,38 @@
         (throw (ex-info (str "Failed to read agent file: " full-path)
                         {:path full-path :error (.getMessage e)}))))))
 
+(defn- normalize-agent-def
+  "Normalize public agent config keys into the internal runtime keys."
+  [agent-def]
+  (cond-> agent-def
+    (contains? agent-def :agent-name)
+    (-> (assoc :name (:agent-name agent-def))
+        (dissoc :agent-name))
+
+    (contains? agent-def :agent-description)
+    (-> (assoc :doc (:agent-description agent-def))
+        (dissoc :agent-description))
+
+    (contains? agent-def :system-prompt)
+    (-> (assoc :system (:system-prompt agent-def))
+        (dissoc :system-prompt))
+
+    (contains? agent-def :default-lm-profile)
+    (-> (assoc :provider (:default-lm-profile agent-def))
+        (dissoc :default-lm-profile))
+
+    (contains? agent-def :default-budget)
+    (-> (assoc :budget (:default-budget agent-def))
+        (dissoc :default-budget))
+
+    (contains? agent-def :format-retries)
+    (-> (assoc :max-retries (:format-retries agent-def))
+        (dissoc :format-retries))
+
+    (contains? agent-def :available-agents)
+    (-> (assoc :llms (:available-agents agent-def))
+        (dissoc :available-agents))))
+
 (defn- merge-agent-defs
   "Merge child agent def onto parent.
    - Scalars: child wins if present (includes :llms — child replaces entirely)
@@ -284,18 +316,19 @@
   "Resolve :base inheritance chain, returning fully merged agent def.
    Removes :base from result."
   [agent-def base-dir]
-  (if-let [base-path (:base agent-def)]
-    (let [base-path-str (str base-path)
-          base-file (java.io.File. (if (str/starts-with? base-path-str "/")
-                                     base-path-str
-                                     (str base-dir "/" base-path-str)))
-          base-dir' (.getParent base-file)
-          base-def (read-agent-edn base-path-str base-dir)
-          resolved-base (resolve-inheritance base-def base-dir')]
-      ;; Merge child onto resolved base, remove :base key
-      (dissoc (merge-agent-defs resolved-base agent-def) :base))
-    ;; No base, return as-is
-    agent-def))
+  (let [agent-def (normalize-agent-def agent-def)]
+    (if-let [base-path (:base agent-def)]
+      (let [base-path-str (str base-path)
+            base-file (java.io.File. (if (str/starts-with? base-path-str "/")
+                                       base-path-str
+                                       (str base-dir "/" base-path-str)))
+            base-dir' (.getParent base-file)
+            base-def (normalize-agent-def (read-agent-edn base-path-str base-dir))
+            resolved-base (resolve-inheritance base-def base-dir')]
+        ;; Merge child onto resolved base, remove :base key
+        (dissoc (merge-agent-defs resolved-base agent-def) :base))
+      ;; No base, return as-is
+      agent-def)))
 
 ;; =============================================================================
 ;; LLMs auto-discovery
@@ -367,7 +400,7 @@
 
     ;; Inline map spec
     (map? value)
-    (cond-> value
+    (cond-> (normalize-agent-def value)
       base-dir (assoc :base-dir base-dir))
 
     :else
@@ -462,7 +495,7 @@
                      path)
          file (java.io.File. full-path)
          base-dir' (.getParent file)
-         raw-def (read-agent-edn full-path nil)
+         raw-def (normalize-agent-def (read-agent-edn full-path nil))
          agent-def (resolve-inheritance raw-def base-dir')]
      (assoc agent-def :base-dir base-dir'))))
 

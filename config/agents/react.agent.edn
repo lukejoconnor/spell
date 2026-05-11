@@ -3,8 +3,8 @@
 ;; react/ plus the minimal shell execution capability needed by the loop.
 
 {:base base-tc.agent.edn
- :name react
- :doc "Hidden ReAct loop profile"
+ :agent-name react
+ :agent-description "Hidden ReAct loop profile"
  :namespaces
  {io    stdlib/io-exec
   react stdlib/react}}

@@ -2,8 +2,8 @@
 ;; Web is intentionally omitted; benchmark web access should be opt-in.
 
 {:base base-pf.agent.edn
- :name io-pf
- :doc "Prefill transport benchmark agent with io namespace (web disabled by default)"
+ :agent-name io-pf
+ :agent-description "Prefill transport benchmark agent with io namespace (web disabled by default)"
 
  :namespaces
  {io       stdlib/io
