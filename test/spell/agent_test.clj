@@ -84,7 +84,24 @@
           llms-map {'helper {:doc "Helper"}}
           llms-ns (agent/resolve-llms llms-map llm/compile-agent agent/compile-agent-spec "claude-sonnet-4-5-20250929" prov nil)]
       (is (runtime/compiled-agent? (:helper llms-ns)))
-      (is (= "inherited" (th/run-agent-prefix (:helper llms-ns) "(do "))))))
+      (is (= "inherited" (th/run-agent-prefix (:helper llms-ns) "(do ")))))
+
+  (testing "sub-agent with its own LM profile does not inherit parent model override"
+    (let [seen-opts (atom nil)
+          child-prov (reify provider/LLMProvider
+                       (plain-text-provider [this] this)
+                       (call-llm [this prompt]
+                         (provider/call-llm this prompt {}))
+                       (call-llm [_ _prompt opts]
+                         (reset! seen-opts opts)
+                         "\"child\")")
+                       (supports-prefill [_] true))
+          llms-map {'helper {:doc "Helper"
+                             :default-lm-profile child-prov}}
+          llms-ns (agent/resolve-llms llms-map llm/compile-agent agent/compile-agent-spec
+                                      "parent-model" (provider/test-provider {:response "\"parent\")"}) nil)]
+      (is (= "child" (th/run-agent-prefix (:helper llms-ns) "(do ")))
+      (is (nil? (:model @seen-opts))))))
 
 (deftest resolve-llms-docs-populated-test
   (testing ":docs populated from :doc fields"
@@ -221,7 +238,7 @@
   (testing "react agent exposes describe docs for react/run"
     (let [prov (provider/test-provider {:response "unused"})
           result (api/run {:init "(eval (do '(describe-fn react :run)))"
-                           :provider prov
+                           :lm-profile prov
                            :agent "config/agents/react.agent.edn"})]
       (is (string? (:result result)))
       (is (str/includes? (:result result) "react/run"))))
@@ -245,7 +262,7 @@
                      2 "Thought: The command succeeded.\nAction: Finish[done]"
                      (throw (ex-info "Unexpected react leaf call" {:prompt prompt}))))})
           result (api/run {:init "(eval (do (def prompt \"Say hello by running a shell command, then finish.\") '(react/run prompt)))"
-                           :provider prov
+                           :lm-profile prov
                            :agent "config/agents/react.agent.edn"})]
       (is (= "done" (:result result)))
       (is (= 2 @calls))
@@ -268,7 +285,7 @@
                    (swap! calls inc)
                    "Thought: Still working.\nAction: Command[printf hello]")})
           result (api/run {:init "(eval (do '(react/run {:task \"Say hello\" :max-steps 1})))"
-                           :provider prov
+                           :lm-profile prov
                            :agent "config/agents/react.agent.edn"})]
       (is (= "React loop reached max steps without a final answer." (:result result)))
       (is (= 1 @calls))))
@@ -291,7 +308,7 @@
                      (throw (ex-info "Unexpected react leaf call" {:prompt prompt}))))})]
       (try
         (let [result (api/run {:init "(eval (do '(react/run \"Create a temp file, then finish.\")))"
-                               :provider prov
+                               :lm-profile prov
                                :agent "config/agents/react.agent.edn"})]
           (is (= "safe" (:result result)))
           (is (= 2 @calls))

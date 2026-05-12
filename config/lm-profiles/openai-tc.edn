@@ -1,6 +1,6 @@
-{:type :openai
+{:provider :openai
  :api-key-env "OPENAI_API_KEY"
- :model "gpt-5.4"
+ :default-model "gpt-5.4"
  :use-responses-api true
  :force-tool-call true
  :max-tokens 32768

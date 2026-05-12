@@ -129,7 +129,7 @@ Run `bin/spell -h` for the authoritative CLI help from the checked-out code.
 - `src/spell/stdlib.clj`, `io.clj`, `web.clj`, `globals.clj`, `patterns.clj`: standard namespaces exposed to Spell programs.
 - `config/agents/`: agent capability profiles.
 - `config/prompts/`: transport-specific system prompts.
-- `config/providers/`: provider configuration.
+- `config/lm-profiles/`: LM profile configuration.
 - `examples/`: runnable `.spl` examples.
 - `test/`: Clojure test suite.
 
