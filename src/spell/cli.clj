@@ -83,7 +83,7 @@
 (def cli-options
   [["-t" "--test" "Use dummy LLM provider (returns 'hello world')"]
    ["-e" "--example NAME" "Run a named example from examples/"]
-   ["-a" "--agent FILE" "Use agent definition from .agent.edn file"]
+   ["-a" "--agent-profile FILE" "Use agent profile from .agent.edn file"]
    ["-m" "--model MODEL" "Model/provider spec: codex-tc:<model>, openai-tc:<model>, anthropic-pf:<model>, anthropic-tc:<model>, fireworks:<model>, fireworks-tc:<model>, ollama:<model>, user (default: codex-tc:gpt-5.3)"]
    ["-d" "--depth DEPTH" "Max recursion depth (default: unlimited, 0 = unlimited)"
     :parse-fn #(Integer/parseInt %)
@@ -123,7 +123,7 @@
           ""
           "Usage: spell [options] <prompt>"
           "       spell [options] <file.spl>"
-          "       spell -a <agent.edn> <prompt>"
+          "       spell -a <agent-profile.edn> <prompt>"
           "       spell -e <example>"
           ""
           "Options:"
@@ -139,7 +139,7 @@
           "  spell examples/hello-world.spl"
           "  spell -e hello-world"
           "  spell -e twenty-questions -d 40"
-          "  spell -a config/agents/coder.agent.edn 'Fix the bug'"]
+          "  spell -a config/agent-profiles/io-tc.agent.edn 'Fix the bug'"]
          (when-let [examples (seq (list-examples))]
            [""
             "Available examples:"
@@ -228,7 +228,7 @@
         (provider/anthropic-pf-provider base-opts)))))
 
 (defn run-prompt
-  [prompt {:keys [depth verbose log budget trace agent model thinking reasoning-effort verbosity
+  [prompt {:keys [depth verbose log budget trace agent-profile model thinking reasoning-effort verbosity
                   suffix-grammar grammar-max-chars]
            :as opts}
    usage-atom]
@@ -241,12 +241,12 @@
         thinking (or thinking (when opus? 16384))
         prov (make-provider opts)
         prefill? (and (provider/supports-prefill prov) (not thinking))
-        resolved-agent (or agent "config/agents/cli.agent.edn")
+        resolved-agent-profile (or agent-profile "config/agent-profiles/cli.agent.edn")
         log-writer (when log (io/writer (io/file log) :append true))]
     (try
       (api/run-internal (cond-> {:prompt prompt
-                                 :lm-profile prov
-                                 :agent resolved-agent
+                                 :model-profile prov
+                                 :agent-profile resolved-agent-profile
                                  :log-writer (when (or verbose log) (or log-writer *out*))
                                  :budget (cond
                                            (nil? budget) nil

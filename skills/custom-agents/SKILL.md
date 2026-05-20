@@ -7,7 +7,7 @@ description: Configure custom Spell agent profiles. Use when creating or modifyi
 
 ## Where To Work
 
-Agent profiles live in `config/agents/` and are loaded by `src/spell/agent.clj`.
+Agent profiles live in `config/agent-profiles/` and are loaded by `src/spell/agent.clj`.
 
 Start from the closest existing profile:
 
@@ -25,7 +25,7 @@ Use `:base` for inheritance and add only the differences:
 {:base cli.agent.edn
  :agent-name my-agent
  :agent-description "Short purpose of this profile."
- :default-lm-profile "../lm-profiles/openai-tc.edn"
+ :default-model-profile "../model-profiles/openai-tc.edn"
  :namespaces
  {io stdlib/io
   patterns stdlib/patterns
@@ -33,7 +33,7 @@ Use `:base` for inheritance and add only the differences:
   globals stdlib/globals}}
 ```
 
-Paths in `:base`, `:system-prompt {:file ...}`, and `:default-lm-profile` are resolved relative to the file that declares them.
+Paths in `:base`, `:system-prompt {:file ...}`, and `:default-model-profile` are resolved relative to the file that declares them.
 
 ## Namespace Guidance
 
@@ -47,13 +47,13 @@ Paths in `:base`, `:system-prompt {:file ...}`, and `:default-lm-profile` are re
 Run a small task with the custom agent:
 
 ```bash
-bin/spell -a config/agents/my-agent.agent.edn -t "Return a short greeting"
+bin/spell -a config/agent-profiles/my-agent.agent.edn -t "Return a short greeting"
 ```
 
 Then run one live task with the intended provider:
 
 ```bash
-bin/spell -a config/agents/my-agent.agent.edn "Return the number 42."
+bin/spell -a config/agent-profiles/my-agent.agent.edn "Return the number 42."
 ```
 
 See `config/AGENTS.md` for the current directory map and gotchas.

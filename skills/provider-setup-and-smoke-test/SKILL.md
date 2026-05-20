@@ -57,5 +57,5 @@ For debugging, add `-v` to show raw model responses or `--log FILE` to save verb
 ## Troubleshooting
 
 - Run `bin/spell -h` for the authoritative option list in the current checkout.
-- Check LM profile files in `config/lm-profiles/` and agent files in `config/agents/`.
+- Check model profile files in `config/model-profiles/` and agent profile files in `config/agent-profiles/`.
 - `SERPER_API_KEY` is only needed for Serper-backed web search. It is not required for local CLI or non-web examples.

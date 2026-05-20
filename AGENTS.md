@@ -1,8 +1,18 @@
 # Spell Source Guide
 
-This file is a public orientation guide for agents, readers, and contributors working through the Spell source tree. Start with `README.md` for the human-facing project overview and CLI usage, read `docs/language-overview.md` for the core language ideas, then use this file for installation checks, source-map lookup, tests, and implementation orientation.
+This file is a public orientation guide for agents, readers, and contributors working through the Spell source tree. Start with `README.md` for the human-facing project overview, CLI usage, and core language ideas, then use this file for installation checks, source-map lookup, tests, and implementation orientation.
+
+Current release state: `v0.2.0` is unreleased. The `v0.2.0-dev` branch is the active public-release preparation branch, with the public Clojure API and configuration surface documented in `docs/api.md`.
 
 Spell is a Lisp dialect for LLM self-orchestration. A Spell completion is itself a program: the evaluator runs the program, and the program can call back into an LLM, spawn sub-agents, manage context, and use configured namespaces such as `io`, `web`, `agents`, `globals`, and `patterns`.
+
+## Repo Skills
+
+This repo includes Spell-specific skills under `.agents/skills/`. Use them as the first stop for task-oriented work:
+
+- `spell-setup`: install/check prerequisites, configure provider credentials, and run the first smoke tests or examples.
+- `spell-agent-config`: create or modify model profiles and agent profiles; use `docs/api.md` as the canonical API/config reference.
+- `spell-developer`: navigate and modify the Spell source code, choose relevant files, and run focused checks.
 
 ## Terminology
 
@@ -21,7 +31,7 @@ Spell is a Lisp dialect for LLM self-orchestration. A Spell completion is itself
 | `test/` | Unit and integration tests. |
 | `data/pricing.edn` | Model pricing table used for usage and cost reporting. |
 | `docs/` | Public documentation for the release. |
-| `docs/language-overview.md` | Short conceptual guide to completions, self-calls, quines, context management, and agents. |
+| `CHANGELOG.md` | Release notes; `v0.2.0` is currently unreleased. |
 | `LICENSE` | MIT license text. |
 
 ## Agent Quick Start
@@ -84,6 +94,8 @@ The `-t` flag uses the test provider and is useful for checking Java, Clojure, d
 | `src/spell/trace_tool.clj` | Developer tooling for inspecting recorded traces. |
 | `src/spell/api.clj` | Programmatic entry point used by library callers; API details are documented separately. |
 
+The public API/configuration reference is `docs/api.md`. In `v0.2.0-dev`, `spell.api/run` requires `:model-profile` and `:agent-profile`, and rejects old public run keys such as `:provider`.
+
 ## Standard Namespaces
 
 | Path | Exposes |
@@ -102,17 +114,17 @@ See `config/AGENTS.md` for a directory-specific guide.
 
 | Path | Purpose |
 | --- | --- |
-| `config/agents/base-pf.agent.edn` | Base prefill-transport agent. |
-| `config/agents/base-msg.agent.edn` | Base message-transport agent. |
-| `config/agents/base-tc.agent.edn` | Base tool-call-transport agent. |
-| `config/agents/cli.agent.edn` | Default CLI agent; enables `io`, `web`, `patterns`, `agents`, and `globals`. |
-| `config/agents/io-pf.agent.edn` | I/O-capable prefill profile. |
-| `config/agents/io-msg.agent.edn` | I/O-capable message profile. |
-| `config/agents/io-tc.agent.edn` | I/O-capable tool-call profile. |
+| `config/agent-profiles/base-pf.agent.edn` | Base prefill-transport agent. |
+| `config/agent-profiles/base-msg.agent.edn` | Base message-transport agent. |
+| `config/agent-profiles/base-tc.agent.edn` | Base tool-call-transport agent. |
+| `config/agent-profiles/cli.agent.edn` | Default CLI agent; enables `io`, `web`, `patterns`, `agents`, and `globals`. |
+| `config/agent-profiles/io-pf.agent.edn` | I/O-capable prefill profile. |
+| `config/agent-profiles/io-msg.agent.edn` | I/O-capable message profile. |
+| `config/agent-profiles/io-tc.agent.edn` | I/O-capable tool-call profile. |
 | `config/prompts/sysprompt-prefill.txt` | System prompt for prefill-style providers. |
 | `config/prompts/sysprompt-message.txt` | System prompt for message-style providers. |
 | `config/prompts/sysprompt-toolcall.txt` | System prompt for mandatory tool-call providers. |
-| `config/lm-profiles/*.edn` | Declarative LM provider defaults and routing metadata. |
+| `config/model-profiles/*.edn` | Declarative model provider defaults and routing metadata. |
 | `config/spl-lib/patterns.spl` | Reusable Spell pattern library. |
 | `config/web.edn` | Web/search configuration. |
 
@@ -169,8 +181,8 @@ For CLI and provider behavior:
 1. `bin/spell`
 2. `src/spell/cli.clj`
 3. `src/spell/provider.clj`
-4. `config/lm-profiles/*.edn`
-5. `config/agents/*.agent.edn`
+4. `config/model-profiles/*.edn`
+5. `config/agent-profiles/*.agent.edn`
 
 For examples:
 
@@ -185,7 +197,7 @@ For examples:
 
 - Prefer the checked-out code over old comments when behavior differs.
 - Run `bin/spell -h` for the authoritative CLI options in this revision.
-- Agent files can inherit from other `.agent.edn` files with `:base`; resolve relative paths from the current agent file.
+- Agent profile files can inherit from other `.agent.edn` files with `:base`; resolve relative paths from the current agent profile file.
 - Provider-prefixed model specs are parsed in `src/spell/cli.clj`.
 - `SERPER_API_KEY` is only needed when using the `web` namespace with Serper-backed search.
 - License is MIT; the full text is in `LICENSE`.

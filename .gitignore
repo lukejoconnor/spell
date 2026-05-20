@@ -11,7 +11,7 @@ target/
 ~$*
 
 # Local agent guidance
-AGENTS.md
+AGENTS.override.md
 CLAUDE.md
 config/CLAUDE.md
 examples/CLAUDE.md
@@ -57,6 +57,12 @@ writeup/
 # Old/scratch files
 /old/
 
+# Public docs surface
+docs/*
+!docs/api.md
+!docs/CHANGELOG.md
+!docs/changelog.md
+
 # LaTeX build artifacts
 *.aux
 *.fdb_latexmk
@@ -66,8 +72,16 @@ writeup/
 # OS junk
 .DS_Store
 
-# Local agent skills
-.agents/
+# Local agent state; keep the public Spell repo skills tracked.
+.agents/*
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/spell-setup/
+!.agents/skills/spell-setup/**
+!.agents/skills/spell-agent-config/
+!.agents/skills/spell-agent-config/**
+!.agents/skills/spell-developer/
+!.agents/skills/spell-developer/**
 skills-lock.json
 .codex/skills/run-benchmark/
 .claude/skills/run-benchmark/

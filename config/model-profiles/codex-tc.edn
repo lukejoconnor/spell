@@ -3,4 +3,4 @@
  :auth-file "~/.codex/auth.json"
  :default-model "gpt-5.3-codex"
  :max-tokens 16384
- :default-agent "../agents/base-tc.agent.edn"}
+ :default-agent-profile "../agent-profiles/base-tc.agent.edn"}

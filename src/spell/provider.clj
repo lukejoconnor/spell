@@ -2239,11 +2239,11 @@
           (recur (:rest result) (:retry result)))))))
 
 ;; ---------------------------------------------------------------------------
-;; Provider / LM profile loading
+;; Provider / model profile loading
 ;; ---------------------------------------------------------------------------
 
 (defn- provider-map->constructor-map
-  "Normalize public LM profile keys into the internal provider constructor map.
+  "Normalize public model profile keys into the internal provider constructor map.
    Low-level constructors and load-provider keep the historical :type/:model
    vocabulary; public profiles use :provider/:default-model."
   [spec]
@@ -2296,12 +2296,12 @@
                                  :response response :prefill? prefill?})
       (throw (ex-info (str "Unknown provider type: " type) {:type type})))))
 
-(defn provider-edn-default-agent
-  "Read :default-agent from a .provider.edn file. Returns path string or nil.
+(defn provider-edn-default-agent-profile
+  "Read :default-agent-profile from a .provider.edn file. Returns path string or nil.
    The path is relative to the provider file's directory."
   [path]
   (let [edn (read-edn-file path)
-        rel-path (:default-agent edn)]
+        rel-path (:default-agent-profile edn)]
     (when rel-path
       (let [base-dir (.getParent (java.io.File. path))]
         (str base-dir "/" rel-path)))))
@@ -2360,51 +2360,51 @@
     (map? spec) (load-provider-from-map spec)
     :else (throw (ex-info "Invalid provider spec" {:spec spec}))))
 
-(defn load-lm-profile
-  "Load a public LM profile from an .edn file."
+(defn load-model-profile
+  "Load a public model profile from an .edn file."
   [path]
   (let [profile (read-edn-file path)
         provider (load-provider-from-map profile)]
     {:profile profile
      :provider provider
      :base-dir (.getParent (java.io.File. path))
-     :default-agent (:default-agent profile)
+     :default-agent-profile (:default-agent-profile profile)
      :default-model (:default-model profile)
      :default-reasoning-effort (:default-reasoning-effort profile)
      :retries (:retries profile)}))
 
-(defn resolve-lm-profile
-  "Resolve a public LM profile from path string, inline map, or provider instance.
+(defn resolve-model-profile
+  "Resolve a public model profile from path string, inline map, or provider instance.
    Returns {:provider p ...profile-defaults...}."
-  ([spec] (resolve-lm-profile spec nil))
+  ([spec] (resolve-model-profile spec nil))
   ([spec base-dir]
    (cond
      (satisfies? LLMProvider spec)
      {:provider spec}
 
      (string? spec)
-     (load-lm-profile (resolve-path spec base-dir))
+     (load-model-profile (resolve-path spec base-dir))
 
      (and (map? spec) (:file spec))
-     (load-lm-profile (resolve-path (:file spec) base-dir))
+     (load-model-profile (resolve-path (:file spec) base-dir))
 
      (map? spec)
      {:profile spec
       :provider (load-provider-from-map spec)
-      :default-agent (:default-agent spec)
+      :default-agent-profile (:default-agent-profile spec)
       :default-model (:default-model spec)
       :default-reasoning-effort (:default-reasoning-effort spec)
       :retries (:retries spec)}
 
      :else
-     (throw (ex-info "Invalid LM profile spec" {:spec spec})))))
+     (throw (ex-info "Invalid model profile spec" {:spec spec})))))
 
-(defn lm-profile-default-agent
-  "Read :default-agent from an LM profile file. Returns path string or nil.
-   The path is relative to the LM profile file's directory."
+(defn model-profile-default-agent-profile
+  "Read :default-agent-profile from a model profile file. Returns path string or nil.
+   The path is relative to the model profile file's directory."
   [path]
   (let [profile (read-edn-file path)
-        rel-path (:default-agent profile)]
+        rel-path (:default-agent-profile profile)]
     (when rel-path
       (let [base-dir (.getParent (java.io.File. path))]
         (str base-dir "/" rel-path)))))

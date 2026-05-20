@@ -54,18 +54,14 @@
 (defn- resolve-model [model]
   (get model-aliases model model))
 
-(def lm-profile-edn-by-prefix
-  {"anthropic-pf"  "config/lm-profiles/anthropic-pf.edn"
-   "anthropic-tc"  "config/lm-profiles/anthropic-tc.edn"
-   "codex-tc"      "config/lm-profiles/codex-tc.edn"
-   "fireworks"     "config/lm-profiles/fireworks.edn"
-   "fireworks-tc"  "config/lm-profiles/fireworks-tc.edn"
-   "openai-tc"     "config/lm-profiles/openai-tc.edn"
-   "ollama"        "config/lm-profiles/ollama.edn"})
-
-(def provider-edn-by-prefix
-  "Deprecated compatibility alias for benchmark tests/consumers."
-  lm-profile-edn-by-prefix)
+(def model-profile-edn-by-prefix
+  {"anthropic-pf"  "config/model-profiles/anthropic-pf.edn"
+   "anthropic-tc"  "config/model-profiles/anthropic-tc.edn"
+   "codex-tc"      "config/model-profiles/codex-tc.edn"
+   "fireworks"     "config/model-profiles/fireworks.edn"
+   "fireworks-tc"  "config/model-profiles/fireworks-tc.edn"
+   "openai-tc"     "config/model-profiles/openai-tc.edn"
+   "ollama"        "config/model-profiles/ollama.edn"})
 
 (defn- normalize-keys [v]
   (cond
@@ -186,19 +182,19 @@
       (throw (ex-info (str "Unknown provider prefix: " provider)
                       {:provider provider :model-spec model-spec})))))
 
-(defn- default-agent-from-request
-  "Resolve default agent path from LM profile for this request."
+(defn- default-agent-profile-from-request
+  "Resolve default agent profile path from model profile for this request."
   [{:keys [model responses-api]}]
   (when-not model
-    (throw (ex-info "model is required to resolve default agent" {:field "model"})))
+    (throw (ex-info "model is required to resolve default agent profile" {:field "model"})))
   (let [{:keys [provider]} (parse-model-spec model)
         provider-prefix (or provider "anthropic-pf")
-        profile-edn (get lm-profile-edn-by-prefix provider-prefix)]
+        profile-edn (get model-profile-edn-by-prefix provider-prefix)]
     (or (when profile-edn
-          (provider/lm-profile-default-agent profile-edn))
+          (provider/model-profile-default-agent-profile profile-edn))
         ;; Test mode doesn't have a provider file; use message transport base.
         (when (= provider-prefix "test")
-          "config/agents/base-msg.agent.edn"))))
+          "config/agent-profiles/base-msg.agent.edn"))))
 
 (defn- response-ok [mode start-ns result-map]
   (let [latency-ms (/ (double (- (System/nanoTime) start-ns)) 1000000.0)
@@ -244,11 +240,11 @@
       (catch Exception e
         (response-error "one_shot" start-ns e)))))
 
-(defn- run-spell [{:keys [prompt init agent budget depth trace trace-dir prefill
+(defn- run-spell [{:keys [prompt init agent-profile budget depth trace trace-dir prefill
                           thinking reasoning-effort verbosity suffix-grammar
                           grammar-max-chars retries format] :as req}]
   (let [provider-inst (make-provider req)
-        resolved-agent (or agent (default-agent-from-request req))
+        resolved-agent-profile (or agent-profile (default-agent-profile-from-request req))
         normalized-format (normalize-format-spec format)
         resolved-trace-dir (when trace (or trace-dir (trace/default-trace-dir)))
         effective-prefill (if (contains? req :prefill)
@@ -257,8 +253,8 @@
                                  (not thinking)))
         start-ns (System/nanoTime)]
     (try
-      (let [result (api/run-internal (cond-> {:lm-profile provider-inst
-                                              :agent resolved-agent
+      (let [result (api/run-internal (cond-> {:model-profile provider-inst
+                                              :agent-profile resolved-agent-profile
                                               :budget budget
                                               :depth depth
                                               :trace-dir resolved-trace-dir

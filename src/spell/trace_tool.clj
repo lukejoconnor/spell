@@ -37,7 +37,7 @@
   (set tracked-form-order))
 
 (def ^:private namespace-order
-  ["io" "agents" "globals" "blocking" "patterns" "math" "strings" "llms"])
+  ["io" "agents" "globals" "blocking" "patterns" "math" "strings" "workers"])
 
 (def ^:private namespace-prefixes
   (set namespace-order))
@@ -51,7 +51,7 @@
   ["trace_dir" "nodes" "think" "prune" "rethink" "pruning_mean_c" "pruning_total_c" "pruning_max_c"
    "extend" "call_now" "peek" "compact" "llm_self" "ask_await" "persist" "print" "describe"
    "leaf_llm" "future" "defn" "fn"
-   "io" "agents" "globals" "blocking" "patterns" "math_fns" "strings_fns" "llms"
+   "io" "agents" "globals" "blocking" "patterns" "math_fns" "strings_fns" "workers"
    "errors_fatal" "errors_recovered" "flags"])
 
 (def cli-options
@@ -1118,7 +1118,7 @@
      (namespace-total summary "patterns")
      (namespace-total summary "math")
      (namespace-total summary "strings")
-     (namespace-total summary "llms")
+     (namespace-total summary "workers")
      fatal-errors
      recovered-errors
      (str/join " " (sort-by name flags))]))

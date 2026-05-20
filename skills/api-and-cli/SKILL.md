@@ -31,24 +31,24 @@ Run `bin/spell -h` for the authoritative option list in the current checkout.
 
 ## Current Clojure API
 
-The checked-out `spell.api/run` takes a map with exactly one of `:prompt` or `:init`, an `:agent` path, and an `:lm-profile` path, inline LM profile map, or low-level provider instance.
+The checked-out `spell.api/run` takes a map with exactly one of `:prompt` or `:init`, an `:agent-profile` path, and a `:model-profile` path, inline model profile map, or low-level provider instance.
 
 ```clojure
 (require '[spell.api :as spell])
 
 (spell/run {:prompt "Return 42."
-            :lm-profile {:provider :test
+            :model-profile {:provider :test
                          :response "(def x 42)"}
-            :agent "config/agents/base-msg.agent.edn"})
+            :agent-profile "config/agent-profiles/base-msg.agent.edn"})
 ```
 
 For a complete Spell program:
 
 ```clojure
 (spell/run {:init "(do 42)"
-            :lm-profile {:provider :test
+            :model-profile {:provider :test
                          :response "unused"}
-            :agent "config/agents/base-msg.agent.edn"})
+            :agent-profile "config/agent-profiles/base-msg.agent.edn"})
 ```
 
 `docs/api.md` describes the public API and configuration surface for this checkout.
@@ -66,8 +66,8 @@ response = client.run(
     {
         "mode": "spell",
         "prompt": "Return 42.",
-        "agent": "config/agents/base-msg.agent.edn",
-        "lm_profile": "config/lm-profiles/openai-tc.edn",
+        "agent_profile": "config/agent-profiles/base-msg.agent.edn",
+        "model_profile": "config/model-profiles/openai-tc.edn",
     },
     timeout=300,
 )

@@ -16,7 +16,7 @@
 ;; Basic run tests
 ;; =============================================================================
 
-(def test-agent "config/agents/base-msg.agent.edn")
+(def test-agent "config/agent-profiles/base-msg.agent.edn")
 
 (defn- observing-provider [seen-opts response]
   (reify provider/LLMProvider
@@ -34,8 +34,8 @@
     ;; The response completes the program.
     (let [p (provider/test-provider {:response "(def x 42))"})
           result (api/run {:prompt "Return 42"
-                           :lm-profile p
-                           :agent test-agent})]
+                           :model-profile p
+                           :agent-profile test-agent})]
       (is (contains? result :result))
       (is (= 42 (:result result)))
       (is (some? (:usage-tracker result)))))
@@ -44,8 +44,8 @@
     ;; :init takes a COMPLETE Spell program (balanced, no LLM needed)
     (let [p (provider/test-provider {:response "should not be called"})
           result (api/run {:init "(do 42)"
-                           :lm-profile p
-                           :agent test-agent})]
+                           :model-profile p
+                           :agent-profile test-agent})]
       (is (= 42 (:result result)))))
 
   (testing "run with :prompt preserves prompt wrapping even when it starts with ("
@@ -55,16 +55,16 @@
                               (swap! call-count inc)
                               "(def answer 42))")})
           result (api/run {:prompt "(+ 1 2)"
-                           :lm-profile p
-                           :agent test-agent})]
+                           :model-profile p
+                           :agent-profile test-agent})]
       (is (= 42 (:result result)))
       (is (= 1 @call-count))))
 
   (testing "run catches errors gracefully"
     (let [p (provider/test-provider {:response "should not be called"})
           result (api/run {:init "(do undefined-symbol)"
-                           :lm-profile p
-                           :agent test-agent})]
+                           :model-profile p
+                           :agent-profile test-agent})]
       (is (contains? result :error))
       (is (some? (:usage-tracker result))))))
 
@@ -76,29 +76,29 @@
   (testing "throws when both :prompt and :init provided"
     (is (thrown-with-msg? Exception #"exactly one"
           (api/run {:prompt "hello" :init "(do )"
-                    :lm-profile (provider/test-provider {:response "unused"})
-                    :agent test-agent}))))
+                    :model-profile (provider/test-provider {:response "unused"})
+                    :agent-profile test-agent}))))
 
   (testing "throws when neither :prompt nor :init provided"
     (is (thrown-with-msg? Exception #"Must specify"
-          (api/run {:lm-profile (provider/test-provider {:response "unused"})
-                    :agent test-agent}))))
+          (api/run {:model-profile (provider/test-provider {:response "unused"})
+                    :agent-profile test-agent}))))
 
-  (testing "throws when :agent missing"
-    (is (thrown-with-msg? Exception #"Must specify :agent"
+  (testing "throws when :agent-profile missing"
+    (is (thrown-with-msg? Exception #"Must specify :agent-profile"
           (api/run {:prompt "hello"
-                    :lm-profile (provider/test-provider {:response "unused"})}))))
+                    :model-profile (provider/test-provider {:response "unused"})}))))
 
-  (testing "throws when :lm-profile missing"
-    (is (thrown-with-msg? Exception #"Must specify :lm-profile"
+  (testing "throws when :model-profile missing"
+    (is (thrown-with-msg? Exception #"Must specify :model-profile"
           (api/run {:prompt "hello"
-                    :agent test-agent}))))
+                    :agent-profile test-agent}))))
 
   (testing "throws on unknown public option"
     (is (thrown-with-msg? Exception #"Unknown public run option"
           (api/run {:prompt "hello"
-                    :lm-profile (provider/test-provider {:response "unused"})
-                    :agent test-agent
+                    :model-profile (provider/test-provider {:response "unused"})
+                    :agent-profile test-agent
                     :bogus true})))))
 
 ;; =============================================================================
@@ -113,8 +113,8 @@
                               (swap! call-count inc)
                               "42)")})
           result (api/run {:init "(do 42)"
-                           :lm-profile p
-                           :agent test-agent})]
+                           :model-profile p
+                           :agent-profile test-agent})]
       ;; The init program (do 42) evaluates directly — no LLM call needed
       (is (= 42 (:result result)))
       (is (= 0 @call-count))))
@@ -126,8 +126,8 @@
                               (swap! call-count inc)
                               "(def answer 42))")})
           result (api/run {:init "(quine completion (eval (do '(!extend))))"
-                           :lm-profile p
-                           :agent test-agent})]
+                           :model-profile p
+                           :agent-profile test-agent})]
       (is (= 42 (:result result)))
       (is (= 1 @call-count)))))
 
@@ -139,16 +139,16 @@
   (testing "budget option is respected"
     (let [p (provider/test-provider {:response "should not be called"})
           result (api/run {:init "(do 42)"
-                           :lm-profile p
-                           :agent test-agent
+                           :model-profile p
+                           :agent-profile test-agent
                            :budget 10.0})]
       (is (= 42 (:result result)))))
 
   (testing "trace boolean is rejected"
     (is (thrown-with-msg? Exception #"Removed public run option"
           (api/run {:prompt "Return 42"
-                    :lm-profile (provider/test-provider {:response "(def x 42))"})
-                    :agent test-agent
+                    :model-profile (provider/test-provider {:response "(def x 42))"})
+                    :agent-profile test-agent
                     :trace true}))))
 
   (testing "trace option respects provided trace-dir"
@@ -157,8 +157,8 @@
                                  "spell-api-trace-"
                                  (make-array java.nio.file.attribute.FileAttribute 0)))
           result (api/run {:prompt "Return 42"
-                           :lm-profile p
-                           :agent test-agent
+                           :model-profile p
+                           :agent-profile test-agent
                            :trace-dir trace-dir})]
       (is (= 42 (:result result)))
       (is (= trace-dir (:trace-dir result)))
@@ -167,25 +167,25 @@
   (testing "removed format option is rejected at the public API"
     (is (thrown-with-msg? Exception #"Removed public run option"
           (api/run {:prompt "Return 42"
-                    :lm-profile (provider/test-provider {:response "{:result 42}))"})
-                    :agent test-agent
+                    :model-profile (provider/test-provider {:response "{:result 42}))"})
+                    :agent-profile test-agent
                     :format {:required [:result]}})))))
 
-  (testing "inline LM profile map is accepted"
+  (testing "inline model profile map is accepted"
     (let [result (api/run {:prompt "Return 42"
-                           :lm-profile {:provider :test
+                           :model-profile {:provider :test
                                         :response "(def x 42))"}
-                           :agent test-agent})]
+                           :agent-profile test-agent})]
       (is (= 42 (:result result)))))
 
-  (testing "LM profile path is accepted"
-    (let [tmp (java.io.File/createTempFile "spell-lm-profile-" ".edn")]
+  (testing "model profile path is accepted"
+    (let [tmp (java.io.File/createTempFile "spell-model-profile-" ".edn")]
       (try
         (spit tmp (pr-str {:provider :test
                            :response "(def x 42))"}))
         (let [result (api/run {:prompt "Return 42"
-                               :lm-profile (.getAbsolutePath tmp)
-                               :agent test-agent})]
+                               :model-profile (.getAbsolutePath tmp)
+                               :agent-profile test-agent})]
           (is (= 42 (:result result))))
         (finally
           (.delete tmp)))))
@@ -193,8 +193,8 @@
   (testing "run-level model and reasoning effort override provider defaults"
     (let [seen (atom nil)
           result (api/run {:prompt "Return 42"
-                           :lm-profile (observing-provider seen "(def x 42))")
-                           :agent test-agent
+                           :model-profile (observing-provider seen "(def x 42))")
+                           :agent-profile test-agent
                            :model "override-model"
                            :reasoning-effort "high"})]
       (is (= 42 (:result result)))
@@ -206,16 +206,16 @@
           writer (proxy [StringWriter] []
                    (close [] (reset! closed? true)))
           result (api/run {:prompt "Return 42"
-                           :lm-profile (provider/test-provider {:response "(def x 42))"})
-                           :agent test-agent
+                           :model-profile (provider/test-provider {:response "(def x 42))"})
+                           :agent-profile test-agent
                            :log-writer writer})]
       (is (= 42 (:result result)))
       (is (false? @closed?))))
 
   (testing "user-reader registers :user"
     (let [result (api/run {:init "(do 42)"
-                           :lm-profile (provider/test-provider {:response "unused"})
-                           :agent test-agent
+                           :model-profile (provider/test-provider {:response "unused"})
+                           :agent-profile test-agent
                            :user-reader (StringReader. "")})]
       (is (= 42 (:result result)))
       (is (contains? (globals/get-val :roles) :user))))

@@ -4,4 +4,4 @@
  :use-responses-api true
  :force-tool-call true
  :max-tokens 32768
- :default-agent "../agents/base-tc.agent.edn"}
+ :default-agent-profile "../agent-profiles/base-tc.agent.edn"}

@@ -4,26 +4,27 @@ This directory contains runtime configuration used by Spell execution.
 
 ## Scope
 
-- `agents/`: `.agent.edn` agent definitions.
+- `agent-profiles/`: `.agent.edn` agent profile definitions.
+- `model-profiles/`: declarative model profile specs (`.edn`).
 - `prompts/`: system prompt text variants.
-- `providers/`: declarative provider specs (`.provider.edn`).
 - `spl-lib/`: reusable Spell library files.
 - `web.edn`: optional defaults for web search and fetch behavior.
 
-## Providers
+## Model Profiles
 
 First-class public provider paths are:
 
-- OpenAI tool-call mode, configured by `providers/openai-tc.provider.edn` and `OPENAI_API_KEY`.
-- Anthropic tool-call mode, configured by `providers/anthropic-tc.provider.edn` and `ANTHROPIC_API_KEY`.
-- Fireworks, configured by `providers/fireworks.provider.edn` or `providers/fireworks-tc.provider.edn` and `FIREWORKS_API_KEY`.
-- Codex CLI, configured by `providers/codex-tc.provider.edn` and local Codex authentication. Treat this path as experimental.
+- OpenAI tool-call mode, configured by `model-profiles/openai-tc.edn` and `OPENAI_API_KEY`.
+- Anthropic prefill/tool-call modes, configured by `model-profiles/anthropic-pf.edn` or `model-profiles/anthropic-tc.edn` and `ANTHROPIC_API_KEY`.
+- Fireworks prefill/tool-call modes, configured by `model-profiles/fireworks.edn` or `model-profiles/fireworks-tc.edn` and `FIREWORKS_API_KEY`.
+- Codex CLI, configured by `model-profiles/codex-tc.edn` and local Codex authentication. Treat this path as experimental.
+- Ollama, configured by `model-profiles/ollama.edn` and a local Ollama server.
 
 The `:test` provider is used by the test suite. Other provider files may exist for local development, but they are not the primary public path for this release.
 
-## Agent Files
+## Agent Profiles
 
-Agent files are loaded by `src/spell/agent.clj`.
+Agent profile files are loaded by `src/spell/agent.clj`.
 
 Base agents define transport-level behavior and do not add effect namespaces:
 
@@ -31,7 +32,7 @@ Base agents define transport-level behavior and do not add effect namespaces:
 - `base-msg.agent.edn`: message providers, using `prompts/sysprompt-message.txt`.
 - `base-tc.agent.edn`: tool-call providers, using `prompts/sysprompt-toolcall.txt`.
 
-Public runtime profiles inherit from a base agent and add namespaces:
+Public agent profiles inherit from a base agent and add namespaces:
 
 - `cli.agent.edn`: CLI default; enables `io`, `web`, `patterns`, `agents`, and `globals`.
 - `io-pf.agent.edn`: I/O-capable prefill profile with `io`, `patterns`, `agents`, and `globals`; web is disabled by default.
@@ -41,7 +42,7 @@ Public runtime profiles inherit from a base agent and add namespaces:
 Key semantics:
 
 - `:base` supports file-based inheritance; paths are resolved relative to the current agent file.
-- `:system {:file ...}` and `:provider {:file ...}` paths are resolved relative to the current agent file.
+- `:system-prompt {:file ...}` and `:default-model-profile` paths are resolved relative to the current agent file.
 - `:namespaces` values support `stdlib/X`, `stdlib/X/Y`, `file.clj/var`, `file.agent.edn`, `{:file f}`, and `{:file f :items {...}}`.
 
 Rules:
@@ -50,11 +51,11 @@ Rules:
 - Keep transport variants aligned unless the transport requires a difference.
 - Avoid inheritance cycles.
 
-## Provider Files
+## Model Profile Files
 
-Provider files are loaded by `spell.provider/load-provider`.
+Model profile files are loaded by `spell.provider/resolve-model-profile`.
 
-Each `.provider.edn` file includes a `:default-agent` key pointing to the transport-appropriate base agent. Supported `:type` values include:
+Each model profile may include a `:default-agent-profile` key pointing to the transport-appropriate base agent profile. `spell.api/run` still requires an explicit `:agent-profile`; the default is for higher-level helpers and CLI-style selection. Supported public `:provider` values include:
 
 - `:anthropic-pf`
 - `:anthropic-tc`
@@ -72,7 +73,7 @@ Rules:
 - Keep API key environment variable names accurate.
 - `:fireworks` is the completions/prefill transport. Use explicit `fireworks-tc:<model>` or `:fireworks-tc` for Fireworks Anthropic-compatible Messages requests with mandatory `spell_suffix` tool output.
 - Use a tool-call provider only where mandatory tool output is intended.
-- OpenAI tool-call configs still use `:type :openai`; set `:force-tool-call true` and a tool-call base agent rather than adding a separate provider type.
+- OpenAI tool-call configs still use `:provider :openai`; set `:force-tool-call true` and a tool-call base agent rather than adding a separate provider type.
 
 ## Prompt Files
 
@@ -103,6 +104,6 @@ Rules:
 
 ## Important Gotchas
 
-- CLI default agent is `config/agents/cli.agent.edn`.
+- CLI default agent profile is `config/agent-profiles/cli.agent.edn`.
 - Agent and provider paths are mostly relative to the file that declares them, not the process working directory.
 - Prompt behavior is transport-sensitive; update all prompt variants when changing provider-agnostic model instructions.

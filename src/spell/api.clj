@@ -11,11 +11,11 @@
             [spell.user :as user]))
 
 (def ^:private public-run-keys
-  #{:prompt :init :lm-profile :agent :model :reasoning-effort
+  #{:prompt :init :model-profile :agent-profile :model :reasoning-effort
     :budget :depth :trace-dir :usage-tracker :user-reader :log-writer})
 
 (def ^:private removed-run-keys
-  #{:provider :trace :usage :user? :verbose :thinking :prefill? :format :retries
+  #{:provider :agent :lm-profile :trace :usage :user? :verbose :thinking :prefill? :format :retries
     :suffix-grammar? :suffix-grammar :grammar-max-chars :provider-constructor
     :verbosity :api-key :api-key-env :base-url :auth-file :account-id :max-tokens :costs
     :use-responses-api :force-tool-call :request-timeout-sec :sse-idle-timeout-sec
@@ -31,24 +31,24 @@
       (throw (ex-info (str "Unknown public run option(s): " unknown)
                       {:type :invalid-run-options :unknown unknown})))))
 
-(defn- validate-required-run-opts! [{:keys [prompt init lm-profile agent]}]
+(defn- validate-required-run-opts! [{:keys [prompt init model-profile agent-profile]}]
   (when (and prompt init)
     (throw (ex-info "Specify exactly one of :prompt or :init, not both" {})))
   (when-not (or prompt init)
     (throw (ex-info "Must specify exactly one of :prompt or :init" {})))
-  (when-not agent
-    (throw (ex-info "Must specify :agent (path to .agent.edn file)" {})))
-  (when-not lm-profile
-    (throw (ex-info "Must specify :lm-profile" {}))))
+  (when-not agent-profile
+    (throw (ex-info "Must specify :agent-profile (path to .agent.edn file)" {})))
+  (when-not model-profile
+    (throw (ex-info "Must specify :model-profile" {}))))
 
 (defn- execute-run
-  [{:keys [prompt init lm-profile agent model reasoning-effort budget depth trace-dir
+  [{:keys [prompt init model-profile agent-profile model reasoning-effort budget depth trace-dir
            usage-tracker user-reader log-writer]
     :as opts}]
   (validate-required-run-opts! opts)
-  (let [profile (provider/resolve-lm-profile lm-profile)
+  (let [profile (provider/resolve-model-profile model-profile)
         resolved-provider (:provider profile)
-        agent-spec (cond-> (agent/load-agent-spec agent)
+        agent-spec (cond-> (agent/load-agent-spec agent-profile)
                      true (assoc :provider resolved-provider)
                      (or model (:default-model profile)) (assoc :model (or model (:default-model profile)))
                      (or reasoning-effort (:default-reasoning-effort profile))
@@ -124,8 +124,8 @@
   "Run a Spell agent with the v0.2.0 public API.
 
    Required:
-     :lm-profile — LM profile path, inline profile map, or provider instance
-     :agent      — path to .agent.edn
+     :model-profile — model profile path, inline profile map, or provider instance
+     :agent-profile      — path to .agent.edn
      exactly one of :prompt or :init
 
    Returns {:result value :usage-tracker atom} or
@@ -136,6 +136,6 @@
 
 (defn run-internal
   "Internal adapter for CLI and benchmark compatibility.
-   Accepts non-public runtime controls while still requiring :lm-profile."
+   Accepts non-public runtime controls while still requiring :model-profile."
   [opts]
   (execute-run opts))

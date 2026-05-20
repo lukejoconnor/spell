@@ -1,6 +1,6 @@
 ;; CLI default agent: full capabilities for interactive use.
 ;; Inherits transport-appropriate system prompt from base-tc.
-;; Used by the CLI when no -a/--agent is specified.
+;; Used by the CLI when no -a/--agent-profile is specified.
 
 {:base base-tc.agent.edn
  :agent-name cli

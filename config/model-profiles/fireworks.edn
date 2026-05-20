@@ -4,4 +4,4 @@
  :default-model "accounts/fireworks/models/glm-5"
  :max-tokens 16384
  :convert-think? true
- :default-agent "../agents/base-pf.agent.edn"}
+ :default-agent-profile "../agent-profiles/base-pf.agent.edn"}
