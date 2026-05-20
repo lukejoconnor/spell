@@ -428,7 +428,7 @@
   (and (seq? form) (= 'rethink (first form))))
 
 (defn prune-form?
-  "Returns true if form is a (prune) or (prune k) pruning marker."
+  "Returns true if form is a (prune) or (prune k) edit marker."
   [form]
   (and (seq? form)
        (= 'prune (first form))
@@ -462,7 +462,7 @@
     (list* 'think (rest form))))
 
 (defn process-siblings
-  "Reduce over sibling forms, pruning previous siblings on prune/rethink."
+  "Reduce over sibling forms, applying prune/rethink edit markers."
   [forms]
   (reduce
     (fn [acc form]
@@ -482,7 +482,7 @@
 
 ;; think: (think label body...) → (do body... nil)
 ;; Evaluates body for side effects (bindings, computation), returns nil.
-;; Preserved as a source marker for extend/prune-substitute.
+;; Preserved as an edit marker for extend/apply-edits.
 (defspellmacro 'think
   (fn [_label & body]
     (if (seq body)
@@ -490,8 +490,8 @@
       nil)))
 
 ;; rethink: (rethink [n] label body...) → (do body... nil)
-;; At eval time, same as think. At source level, marks previous N siblings
-;; for pruning by extend (default N=1).
+;; At eval time, same as think. At edit time, marks previous N siblings
+;; for pruning by apply-edits (default N=1).
 (defspellmacro 'rethink
   (fn [& args]
     (let [body (cond
@@ -511,13 +511,13 @@
       :else (throw (ex-info "prune: expected 0 args (prune 1) or 1 numeric arg (prune k)"
                             {:args-count (count args)})))))
 
-;; extend: (!extend completion) — prune prune/rethink markers and continue via !llm-self
+;; extend: (!extend completion) — apply edit markers and continue via !llm-self
 (defspellmacro '!extend
   (fn
     ([] (list '!llm-self (list 'prune-and-reopen 'completion)))
     ([comp-sym] (list '!llm-self (list 'prune-and-reopen comp-sym)))))
 
-;; compact: (!compact completion) — prune prune/rethink markers, append compaction instructions, continue via !llm-self
+;; compact: (!compact completion) — apply edit markers, append compaction instructions, continue via !llm-self
 ;; Prefix ends with '(!llm-self (wrap-cat — LLM writes quoted forms, balance-parens closes everything.
 (def ^:private compact-suffix
   (str "(think \"=compact= Compact your context into the wrap-cat below. "

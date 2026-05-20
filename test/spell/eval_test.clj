@@ -2043,7 +2043,7 @@
                                 (persist snippet lines)
                                 (quote (!extend completion)))))
           reopened (-> quine-form
-                       (eval/prune-substitute {'snippet lines})
+                       (eval/apply-edits {'snippet lines})
                        eval/reopen)
           reparsed (first (spell.parse/read-all
                             (spell.parse/balance-parens
@@ -2088,7 +2088,7 @@
                                 (persist snippet lines)
                                 (quote (!extend completion)))))
           reopened (-> quine-form
-                       (eval/prune-substitute {'snippet lines})
+                       (eval/apply-edits {'snippet lines})
                        eval/reopen)
           prefix (eval/serialize-quine-prefix reopened)]
       (is (.contains ^String prefix "(persist snippet (first-line 40 ["))
@@ -2653,67 +2653,67 @@
                                (rethink "new" (def x 99))
                                x))))))
 
-(deftest prune-substitute-test
+(deftest apply-edits-test
   (testing "no rethinks — pass through unchanged"
     (is (= '(do (think "A" 1) (think "B" 2))
-           (eval/prune-substitute '(do (think "A" 1) (think "B" 2)) nil))))
+           (eval/apply-edits '(do (think "A" 1) (think "B" 2)) nil))))
 
   (testing "prune prunes previous sibling and disappears"
     (is (= '(do)
-           (eval/prune-substitute '(do (think "A" 1) (prune)) nil))))
+           (eval/apply-edits '(do (think "A" 1) (prune)) nil))))
 
   (testing "prune with count prunes N previous siblings and disappears"
     (is (= '(do)
-           (eval/prune-substitute '(do (def x 1) (def y 2) (prune 2)) nil))))
+           (eval/apply-edits '(do (def x 1) (def y 2) (prune 2)) nil))))
 
   (testing "rethink prunes previous sibling"
     (is (= '(do (think "B" 2))
-           (eval/prune-substitute '(do (think "A" 1) (rethink "B" 2)) nil))))
+           (eval/apply-edits '(do (think "A" 1) (rethink "B" 2)) nil))))
 
   (testing "rethink prunes any previous sibling, not just think"
     (is (= '(do (think "B" 2))
-           (eval/prune-substitute '(do (def x 1) (rethink "B" 2)) nil))))
+           (eval/apply-edits '(do (def x 1) (rethink "B" 2)) nil))))
 
   (testing "rethink with count prunes N previous siblings"
     (is (= '(do (think "C" 3))
-           (eval/prune-substitute '(do (think "A" 1) (def x 2) (rethink 2 "C" 3)) nil))))
+           (eval/apply-edits '(do (think "A" 1) (def x 2) (rethink 2 "C" 3)) nil))))
 
   (testing "rethink converts to think after pruning"
-    (let [result (eval/prune-substitute '(do (think "A" 1) (rethink "B" 2)) nil)]
+    (let [result (eval/apply-edits '(do (think "A" 1) (rethink "B" 2)) nil)]
       (is (= 'think (first (second result))))))
 
   (testing "prune plus think matches rethink pruning behavior"
-    (is (= (eval/prune-substitute '(do (think "A" 1) (prune) (think "B" 2)) nil)
-           (eval/prune-substitute '(do (think "A" 1) (rethink "B" 2)) nil))))
+    (is (= (eval/apply-edits '(do (think "A" 1) (prune) (think "B" 2)) nil)
+           (eval/apply-edits '(do (think "A" 1) (rethink "B" 2)) nil))))
 
   (testing "chained rethinks"
     (is (= '(do (think "C" 3))
-           (eval/prune-substitute '(do (think "A" 1)
+           (eval/apply-edits '(do (think "A" 1)
                                        (rethink "B" 2)
                                        (rethink "C" 3))
                                   nil))))
 
   (testing "rethink leaves earlier non-targeted siblings intact"
     (is (= '(do (def x 1) (think "B" 3))
-           (eval/prune-substitute '(do (def x 1) (think "A" 2) (rethink "B" 3)) nil))))
+           (eval/apply-edits '(do (def x 1) (think "A" 2) (rethink "B" 3)) nil))))
 
   (testing "recursive — rethink inside nested do"
     (is (= '(do (do (think "B" 2)) (def y 3))
-           (eval/prune-substitute '(do (do (think "A" 1) (rethink "B" 2)) (def y 3)) nil))))
+           (eval/apply-edits '(do (do (think "A" 1) (rethink "B" 2)) (def y 3)) nil))))
 
   (testing "inner rethink cannot prune outer think"
     ;; rethink inside think's body targets siblings within the body, not the think itself
-    (let [result (eval/prune-substitute '(do (think "outer" (def a 1) (rethink "inner" (def a 2)))) nil)]
+    (let [result (eval/apply-edits '(do (think "outer" (def a 1) (rethink "inner" (def a 2)))) nil)]
       ;; outer think should survive, inner rethink prunes (def a 1) within its body
       (is (= 'think (first (second result))))
       (is (= "outer" (second (second result))))))
 
   (testing "rethink with count larger than available siblings removes all"
     (is (= '(do (think "Z" 99))
-           (eval/prune-substitute '(do (def a 1) (rethink 5 "Z" 99)) nil))))
+           (eval/apply-edits '(do (def a 1) (rethink 5 "Z" 99)) nil))))
 
   (testing "prune through quine structure"
-    (let [result (eval/prune-substitute
+    (let [result (eval/apply-edits
                    '(quine completion (eval (do
                       (think "A" (def x 1))
                       (rethink "B" (def x 2))
@@ -2726,7 +2726,7 @@
              result))))
 
   (testing "prune through quine structure disappears without residual marker"
-    (let [result (eval/prune-substitute
+    (let [result (eval/apply-edits
                    '(quine completion (eval (do
                       (def big "...")
                       (prune)
@@ -2738,7 +2738,7 @@
 
   (testing "vectors are recursed into but not sibling-processed"
     (is (= '(do [(do (think "B" 2))])
-           (eval/prune-substitute '(do [(do (think "A" 1) (rethink "B" 2))]) nil))))
+           (eval/apply-edits '(do [(do (think "A" 1) (rethink "B" 2))]) nil))))
 
   (testing "single walk can prune and materialize persist together"
     (is (= '(quine completion
@@ -2746,7 +2746,7 @@
                       (think "keep" (def y (get big 1)))
                       (persist y 2)
                       (quote (!extend completion)))))
-           (eval/prune-substitute
+           (eval/apply-edits
              '(quine completion
                 (eval (do
                         (def big [1 2 3])

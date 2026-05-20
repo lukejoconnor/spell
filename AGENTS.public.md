@@ -4,6 +4,11 @@ This file is a public orientation guide for agents, readers, and contributors wo
 
 Spell is a Lisp dialect for LLM self-orchestration. A Spell completion is itself a program: the evaluator runs the program, and the program can call back into an LLM, spawn sub-agents, manage context, and use configured namespaces such as `io`, `web`, `agents`, `globals`, and `patterns`.
 
+## Terminology
+
+- Edit marker: a source form, such as `prune`, `rethink`, or `persist`, that affects how `apply-edits` rewrites a completion for a later turn.
+- Edit time: the phase when `apply-edits` applies edit markers to a completion before it is used as a model prefix.
+
 ## Top-Level Layout
 
 | Path | Purpose |

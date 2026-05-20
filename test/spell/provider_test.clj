@@ -676,7 +676,7 @@
                            {:type "text" :text "z" :cache_control {:type "ephemeral"}}]}]
                (:messages body)))))
 
-    (testing "tool-call path keeps the prompt cached when prune/rethink shrinks it to the shared prefix"
+    (testing "tool-call path keeps the prompt cached when edit markers shrink it to the shared prefix"
       (let [request (#'provider/anthropic-tc-request "test" "claude-sonnet-4-20250514"
                                                      shared-prefix nil nil false nil
                                                      nil cache-prefix nil)

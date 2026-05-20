@@ -131,7 +131,7 @@
       (is (= '(foo) (:form result)))
       (is (= 1 (:target-count detail)))
       (is (= (count (pr-str '(def a 1))) (:chars-pruned detail)))))
-  (testing "quote and fn bodies are opaque to pruning markers"
+  (testing "quote and fn bodies are opaque to edit markers"
     (let [result (tt/prune-accounting '(do '(prune 1)
                                            (fn [] (prune 1))
                                            (def x 1)

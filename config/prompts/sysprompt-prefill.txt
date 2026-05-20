@@ -166,7 +166,7 @@ You can also use rethink to delete a tool call result from context:
     ;; start of turn 2 suffix (not shown)
     ;; both the !peek call and file-lines are gone on the following extension
 
-`persist` retains a computed value across prune/rethink pruning:
+`persist` is an edit marker that retains a computed value across prune/rethink edits:
     ...'(!peek data (io/read-lines "src/server.py"))
     ;; end of turn 1 completion
     (def data (first-line 1 ["..." "..." ...]))
