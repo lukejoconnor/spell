@@ -17,6 +17,7 @@ Check:
 java -version
 clj -Sdescribe
 bin/spell -h
+command -v spell || true
 ```
 
 If Clojure is missing on macOS, recommend:
@@ -24,6 +25,12 @@ If Clojure is missing on macOS, recommend:
 ```bash
 brew install clojure/tools/clojure
 ```
+
+If `spell` does not already resolve to this checkout's `bin/spell`, ask the user
+whether they want to add this checkout's `bin/` directory to their shell `PATH`.
+Do not edit shell startup files without asking. If they say yes, prefer appending
+an absolute path entry to the appropriate shell profile and then verify with
+`command -v spell` in a fresh shell.
 
 ## Provider Setup
 
@@ -33,13 +40,25 @@ For a no-cost smoke test, use the built-in test provider:
 bin/spell -t "Return a short greeting"
 ```
 
-For live model runs, choose one provider path:
+Before asking the user which live provider to configure, check the current auth
+state without printing secret values:
+
+```bash
+test -n "${OPENAI_API_KEY:-}" && echo "OPENAI_API_KEY is set" || echo "OPENAI_API_KEY is not set"
+test -n "${ANTHROPIC_API_KEY:-}" && echo "ANTHROPIC_API_KEY is set" || echo "ANTHROPIC_API_KEY is not set"
+test -n "${FIREWORKS_API_KEY:-}" && echo "FIREWORKS_API_KEY is set" || echo "FIREWORKS_API_KEY is not set"
+test -f "$HOME/.codex/auth.json" && echo "Codex auth exists" || echo "Codex auth not found"
+```
+
+Report which authorization options were found. If at least one is present, say
+which corresponding provider paths are ready to try and ask whether the user
+wants to configure any additional provider. If none are present, ask whether the
+user wants to configure one now and list these options:
 
 - Codex CLI: install Codex and run `codex` once so `~/.codex/auth.json` exists.
 - OpenAI API: set `OPENAI_API_KEY`; use `openai-tc:<model>`.
 - Anthropic API: set `ANTHROPIC_API_KEY`; use `anthropic-pf:<model>` or `anthropic-tc:<model>`.
 - Fireworks API: set `FIREWORKS_API_KEY`; use `fireworks:<model>` or `fireworks-tc:<model>`.
-- Ollama: run a local Ollama server and use `ollama:<model>`.
 
 Model names must be exact. Do not guess model IDs; check provider docs before adding or recommending new model strings.
 

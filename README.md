@@ -37,7 +37,7 @@ The inner `do` block returns the value of its last expression, the trailing expr
 
 ## Quick start
 
-Clone the repo and ask your agent to perform setup; it should discover the repo-local `spell-setup` skill for installation checks, provider auth, and first runs. The prerequisites are Java, Clojure, and an API key or Codex auth.
+Clone the repo and ask your agent to perform setup; it should discover the repo-local `spell-setup` skill. The prerequisites are Java, Clojure, and an API key or Codex auth.
 
 The most convenient way to run Spell is via the CLI:
 
@@ -53,8 +53,6 @@ bin/spell -h
 ```
 
 To run `spell` directly instead of `bin/spell`, put this checkout's `bin/` directory on your `PATH`.
-
-Agent-facing setup, source map, test commands, and repo-local skill guidance live in `AGENTS.md`.
 
 ## Spell language overview
 

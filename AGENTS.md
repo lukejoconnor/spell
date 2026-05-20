@@ -31,7 +31,7 @@ This repo includes Spell-specific skills under `.agents/skills/`. Use them as th
 | `test/` | Unit and integration tests. |
 | `data/pricing.edn` | Model pricing table used for usage and cost reporting. |
 | `docs/` | Public documentation for the release. |
-| `CHANGELOG.md` | Release notes; `v0.2.0` is currently unreleased. |
+| `docs/CHANGELOG.md` | Release notes; `v0.2.0` is currently unreleased. |
 | `LICENSE` | MIT license text. |
 
 ## Agent Quick Start

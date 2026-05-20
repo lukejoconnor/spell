@@ -21,6 +21,8 @@ test/CLAUDE.md
 bin/*
 !bin/spell
 dev/
+.venv/
+.uv-cache/
 traces/
 logs/
 scripts/check-codex-auth.sh
@@ -45,7 +47,6 @@ temp.txt
 PLAN-team-pattern.md
 *.bak
 *.bak2
-spell_benchmark_client.py
 
 # Python
 __pycache__/
