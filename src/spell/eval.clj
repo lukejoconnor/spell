@@ -580,9 +580,9 @@
    ;; wrap-cat: build a quine completion form from the provided forms
    'wrap-cat (fn [& forms]
                (apply reopen (list 'quine 'completion '(eval (do))) forms)),
-   ;; Prune rethinks and keep the cleaned quine as data
-   'prune-and-reopen (fn [quine-form]
-                       (apply-edits quine-form (or *spell-env* {}))),
+   ;; Apply edit markers and keep the edited quine as data
+   'edit-reopen (fn [quine-form]
+                  (apply-edits quine-form (or *spell-env* {}))),
    ;; Value store (for !call-now out-of-band large values)
    'stored stored,
    'serialize (fn

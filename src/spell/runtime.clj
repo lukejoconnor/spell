@@ -746,7 +746,7 @@ Re-evaluate and re-issue if still appropriate.
   ;; agent C sends a message before your ask fires; your completion becomes:
   ...'(agents/!ask :B \"hello\") (think \"[preempted or awakened by msg-0]\")
   (def msg-0 {:from :C :body \"urgent\"})
-  '(!llm-self (prune-and-reopen completion))  ;; ask became inert data — it did not fire"
+  '(!llm-self (edit-reopen completion))  ;; ask became inert data — it did not fire"
 
     :!reply-ask
     "Reply to a received message and block for the next response.

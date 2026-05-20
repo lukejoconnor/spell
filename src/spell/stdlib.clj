@@ -403,7 +403,7 @@ Categories (use (!describe builtins :category) for full listing):
   sequences     — map, filter, reduce, sort, group-by, take, drop, partition, range, ...
   combinators   — comp, partial, juxt, complement, constantly, ...
   bitwise       — bit-and, bit-or, bit-xor, bit-shift-left, ...
-  spell         — spell-eval, reopen, wrap-cat, serialize-prefix, prune-and-reopen, serialize, stored
+  spell         — spell-eval, reopen, wrap-cat, serialize-prefix, edit-reopen, serialize, stored
   concurrency   — future*
   error         — throw, ex-info, ex-data, ex-message, ex-cause, gensym
 
@@ -424,7 +424,7 @@ Common mistakes:
     :special-forms
     "  quote — return expression unevaluated as data; prevents evaluation of its argument
   def — bind a value to a symbol in the current environment
-  persist — bind like def, but survive prune-and-reopen only when written explicitly in source
+  persist — bind like def, but survive edit-reopen only when written explicitly in source
   do — evaluate expressions sequentially; return the value of the last one
   if — conditional branch; evaluates test, then either then-expr or else-expr
   let — introduce local bindings scoped to the body; supports destructuring
@@ -746,11 +746,11 @@ and returns the open prefix string:
 Used internally by !llm-self and !compact when a quine form needs to cross the
 LLM boundary as text."
 
-    :prune-and-reopen
+    :edit-reopen
     "Apply edit markers: apply prune/rethink edits and materialize explicit persist markers
 in a quine.
 
-(prune-and-reopen completion)
+(edit-reopen completion)
 
 Returns a cleaned quine form, not a string. It:
 1. Walks the quine form
@@ -818,7 +818,7 @@ The double evaluation pattern:
 
 prompt: string or quine form. If a bare string, automatically wrapped in
 the completion wrapper. If given a quine form (from reopen, wrap-cat, or
-prune-and-reopen), that quine is serialized as the child's open prefix.
+edit-reopen), that quine is serialized as the child's open prefix.
 
 The child writes Spell code that is parsed and evaluated. Use for:
 - Extending context (!extend, !compact)
@@ -983,7 +983,7 @@ Example:
 
 '(!extend completion)
 
-Calls prune-and-reopen on the completion quine, then !llm-self on the edited
+Calls edit-reopen on the completion quine, then !llm-self on the edited
 result. Use after prune/rethink edit markers to continue with a shorter, corrected context."
 
     :!compact

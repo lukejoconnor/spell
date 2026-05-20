@@ -1790,7 +1790,7 @@
   (testing "persisted ex-info stays reader-safe across reopen"
     (let [result (run-spell '(do
                                (def err (ex-info "not found" {:code 404}))
-                               (prune-and-reopen
+                               (edit-reopen
                                  '(quine completion
                                     (eval (do
                                             (persist err err)
@@ -2036,7 +2036,7 @@
       (is (= ["alpha" "beta"] (:ok result)))
       (is (= 17 (:spell/first-line (meta (:ok result)))))))
 
-  (testing "prune-and-reopen preserves first-line metadata across read/eval cycle"
+  (testing "edit-reopen preserves first-line metadata across read/eval cycle"
     (let [lines (with-meta ["first" "second"] {:spell/first-line 40})
           quine-form '(quine completion
                         (eval (do
@@ -2556,7 +2556,7 @@
             reopen-form (second llm-call)]
         (is (= '!llm-self (first llm-call)))
         (is (= 'reopen (first reopen-form)))
-        (is (= '(prune-and-reopen completion) (second reopen-form)))
+        (is (= '(edit-reopen completion) (second reopen-form)))
         (is (= 'reopen-eval (first (nth reopen-form 2))))
         (is (= 'read-string (first (second (nth reopen-form 2)))))
         (is (= 'serialize (first (second (second (nth reopen-form 2)))))))))
@@ -2581,7 +2581,7 @@
       (is (= 'let (first expanded)))
       (is (= '!llm-self (first llm-call)))
       (is (= 'reopen (first reopen-form)))
-      (is (= '(prune-and-reopen completion) (second reopen-form)))
+      (is (= '(edit-reopen completion) (second reopen-form)))
       (is (= 'reopen-eval (first (nth reopen-form 2))))
       (is (= 'list (first (second (nth reopen-form 2)))))
       (is (= '(quote def) (second (second (nth reopen-form 2)))))
@@ -2603,7 +2603,7 @@
                           (prune 2)
                           (def fn-defn ["L2" "L3"])
                           (quote (!extend completion)))))
-          result (run-spell (list 'prune-and-reopen (list 'quote quine-form)))
+          result (run-spell (list 'edit-reopen (list 'quote quine-form)))
           prefix (eval/serialize-quine-prefix result)]
       (is (seq? result))
       (is (.contains ^String prefix "(def fn-defn [\"L2\" \"L3\"])"))
@@ -2756,59 +2756,59 @@
              {'big [1 2 3]
               'y 2})))))
 
-(deftest prune-and-reopen-test
-  (testing "prune-and-reopen returns a pruned quine form"
+(deftest edit-reopen-test
+  (testing "edit-reopen returns a pruned quine form"
     (let [quine-form '(quine completion (eval (do
                          (think "A" (def x 1))
                          (rethink "B" (def x 2))
                          (quote (!extend completion)))))
-          result (run-spell (list 'prune-and-reopen (list 'quote quine-form)))
+          result (run-spell (list 'edit-reopen (list 'quote quine-form)))
           prefix (eval/serialize-quine-prefix result)]
       (is (seq? result))
       (is (.startsWith ^String prefix "(quine completion (eval (do "))
       (is (.contains ^String prefix "(think \"B\" (def x 2))"))
       (is (not (.contains ^String prefix "(def x 1)")))))
 
-  (testing "prune-and-reopen with no rethinks passes through"
+  (testing "edit-reopen with no rethinks passes through"
     (let [quine-form '(quine completion (eval (do (def x 1) (def y 2))))
-          result (run-spell (list 'prune-and-reopen (list 'quote quine-form)))
+          result (run-spell (list 'edit-reopen (list 'quote quine-form)))
           prefix (eval/serialize-quine-prefix result)]
       (is (.startsWith ^String prefix "(quine completion (eval (do "))
       (is (.contains ^String prefix "(def x 1)"))))
 
-  (testing "prune-and-reopen with multi-arg quine preserves inert args"
+  (testing "edit-reopen with multi-arg quine preserves inert args"
     (let [quine-form '(quine completion
                         (eval (do (def x 1) (quote (!extend completion))))
                         (eval (do (rethink "fix" (def y 2)) (quote (!extend completion)))))
-          result (run-spell (list 'prune-and-reopen (list 'quote quine-form)))
+          result (run-spell (list 'edit-reopen (list 'quote quine-form)))
           prefix (eval/serialize-quine-prefix result)]
       (is (seq? result))
       (is (.startsWith ^String prefix "(quine completion "))
       (is (.contains ^String prefix "(eval (do (def x 1)"))
       (is (.contains ^String prefix "(def y 2)"))))
 
-  (testing "prune-and-reopen can prune an inert quine arg via a top-level rethink sibling"
+  (testing "edit-reopen can prune an inert quine arg via a top-level rethink sibling"
       (let [quine-form '(quine completion
                         (eval (do (def bad undefined-symbol) (quote (!extend completion))))
                         (rethink "Error recovery - see _error for details.")
                         (eval (do
                                 (def _error {:error "Unbound symbol: undefined-symbol"})
                                 (quote (!llm-self (reopen completion))))))
-          result (run-spell (list 'prune-and-reopen (list 'quote quine-form)))
+          result (run-spell (list 'edit-reopen (list 'quote quine-form)))
           prefix (eval/serialize-quine-prefix result)]
       (is (.startsWith ^String prefix "(quine completion "))
       (is (not (.contains ^String prefix "(def bad undefined-symbol)")))
       (is (.contains ^String prefix "(think \"Error recovery - see _error for details.\")"))
       (is (.contains ^String prefix "(quote (!llm-self (reopen completion)))"))))
 
-  (testing "prune-and-reopen with standard (2-arg) quine unchanged behavior"
+  (testing "edit-reopen with standard (2-arg) quine unchanged behavior"
     (let [quine-form '(quine completion (eval (do (def a 10))))
-          result (run-spell (list 'prune-and-reopen (list 'quote quine-form)))
+          result (run-spell (list 'edit-reopen (list 'quote quine-form)))
           prefix (eval/serialize-quine-prefix result)]
       (is (.startsWith ^String prefix "(quine completion (eval (do "))
       (is (.contains ^String prefix "(def a 10)"))))
 
-  (testing "prune-and-reopen keeps persist with baked value after rethink pruning"
+  (testing "edit-reopen keeps persist with baked value after rethink pruning"
     (let [quine-form '(quine completion
                         (eval (do (def big [1 2 3])
                                   (rethink "drop big")
@@ -2817,46 +2817,46 @@
           result (run-spell (list 'do
                                   (list 'def 'big [1 2 3])
                                   (list 'persist 'y (list 'get 'big 1))
-                                  (list 'prune-and-reopen (list 'quote quine-form))))]
+                                  (list 'edit-reopen (list 'quote quine-form))))]
       (let [prefix (eval/serialize-quine-prefix result)]
         (is (.contains ^String prefix "(persist y 2)"))
         (is (not (.contains ^String prefix "(def big [1 2 3])"))))))
 
-  (testing "prune-and-reopen leaves non-persist forms untouched"
+  (testing "edit-reopen leaves non-persist forms untouched"
     (let [quine-form '(quine completion
                         (eval (do (def y (+ x 1))
                                   (quote (!extend completion)))))
           result (run-spell (list 'do
                                   (list 'def 'x 41)
-                                  (list 'prune-and-reopen (list 'quote quine-form))))]
+                                  (list 'edit-reopen (list 'quote quine-form))))]
       (let [prefix (eval/serialize-quine-prefix result)]
         (is (.contains ^String prefix "(def y (+ x 1))"))
         (is (not (.contains ^String prefix "(def y (+ 41 1))"))))))
 
-  (testing "prune-and-reopen leaves unbound persist forms untouched"
+  (testing "edit-reopen leaves unbound persist forms untouched"
     (let [quine-form '(quine completion
                         (eval (do (persist y (+ x 1))
                                   (quote (!extend completion)))))]
       (is (= '(quine completion
                 (eval (do (persist y (+ x 1))
                           (quote (!extend completion)))))
-             (run-spell (list 'prune-and-reopen (list 'quote quine-form)))))))
+             (run-spell (list 'edit-reopen (list 'quote quine-form)))))))
 
-  (testing "prune-and-reopen does not materialize persist inside nested fn/fn*"
+  (testing "edit-reopen does not materialize persist inside nested fn/fn*"
     (let [quine-form '(quine completion
                         (eval (do (fn [x] (persist y x))
                                   (fn* [x] (persist z x))
                                   (quote (!extend completion)))))
-          result (run-spell (list 'prune-and-reopen (list 'quote quine-form)))
+          result (run-spell (list 'edit-reopen (list 'quote quine-form)))
           prefix (eval/serialize-quine-prefix result)]
       (is (.contains ^String prefix "(fn [x] (persist y x))"))
       (is (.contains ^String prefix "(fn* [x] (persist z x))")))))
 
 (deftest extend-macro-expansion-test
-  (testing "extend expands to !llm-self with prune-and-reopen"
+  (testing "extend expands to !llm-self with edit-reopen"
     (let [expanded (macros/spell-macroexpand-1 '(!extend completion))]
       (is (= '!llm-self (first expanded)))
-      (is (= '(prune-and-reopen completion) (second expanded))))))
+      (is (= '(edit-reopen completion) (second expanded))))))
 
 ;; =============================================================================
 ;; Effect-phase error tagging tests
@@ -2935,7 +2935,7 @@
       (is (= '!llm-self (first expanded)))
       (is (seq? (second expanded)))
       (is (= 'str (first (second expanded))))
-      (is (= '(serialize-prefix (prune-and-reopen completion))
+      (is (= '(serialize-prefix (edit-reopen completion))
              (second (second expanded))))))
 
   (testing "compact suffix has !llm-self/wrap-cat trailing expression"

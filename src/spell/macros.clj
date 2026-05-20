@@ -235,7 +235,7 @@
             temp (gensym "call-now__")]
         (list 'let [temp val-expr]
               (list '!llm-self
-                    (list* 'reopen (list 'prune-and-reopen 'completion)
+                    (list* 'reopen (list 'edit-reopen 'completion)
                            (concat [(def-form-expr name-sym temp)]
                                    extra-form-exprs)))))
 
@@ -245,7 +245,7 @@
             temp (gensym "call-now__")]
         (list 'let [temp val-expr]
               (list '!llm-self
-                    (list* 'reopen (list 'prune-and-reopen 'completion)
+                    (list* 'reopen (list 'edit-reopen 'completion)
                            (concat [(def-form-expr name-sym temp limit)]
                                    extra-form-exprs)))))
 
@@ -259,7 +259,7 @@
                            temps pairs)]
         (list 'let let-bindings
               (list '!llm-self
-                    (list* 'reopen (list 'prune-and-reopen 'completion)
+                    (list* 'reopen (list 'edit-reopen 'completion)
                            (concat def-forms extra-form-exprs)))))
 
       :else
@@ -342,7 +342,7 @@
         forms (map (comp reopen-eval-form serialized-form) temps)]
     (list 'let bindings
           (list '!llm-self
-                (list* 'reopen (list 'prune-and-reopen 'completion) forms)))))
+                (list* 'reopen (list 'edit-reopen 'completion) forms)))))
 
 (defspellmacro '!print print-expander)
 ;; Backward-compatible alias.
@@ -514,8 +514,8 @@
 ;; extend: (!extend completion) — apply edit markers and continue via !llm-self
 (defspellmacro '!extend
   (fn
-    ([] (list '!llm-self (list 'prune-and-reopen 'completion)))
-    ([comp-sym] (list '!llm-self (list 'prune-and-reopen comp-sym)))))
+    ([] (list '!llm-self (list 'edit-reopen 'completion)))
+    ([comp-sym] (list '!llm-self (list 'edit-reopen comp-sym)))))
 
 ;; compact: (!compact completion) — apply edit markers, append compaction instructions, continue via !llm-self
 ;; Prefix ends with '(!llm-self (wrap-cat — LLM writes quoted forms, balance-parens closes everything.
@@ -537,5 +537,5 @@
     ([comp-sym]
      (list '!llm-self
        (list 'str
-             (list 'serialize-prefix (list 'prune-and-reopen comp-sym))
+             (list 'serialize-prefix (list 'edit-reopen comp-sym))
              compact-suffix)))))
