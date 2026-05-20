@@ -2,8 +2,8 @@
 ;; Web is intentionally omitted; web access should be opt-in.
 
 {:base base-msg.agent.edn
- :name io-msg
- :doc "Message transport I/O agent with io namespace (web disabled by default)"
+ :agent-name io-msg
+ :agent-description "Message transport I/O agent with io namespace (web disabled by default)"
 
  :namespaces
  {io       stdlib/io

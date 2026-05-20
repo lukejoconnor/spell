@@ -4,7 +4,8 @@
             [clojure.string :as str]
             [clojure.java.io :as io]
             [spell.api :as api]
-            [spell.provider :as provider])
+            [spell.provider :as provider]
+            [spell.trace :as spell-trace])
   (:gen-class))
 
 (def model-aliases
@@ -242,25 +243,29 @@
         prefill? (and (provider/supports-prefill prov) (not thinking))
         resolved-agent (or agent "config/agents/cli.agent.edn")
         log-writer (when log (io/writer (io/file log) :append true))]
-    (api/run {:prompt prompt
-              :provider prov
-              :agent resolved-agent
-              :user? (and (some? (. System console)) (not= model "user"))
-              :verbose (or verbose (some? log))
-              :log-writer log-writer
-              :budget (cond
-                        (nil? budget) nil  ; api/run handles agent/default fallback
-                        (zero? budget) 0   ; api/run maps 0 -> nil (unlimited)
-                        :else budget)
-              :depth max-depth
-              :trace trace
-              :prefill? prefill?
-              :thinking thinking
-              :reasoning-effort reasoning-effort
-              :verbosity verbosity
-              :suffix-grammar? suffix-grammar
-              :grammar-max-chars grammar-max-chars
-              :usage usage-atom})))
+    (try
+      (api/run-internal (cond-> {:prompt prompt
+                                 :lm-profile prov
+                                 :agent resolved-agent
+                                 :log-writer (when (or verbose log) (or log-writer *out*))
+                                 :budget (cond
+                                           (nil? budget) nil
+                                           (zero? budget) 0
+                                           :else budget)
+                                 :depth max-depth
+                                 :prefill? prefill?
+                                 :thinking thinking
+                                 :reasoning-effort reasoning-effort
+                                 :verbosity verbosity
+                                 :suffix-grammar? suffix-grammar
+                                 :grammar-max-chars grammar-max-chars
+                                 :usage-tracker usage-atom}
+                          trace (assoc :trace-dir (spell-trace/default-trace-dir))
+                          (and (some? (. System console)) (not= model "user"))
+                          (assoc :user-reader (io/reader System/in))))
+      (finally
+        (when log-writer
+          (.close ^java.io.Writer log-writer))))))
 
 (defn- format-cache-stats [stats]
   (let [cache-write (:cache_write_input_tokens stats 0)
@@ -345,7 +350,8 @@
                                       (println (format "\nCost: $%.4f" c))))))))]
         (.addShutdownHook (Runtime/getRuntime) shutdown-hook)
         (run-shell (:setup options))
-        (let [{:keys [result error error-data usage trace-dir]} (run-prompt prompt options usage-atom)]
+        (let [{:keys [result error error-data usage-tracker trace-dir]} (run-prompt prompt options usage-atom)
+              usage usage-tracker]
           (run-shell (:cleanup options))
           (when trace-dir
             (binding [*out* *err*]

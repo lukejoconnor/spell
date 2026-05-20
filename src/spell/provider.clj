@@ -2239,8 +2239,25 @@
           (recur (:rest result) (:retry result)))))))
 
 ;; ---------------------------------------------------------------------------
-;; Provider loading from .provider.edn files
+;; Provider / LM profile loading
 ;; ---------------------------------------------------------------------------
+
+(defn- provider-map->constructor-map
+  "Normalize public LM profile keys into the internal provider constructor map.
+   Low-level constructors and load-provider keep the historical :type/:model
+   vocabulary; public profiles use :provider/:default-model."
+  [spec]
+  (let [provider-type (or (:type spec) (:provider spec))
+        default-model (if (contains? spec :default-model)
+                        (:default-model spec)
+                        (:model spec))]
+    (cond-> (assoc spec :type provider-type)
+      (contains? spec :provider) (dissoc :provider)
+      (contains? spec :default-model) (dissoc :default-model)
+      default-model (assoc :model default-model))))
+
+(defn- read-edn-file [path]
+  (edn/read-string (slurp path)))
 
 (defn load-provider
   "Load provider from a .provider.edn file path."
@@ -2249,7 +2266,7 @@
                 responses response-rules response prefill? chat-template convert-think?
                 force-tool-call cache-read-ratio prompt-cache-key request-timeout-sec
                 sse-idle-timeout-sec sse-completion-timeout-sec]}
-        (edn/read-string (slurp path))
+        (provider-map->constructor-map (read-edn-file path))
         api-key (when api-key-env (System/getenv api-key-env))
         opts (cond-> {:costs (cond-> (merge default-costs (or costs {}))
                                cache-read-ratio (assoc :cache-read-ratio cache-read-ratio))}
@@ -2283,7 +2300,7 @@
   "Read :default-agent from a .provider.edn file. Returns path string or nil.
    The path is relative to the provider file's directory."
   [path]
-  (let [edn (edn/read-string (slurp path))
+  (let [edn (read-edn-file path)
         rel-path (:default-agent edn)]
     (when rel-path
       (let [base-dir (.getParent (java.io.File. path))]
@@ -2291,10 +2308,12 @@
 
 (defn- load-provider-from-map
   "Create a provider from an inline config map (same keys as .provider.edn)."
-  [{:keys [type api-key-env base-url model max-tokens costs use-responses-api auth-file account-id
+  [spec]
+  (let [{:keys [type api-key-env base-url model max-tokens costs use-responses-api auth-file account-id
            responses response-rules response prefill? chat-template convert-think?
            force-tool-call cache-read-ratio prompt-cache-key request-timeout-sec
-           sse-idle-timeout-sec sse-completion-timeout-sec] :as spec}]
+           sse-idle-timeout-sec sse-completion-timeout-sec] :as spec}
+        (provider-map->constructor-map spec)]
   (let [api-key (when api-key-env (System/getenv api-key-env))
         opts (cond-> {:costs (cond-> (merge default-costs (or costs {}))
                                cache-read-ratio (assoc :cache-read-ratio cache-read-ratio))}
@@ -2322,7 +2341,7 @@
       :ollama    (ollama-provider opts)
       :test      (test-provider {:responses responses :response-rules response-rules
                                  :response response :prefill? prefill?})
-      (throw (ex-info (str "Unknown provider type: " type) {:type type :spec spec})))))
+      (throw (ex-info (str "Unknown provider type: " type) {:type type :spec spec}))))))
 
 (defn- resolve-path
   "Resolve a relative path against a base directory."
@@ -2340,3 +2359,52 @@
     (and (map? spec) (:file spec)) (load-provider (resolve-path (:file spec) base-dir))
     (map? spec) (load-provider-from-map spec)
     :else (throw (ex-info "Invalid provider spec" {:spec spec}))))
+
+(defn load-lm-profile
+  "Load a public LM profile from an .edn file."
+  [path]
+  (let [profile (read-edn-file path)
+        provider (load-provider-from-map profile)]
+    {:profile profile
+     :provider provider
+     :base-dir (.getParent (java.io.File. path))
+     :default-agent (:default-agent profile)
+     :default-model (:default-model profile)
+     :default-reasoning-effort (:default-reasoning-effort profile)
+     :retries (:retries profile)}))
+
+(defn resolve-lm-profile
+  "Resolve a public LM profile from path string, inline map, or provider instance.
+   Returns {:provider p ...profile-defaults...}."
+  ([spec] (resolve-lm-profile spec nil))
+  ([spec base-dir]
+   (cond
+     (satisfies? LLMProvider spec)
+     {:provider spec}
+
+     (string? spec)
+     (load-lm-profile (resolve-path spec base-dir))
+
+     (and (map? spec) (:file spec))
+     (load-lm-profile (resolve-path (:file spec) base-dir))
+
+     (map? spec)
+     {:profile spec
+      :provider (load-provider-from-map spec)
+      :default-agent (:default-agent spec)
+      :default-model (:default-model spec)
+      :default-reasoning-effort (:default-reasoning-effort spec)
+      :retries (:retries spec)}
+
+     :else
+     (throw (ex-info "Invalid LM profile spec" {:spec spec})))))
+
+(defn lm-profile-default-agent
+  "Read :default-agent from an LM profile file. Returns path string or nil.
+   The path is relative to the LM profile file's directory."
+  [path]
+  (let [profile (read-edn-file path)
+        rel-path (:default-agent profile)]
+    (when rel-path
+      (let [base-dir (.getParent (java.io.File. path))]
+        (str base-dir "/" rel-path)))))

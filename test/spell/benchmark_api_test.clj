@@ -43,7 +43,7 @@
                                                   :cost 0.123
                                                   :calls 2
                                                   :max_total_tokens 260}}})
-          out ((var benchmark-api/response-ok) "spell" start {:usage usage-atom})]
+          out ((var benchmark-api/response-ok) "spell" start {:usage-tracker usage-atom})]
       (is (== 225.0 (get-in out [:usage :by-model "model-a" :mean_total_tokens])))
       (is (= 260 (get-in out [:usage :by-model "model-a" :max_total_tokens])))
       (is (= 0.123 (get-in out [:usage :by-model "model-a" :cost])))
@@ -57,7 +57,7 @@
                                                         :output_tokens 120
                                                         :calls 1
                                                         :cost nil}}})
-          out ((var benchmark-api/response-ok) "spell" start {:usage usage-atom})]
+          out ((var benchmark-api/response-ok) "spell" start {:usage-tracker usage-atom})]
       (is (nil? (get-in out [:usage :by-model "unknown-model" :cost])))
       (is (nil? (get-in out [:usage :total :cost])))
       (is (string? (json/write-str out))))))
@@ -68,8 +68,8 @@
            ((var benchmark-api/parse-model-spec) "fireworks:glm-5"))))
 
   (testing "default-agent resolution uses the fireworks provider config"
-    (is (= "config/providers/fireworks.provider.edn"
-           (get benchmark-api/provider-edn-by-prefix "fireworks")))))
+    (is (= "config/lm-profiles/fireworks.edn"
+           (get benchmark-api/lm-profile-edn-by-prefix "fireworks")))))
 
 (deftest fireworks-tc-model-spec-and-default-agent-test
   (testing "parse-model-spec accepts fireworks-tc prefix"
@@ -77,11 +77,11 @@
            ((var benchmark-api/parse-model-spec) "fireworks-tc:kimi-k2p6"))))
 
   (testing "default-agent resolution uses the fireworks-tc provider config"
-    (is (= "config/providers/fireworks-tc.provider.edn"
-           (get benchmark-api/provider-edn-by-prefix "fireworks-tc")))
+    (is (= "config/lm-profiles/fireworks-tc.edn"
+           (get benchmark-api/lm-profile-edn-by-prefix "fireworks-tc")))
     (is (str/ends-with? ((var benchmark-api/default-agent-from-request)
                          {:model "fireworks-tc:kimi-k2p6"})
-                        "config/providers/../agents/base-tc.agent.edn"))))
+                        "config/lm-profiles/../agents/base-tc.agent.edn"))))
 
 (deftest openai-tc-model-spec-and-default-agent-test
   (testing "parse-model-spec accepts openai-tc prefix"
@@ -89,11 +89,11 @@
            ((var benchmark-api/parse-model-spec) "openai-tc:gpt-5.4"))))
 
   (testing "default-agent resolution uses the openai-tc provider config"
-    (is (= "config/providers/openai-tc.provider.edn"
-           (get benchmark-api/provider-edn-by-prefix "openai-tc")))
+    (is (= "config/lm-profiles/openai-tc.edn"
+           (get benchmark-api/lm-profile-edn-by-prefix "openai-tc")))
     (is (str/ends-with? ((var benchmark-api/default-agent-from-request)
                          {:model "openai-tc:gpt-5.4"})
-                        "config/providers/../agents/base-tc.agent.edn"))))
+                        "config/lm-profiles/../agents/base-tc.agent.edn"))))
 
 (deftest run-spell-trace-default-test
   (testing "trace defaults to an absolute temp dir when no trace-dir override is provided"

@@ -2,9 +2,9 @@
 ;; Web is intentionally omitted; web access should be opt-in.
 
 {:base base-tc.agent.edn
- :name io-tc
- :doc "Tool-call transport I/O agent with io namespace (web disabled by default)"
- :llms {explore explore.agent.edn}
+ :agent-name io-tc
+ :agent-description "Tool-call transport I/O agent with io namespace (web disabled by default)"
+ :available-agents {explore explore.agent.edn}
 
  :namespaces
  {io       stdlib/io

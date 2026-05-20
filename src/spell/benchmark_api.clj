@@ -54,14 +54,18 @@
 (defn- resolve-model [model]
   (get model-aliases model model))
 
+(def lm-profile-edn-by-prefix
+  {"anthropic-pf"  "config/lm-profiles/anthropic-pf.edn"
+   "anthropic-tc"  "config/lm-profiles/anthropic-tc.edn"
+   "codex-tc"      "config/lm-profiles/codex-tc.edn"
+   "fireworks"     "config/lm-profiles/fireworks.edn"
+   "fireworks-tc"  "config/lm-profiles/fireworks-tc.edn"
+   "openai-tc"     "config/lm-profiles/openai-tc.edn"
+   "ollama"        "config/lm-profiles/ollama.edn"})
+
 (def provider-edn-by-prefix
-  {"anthropic-pf"  "config/providers/anthropic-pf.provider.edn"
-   "anthropic-tc"  "config/providers/anthropic-tc.provider.edn"
-   "codex-tc"      "config/providers/codex-tc.provider.edn"
-   "fireworks"     "config/providers/fireworks.provider.edn"
-   "fireworks-tc"  "config/providers/fireworks-tc.provider.edn"
-   "openai-tc"     "config/providers/openai-tc.provider.edn"
-   "ollama"        "config/providers/ollama.provider.edn"})
+  "Deprecated compatibility alias for benchmark tests/consumers."
+  lm-profile-edn-by-prefix)
 
 (defn- normalize-keys [v]
   (cond
@@ -183,22 +187,22 @@
                       {:provider provider :model-spec model-spec})))))
 
 (defn- default-agent-from-request
-  "Resolve default agent path from provider .edn for this request."
+  "Resolve default agent path from LM profile for this request."
   [{:keys [model responses-api]}]
   (when-not model
     (throw (ex-info "model is required to resolve default agent" {:field "model"})))
   (let [{:keys [provider]} (parse-model-spec model)
         provider-prefix (or provider "anthropic-pf")
-        provider-edn (get provider-edn-by-prefix provider-prefix)]
-    (or (when provider-edn
-          (provider/provider-edn-default-agent provider-edn))
+        profile-edn (get lm-profile-edn-by-prefix provider-prefix)]
+    (or (when profile-edn
+          (provider/lm-profile-default-agent profile-edn))
         ;; Test mode doesn't have a provider file; use message transport base.
         (when (= provider-prefix "test")
           "config/agents/base-msg.agent.edn"))))
 
 (defn- response-ok [mode start-ns result-map]
   (let [latency-ms (/ (double (- (System/nanoTime) start-ns)) 1000000.0)
-        usage-atom (:usage result-map)
+        usage-atom (or (:usage-tracker result-map) (:usage result-map))
         usage (when usage-atom (provider/usage-summary usage-atom))]
     (cond-> {:ok true
              :mode mode
@@ -253,19 +257,18 @@
                                  (not thinking)))
         start-ns (System/nanoTime)]
     (try
-      (let [result (api/run (cond-> {:provider provider-inst
-                                     :agent resolved-agent
-                                     :budget budget
-                                     :depth depth
-                                     :trace trace
-                                     :trace-dir resolved-trace-dir
-                                     :retries retries
-                                     :thinking thinking
-                                     :reasoning-effort reasoning-effort
-                                     :verbosity verbosity
-                                     :prefill? effective-prefill
-                                     :suffix-grammar? suffix-grammar
-                                     :format normalized-format}
+      (let [result (api/run-internal (cond-> {:lm-profile provider-inst
+                                              :agent resolved-agent
+                                              :budget budget
+                                              :depth depth
+                                              :trace-dir resolved-trace-dir
+                                              :retries retries
+                                              :thinking thinking
+                                              :reasoning-effort reasoning-effort
+                                              :verbosity verbosity
+                                              :prefill? effective-prefill
+                                              :suffix-grammar? suffix-grammar
+                                              :format normalized-format}
                               grammar-max-chars (assoc :grammar-max-chars grammar-max-chars)
                               prompt (assoc :prompt prompt)
                               init (assoc :init init)))]
@@ -276,7 +279,7 @@
            :error (:error result)
            :error_type (some-> result :error-data :type name)
            :error_data (json-safe (:error-data result))
-           :usage (when-let [u (:usage result)] (provider/usage-summary u))
+           :usage (when-let [u (:usage-tracker result)] (provider/usage-summary u))
            :trace_dir (or (:trace-dir result) resolved-trace-dir)}
           (response-ok "spell" start-ns result)))
       (catch Exception e

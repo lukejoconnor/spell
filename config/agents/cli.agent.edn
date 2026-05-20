@@ -3,9 +3,9 @@
 ;; Used by the CLI when no -a/--agent is specified.
 
 {:base base-tc.agent.edn
- :name cli
- :doc "CLI default: full capabilities for interactive use"
- :llms {explore explore.agent.edn}
+ :agent-name cli
+ :agent-description "CLI default: full capabilities for interactive use"
+ :available-agents {explore explore.agent.edn}
 
  :namespaces
  {io       stdlib/io
