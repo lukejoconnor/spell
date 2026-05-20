@@ -4,45 +4,18 @@
             [clojure.string :as str]
             [clojure.java.io :as io]
             [spell.api :as api]
-            [spell.provider :as provider])
+            [spell.model-spec :as model-spec]
+            [spell.provider :as provider]
+            [spell.trace :as spell-trace])
   (:gen-class))
 
-(def model-aliases
-  {"haiku"   "claude-haiku-4-5-20251001"
-   "sonnet"  "claude-sonnet-4-5-20250929"
-   "opus"    "claude-opus-4-6"
-   "opus45"  "claude-opus-4-5-20251101"
-   "o3"      "o3"
-   "o4-mini" "o4-mini"
-   "gpt52"   "gpt-5.2"
-   "gpt53"   "gpt-5.3"
-   "gpt54"   "gpt-5.4"})
-
-(def provider-prefixes
-  #{"ollama" "codex-tc" "openai-tc"
-    "anthropic-pf" "anthropic-tc" "fireworks" "fireworks-tc" "test"})
-
 (defn parse-model-spec
-  "Parse 'provider:model' into {:provider str :model str}.
-   If no colon, returns {:provider nil :model input} (defaults to anthropic).
-   Throws on unrecognized provider prefix.
-   Examples:
-     ollama:smollm2:135m  -> {:provider \"ollama\" :model \"smollm2:135m\"}
-     chatgpt:gpt-5.3-codex -> {:provider \"chatgpt\" :model \"gpt-5.3-codex\"}
-     haiku                -> {:provider nil :model \"haiku\"}"
+  "Parse 'provider:model' into {:provider str :model str}."
   [s]
-  (if-let [idx (str/index-of s ":")]
-    (let [prefix (subs s 0 idx)
-          rest   (subs s (inc idx))]
-      (if (contains? provider-prefixes prefix)
-        {:provider prefix :model rest}
-        (throw (ex-info (str "Unknown provider prefix: " (pr-str prefix)
-                             ". Known prefixes: " (str/join ", " (sort provider-prefixes)))
-                        {:prefix prefix :model-spec s}))))
-    {:provider nil :model s}))
+  (model-spec/parse-model-spec s))
 
 (defn resolve-model [model]
-  (get model-aliases model model))
+  (model-spec/resolve-model-alias model))
 
 (defn find-examples-dir
   "Find the examples directory relative to the project root."
@@ -82,8 +55,10 @@
 (def cli-options
   [["-t" "--test" "Use dummy LLM provider (returns 'hello world')"]
    ["-e" "--example NAME" "Run a named example from examples/"]
-   ["-a" "--agent FILE" "Use agent definition from .agent.edn file"]
-   ["-m" "--model MODEL" "Model spec: haiku, sonnet, opus, opus45, ollama:<model>, codex-tc:<model>, openai-tc:<model>, anthropic-pf:<model>, anthropic-tc:<model>, fireworks:<model>, fireworks-tc:<model>, user (default: codex-tc:gpt-5.3)"]
+   ["-i" "--init PROGRAM" "Run a complete Spell program string directly instead of wrapping a natural-language prompt"]
+   ["-I" "--init-file FILE" "Run a complete Spell program file directly instead of wrapping it as a natural-language prompt"]
+   ["-a" "--agent-profile FILE" "Use agent profile from .agent.edn file"]
+   ["-m" "--model MODEL" "Model/provider spec: codex-tc:<model>, openai-tc:<model>, anthropic-pf:<model>, anthropic-tc:<model>, fireworks:<model>, fireworks-tc:<model>, ollama:<model>, user (default: codex-tc:gpt-5.3)"]
    ["-d" "--depth DEPTH" "Max recursion depth (default: unlimited, 0 = unlimited)"
     :parse-fn #(Integer/parseInt %)
     :validate [#(>= % 0) "Must be non-negative"]]
@@ -121,8 +96,10 @@
          ["Spell - A Lisp for LLM self-orchestration"
           ""
           "Usage: spell [options] <prompt>"
-          "       spell [options] <file.spl>"
-          "       spell -a <agent.edn> <prompt>"
+          "       spell [options] <file.spl>          # natural-language prompt file"
+          "       spell --init '<program>'            # complete Spell program"
+          "       spell --init-file <file.spl>        # complete Spell program file"
+          "       spell -a <agent-profile.edn> <prompt>"
           "       spell -e <example>"
           ""
           "Options:"
@@ -131,15 +108,16 @@
           "Examples:"
           "  spell 'Return 42'"
           "  spell -t 'Test prompt'"
-          "  spell -m haiku 'Add 1 and 2'"
-          "  spell -m ollama:llama3.2 'Return 42'"
+          "  spell -m codex-tc:gpt-5.3 'Return 42'"
           "  spell -m openai-tc:gpt-5.4 'Return 42'"
           "  spell -m fireworks:glm-5 'Return 42'"
           "  spell -m fireworks-tc:kimi-k2p6 'Return 42'"
           "  spell examples/hello-world.spl"
+          "  spell -t --init '(do (+ 20 22))'"
+          "  spell --init-file scratch/my-program.spl"
           "  spell -e hello-world"
-          "  spell -e twenty-questions -m opus -d 40"
-          "  spell -a config/agents/coder.agent.edn 'Fix the bug'"]
+          "  spell -e twenty-questions -d 40"
+          "  spell -a config/agent-profiles/io-tc.agent.edn 'Fix the bug'"]
          (when-let [examples (seq (list-examples))]
            [""
             "Available examples:"
@@ -157,6 +135,31 @@
 
       errors
       {:exit-message (error-msg errors) :ok? false}
+
+      (and (:example options) (or (:init options) (:init-file options)))
+      {:exit-message "Cannot combine --example with --init or --init-file"
+       :ok? false}
+
+      (and (:init options) (:init-file options))
+      {:exit-message "Specify only one of --init or --init-file"
+       :ok? false}
+
+      (and (:init options) (seq arguments))
+      {:exit-message "--init does not accept a positional prompt or file"
+       :ok? false}
+
+      (and (:init-file options) (seq arguments))
+      {:exit-message "--init-file does not accept a positional prompt or file"
+       :ok? false}
+
+      (:init options)
+      {:init (:init options) :options options}
+
+      (:init-file options)
+      (if-let [init (load-file-prompt (:init-file options))]
+        {:init init :options options}
+        {:exit-message (str "File not found: " (:init-file options))
+         :ok? false})
 
       (:example options)
       (if-let [{:keys [prompt setup cleanup]} (load-example (:example options))]
@@ -191,14 +194,9 @@
 
     :else
     (let [{:keys [provider model]} (if model
-                                     (parse-model-spec model)
-                                     {:provider "codex-tc" :model "gpt-5.3"})
-          resolved-model (when model (resolve-model model))
-          ;; ChatGPT/Codex backend exposes gpt-5.3 as gpt-5.3-codex.
-          resolved-model (if (and (= "codex-tc" provider)
-                                  (= resolved-model "gpt-5.3"))
-                           "gpt-5.3-codex"
-                           resolved-model)
+                                     (model-spec/resolve-model-spec model)
+                                     {:provider "codex-tc" :model "gpt-5.3-codex"})
+          resolved-model model
           base-opts (cond-> {:costs provider/default-costs}
                       resolved-model (assoc :model resolved-model)
                       max-tokens (assoc :max-tokens max-tokens))]
@@ -227,41 +225,47 @@
         "anthropic-pf"
         (provider/anthropic-pf-provider base-opts)))))
 
-(defn run-prompt
-  [prompt {:keys [depth verbose log budget trace agent model thinking reasoning-effort verbosity
-                  suffix-grammar grammar-max-chars]
-           :as opts}
+(defn run-input
+  [{:keys [prompt init]}
+   {:keys [depth verbose log budget trace agent-profile model thinking reasoning-effort verbosity
+           suffix-grammar grammar-max-chars]
+    :as opts}
    usage-atom]
   (let [max-depth (cond
                     (nil? depth) nil    ; default: no depth limit
                     (zero? depth) nil   ; 0 also means unlimited
                     :else depth)
-        resolved-model (some-> model parse-model-spec :model resolve-model)
+        resolved-model (some-> model model-spec/resolve-model-spec :model)
         opus? (and resolved-model (str/includes? resolved-model "opus"))
         thinking (or thinking (when opus? 16384))
         prov (make-provider opts)
         prefill? (and (provider/supports-prefill prov) (not thinking))
-        resolved-agent (or agent "config/agents/cli.agent.edn")
+        resolved-agent-profile (or agent-profile "config/agent-profiles/cli.agent.edn")
         log-writer (when log (io/writer (io/file log) :append true))]
-    (api/run {:prompt prompt
-              :provider prov
-              :agent resolved-agent
-              :user? (and (some? (. System console)) (not= model "user"))
-              :verbose (or verbose (some? log))
-              :log-writer log-writer
-              :budget (cond
-                        (nil? budget) nil  ; api/run handles agent/default fallback
-                        (zero? budget) 0   ; api/run maps 0 -> nil (unlimited)
-                        :else budget)
-              :depth max-depth
-              :trace trace
-              :prefill? prefill?
-              :thinking thinking
-              :reasoning-effort reasoning-effort
-              :verbosity verbosity
-              :suffix-grammar? suffix-grammar
-              :grammar-max-chars grammar-max-chars
-              :usage usage-atom})))
+    (try
+      (api/run-internal (cond-> {:model-profile prov
+                                 :agent-profile resolved-agent-profile
+                                 :log-writer (when (or verbose log) (or log-writer *out*))
+                                 :budget (cond
+                                           (nil? budget) nil
+                                           (zero? budget) 0
+                                           :else budget)
+                                 :depth max-depth
+                                 :prefill? prefill?
+                                 :thinking thinking
+                                 :reasoning-effort reasoning-effort
+                                 :verbosity verbosity
+                                 :suffix-grammar? suffix-grammar
+                                 :grammar-max-chars grammar-max-chars
+                                 :usage-tracker usage-atom}
+                          prompt (assoc :prompt prompt)
+                          init (assoc :init init)
+                          trace (assoc :trace-dir (spell-trace/default-trace-dir))
+                          (and (some? (. System console)) (not= model "user"))
+                          (assoc :user-reader (io/reader System/in))))
+      (finally
+        (when log-writer
+          (.close ^java.io.Writer log-writer))))))
 
 (defn- format-cache-stats [stats]
   (let [cache-write (:cache_write_input_tokens stats 0)
@@ -330,7 +334,7 @@
       (.exitValue proc))))
 
 (defn -main [& args]
-  (let [{:keys [prompt options exit-message ok?]} (validate-args args)]
+  (let [{:keys [prompt init options exit-message ok?]} (validate-args args)]
     (if exit-message
       (do
         (println exit-message)
@@ -346,7 +350,8 @@
                                       (println (format "\nCost: $%.4f" c))))))))]
         (.addShutdownHook (Runtime/getRuntime) shutdown-hook)
         (run-shell (:setup options))
-        (let [{:keys [result error error-data usage trace-dir]} (run-prompt prompt options usage-atom)]
+        (let [{:keys [result error error-data usage-tracker trace-dir]} (run-input {:prompt prompt :init init} options usage-atom)
+              usage usage-tracker]
           (run-shell (:cleanup options))
           (when trace-dir
             (binding [*out* *err*]

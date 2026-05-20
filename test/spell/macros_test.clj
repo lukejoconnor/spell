@@ -70,7 +70,7 @@
     (with-stable-gensyms
       (is (= '(let [call-now__1 value]
                 (!llm-self
-                  (reopen (prune-and-reopen completion)
+                  (reopen (edit-reopen completion)
                           (reopen-eval
                             (list (quote def) (quote result)
                                   (read-string (serialize call-now__1)))))))
@@ -80,7 +80,7 @@
     (with-stable-gensyms
       (is (= '(let [call-now__1 value]
                 (!llm-self
-                  (reopen (prune-and-reopen completion)
+                  (reopen (edit-reopen completion)
                           (reopen-eval
                             (list (quote def) (quote result)
                                   (read-string (serialize call-now__1 50)))))))
@@ -91,7 +91,7 @@
       (is (= '(let [call-now-a__1 expr-a
                      call-now-b__2 expr-b]
                 (!llm-self
-                  (reopen (prune-and-reopen completion)
+                  (reopen (edit-reopen completion)
                           (reopen-eval
                             (list (quote def) (quote a)
                                   (read-string (serialize call-now-a__1))))
@@ -110,7 +110,7 @@
     (with-stable-gensyms
       (is (= '(let [call-now__1 expr]
                 (!llm-self
-                  (reopen (prune-and-reopen completion)
+                  (reopen (edit-reopen completion)
                           (reopen-eval
                             (list (quote def) (quote snapshot)
                                   (read-string (serialize call-now__1))))
@@ -120,7 +120,7 @@
       (is (= '(let [call-now-left__1 expr-left
                      call-now-right__2 expr-right]
                 (!llm-self
-                  (reopen (prune-and-reopen completion)
+                  (reopen (edit-reopen completion)
                           (reopen-eval
                             (list (quote def) (quote left)
                                   (read-string (serialize call-now-left__1))))
@@ -142,7 +142,7 @@
       (is (= '(let [print__1 a
                      print__2 b]
                 (!llm-self
-                  (reopen (prune-and-reopen completion)
+                  (reopen (edit-reopen completion)
                           (reopen-eval (read-string (serialize print__1)))
                           (reopen-eval (read-string (serialize print__2))))))
              (expand1 '(!print a b)))))
@@ -170,9 +170,9 @@
 
 (deftest simple-macro-expansion-test
   (testing "!extend defaults to completion and accepts an explicit continuation"
-    (is (= '(!llm-self (prune-and-reopen completion))
+    (is (= '(!llm-self (edit-reopen completion))
            (expand1 '(!extend))))
-    (is (= '(!llm-self (prune-and-reopen saved))
+    (is (= '(!llm-self (edit-reopen saved))
            (expand1 '(!extend saved)))))
 
   (testing "!compact defaults to completion and reuses the shared suffix"
@@ -181,7 +181,7 @@
              (expand1 '(!compact))))
       (is (= (list '!llm-self
                    (list 'str
-                         (list 'serialize-prefix (list 'prune-and-reopen 'saved))
+                         (list 'serialize-prefix (list 'edit-reopen 'saved))
                          suffix))
              (expand1 '(!compact saved))))))
 

@@ -1,0 +1,7 @@
+;; Base agent for prefill providers (Anthropic).
+;; No effect namespaces — just the transport-appropriate system prompt.
+
+{:agent-name base-pf
+ :agent-description "Base agent for prefill providers (Anthropic)"
+ :system-prompt {:file "../prompts/sysprompt-prefill.txt"}
+ :available-agents []}

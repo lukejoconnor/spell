@@ -1,0 +1,4 @@
+{:provider :ollama
+ :base-url "http://localhost:11434"
+ :default-agent-profile "../agent-profiles/base-msg.agent.edn"
+ :costs {}}

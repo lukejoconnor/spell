@@ -131,7 +131,7 @@
       (is (= '(foo) (:form result)))
       (is (= 1 (:target-count detail)))
       (is (= (count (pr-str '(def a 1))) (:chars-pruned detail)))))
-  (testing "quote and fn bodies are opaque to pruning markers"
+  (testing "quote and fn bodies are opaque to edit markers"
     (let [result (tt/prune-accounting '(do '(prune 1)
                                            (fn [] (prune 1))
                                            (def x 1)
@@ -258,8 +258,8 @@
                                     (patterns/team {:goal "x"})
                                     (leaf-llm prompt)
                                     (!llm-self "continue")
-                                    (agents/spawn llms/coder "prompt"))
-                        :response "(!ask-await worker) (agents/!ask worker \"hi\") (patterns/team {:goal \"x\"}) (leaf-llm prompt) (!llm-self \"continue\") (agents/spawn llms/coder \"prompt\")"}
+                                    (agents/spawn workers/coder "prompt"))
+                        :response "(!ask-await worker) (agents/!ask worker \"hi\") (patterns/team {:goal \"x\"}) (leaf-llm prompt) (!llm-self \"continue\") (agents/spawn workers/coder \"prompt\")"}
                        {:id 3
                         :depth 0
                         :error "fatal"
@@ -296,7 +296,7 @@
     (is (= {"replace" 1}
            (get-in summary [:namespace-usage "strings"])))
     (is (= {"coder" 1}
-           (get-in summary [:namespace-usage "llms"])))
+           (get-in summary [:namespace-usage "workers"])))
     (is (= {:count 2
             :total-chars pruned-think
             :mean-chars (/ (double pruned-think) 2.0)
@@ -411,7 +411,7 @@
                                    "patterns" {"team" 1}
                                    "math" {"sqrt" 1}
                                    "strings" {"replace" 3}
-                                   "llms" {"fast" 1}}
+                                   "workers" {"fast" 1}}
                  :errors [{:node-id 1 :recovered? true}
                           {:node-id 2 :recovered? false}]
                  :flags #{:concurrency-used :function-definitions}}]

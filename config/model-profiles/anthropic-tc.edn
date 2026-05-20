@@ -1,0 +1,4 @@
+{:provider :anthropic-tc
+ :api-key-env "ANTHROPIC_API_KEY"
+ :max-tokens 16384
+ :default-agent-profile "../agent-profiles/base-tc.agent.edn"}

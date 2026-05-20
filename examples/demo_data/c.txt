@@ -1,4 +1,0 @@
-C is longer.
-It includes multiple sentences to vary token and character counts.
-The distributed stats pipeline will process this file as well.
-End of file C.

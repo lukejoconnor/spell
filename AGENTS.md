@@ -1,114 +1,203 @@
-# Spell
+# Spell Source Guide
 
-Self programmed execution language for LMs: a domain-specific language for agentic self-orchestration and own-context management, implemented as a Lisp dialect in Clojure.
+This file is a public orientation guide for agents, readers, and contributors working through the Spell source tree. Start with `README.md` for the human-facing project overview, CLI usage, and core language ideas, then use this file for installation checks, source-map lookup, tests, and implementation orientation.
 
-## Self-programmed execution
+Current release state: `v0.2.0` is unreleased. The `v0.2.0-dev` branch is the active public-release preparation branch, with the public Clojure API and configuration surface documented in `docs/api.md`.
 
-Instead of an external harness controlling an agent loop, the LLM programs its own execution graph. Its entire completion is a program, the language of which is Spell. The harness is purely an execution layer: it evaluates the program. The program can re-invoke the LLM, and it controls exactly what context is passed in.
+Spell is a Lisp dialect for LLM self-orchestration. A Spell completion is itself a program: the evaluator runs the program, and the program can call back into an LLM, spawn sub-agents, manage context, and use configured namespaces such as `io`, `web`, `agents`, `globals`, and `patterns`.
 
-## Language Overview
+## Repo Skills
 
-See `notebook/writeup/paper/language-design-v3.md` and the manuscript sources under `notebook/writeup/paper/` for full semantics. Key concepts:
+This repo includes Spell-specific skills under `.agents/skills/`. Use them as the first stop for task-oriented work:
 
-- **Self-calls**: `(!llm-self prefix)` makes an LLM call. `!call-now`, `!print`, and `!extend` wrap or expand to `!llm-self`.
-- **Quine**: `(quine name body)` binds `name` to its own source form as data, enabling self-referential LLM calls.
-- **Environment threading**: `spell-eval` takes env in, returns env out. State is explicit in program structure.
-- **Dynamic scoping**: `fn`/`defn` return source forms, not closures; bodies evaluate in caller env.
-- **Prompt-as-prefix**: prompt text is both user message and assistant prefix; response is appended and eval'd.
-- **Double evaluation**: the outer `eval` in the completion wrapper makes effect namespaces available to the trailing expression. Without it, only core namespaces are in scope.
-- **Completion wrapper**: NL prompts wrapped as `(quine completion (eval (do ...)))` with double evaluation of trailing expression.
-- **Think/prune/rethink/extend**: context management. `prune` removes sibling expressions, `rethink` is `prune` plus residual `think`, and `!extend` continues with pruned context.
-- **Namespaces**: core (`strings`, `math`, `builtins`) always available. Effect (`io`, `web`, `globals`, `agents`, `patterns`) available via trailing-expression `eval`. Future threads also get `blocking/` (`await`, `await-all`, `pmap`, `completion-promise`, `send-await`).
-- **Concurrency**: `!llm-self` for serial self-calls; `agents/spawn` for async agents; `future`/`blocking/await` for deterministic compute. These are intentionally separate.
-- **Communication**: `agents/!ask` (request/reply, poke-only, multi-target), `agents/send` (fire-and-forget), keyword handles. `!ask-await` bridges main-thread agent waits with future waits.
+- `spell-setup`: install/check prerequisites, configure provider credentials, and run the first smoke tests or examples.
+- `spell-agent-config`: create or modify model profiles and agent profiles; use `docs/api.md` as the canonical API/config reference.
+- `spell-developer`: navigate and modify the Spell source code, choose relevant files, and run focused checks.
 
-## Providers and Agents
+## Terminology
 
-See `config/CLAUDE.md` for provider/agent details. Base agents: `base-pf`, `base-msg`, `base-tc`. Agents with `:llms` get a dynamic `llms/` namespace.
+- Edit marker: a source form, such as `prune`, `rethink`, or `persist`, that affects how `apply-edits` rewrites a completion for a later turn.
+- Edit time: the phase when `apply-edits` applies edit markers to a completion before it is used as a model prefix.
 
-## CLI and API
+## Top-Level Layout
 
-- CLI: use `-h` or `--help` for current flags and usage. Default agent: `config/agents/cli.agent.edn`.
-- Programmatic entry point: `spell.api/run` with `:prompt` or `:init`. Requires explicit `:agent` argument.
+| Path | Purpose |
+| --- | --- |
+| `bin/spell` | Shell wrapper around the Clojure CLI entry point. |
+| `deps.edn` | Clojure dependencies and aliases, including `:run`, `:test-fast`, and `:test-slow`. |
+| `src/spell/` | Main Spell implementation. |
+| `config/` | Runtime agent, provider, prompt, web, and Spell library configuration. |
+| `examples/` | Runnable `.spl` examples plus short writeups for selected examples. |
+| `test/` | Unit and integration tests. |
+| `data/pricing.edn` | Model pricing table used for usage and cost reporting. |
+| `docs/` | Public documentation for the release. |
+| `docs/CHANGELOG.md` | Release notes; `v0.2.0` is currently unreleased. |
+| `LICENSE` | MIT license text. |
 
-## Key Files
+## Agent Quick Start
 
-| Path | Description |
-|------|-------------|
-| `notebook/writeup/paper/language-design-v3.md` | Main language design writeup. |
-| `notebook/writeup/paper/paper_v7.tex` | Current main manuscript source for NeurIPS submission prep. |
-| `notebook/writeup/paper/paper_v7_TODO.md` | Current manuscript TODO list. |
-| `notebook/writeup/paper/appendix/appendix-a.tex`, `appendix-b.tex`, `appendix-c.tex` | Current appendix sources. |
-| `notebook/writeup/paper/figures/` | Main manuscript figure scripts, source tables, and rendered figures. |
-| `src/spell/eval.clj` | Core evaluator and special forms. |
-| `src/spell/macros.clj` | Spell macro registry and macro implementations. |
-| `src/spell/runtime.clj` | Box runtime, registry, ask/spawn/send, notifier flow. |
-| `src/spell/llm.clj` | LLM wiring (`make-llm`, inbox pipeline, init builder). |
-| `src/spell/prompt.clj` | System prompt composition from namespace metadata. |
-| `src/spell/provider.clj` | Provider implementations and usage/cost tracking. |
-| `data/pricing.edn` | Shared model pricing table used by both Spell and the benchmarking repo. |
-| `src/spell/agent.clj` | Agent definition loading and llm factory wiring. |
-| `src/spell/api.clj` | Public `run` entry point. |
-| `src/spell/cli.clj` | CLI implementation. |
-| `src/spell/benchmark_api.clj` | JSON benchmark API bridge. |
-| `config/prompts/sysprompt-prefill.txt`, `config/prompts/sysprompt-message.txt`, `config/prompts/sysprompt-toolcall.txt` | Base prompt variants; provider-agnostic behavior changes should be applied consistently to all three unless intentionally variant-specific. |
-| `notebook/ERROR_WATCHLIST.md` | Low-frequency observed errors not yet warranting runtime intervention. |
+Prerequisites:
 
-## Rules
+- Java 11+
+- Clojure CLI (`clj`)
+- At least one LLM provider credential or local provider
 
-- **No backwards compatibility.** This is a nascent project with effectively zero users. Do not add compatibility shims, legacy placeholders, migration paths, reopen support for prior serialized shapes, or deprecated aliases unless the user explicitly asks for them. Prefer replacing old paths outright when that simplifies the system.
-- **Redesign means replace, not accumulate.** When switching from approach A to approach B, the plan must include deleting approach A. Do not leave the old approach in the codebase "for now" or "for compatibility." We want fewer options, not more; one approach, not two. If the plan doesn't explicitly include removing the old code/config/files, the plan is incomplete.
-- **Model names must be exact.** Never guess or extrapolate model identifiers (e.g., don't assume `gpt-5.4-codex` exists because `gpt-5.3-codex` does). Always consult the provider's API docs or web search to confirm the exact model ID string and pricing before adding models or making API calls.
-- When the user asks for a plan, always enter plan mode (using the EnterPlanMode tool). After the plan is created, tell the user the filesystem path where the plan file is located.
-- When planning any change, consider whether this doc (CLAUDE.md) should be updated; if so, add that to the plan.
-- When planning, consider whether a notebook entry is warranted; if so, add entry creation to the plan (almost always yes).
-- For benchmarking analyses, always use the run-benchmark skill.
-- Whenever possible, delegate to subagents or use task lists, preserving the main context window for iteration and discussion.
-
-## Benchmarking
-
-`benchmarking/` is a separate nested git repository (`benchmarking/.git`).
-See `benchmarking/AGENTS.md` for benchmark commands, datasets, and reporting expectations.
-Use `uv run` for Python benchmark tooling.
-
-Current project phase: final manuscript preparation for NeurIPS submission. Paper-facing Spell work should happen on the `paper` branch/worktree, and paper-facing benchmarking work should happen on the nested benchmarking repo's `paper` branch. Benchmarking analyses for the manuscript should be reproducible from scripts committed in the benchmarking repo, not ad hoc notebook-only/manual transformations.
-
-### GCP Benchmark VM
-
-Use `scripts/gcp-benchmark.sh` to run long benchmark jobs on a GCP VM:
+On macOS with Homebrew:
 
 ```bash
-./scripts/gcp-benchmark.sh run --name <vm-name> --run-group <group> --command "<benchmark command>"
-./scripts/gcp-benchmark.sh wait --run-group <group> --finish
-./scripts/gcp-benchmark.sh status-all --run-group <group>
+brew install clojure/tools/clojure
 ```
 
-Recommended workflow:
-- `run` is the default path for unattended Docker-backed evals. It creates the VM, waits for startup, stages a benchmark wrapper into the tmux session, and returns without attaching.
-- `wait --run-group <group> --finish` is the standard way to monitor a batch. It prints a one-line status summary each polling cycle, then pulls artifacts and deletes terminal VMs before exiting. Run it in the background when you want a single completion notification.
-- `status-all --run-group <group>` remains the ad-hoc fleet snapshot command. `--all` is the project-wide escape hatch when you intentionally want every Spell-managed VM.
-- `pull-all --run-group <group>` is available for non-destructive syncs, and `finish-all --run-group <group>` remains the manual cleanup path.
-- `start` and `ssh` remain the manual debugging path.
-- `wait` now bounds SSH polling and eventually treats persistently unreachable VMs as terminal for the wait loop, so one dead VM will not hang the whole fleet. `finish-all` remains conservative and skips VMs it cannot still pull.
+Provider setup:
 
-The launcher tags each managed VM with `managed-by=spell-benchmark` plus a run-group label for fleet discovery. The full run-group string and benchmark command are also stored in instance metadata for detailed reporting.
+- Codex tool-call provider, the CLI default: install the OpenAI Codex CLI and run `codex` once so `~/.codex/auth.json` exists.
+- Anthropic API: set `ANTHROPIC_API_KEY`.
+- OpenAI API: set `OPENAI_API_KEY`.
+- Fireworks API: set `FIREWORKS_API_KEY`.
+- Ollama: run a local Ollama server and pass an `ollama:<model>` model spec.
 
-The VM bootstrap lives in `scripts/gcp-startup.sh`. It clones the main `spell` repo and then separately clones `spell-benchmarking` into `spell/benchmarking`, because `benchmarking/` is an ignored nested repo rather than part of the main checkout. After the first successful bootstrap, later stop/start cycles take a fast path that refreshes secrets, recreates the tmux shell session, and preserves the existing checkout and benchmark artifacts.
+Install from a fresh checkout:
 
-Pulled artifacts land directly under:
-- `benchmarking/results/gcp/<vm-name>/...`
-- `benchmarking/traces/gcp/<vm-name>/...`
-- `benchmarking/logs/gcp/<vm-name>/...`
+```bash
+git clone https://github.com/lukejoconnor/spell.git
+cd spell
+```
 
-One-time setup on your Mac:
-- Install and authenticate `gcloud` (`brew install --cask gcloud-cli`, then `gcloud init`)
-- Enable `compute.googleapis.com` and `secretmanager.googleapis.com`
-- Store `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `FIREWORKS_API_KEY`, and a read-only `GITHUB_TOKEN` in Secret Manager
-- For `codex-tc` model runs: store `CODEX_AUTH_JSON_B64` in Secret Manager (base64-encode your local `~/.codex/auth.json`). Without this, use `openai-tc:gpt-5.4` instead (standard OpenAI API).
-- For Claude Code with Max subscription: run `claude setup-token` locally, then store the resulting token as `CLAUDE_CODE_OAUTH_TOKEN` in Secret Manager. Without this, Claude Code uses `ANTHROPIC_API_KEY` (API billing) instead of the subscription.
-- Grant the default Compute Engine service account `roles/secretmanager.secretAccessor` on those secrets
-- Ensure the project has a usable VPC network. If it has no `default` VPC, create one or pass `--network <name>` to the launcher.
+No build step is required for normal CLI use. The `bin/spell` wrapper runs the Clojure CLI entry point with `clj -M:run`.
 
-**SWE-bench on fresh VMs:** The first SWE-bench run on a new VM requires building environment images (~10 min per unique env). These are cached for subsequent runs. A full SWE-bench Lite run touches ~20 unique envs, so initial bootstrapping can take ~3 hours. Consider pre-building images or using a persistent disk cache.
+Smoke test without making an LLM API call:
 
-The launcher uses Compute Engine's built-in `--max-run-duration` with `--instance-termination-action=DELETE` so benchmark VMs auto-delete instead of lingering after long unattended runs.
+```bash
+bin/spell -h
+bin/spell -t "Return a short greeting"
+```
+
+The `-t` flag uses the test provider and is useful for checking Java, Clojure, dependencies, and CLI wiring.
+
+## Core Runtime Files
+
+| Path | Purpose |
+| --- | --- |
+| `src/spell/cli.clj` | CLI argument parsing, model/provider selection, trace/log options, and execution dispatch. |
+| `src/spell/eval.clj` | Main evaluator, special forms, environment threading, futures, self-calls, context-management forms, and namespace lookup. |
+| `src/spell/parse.clj` | Reader/parser entry points for Spell forms. |
+| `src/spell/grammar.clj` | Parenthesis and delimiter grammar checks. |
+| `src/spell/format.clj` | Formatting helpers for Spell forms. |
+| `src/spell/macros.clj` | Macro registry and macro expansion. |
+| `src/spell/runtime.clj` | Agent boxes, registry, `spawn`, `ask`, `send`, notifier flow, and completion coordination. |
+| `src/spell/llm.clj` | LLM request construction, prompt prefix handling, suffix cleanup, and inbox pipeline. |
+| `src/spell/provider.clj` | Provider implementations for Anthropic, OpenAI, Codex CLI, Fireworks, Ollama, user, and test modes. |
+| `src/spell/agent.clj` | Agent definition loading, inheritance, namespace resolution, and provider default wiring. |
+| `src/spell/prompt.clj` | System prompt composition from namespace metadata. |
+| `src/spell/recovery.clj` | Recovery prompts and retry helpers for malformed completions. |
+| `src/spell/trace.clj` | Execution trace recording. |
+| `src/spell/trace_tool.clj` | Developer tooling for inspecting recorded traces. |
+| `src/spell/api.clj` | Programmatic entry point used by library callers; API details are documented separately. |
+
+The public API/configuration reference is `docs/api.md`. In `v0.2.0-dev`, `spell.api/run` requires `:model-profile` and `:agent-profile`, and rejects old public run keys such as `:provider`.
+
+## Standard Namespaces
+
+| Path | Exposes |
+| --- | --- |
+| `src/spell/stdlib.clj` | Core `strings`, `math`, and built-in helper namespaces. |
+| `src/spell/io.clj` | Filesystem and shell helpers exposed as `io/*` when the selected agent enables I/O. |
+| `src/spell/web.clj` | Search and fetch helpers exposed as `web/*`. |
+| `src/spell/globals.clj` | Shared global store exposed as `globals/*`. |
+| `src/spell/patterns.clj` | Loader for reusable Spell patterns. |
+| `src/spell/user.clj` | Manual user-provider implementation for `-m user`. |
+| `src/spell/inbox.clj` | Message inbox helpers. |
+
+## Configuration
+
+See `config/AGENTS.md` for a directory-specific guide.
+
+| Path | Purpose |
+| --- | --- |
+| `config/agent-profiles/base-pf.agent.edn` | Base prefill-transport agent. |
+| `config/agent-profiles/base-msg.agent.edn` | Base message-transport agent. |
+| `config/agent-profiles/base-tc.agent.edn` | Base tool-call-transport agent. |
+| `config/agent-profiles/cli.agent.edn` | Default CLI agent; enables `io`, `web`, `patterns`, `agents`, and `globals`. |
+| `config/agent-profiles/io-pf.agent.edn` | I/O-capable prefill profile. |
+| `config/agent-profiles/io-msg.agent.edn` | I/O-capable message profile. |
+| `config/agent-profiles/io-tc.agent.edn` | I/O-capable tool-call profile. |
+| `config/prompts/sysprompt-prefill.txt` | System prompt for prefill-style providers. |
+| `config/prompts/sysprompt-message.txt` | System prompt for message-style providers. |
+| `config/prompts/sysprompt-toolcall.txt` | System prompt for mandatory tool-call providers. |
+| `config/model-profiles/*.edn` | Declarative model provider defaults and routing metadata. |
+| `config/spl-lib/patterns.spl` | Reusable Spell pattern library. |
+| `config/web.edn` | Web/search configuration. |
+
+First-class public provider paths are OpenAI, Anthropic, Fireworks, and Codex CLI. The Codex CLI path uses local Codex authentication and should be treated as experimental.
+
+## Examples
+
+See `examples/AGENTS.md` for a directory-specific guide and `examples/README.md` for the user-facing example list.
+
+Start with:
+
+- `examples/hello-world.spl`: small self-call.
+- `examples/coin-flip.spl`: recursion and branching.
+- `examples/twenty-questions.spl`: multi-agent loop.
+- `examples/telephone.spl`: sequential relay loop.
+- `examples/auction.spl`: parallel agent pattern.
+- `examples/chat.spl`: interactive communication.
+
+Each public example has a companion `.md` file with expected behavior and explanation.
+
+## Running And Testing
+
+```bash
+bin/spell -h
+bin/spell -t "Return a greeting"
+bin/spell -e hello-world
+bin/spell "Explain the examples directory."
+clj -M:test-fast
+clj -M:test-slow
+```
+
+The fast suite covers parser, evaluator, provider, agent, web, API, trace, macro, and prompt-facing behavior. The slow suite covers concurrency, I/O, runtime, globals, and user-provider behavior. `deps.edn` is the authoritative list of test aliases and included namespaces.
+
+Use `-T` to record an execution trace under the temporary Spell trace directory. The trace tool can inspect a trace directory directly, for example:
+
+```bash
+clj -M -m spell.trace-tool --trace-dir DIR --summary
+```
+
+Use `--log FILE` or `-v` when you need to inspect model responses during development.
+
+## Reading Order
+
+For evaluator semantics:
+
+1. `src/spell/parse.clj`
+2. `src/spell/eval.clj`
+3. `src/spell/llm.clj`
+4. `src/spell/runtime.clj`
+5. `config/prompts/sysprompt-*.txt`
+
+For CLI and provider behavior:
+
+1. `bin/spell`
+2. `src/spell/cli.clj`
+3. `src/spell/provider.clj`
+4. `config/model-profiles/*.edn`
+5. `config/agent-profiles/*.agent.edn`
+
+For examples:
+
+1. `examples/README.md`
+2. `examples/hello-world.spl`
+3. `examples/coin-flip.spl`
+4. `examples/twenty-questions.spl`
+5. `examples/telephone.spl`
+6. `src/spell/runtime.clj`
+
+## Notes For Readers
+
+- Prefer the checked-out code over old comments when behavior differs.
+- Run `bin/spell -h` for the authoritative CLI options in this revision.
+- Agent profile files can inherit from other `.agent.edn` files with `:base`; resolve relative paths from the current agent profile file.
+- Provider-prefixed model specs are parsed in `src/spell/cli.clj`.
+- `SERPER_API_KEY` is only needed when using the `web` namespace with Serper-backed search.
+- License is MIT; the full text is in `LICENSE`.

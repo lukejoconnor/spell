@@ -300,7 +300,7 @@
 ;; Builtins
 ;; =============================================================================
 
-(declare spell-eval prune-substitute reopen serialize-quine-prefix destructure-bind)
+(declare spell-eval apply-edits reopen serialize-quine-prefix destructure-bind)
 
 (defn spell-fn?
   "Returns true if v is a Spell function (dynamic-scoping function map)."
@@ -580,9 +580,9 @@
    ;; wrap-cat: build a quine completion form from the provided forms
    'wrap-cat (fn [& forms]
                (apply reopen (list 'quine 'completion '(eval (do))) forms)),
-   ;; Prune rethinks and keep the cleaned quine as data
-   'prune-and-reopen (fn [quine-form]
-                       (prune-substitute quine-form (or *spell-env* {}))),
+   ;; Apply edit markers and keep the edited quine as data
+   'edit-reopen (fn [quine-form]
+                  (apply-edits quine-form (or *spell-env* {}))),
    ;; Value store (for !call-now out-of-band large values)
    'stored stored,
    'serialize (fn
@@ -788,9 +788,10 @@
     (list 'first-line (:spell/first-line (meta v)) v)
     :else (list 'quote v)))
 
-(defn prune-substitute
-  "Single walk: prune rethink siblings and materialize persist forms.
-   Works on any form. When env is nil, persist forms are left intact."
+(defn apply-edits
+  "Single walk: apply edit markers.
+   Prune/rethink markers edit sibling forms; persist markers materialize values.
+   Works on any form. When env is nil, persist markers are left intact."
   [form env]
   (cond
     (and (seq? form)
@@ -810,18 +811,18 @@
     form
 
     (seq? form)
-    (let [head (prune-substitute (first form) env)
-          tail (map #(prune-substitute % env) (rest form))
+    (let [head (apply-edits (first form) env)
+          tail (map #(apply-edits % env) (rest form))
           pruned (macros/process-siblings tail)]
       (apply list head pruned))
 
     (vector? form)
-    (mapv #(prune-substitute % env) form)
+    (mapv #(apply-edits % env) form)
 
     (map? form)
     (into {} (map (fn [[k v]]
-                    [(prune-substitute k env)
-                     (prune-substitute v env)]))
+                    [(apply-edits k env)
+                     (apply-edits v env)]))
           form)
 
     :else form))

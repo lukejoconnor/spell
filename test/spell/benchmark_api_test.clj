@@ -43,7 +43,7 @@
                                                   :cost 0.123
                                                   :calls 2
                                                   :max_total_tokens 260}}})
-          out ((var benchmark-api/response-ok) "spell" start {:usage usage-atom})]
+          out ((var benchmark-api/response-ok) "spell" start {:usage-tracker usage-atom})]
       (is (== 225.0 (get-in out [:usage :by-model "model-a" :mean_total_tokens])))
       (is (= 260 (get-in out [:usage :by-model "model-a" :max_total_tokens])))
       (is (= 0.123 (get-in out [:usage :by-model "model-a" :cost])))
@@ -57,50 +57,76 @@
                                                         :output_tokens 120
                                                         :calls 1
                                                         :cost nil}}})
-          out ((var benchmark-api/response-ok) "spell" start {:usage usage-atom})]
+          out ((var benchmark-api/response-ok) "spell" start {:usage-tracker usage-atom})]
       (is (nil? (get-in out [:usage :by-model "unknown-model" :cost])))
       (is (nil? (get-in out [:usage :total :cost])))
       (is (string? (json/write-str out))))))
 
-(deftest fireworks-model-spec-and-default-agent-test
+(deftest fireworks-model-spec-and-default-agent-profile-test
   (testing "parse-model-spec accepts fireworks prefix"
     (is (= {:provider "fireworks" :model "glm-5"}
            ((var benchmark-api/parse-model-spec) "fireworks:glm-5"))))
 
-  (testing "default-agent resolution uses the fireworks provider config"
-    (is (= "config/providers/fireworks.provider.edn"
-           (get benchmark-api/provider-edn-by-prefix "fireworks")))))
+  (testing "default-agent-profile resolution uses the fireworks provider config"
+    (is (= "config/model-profiles/fireworks.edn"
+           (get benchmark-api/model-profile-edn-by-prefix "fireworks")))))
 
-(deftest fireworks-tc-model-spec-and-default-agent-test
+(deftest fireworks-tc-model-spec-and-default-agent-profile-test
   (testing "parse-model-spec accepts fireworks-tc prefix"
     (is (= {:provider "fireworks-tc" :model "kimi-k2p6"}
            ((var benchmark-api/parse-model-spec) "fireworks-tc:kimi-k2p6"))))
 
-  (testing "default-agent resolution uses the fireworks-tc provider config"
-    (is (= "config/providers/fireworks-tc.provider.edn"
-           (get benchmark-api/provider-edn-by-prefix "fireworks-tc")))
-    (is (str/ends-with? ((var benchmark-api/default-agent-from-request)
+  (testing "default-agent-profile resolution uses the fireworks-tc provider config"
+    (is (= "config/model-profiles/fireworks-tc.edn"
+           (get benchmark-api/model-profile-edn-by-prefix "fireworks-tc")))
+    (is (str/ends-with? ((var benchmark-api/default-agent-profile-from-request)
                          {:model "fireworks-tc:kimi-k2p6"})
-                        "config/providers/../agents/base-tc.agent.edn"))))
+                        "config/model-profiles/../agent-profiles/base-tc.agent.edn"))))
 
-(deftest openai-tc-model-spec-and-default-agent-test
+(deftest openai-tc-model-spec-and-default-agent-profile-test
   (testing "parse-model-spec accepts openai-tc prefix"
     (is (= {:provider "openai-tc" :model "gpt-5.4"}
            ((var benchmark-api/parse-model-spec) "openai-tc:gpt-5.4"))))
 
-  (testing "default-agent resolution uses the openai-tc provider config"
-    (is (= "config/providers/openai-tc.provider.edn"
-           (get benchmark-api/provider-edn-by-prefix "openai-tc")))
-    (is (str/ends-with? ((var benchmark-api/default-agent-from-request)
+  (testing "default-agent-profile resolution uses the openai-tc provider config"
+    (is (= "config/model-profiles/openai-tc.edn"
+           (get benchmark-api/model-profile-edn-by-prefix "openai-tc")))
+    (is (str/ends-with? ((var benchmark-api/default-agent-profile-from-request)
                          {:model "openai-tc:gpt-5.4"})
-                        "config/providers/../agents/base-tc.agent.edn"))))
+                        "config/model-profiles/../agent-profiles/base-tc.agent.edn"))))
+
+(deftest make-provider-resolves-shared-model-aliases-test
+  (testing "bare open-weight aliases route to Fireworks tool-call transport"
+    (doseq [[alias expected] [["glm51" "glm-5p1"]
+                             ["kimi26" "kimi-k2p6"]
+                             ["qwen36p" "qwen3p6-plus"]]]
+      (let [captured (atom nil)]
+        (with-redefs [provider/fireworks-tc-provider
+                      (fn [opts]
+                        (reset! captured opts)
+                        {:provider :fireworks-tc :opts opts})]
+          (is (= :fireworks-tc
+                 (:provider ((var benchmark-api/make-provider) {:model alias}))))
+          (is (= expected (:model @captured)))))))
+
+  (testing "bare gpt alias routes to OpenAI tool-call transport"
+    (let [captured (atom nil)]
+      (with-redefs [provider/openai-provider
+                    (fn [opts]
+                      (reset! captured opts)
+                      {:provider :openai-tc :opts opts})]
+        (is (= :openai-tc
+               (:provider ((var benchmark-api/make-provider) {:model "gpt"}))))
+        (is (= "gpt-5.4" (:model @captured)))
+        (is (:use-responses-api @captured))
+        (is (:force-tool-call @captured))))))
 
 (deftest run-spell-trace-default-test
   (testing "trace defaults to an absolute temp dir when no trace-dir override is provided"
     (let [result (with-redefs [benchmark-api/make-provider
                                (fn [_] (provider/test-provider {:response "(def x 42))"}))
-                               benchmark-api/default-agent-from-request
-                               (fn [_] "config/agents/base-msg.agent.edn")]
+                               benchmark-api/default-agent-profile-from-request
+                               (fn [_] "config/agent-profiles/base-msg.agent.edn")]
                    ((var benchmark-api/run-spell) {:prompt "Return 42"
                                                    :model "test:dummy"
                                                    :trace true}))]
@@ -117,8 +143,8 @@
                                  (make-array java.nio.file.attribute.FileAttribute 0)))
           result (with-redefs [benchmark-api/make-provider
                                (fn [_] (provider/test-provider {:response "(def x 42))"}))
-                               benchmark-api/default-agent-from-request
-                               (fn [_] "config/agents/base-msg.agent.edn")]
+                               benchmark-api/default-agent-profile-from-request
+                               (fn [_] "config/agent-profiles/base-msg.agent.edn")]
                    ((var benchmark-api/run-spell) {:prompt "Return 42"
                                                    :model "test:dummy"
                                                    :trace true

@@ -746,7 +746,7 @@ Re-evaluate and re-issue if still appropriate.
   ;; agent C sends a message before your ask fires; your completion becomes:
   ...'(agents/!ask :B \"hello\") (think \"[preempted or awakened by msg-0]\")
   (def msg-0 {:from :C :body \"urgent\"})
-  '(!llm-self (prune-and-reopen completion))  ;; ask became inert data — it did not fire"
+  '(!llm-self (edit-reopen completion))  ;; ask became inert data — it did not fire"
 
     :!reply-ask
     "Reply to a received message and block for the next response.
@@ -804,14 +804,14 @@ Example (from a spawned child):
 (agents/spawn prompt :name)
 (agents/spawn agent prompt)
 (agents/spawn agent prompt :name)
-  agent: explicit compiled agent (for example llms/helper)
+  agent: explicit compiled agent (for example workers/helper)
   prompt: string prompt for the child agent
   :name: optional keyword handle (e.g. :seller). Default: auto-generated :spawn-N.
 Include instructions to the child LLM in its prompt, usually not by sending a message.
 Natural-language prompts are wrapped into an init program automatically.
 Strings that already start with '(' are treated as init programs directly.
 If you have an explicit compiled agent, pass it as the first argument:
-  '(agents/spawn llms/helper \"Do X.\")
+  '(agents/spawn workers/helper \"Do X.\")
   '(agents/spawn \"Do X.\")                  ; uses current agent
 
 The child runs independently with its own handle and can send messages to you or other agents.
@@ -828,7 +828,7 @@ Combines spawn + block. One-shot delegation pattern.
 (agents/!spawn-ask prompt :name)
 (agents/!spawn-ask agent prompt)
 (agents/!spawn-ask agent prompt :name)
-  agent: explicit compiled agent (for example llms/helper)
+  agent: explicit compiled agent (for example workers/helper)
   prompt: string or wrap-cat
   :name: optional keyword handle (like agents/spawn)
 

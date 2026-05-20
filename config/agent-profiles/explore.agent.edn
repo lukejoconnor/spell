@@ -1,0 +1,5 @@
+{:base base-tc.agent.edn
+ :agent-name explore
+ :agent-description "Read-only codebase exploration agent"
+ :namespaces {io stdlib/io-read}
+ :available-agents []}

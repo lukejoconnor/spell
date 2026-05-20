@@ -1,7 +1,7 @@
 (ns spell.agent
-  "Agent definition loader and compiler.
+  "Agent profile loader and compiler.
 
-   Loads .agent.edn files into plain data specs, then compiles those specs
+   Loads .agent.edn files into plain profile specs, then compiles those specs
    into runnable spawn-agent functions.
 
    Inheritance via :base:
@@ -17,7 +17,7 @@
    - stdlib/X           → stdlib namespace
    - stdlib/X/Y         → nested item from stdlib
    - file.clj/var       → load-file, resolve var
-   - file.agent.edn     → load agent spec → compile spawn-agent fn
+   - file.agent.edn     → load agent profile spec → compile spawn-agent fn
    - {:file f :items m} → submap of vars from file
    - {:file f}          → slurp file as string"
   (:require [clojure.edn :as edn]
@@ -51,8 +51,7 @@
    'reminders stdlib/reminders-namespace
    'strings stdlib/strings
    'math stdlib/math
-   'patterns stdlib/patterns
-   'react stdlib/react})
+   'patterns stdlib/patterns})
 
 (defn- resolve-stdlib-path
   "Resolve a stdlib/X or stdlib/X/Y path.
@@ -156,7 +155,7 @@
    - stdlib/X or stdlib/X/Y  → stdlib namespace/item
    - [a b c]                 → resolve and merge namespace maps
    - file.clj/var            → var from Clojure file
-   - file.agent.edn          → load agent spec → compiled spawn-agent fn
+   - file.agent.edn          → load agent profile spec → compiled spawn-agent fn
    - {:file f :items {...}}  → submap of vars from file
    - {:file f}               → file content as string"
   [value base-dir clj-cache compile-agent-fn]
@@ -219,7 +218,7 @@
                     {:value value :type (type value)}))))
 
 (defn- resolve-namespaces
-  "Resolve all namespace entries in the agent definition."
+  "Resolve all namespace entries in the agent profile definition."
   [namespaces base-dir compile-agent-fn]
   (let [clj-cache (atom {})]
     (into {}
@@ -256,12 +255,44 @@
     (try
       (edn/read-string (slurp full-path))
       (catch Exception e
-        (throw (ex-info (str "Failed to read agent file: " full-path)
+        (throw (ex-info (str "Failed to read agent profile file: " full-path)
                         {:path full-path :error (.getMessage e)}))))))
 
+(defn- normalize-agent-def
+  "Normalize public agent profile keys into the internal runtime keys."
+  [agent-def]
+  (cond-> agent-def
+    (contains? agent-def :agent-name)
+    (-> (assoc :name (:agent-name agent-def))
+        (dissoc :agent-name))
+
+    (contains? agent-def :agent-description)
+    (-> (assoc :doc (:agent-description agent-def))
+        (dissoc :agent-description))
+
+    (contains? agent-def :system-prompt)
+    (-> (assoc :system (:system-prompt agent-def))
+        (dissoc :system-prompt))
+
+    (contains? agent-def :default-model-profile)
+    (-> (assoc :provider (:default-model-profile agent-def))
+        (dissoc :default-model-profile))
+
+    (contains? agent-def :default-budget)
+    (-> (assoc :budget (:default-budget agent-def))
+        (dissoc :default-budget))
+
+    (contains? agent-def :format-retries)
+    (-> (assoc :max-retries (:format-retries agent-def))
+        (dissoc :format-retries))
+
+    (contains? agent-def :available-agents)
+    (-> (assoc :workers (:available-agents agent-def))
+        (dissoc :available-agents))))
+
 (defn- merge-agent-defs
-  "Merge child agent def onto parent.
-   - Scalars: child wins if present (includes :llms — child replaces entirely)
+  "Merge child agent profile def onto parent.
+   - Scalars: child wins if present (includes :workers — child replaces entirely)
    - :namespaces: maps are merged (child overrides parent entries)"
   [parent child]
   (let [;; Start with parent, override with non-nil child scalars
@@ -272,7 +303,7 @@
                        parent
                        [:name :doc :system :model :budget :recover :format :max-retries :retries
                         :thinking :reasoning-effort :verbosity :suffix-grammar? :grammar-max-chars
-                        :api :llms :provider])
+                        :api :workers :provider])
         ;; Merge namespaces
         merged (if (or (:namespaces parent) (:namespaces child))
                  (assoc merged :namespaces
@@ -281,24 +312,25 @@
     merged))
 
 (defn- resolve-inheritance
-  "Resolve :base inheritance chain, returning fully merged agent def.
+  "Resolve :base inheritance chain, returning fully merged agent profile def.
    Removes :base from result."
   [agent-def base-dir]
-  (if-let [base-path (:base agent-def)]
-    (let [base-path-str (str base-path)
-          base-file (java.io.File. (if (str/starts-with? base-path-str "/")
-                                     base-path-str
-                                     (str base-dir "/" base-path-str)))
-          base-dir' (.getParent base-file)
-          base-def (read-agent-edn base-path-str base-dir)
-          resolved-base (resolve-inheritance base-def base-dir')]
-      ;; Merge child onto resolved base, remove :base key
-      (dissoc (merge-agent-defs resolved-base agent-def) :base))
-    ;; No base, return as-is
-    agent-def))
+  (let [agent-def (normalize-agent-def agent-def)]
+    (if-let [base-path (:base agent-def)]
+      (let [base-path-str (str base-path)
+            base-file (java.io.File. (if (str/starts-with? base-path-str "/")
+                                       base-path-str
+                                       (str base-dir "/" base-path-str)))
+            base-dir' (.getParent base-file)
+            base-def (normalize-agent-def (read-agent-edn base-path-str base-dir))
+            resolved-base (resolve-inheritance base-def base-dir')]
+        ;; Merge child onto resolved base, remove :base key
+        (dissoc (merge-agent-defs resolved-base agent-def) :base))
+      ;; No base, return as-is
+      agent-def)))
 
 ;; =============================================================================
-;; LLMs auto-discovery
+;; Workers config normalization
 ;; =============================================================================
 
 (defn- agent-name-from-file
@@ -306,52 +338,36 @@
   [filename]
   (symbol (str/replace filename #"\.agent\.edn$" "")))
 
-(defn- discover-sibling-agents
-  "Find all .agent.edn files in base-dir. Returns {name-sym filename, ...}."
-  [base-dir]
-  (when base-dir
-    (let [dir (java.io.File. base-dir)
-          files (.listFiles dir)]
-      (when files
-        (into {}
-              (comp
-                (filter #(.isFile %))
-                (map #(.getName %))
-                (filter #(str/ends-with? % ".agent.edn"))
-                (map (fn [f] [(agent-name-from-file f) (symbol f)])))
-              files)))))
-
-(defn- normalize-llms-config
-  "Normalize raw :llms value into a map for resolve-llms, or nil.
-   - ::not-set + base-dir → discover siblings
-   - ::not-set + nil base-dir → nil
+(defn- normalize-workers-config
+  "Normalize raw :workers value into a map for resolve-workers, or nil.
+   - ::not-set → nil
    - [] → nil (opt-out)
    - vector of symbols → {(agent-name sym) sym, ...}
    - map → pass through"
-  [raw-llms base-dir]
+  [raw-workers _base-dir]
   (cond
-    (= raw-llms ::not-set)
-    (discover-sibling-agents base-dir)
-
-    (and (vector? raw-llms) (empty? raw-llms))
+    (= raw-workers ::not-set)
     nil
 
-    (vector? raw-llms)
-    (into {} (map (fn [s] [(agent-name-from-file (str s)) s]) raw-llms))
+    (and (vector? raw-workers) (empty? raw-workers))
+    nil
 
-    (map? raw-llms)
-    raw-llms
+    (vector? raw-workers)
+    (into {} (map (fn [s] [(agent-name-from-file (str s)) s]) raw-workers))
+
+    (map? raw-workers)
+    raw-workers
 
     :else nil))
 
 ;; =============================================================================
-;; LLMs namespace resolution
+;; Workers namespace resolution
 ;; =============================================================================
 
-(defn- resolve-llm-spec
-  "Resolve an llm spec value into a plain agent spec map.
-   - symbol ending in .agent.edn → load agent file, return its spec
-   - map → treat as inline spec (mini agent spec)"
+(defn- resolve-worker-spec
+  "Resolve a worker spec value into a plain agent profile spec map.
+   - symbol ending in .agent.edn → load agent profile file, return its spec
+   - map → treat as inline spec (mini agent profile spec)"
   [value base-dir]
   (cond
     ;; Symbol referencing a .agent.edn file
@@ -367,15 +383,15 @@
 
     ;; Inline map spec
     (map? value)
-    (cond-> value
+    (cond-> (normalize-agent-def value)
       base-dir (assoc :base-dir base-dir))
 
     :else
-    (throw (ex-info (str "Invalid llm spec: " value ". Expected .agent.edn symbol or inline map.")
+    (throw (ex-info (str "Invalid worker spec: " value ". Expected .agent.edn symbol or inline map.")
                     {:value value}))))
 
 (defn- compile-runtime-agent-from-resolved-spec
-  "Compile a resolved agent spec after model/provider/system/namespaces
+  "Compile a resolved agent profile spec after model/provider/system/namespaces
    have already been determined."
   [spec compile-runtime-agent-fn {:keys [model provider system namespaces]}]
   (let [base-agent (compile-runtime-agent-fn
@@ -399,12 +415,14 @@
       base-agent)))
 
 (defn- build-compiled-agent-from-spec
-  "Build a compiled spawn-agent function from a resolved agent spec.
-   Used for llms/ entries, which inherit parent model/provider and share a
-   common llms namespace for circular references."
+  "Build a compiled spawn-agent function from a resolved agent profile spec.
+   Used for workers/ entries, which inherit parent model/provider and share a
+   common workers namespace for circular references."
   [spec compile-runtime-agent-fn compile-agent-fn model parent-provider extra-namespaces base-dir]
   (let [spec-base-dir (or (:base-dir spec) base-dir)
-        spec-model (or (:model spec) model)
+        spec-has-provider? (contains? spec :provider)
+        spec-model (or (:model spec)
+                       (when-not spec-has-provider? model))
         spec-provider (if (contains? spec :provider)
                         (provider/resolve-provider (:provider spec) spec-base-dir)
                         parent-provider)
@@ -418,20 +436,20 @@
                                                :system system
                                                :namespaces all-namespaces})))
 
-(defn resolve-llms
-  "Resolve :llms map into an effect namespace of compiled spawn-agent functions.
+(defn resolve-workers
+  "Resolve :workers map into an effect namespace of compiled spawn-agent functions.
    Uses atom-based lazy init for circular references (A can refer to B, B can refer to A).
-   Returns namespace map with :docs and compiled agent functions, or nil if no llms."
-  [llms-map compile-runtime-agent-fn compile-agent-fn model parent-provider base-dir]
-  (when (seq llms-map)
+   Returns namespace map with :docs and compiled agent functions, or nil if no workers."
+  [workers-map compile-runtime-agent-fn compile-agent-fn model parent-provider base-dir]
+  (when (seq workers-map)
     ;; Phase 1: create atoms and proxy namespace
-    (let [agent-atoms (into {} (map (fn [[k _]] [k (atom nil)]) llms-map))
+    (let [agent-atoms (into {} (map (fn [[k _]] [k (atom nil)]) workers-map))
           docs (into {} (map (fn [[k v]]
-                               (let [spec (resolve-llm-spec v base-dir)
+                               (let [spec (resolve-worker-spec v base-dir)
                                      doc (or (:doc spec) (str "Sub-agent: " (name k)))]
                                  [(keyword k) doc]))
-                             llms-map))
-          llms-ns (merge {:docs docs}
+                             workers-map))
+          workers-ns (merge {:docs docs}
                          (into {} (map (fn [[k _]]
                                          [(keyword k)
                                           (with-meta
@@ -439,21 +457,21 @@
                                               ([prompt] (@(get agent-atoms k) prompt (keyword (gensym (str (name k) "-")))))
                                               ([prompt handle] (@(get agent-atoms k) prompt handle)))
                                             {:spell/compiled-agent true})])
-                                       llms-map)))]
+                                       workers-map)))]
       ;; Phase 2: resolve each spec and fill atoms
-      (doseq [[k v] llms-map]
-        (let [spec (resolve-llm-spec v base-dir)
+      (doseq [[k v] workers-map]
+        (let [spec (resolve-worker-spec v base-dir)
               agent-fn (build-compiled-agent-from-spec spec compile-runtime-agent-fn compile-agent-fn
-                                                       model parent-provider {'llms llms-ns} base-dir)]
+                                                       model parent-provider {'workers workers-ns} base-dir)]
           (reset! (get agent-atoms k) agent-fn)))
-      llms-ns)))
+      workers-ns)))
 
 ;; =============================================================================
 ;; Main loader
 ;; =============================================================================
 
 (defn load-agent-spec
-  "Load an agent definition from a .agent.edn file into a plain data spec map.
+  "Load an agent profile definition from a .agent.edn file into a plain data spec map.
    Supports inheritance via :base - child agents can extend parent agents."
   ([path] (load-agent-spec path nil))
   ([path base-dir]
@@ -462,7 +480,7 @@
                      path)
          file (java.io.File. full-path)
          base-dir' (.getParent file)
-         raw-def (read-agent-edn full-path nil)
+         raw-def (normalize-agent-def (read-agent-edn full-path nil))
          agent-def (resolve-inheritance raw-def base-dir')]
      (assoc agent-def :base-dir base-dir'))))
 
@@ -496,7 +514,7 @@
                          :available (sort available)}))))))
 
 (defn compile-agent-spec
-  "Compile a plain data agent spec into a runnable spawn-agent function."
+  "Compile a plain data agent profile spec into a runnable spawn-agent function."
   [agent-spec]
   (let [{:keys [base-dir system model budget recover namespaces format max-retries retries
                 prefill? thinking reasoning-effort verbosity suffix-grammar? grammar-max-chars
@@ -508,12 +526,12 @@
         resolved-namespaces (when namespaces
                               (resolve-namespaces namespaces base-dir compile-agent-fn))
         _ (validate-pattern-dependencies! resolved-namespaces)
-        raw-llms (get agent-spec :llms ::not-set)
-        llms (normalize-llms-config raw-llms base-dir)
-        llms-ns (when (seq llms)
-                  (resolve-llms llms llm/compile-agent compile-agent-fn model resolved-provider base-dir))
+        raw-workers (get agent-spec :workers ::not-set)
+        workers (normalize-workers-config raw-workers base-dir)
+        workers-ns (when (seq workers)
+                  (resolve-workers workers llm/compile-agent compile-agent-fn model resolved-provider base-dir))
         all-namespaces (cond-> (or resolved-namespaces {})
-                         llms-ns (assoc 'llms llms-ns))]
+                         workers-ns (assoc 'workers workers-ns))]
     (compile-runtime-agent-from-resolved-spec agent-spec llm/compile-agent
                                               {:model model
                                                :provider resolved-provider

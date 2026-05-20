@@ -1,0 +1,7 @@
+;; Base agent for message providers (no prefill).
+;; No effect namespaces — just the transport-appropriate system prompt.
+
+{:agent-name base-msg
+ :agent-description "Base agent for message providers (no prefill)"
+ :system-prompt {:file "../prompts/sysprompt-message.txt"}
+ :available-agents []}

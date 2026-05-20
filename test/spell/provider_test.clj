@@ -478,24 +478,24 @@
           (provider/resolve-provider 42 nil)))))
 
 ;; =============================================================================
-;; provider-edn-default-agent
+;; provider-edn-default-agent-profile
 ;; =============================================================================
 
-(deftest provider-edn-default-agent-test
-  (testing "returns resolved path when :default-agent is present"
+(deftest provider-edn-default-agent-profile-test
+  (testing "returns resolved path when :default-agent-profile is present"
     (let [tmp (java.io.File/createTempFile "provider-da-" ".provider.edn")]
       (try
-        (spit tmp (pr-str {:type :ollama :default-agent "agents/chat.agent.edn"}))
-        (let [result (provider/provider-edn-default-agent (.getAbsolutePath tmp))]
+        (spit tmp (pr-str {:type :ollama :default-agent-profile "agents/chat.agent.edn"}))
+        (let [result (provider/provider-edn-default-agent-profile (.getAbsolutePath tmp))]
           (is (= (str (.getParent tmp) "/agents/chat.agent.edn") result)))
         (finally
           (.delete tmp)))))
 
-  (testing "returns nil when :default-agent is absent"
+  (testing "returns nil when :default-agent-profile is absent"
     (let [tmp (java.io.File/createTempFile "provider-noda-" ".provider.edn")]
       (try
         (spit tmp (pr-str {:type :ollama}))
-        (is (nil? (provider/provider-edn-default-agent (.getAbsolutePath tmp))))
+        (is (nil? (provider/provider-edn-default-agent-profile (.getAbsolutePath tmp))))
         (finally
           (.delete tmp))))))
 
@@ -676,7 +676,7 @@
                            {:type "text" :text "z" :cache_control {:type "ephemeral"}}]}]
                (:messages body)))))
 
-    (testing "tool-call path keeps the prompt cached when prune/rethink shrinks it to the shared prefix"
+    (testing "tool-call path keeps the prompt cached when edit markers shrink it to the shared prefix"
       (let [request (#'provider/anthropic-tc-request "test" "claude-sonnet-4-20250514"
                                                      shared-prefix nil nil false nil
                                                      nil cache-prefix nil)

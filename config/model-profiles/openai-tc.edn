@@ -1,0 +1,7 @@
+{:provider :openai
+ :api-key-env "OPENAI_API_KEY"
+ :default-model "gpt-5.4"
+ :use-responses-api true
+ :force-tool-call true
+ :max-tokens 32768
+ :default-agent-profile "../agent-profiles/base-tc.agent.edn"}

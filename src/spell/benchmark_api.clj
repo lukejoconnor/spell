@@ -5,15 +5,12 @@
             [clojure.string :as str]
             [clojure.tools.cli :refer [parse-opts]]
             [spell.api :as api]
+            [spell.model-spec :as model-spec]
             [spell.provider :as provider]
             [spell.runtime :as runtime]
             [spell.trace :as trace])
   (:import [java.util.concurrent TimeUnit])
   (:gen-class))
-
-(def provider-prefixes
-  #{"ollama" "codex-tc" "openai-tc"
-    "anthropic-pf" "anthropic-tc" "fireworks" "fireworks-tc" "test"})
 
 (def cli-options
   [["-r" "--request FILE" "Request JSON path, or '-' for stdin" :default "-"]
@@ -30,38 +27,16 @@
      summary]))
 
 (defn- parse-model-spec [s]
-  (if-let [idx (str/index-of s ":")]
-    (let [prefix (subs s 0 idx)
-          rest (subs s (inc idx))]
-      (if (contains? provider-prefixes prefix)
-        {:provider prefix :model rest}
-        (throw (ex-info (str "Unknown provider prefix: " (pr-str prefix)
-                             ". Known prefixes: " (str/join ", " (sort provider-prefixes)))
-                        {:prefix prefix :model-spec s}))))
-    {:provider nil :model s}))
+  (model-spec/parse-model-spec s))
 
-(def model-aliases
-  {"haiku" "claude-haiku-4-5-20251001"
-   "sonnet" "claude-sonnet-4-5-20250929"
-   "opus" "claude-opus-4-5-20251101"
-   "opus46" "claude-opus-4-6"
-   "o3" "o3"
-   "o4-mini" "o4-mini"
-   "gpt52" "gpt-5.2"
-   "gpt53" "gpt-5.3"
-   "gpt54" "gpt-5.4"})
-
-(defn- resolve-model [model]
-  (get model-aliases model model))
-
-(def provider-edn-by-prefix
-  {"anthropic-pf"  "config/providers/anthropic-pf.provider.edn"
-   "anthropic-tc"  "config/providers/anthropic-tc.provider.edn"
-   "codex-tc"      "config/providers/codex-tc.provider.edn"
-   "fireworks"     "config/providers/fireworks.provider.edn"
-   "fireworks-tc"  "config/providers/fireworks-tc.provider.edn"
-   "openai-tc"     "config/providers/openai-tc.provider.edn"
-   "ollama"        "config/providers/ollama.provider.edn"})
+(def model-profile-edn-by-prefix
+  {"anthropic-pf"  "config/model-profiles/anthropic-pf.edn"
+   "anthropic-tc"  "config/model-profiles/anthropic-tc.edn"
+   "codex-tc"      "config/model-profiles/codex-tc.edn"
+   "fireworks"     "config/model-profiles/fireworks.edn"
+   "fireworks-tc"  "config/model-profiles/fireworks-tc.edn"
+   "openai-tc"     "config/model-profiles/openai-tc.edn"
+   "ollama"        "config/model-profiles/ollama.edn"})
 
 (defn- normalize-keys [v]
   (cond
@@ -143,12 +118,8 @@
   (when-not model
     (throw (ex-info "model is required in benchmark request" {:field "model"})))
   (let [model-spec model
-        {:keys [provider model]} (parse-model-spec model-spec)
-        resolved-model (resolve-model model)
-        resolved-model (if (and (= "codex-tc" provider)
-                                (= resolved-model "gpt-5.3"))
-                         "gpt-5.3-codex"
-                         resolved-model)
+        {:keys [provider model]} (model-spec/resolve-model-spec model-spec)
+        resolved-model model
         base-opts (cond-> {:costs provider/default-costs}
                     resolved-model (assoc :model resolved-model)
                     max-tokens (assoc :max-tokens max-tokens))]
@@ -182,23 +153,23 @@
       (throw (ex-info (str "Unknown provider prefix: " provider)
                       {:provider provider :model-spec model-spec})))))
 
-(defn- default-agent-from-request
-  "Resolve default agent path from provider .edn for this request."
+(defn- default-agent-profile-from-request
+  "Resolve default agent profile path from model profile for this request."
   [{:keys [model responses-api]}]
   (when-not model
-    (throw (ex-info "model is required to resolve default agent" {:field "model"})))
-  (let [{:keys [provider]} (parse-model-spec model)
+    (throw (ex-info "model is required to resolve default agent profile" {:field "model"})))
+  (let [{:keys [provider]} (model-spec/resolve-model-spec model)
         provider-prefix (or provider "anthropic-pf")
-        provider-edn (get provider-edn-by-prefix provider-prefix)]
-    (or (when provider-edn
-          (provider/provider-edn-default-agent provider-edn))
+        profile-edn (get model-profile-edn-by-prefix provider-prefix)]
+    (or (when profile-edn
+          (provider/model-profile-default-agent-profile profile-edn))
         ;; Test mode doesn't have a provider file; use message transport base.
         (when (= provider-prefix "test")
-          "config/agents/base-msg.agent.edn"))))
+          "config/agent-profiles/base-msg.agent.edn"))))
 
 (defn- response-ok [mode start-ns result-map]
   (let [latency-ms (/ (double (- (System/nanoTime) start-ns)) 1000000.0)
-        usage-atom (:usage result-map)
+        usage-atom (or (:usage-tracker result-map) (:usage result-map))
         usage (when usage-atom (provider/usage-summary usage-atom))]
     (cond-> {:ok true
              :mode mode
@@ -240,11 +211,11 @@
       (catch Exception e
         (response-error "one_shot" start-ns e)))))
 
-(defn- run-spell [{:keys [prompt init agent budget depth trace trace-dir prefill
+(defn- run-spell [{:keys [prompt init agent-profile budget depth trace trace-dir prefill
                           thinking reasoning-effort verbosity suffix-grammar
                           grammar-max-chars retries format] :as req}]
   (let [provider-inst (make-provider req)
-        resolved-agent (or agent (default-agent-from-request req))
+        resolved-agent-profile (or agent-profile (default-agent-profile-from-request req))
         normalized-format (normalize-format-spec format)
         resolved-trace-dir (when trace (or trace-dir (trace/default-trace-dir)))
         effective-prefill (if (contains? req :prefill)
@@ -253,19 +224,18 @@
                                  (not thinking)))
         start-ns (System/nanoTime)]
     (try
-      (let [result (api/run (cond-> {:provider provider-inst
-                                     :agent resolved-agent
-                                     :budget budget
-                                     :depth depth
-                                     :trace trace
-                                     :trace-dir resolved-trace-dir
-                                     :retries retries
-                                     :thinking thinking
-                                     :reasoning-effort reasoning-effort
-                                     :verbosity verbosity
-                                     :prefill? effective-prefill
-                                     :suffix-grammar? suffix-grammar
-                                     :format normalized-format}
+      (let [result (api/run-internal (cond-> {:model-profile provider-inst
+                                              :agent-profile resolved-agent-profile
+                                              :budget budget
+                                              :depth depth
+                                              :trace-dir resolved-trace-dir
+                                              :retries retries
+                                              :thinking thinking
+                                              :reasoning-effort reasoning-effort
+                                              :verbosity verbosity
+                                              :prefill? effective-prefill
+                                              :suffix-grammar? suffix-grammar
+                                              :format normalized-format}
                               grammar-max-chars (assoc :grammar-max-chars grammar-max-chars)
                               prompt (assoc :prompt prompt)
                               init (assoc :init init)))]
@@ -276,7 +246,7 @@
            :error (:error result)
            :error_type (some-> result :error-data :type name)
            :error_data (json-safe (:error-data result))
-           :usage (when-let [u (:usage result)] (provider/usage-summary u))
+           :usage (when-let [u (:usage-tracker result)] (provider/usage-summary u))
            :trace_dir (or (:trace-dir result) resolved-trace-dir)}
           (response-ok "spell" start-ns result)))
       (catch Exception e

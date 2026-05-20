@@ -5,13 +5,11 @@
    Namespaces here match Clojure's namespace structure:
    - strings: matches clojure.string
    - math: matches Java's Math (since Clojure uses Math/ interop)
-   - patterns: Spell-specific orchestration patterns
-   - react: hidden ReAct loop"
+   - patterns: Spell-specific orchestration patterns"
   (:require [clojure.string :as str]
             [spell.eval :as eval]
             [spell.runtime :as runtime]
-            [spell.patterns :as patterns-lib]
-            [spell.react :as react-lib]))
+            [spell.patterns :as patterns-lib]))
 
 ;; =============================================================================
 ;; strings namespace (matches clojure.string)
@@ -196,14 +194,6 @@ Bind the result, inspect it on the next turn, then decide what to do next."}
 (def patterns
   "Reusable orchestration patterns (Spell-specific)."
   patterns-lib/patterns)
-
-;; =============================================================================
-;; react namespace (Spell-specific)
-;; =============================================================================
-
-(def react
-  "Hidden ReAct loop (Spell-specific)."
-  react-lib/react)
 
 ;; =============================================================================
 ;; reminders namespace (docs-only, context reminder for LLM)
@@ -403,7 +393,7 @@ Categories (use (!describe builtins :category) for full listing):
   sequences     — map, filter, reduce, sort, group-by, take, drop, partition, range, ...
   combinators   — comp, partial, juxt, complement, constantly, ...
   bitwise       — bit-and, bit-or, bit-xor, bit-shift-left, ...
-  spell         — spell-eval, reopen, wrap-cat, serialize-prefix, prune-and-reopen, serialize, stored
+  spell         — spell-eval, reopen, wrap-cat, serialize-prefix, edit-reopen, serialize, stored
   concurrency   — future*
   error         — throw, ex-info, ex-data, ex-message, ex-cause, gensym
 
@@ -424,7 +414,7 @@ Common mistakes:
     :special-forms
     "  quote — return expression unevaluated as data; prevents evaluation of its argument
   def — bind a value to a symbol in the current environment
-  persist — bind like def, but survive prune-and-reopen only when written explicitly in source
+  persist — bind like def, but survive edit-reopen only when written explicitly in source
   do — evaluate expressions sequentially; return the value of the last one
   if — conditional branch; evaluates test, then either then-expr or else-expr
   let — introduce local bindings scoped to the body; supports destructuring
@@ -464,10 +454,10 @@ Common mistakes:
   compmacro — compose macro values left-to-right into one macro
   !describe — extend completion with namespace documentation; accepts ns, ns :key, or mixed (ns1 ns2 :key)
   think — label a reasoning step; evaluates body for side effects, returns nil
-  prune — prune N previous sibling expressions from source on !extend, then disappear
+  prune — edit marker that prunes N previous sibling expressions at edit time, then disappears
   rethink — equivalent to prune N siblings, then leave behind a think marker
-  !extend — prune prune/rethink forms from the completion and continue execution via !llm-self
-  !compact — prune prune/rethink markers and prompt the LLM to compress its context via wrap-cat"
+  !extend — apply edit markers to the completion and continue execution via !llm-self
+  !compact — apply edit markers and prompt the LLM to compress its context via wrap-cat"
 
     :effect
     "Per-agent effect builtins (available in trailing expression via double evaluation):
@@ -653,7 +643,7 @@ Note: map? returns false for spell functions ({:spell/fn true ...}) and futures 
     ;; ---- Individual Spell-specific function docs ----
 
     :persist
-    "Special form. Bind like def, but mark the binding for explicit reopen-time retention.
+    "Special form. Bind like def, but mark the binding for explicit edit-time retention.
 
 (persist sym)
 (persist sym expr)
@@ -663,14 +653,14 @@ Note: map? returns false for spell functions ({:spell/fn true ...}) and futures 
 Eval-time semantics otherwise match def: expr is evaluated, sym is bound, and
 the resulting value is returned.
 
-During prune-and-reopen, explicit source-level persist forms are rewritten to:
+At edit time, explicit persist edit markers are rewritten to:
   (persist sym <literal-runtime-value-of-sym>)
 
 No other forms are auto-materialized. If you need a value to survive pruning,
 write persist explicitly in the source before extending.
 
 Do not write Spell macros that emit persist. Macro-generated persist may not
-materialize during reopen. Use explicit source-level persist forms."
+materialize at edit time. Use explicit persist edit markers."
 
     :quine
     "Special form. Bind a name to the entire enclosing form as data.
@@ -746,20 +736,20 @@ and returns the open prefix string:
 Used internally by !llm-self and !compact when a quine form needs to cross the
 LLM boundary as text."
 
-    :prune-and-reopen
-    "Prune prune/rethink-marked expressions and materialize explicit persist forms
+    :edit-reopen
+    "Apply edit markers: apply prune/rethink edits and materialize explicit persist markers
 in a quine.
 
-(prune-and-reopen completion)
+(edit-reopen completion)
 
 Returns a cleaned quine form, not a string. It:
 1. Walks the quine form
-2. Removes expressions marked for pruning by prune/rethink
-3. Rewrites explicit source-level (persist sym expr) forms to
+2. Applies prune/rethink edit markers
+3. Rewrites explicit persist edit markers to
    (persist sym <literal-runtime-value-of-sym>)
 
 No other forms are auto-materialized. Do not write Spell macros that emit
-persist; macro-generated persist may not materialize during reopen.
+persist; macro-generated persist may not materialize at edit time.
 
 Used internally by !call-now, !print, !describe, and !extend."
 
@@ -818,7 +808,7 @@ The double evaluation pattern:
 
 prompt: string or quine form. If a bare string, automatically wrapped in
 the completion wrapper. If given a quine form (from reopen, wrap-cat, or
-prune-and-reopen), that quine is serialized as the child's open prefix.
+edit-reopen), that quine is serialized as the child's open prefix.
 
 The child writes Spell code that is parsed and evaluated. Use for:
 - Extending context (!extend, !compact)
@@ -901,7 +891,7 @@ to rerun the script later, write it to disk first with io/write-file."
 
 On your next extension, that prune removes both the peek command and its
 result binding(s) from source. If you need part of the value, persist it first
-with your own persist form.
+with your own persist edit marker.
 
 Example:
   '(!peek-now code (io/read-lines \"main.py\"))
@@ -979,15 +969,15 @@ Example:
   ;; child sees only the corrected think"
 
     :!extend
-    "Macro. Prune prune/rethink-marked expressions from the completion and continue via !llm-self.
+    "Macro. Apply edit markers to the completion and continue via !llm-self.
 
 '(!extend completion)
 
-Calls prune-and-reopen on the completion quine, then !llm-self on the cleaned
-result. Use after prune/rethink to continue with a shorter, corrected context."
+Calls edit-reopen on the completion quine, then !llm-self on the edited
+result. Use after prune/rethink edit markers to continue with a shorter, corrected context."
 
     :!compact
-    "Macro. Prune prune/rethink markers, then prompt the LLM to compress its context.
+    "Macro. Apply edit markers, then prompt the LLM to compress its context.
 
 '(!compact completion)
 

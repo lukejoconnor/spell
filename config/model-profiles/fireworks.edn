@@ -1,0 +1,7 @@
+{:provider :fireworks
+ :api-key-env "FIREWORKS_API_KEY"
+ :base-url "https://api.fireworks.ai/inference/v1"
+ :default-model "accounts/fireworks/models/glm-5"
+ :max-tokens 16384
+ :convert-think? true
+ :default-agent-profile "../agent-profiles/base-pf.agent.edn"}

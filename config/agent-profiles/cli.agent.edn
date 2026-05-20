@@ -1,0 +1,15 @@
+;; CLI default agent: full capabilities for interactive use.
+;; Inherits transport-appropriate system prompt from base-tc.
+;; Used by the CLI when no -a/--agent-profile is specified.
+
+{:base base-tc.agent.edn
+ :agent-name cli
+ :agent-description "CLI default: full capabilities for interactive use"
+ :available-agents {explore explore.agent.edn}
+
+ :namespaces
+ {io       stdlib/io
+  web      stdlib/web
+  patterns stdlib/patterns
+  agents   stdlib/agents
+  globals  stdlib/globals}}

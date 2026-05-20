@@ -37,7 +37,7 @@
   (set tracked-form-order))
 
 (def ^:private namespace-order
-  ["io" "agents" "globals" "blocking" "patterns" "math" "strings" "llms"])
+  ["io" "agents" "globals" "blocking" "patterns" "math" "strings" "workers"])
 
 (def ^:private namespace-prefixes
   (set namespace-order))
@@ -51,7 +51,7 @@
   ["trace_dir" "nodes" "think" "prune" "rethink" "pruning_mean_c" "pruning_total_c" "pruning_max_c"
    "extend" "call_now" "peek" "compact" "llm_self" "ask_await" "persist" "print" "describe"
    "leaf_llm" "future" "defn" "fn"
-   "io" "agents" "globals" "blocking" "patterns" "math_fns" "strings_fns" "llms"
+   "io" "agents" "globals" "blocking" "patterns" "math_fns" "strings_fns" "workers"
    "errors_fatal" "errors_recovered" "flags"])
 
 (def cli-options
@@ -66,9 +66,9 @@
    [nil "--fn SYMBOL" "Function symbol to count (repeatable)"
     :assoc-fn (fn [m k v] (update m k (fnil conj []) v))]
    [nil "--count-all-nodes" "Count function calls across all nodes (default: selected node only)"]
-   [nil "--rethinks" "Report prune/rethink forms and preceding expressions (single trace or trace root)"]
-   [nil "--context-trajectory" "Report per-node context size trajectory and pruning markers (single trace or trace root)"]
-   [nil "--pruning-accounting" "Report stack-based prune/rethink target accounting over program ASTs (single trace or trace root)"]
+   [nil "--rethinks" "Report prune/rethink edit markers and preceding expressions (single trace or trace root)"]
+   [nil "--context-trajectory" "Report per-node context size trajectory and edit markers (single trace or trace root)"]
+   [nil "--pruning-accounting" "Report stack-based prune/rethink edit-marker accounting over program ASTs (single trace or trace root)"]
    [nil "--pruning-savings" "Report cumulative turn-level pruning savings in chars (single trace or trace root)"]
    [nil "--summary" "Report tracked-form, namespace, pruning, and error summary (single trace, trace root, or results JSONL)"]
    [nil "--tsv" "Print summary output as TSV rows (requires --summary with --trace-root)"]
@@ -358,9 +358,9 @@
     (macros/rethink-form? form) (macros/rethink-n form)
     :else 0))
 
-(defn- opaque-prune-substitute-form? [form]
-  ;; Mirrors spell.eval/prune-substitute: quoted forms and fn bodies are not
-  ;; traversed for source-pruning markers.
+(defn- opaque-apply-edits-form? [form]
+  ;; Mirrors spell.eval/apply-edits: quoted forms and fn bodies are not
+  ;; traversed for edit markers.
   (and (seq? form)
        (contains? #{'quote 'fn 'fn*} (first form))))
 
@@ -412,7 +412,7 @@
           head (nth items 0)
           head-result (prune-accounting head (conj path 0))]
       ;; The operator position is not a prunable sibling. This matches
-      ;; prune-substitute, which only runs process-siblings over the seq tail.
+      ;; apply-edits, which only runs process-siblings over the seq tail.
       (loop [idx 1
              remaining (subvec items 1)
              child-stack []
@@ -496,16 +496,16 @@
   "Walk a form and account for source pruning with stack semantics.
 
    Returns {:form transformed-form :chars retained-char-count :details [...]}
-   where :details contains one row per prune/rethink marker:
+   where :details contains one row per prune/rethink edit marker:
    {:path :marker :kind :k :trigger :target-count :chars-pruned :targets ...}.
 
-   The child stack is local to each seq tail, because Spell's prune-substitute
+   The child stack is local to each seq tail, because Spell's apply-edits
    processes only sibling expressions after the operator. Collections recurse
-   into their children, but only seq tails have prune/rethink sibling effects."
+   into their children, but only seq tails have prune/rethink edit effects."
   ([form] (prune-accounting form []))
   ([form path]
    (cond
-     (opaque-prune-substitute-form? form)
+     (opaque-apply-edits-form? form)
      {:form form :chars (count (pr-str form)) :details []}
 
      (seq? form)
@@ -524,7 +524,7 @@
      {:form form :chars (count (pr-str form)) :details []})))
 
 (defn collect-rethinks
-  "Collect stack-accounted prune/rethink markers in a form.
+  "Collect stack-accounted prune/rethink edit markers in a form.
    Keeps the historical name used by trace-tool callers, but the returned
    entries now include full target stacks rather than only the immediately
    preceding sibling."
@@ -533,14 +533,14 @@
    (:details (prune-accounting form path))))
 
 (defn- collect-rethinks-in-forms
-  "Collect prune/rethink forms across top-level response forms.
+  "Collect prune/rethink edit markers across top-level response forms.
    Uses a synthetic `do` wrapper so top-level sibling relationships are preserved."
   [forms]
   (when (seq forms)
     (collect-rethinks (list* 'do forms))))
 
 (defn collect-trace-rethinks
-  "Collect prune/rethink markers from all program nodes in one trace.
+  "Collect prune/rethink edit markers from all program nodes in one trace.
    Adds :node-id for reporting."
   [trace]
   (->> (:nodes trace)
@@ -555,7 +555,7 @@
        (map #(assoc % :node-id (:id node)))))
 
 (defn trace-pruning-accounting
-  "Collect stack-accounted prune/rethink markers over full program ASTs.
+  "Collect stack-accounted prune/rethink edit markers over full program ASTs.
 
    This sees macro-injected `!peek` prune markers because those live in the
    next node's program prefix, not in the model's response suffix. To avoid
@@ -604,7 +604,7 @@
 (defn- pruning-emission-node-id
   "Assign generated `!peek` prune markers to the response turn that emitted
    the `!peek`, not the following program where the generated prune first
-   appears. Explicit prune/rethink markers stay on their own node."
+   appears. Explicit prune/rethink edit markers stay on their own node."
   [previous-by-node {:keys [node-id trigger]}]
   (if (= :peek trigger)
     (get previous-by-node node-id node-id)
@@ -644,7 +644,7 @@
                (+ completion response-chars))))))
 
 (defn pruning-turn-savings
-  "Compute cumulative turn-level source-pruning savings in chars.
+  "Compute cumulative turn-level edit-marker savings in chars.
 
    For each program node t:
    - C_t is the response char count for that turn.
@@ -653,7 +653,7 @@
 
    Returns per-bucket numerator/denominator stats for sum(A_t) /
    sum(A_t + C_t). The :all bucket includes peek-triggered and explicit
-   prune/rethink markers; :peek includes generated `!peek` pruning only."
+   prune/rethink edit markers; :peek includes generated `!peek` pruning only."
   [trace]
   (let [nodes (program-nodes trace)
         details (trace-pruning-accounting trace)
@@ -1118,7 +1118,7 @@
      (namespace-total summary "patterns")
      (namespace-total summary "math")
      (namespace-total summary "strings")
-     (namespace-total summary "llms")
+     (namespace-total summary "workers")
      fatal-errors
      recovered-errors
      (str/join " " (sort-by name flags))]))
