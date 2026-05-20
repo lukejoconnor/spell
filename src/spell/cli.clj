@@ -139,7 +139,7 @@
           "  spell examples/hello-world.spl"
           "  spell -e hello-world"
           "  spell -e twenty-questions -d 40"
-          "  spell -a config/agents/coder.agent.edn 'Fix the bug'"]
+          "  spell -a config/agents/cli.agent.edn 'Fix the bug'"]
          (when-let [examples (seq (list-examples))]
            [""
             "Available examples:"

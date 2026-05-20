@@ -4,7 +4,7 @@
    Primary goals:
    - Skeletonize a selected trace node's program by collapsing strings to ellipsis
    - Count function call usage without double-counting inherited prefixes across extensions
-   - Resolve the latest errored benchmark record to a concrete trace directory"
+   - Resolve the latest errored JSONL row to a concrete trace directory"
   (:require [clojure.data.json :as json]
             [clojure.java.io :as io]
             [clojure.pprint :as pp]
@@ -57,7 +57,7 @@
 (def cli-options
   [[nil "--trace-dir DIR" "Trace directory (e.g., traces/2026-03-02T07-04-01)"]
    [nil "--trace-root DIR" "Directory containing many trace dirs (recursive scan for trace.edn)"]
-   [nil "--results-jsonl FILE" "Unified benchmark JSONL file; resolves latest errored item to trace dir"]
+   [nil "--results-jsonl FILE" "JSONL file with trace_dir metadata; resolves latest errored row to trace dir"]
    [nil "--node ID" "Node id to skeletonize (default: last node id)"
     :parse-fn #(Integer/parseInt %)]
    [nil "--string-truncate N" "Max string chars to keep before appending … (default: 32, -1 = no truncation)"
@@ -91,7 +91,7 @@
     "  clj -M -m spell.trace-tool --results-jsonl FILE --summary"
     ""
     "Notes:"
-    "  - --results-jsonl resolves the latest errored item and uses its trace_dir"
+    "  - --results-jsonl resolves the latest errored row and uses its trace_dir"
     "  - Function call counting defaults to selected node only (typically latest extension node)"
     "  - Use --count-all-nodes to aggregate response-only calls across nodes"
     ""

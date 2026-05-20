@@ -53,7 +53,7 @@ Spell uses prompt-as-prefix execution. A prompt is not merely an instruction str
 For example, the model may see an open prefix like:
 
 ```clojure
-(quine completion (eval (do (quine prompt "Inspect the project root.") 
+(quine completion (eval (do (quine prompt "Inspect the project root.")
 ```
 
 The suffix it returns is appended directly to that prefix. A valid suffix must therefore complete the program.

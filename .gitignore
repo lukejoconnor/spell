@@ -33,11 +33,9 @@ data/*
 !data/pricing.edn
 results/
 
-# Claude Code worktrees
-.claude/worktrees/
+# Local Claude/Codex workspace
+.claude/
 .worktrees/
-.claude/plan.md
-.claude/scheduled_tasks.lock
 
 # Scratch/temp files
 .__tmp_*
@@ -45,7 +43,6 @@ temp.txt
 PLAN-team-pattern.md
 *.bak
 *.bak2
-spell_benchmark_client.py
 
 # Python
 __pycache__/
