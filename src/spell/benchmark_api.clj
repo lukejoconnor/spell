@@ -5,15 +5,12 @@
             [clojure.string :as str]
             [clojure.tools.cli :refer [parse-opts]]
             [spell.api :as api]
+            [spell.model-spec :as model-spec]
             [spell.provider :as provider]
             [spell.runtime :as runtime]
             [spell.trace :as trace])
   (:import [java.util.concurrent TimeUnit])
   (:gen-class))
-
-(def provider-prefixes
-  #{"ollama" "codex-tc" "openai-tc"
-    "anthropic-pf" "anthropic-tc" "fireworks" "fireworks-tc" "test"})
 
 (def cli-options
   [["-r" "--request FILE" "Request JSON path, or '-' for stdin" :default "-"]
@@ -30,29 +27,7 @@
      summary]))
 
 (defn- parse-model-spec [s]
-  (if-let [idx (str/index-of s ":")]
-    (let [prefix (subs s 0 idx)
-          rest (subs s (inc idx))]
-      (if (contains? provider-prefixes prefix)
-        {:provider prefix :model rest}
-        (throw (ex-info (str "Unknown provider prefix: " (pr-str prefix)
-                             ". Known prefixes: " (str/join ", " (sort provider-prefixes)))
-                        {:prefix prefix :model-spec s}))))
-    {:provider nil :model s}))
-
-(def model-aliases
-  {"haiku" "claude-haiku-4-5-20251001"
-   "sonnet" "claude-sonnet-4-5-20250929"
-   "opus" "claude-opus-4-5-20251101"
-   "opus46" "claude-opus-4-6"
-   "o3" "o3"
-   "o4-mini" "o4-mini"
-   "gpt52" "gpt-5.2"
-   "gpt53" "gpt-5.3"
-   "gpt54" "gpt-5.4"})
-
-(defn- resolve-model [model]
-  (get model-aliases model model))
+  (model-spec/parse-model-spec s))
 
 (def model-profile-edn-by-prefix
   {"anthropic-pf"  "config/model-profiles/anthropic-pf.edn"
@@ -143,12 +118,8 @@
   (when-not model
     (throw (ex-info "model is required in benchmark request" {:field "model"})))
   (let [model-spec model
-        {:keys [provider model]} (parse-model-spec model-spec)
-        resolved-model (resolve-model model)
-        resolved-model (if (and (= "codex-tc" provider)
-                                (= resolved-model "gpt-5.3"))
-                         "gpt-5.3-codex"
-                         resolved-model)
+        {:keys [provider model]} (model-spec/resolve-model-spec model-spec)
+        resolved-model model
         base-opts (cond-> {:costs provider/default-costs}
                     resolved-model (assoc :model resolved-model)
                     max-tokens (assoc :max-tokens max-tokens))]
@@ -187,7 +158,7 @@
   [{:keys [model responses-api]}]
   (when-not model
     (throw (ex-info "model is required to resolve default agent profile" {:field "model"})))
-  (let [{:keys [provider]} (parse-model-spec model)
+  (let [{:keys [provider]} (model-spec/resolve-model-spec model)
         provider-prefix (or provider "anthropic-pf")
         profile-edn (get model-profile-edn-by-prefix provider-prefix)]
     (or (when profile-edn

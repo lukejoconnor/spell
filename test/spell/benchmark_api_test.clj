@@ -95,6 +95,32 @@
                          {:model "openai-tc:gpt-5.4"})
                         "config/model-profiles/../agent-profiles/base-tc.agent.edn"))))
 
+(deftest make-provider-resolves-shared-model-aliases-test
+  (testing "bare open-weight aliases route to Fireworks tool-call transport"
+    (doseq [[alias expected] [["glm51" "glm-5p1"]
+                             ["kimi26" "kimi-k2p6"]
+                             ["qwen36p" "qwen3p6-plus"]]]
+      (let [captured (atom nil)]
+        (with-redefs [provider/fireworks-tc-provider
+                      (fn [opts]
+                        (reset! captured opts)
+                        {:provider :fireworks-tc :opts opts})]
+          (is (= :fireworks-tc
+                 (:provider ((var benchmark-api/make-provider) {:model alias}))))
+          (is (= expected (:model @captured)))))))
+
+  (testing "bare gpt alias routes to OpenAI tool-call transport"
+    (let [captured (atom nil)]
+      (with-redefs [provider/openai-provider
+                    (fn [opts]
+                      (reset! captured opts)
+                      {:provider :openai-tc :opts opts})]
+        (is (= :openai-tc
+               (:provider ((var benchmark-api/make-provider) {:model "gpt"}))))
+        (is (= "gpt-5.4" (:model @captured)))
+        (is (:use-responses-api @captured))
+        (is (:force-tool-call @captured))))))
+
 (deftest run-spell-trace-default-test
   (testing "trace defaults to an absolute temp dir when no trace-dir override is provided"
     (let [result (with-redefs [benchmark-api/make-provider

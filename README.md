@@ -52,6 +52,21 @@ bin/spell "Inspect the examples directory and suggest one example to run next."
 bin/spell -h
 ```
 
+These commands assume you are in the repository root. The `bin/spell` wrapper is
+the repo-local entry point; it changes to the repository root and runs
+`clj -M:run`.
+
+If you want to run `spell` directly, put this checkout's `bin/` directory on your
+`PATH`:
+
+```bash
+export PATH="$PWD/bin:$PATH"
+spell -h
+```
+
+For a persistent shell setup, use the absolute path to this checkout's `bin/`
+directory in your shell profile.
+
 Agent-facing setup, source map, test commands, and repo-local skill guidance live in `AGENTS.md`.
 
 ## Spell language overview

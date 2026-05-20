@@ -4,46 +4,18 @@
             [clojure.string :as str]
             [clojure.java.io :as io]
             [spell.api :as api]
+            [spell.model-spec :as model-spec]
             [spell.provider :as provider]
             [spell.trace :as spell-trace])
   (:gen-class))
 
-(def model-aliases
-  {"haiku"   "claude-haiku-4-5-20251001"
-   "sonnet"  "claude-sonnet-4-5-20250929"
-   "opus"    "claude-opus-4-6"
-   "opus45"  "claude-opus-4-5-20251101"
-   "o3"      "o3"
-   "o4-mini" "o4-mini"
-   "gpt52"   "gpt-5.2"
-   "gpt53"   "gpt-5.3"
-   "gpt54"   "gpt-5.4"})
-
-(def provider-prefixes
-  #{"ollama" "codex-tc" "openai-tc"
-    "anthropic-pf" "anthropic-tc" "fireworks" "fireworks-tc" "test"})
-
 (defn parse-model-spec
-  "Parse 'provider:model' into {:provider str :model str}.
-   If no colon, returns {:provider nil :model input} (defaults to anthropic).
-   Throws on unrecognized provider prefix.
-   Examples:
-     ollama:smollm2:135m  -> {:provider \"ollama\" :model \"smollm2:135m\"}
-     chatgpt:gpt-5.3-codex -> {:provider \"chatgpt\" :model \"gpt-5.3-codex\"}
-     haiku                -> {:provider nil :model \"haiku\"}"
+  "Parse 'provider:model' into {:provider str :model str}."
   [s]
-  (if-let [idx (str/index-of s ":")]
-    (let [prefix (subs s 0 idx)
-          rest   (subs s (inc idx))]
-      (if (contains? provider-prefixes prefix)
-        {:provider prefix :model rest}
-        (throw (ex-info (str "Unknown provider prefix: " (pr-str prefix)
-                             ". Known prefixes: " (str/join ", " (sort provider-prefixes)))
-                        {:prefix prefix :model-spec s}))))
-    {:provider nil :model s}))
+  (model-spec/parse-model-spec s))
 
 (defn resolve-model [model]
-  (get model-aliases model model))
+  (model-spec/resolve-model-alias model))
 
 (defn find-examples-dir
   "Find the examples directory relative to the project root."
@@ -191,14 +163,9 @@
 
     :else
     (let [{:keys [provider model]} (if model
-                                     (parse-model-spec model)
-                                     {:provider "codex-tc" :model "gpt-5.3"})
-          resolved-model (when model (resolve-model model))
-          ;; ChatGPT/Codex backend exposes gpt-5.3 as gpt-5.3-codex.
-          resolved-model (if (and (= "codex-tc" provider)
-                                  (= resolved-model "gpt-5.3"))
-                           "gpt-5.3-codex"
-                           resolved-model)
+                                     (model-spec/resolve-model-spec model)
+                                     {:provider "codex-tc" :model "gpt-5.3-codex"})
+          resolved-model model
           base-opts (cond-> {:costs provider/default-costs}
                       resolved-model (assoc :model resolved-model)
                       max-tokens (assoc :max-tokens max-tokens))]
@@ -236,7 +203,7 @@
                     (nil? depth) nil    ; default: no depth limit
                     (zero? depth) nil   ; 0 also means unlimited
                     :else depth)
-        resolved-model (some-> model parse-model-spec :model resolve-model)
+        resolved-model (some-> model model-spec/resolve-model-spec :model)
         opus? (and resolved-model (str/includes? resolved-model "opus"))
         thinking (or thinking (when opus? 16384))
         prov (make-provider opts)
