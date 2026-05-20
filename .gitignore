@@ -67,5 +67,7 @@ writeup/
 .DS_Store
 
 # Local agent skills
+.agents/
+skills-lock.json
 .codex/skills/run-benchmark/
 .claude/skills/run-benchmark/

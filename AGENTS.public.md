@@ -1,6 +1,6 @@
 # Spell Source Guide
 
-This file is a public orientation guide for readers and contributors working through the Spell source tree. Start with `README.md` for setup and CLI usage, read `docs/language-overview.md` for the core language ideas, then use this file as a map of the implementation, configuration, examples, and tests.
+This file is a public orientation guide for agents, readers, and contributors working through the Spell source tree. Start with `README.md` for the human-facing project overview and CLI usage, read `docs/language-overview.md` for the core language ideas, then use this file for installation checks, source-map lookup, tests, and implementation orientation.
 
 Spell is a Lisp dialect for LLM self-orchestration. A Spell completion is itself a program: the evaluator runs the program, and the program can call back into an LLM, spawn sub-agents, manage context, and use configured namespaces such as `io`, `web`, `agents`, `globals`, and `patterns`.
 
@@ -17,6 +17,47 @@ Spell is a Lisp dialect for LLM self-orchestration. A Spell completion is itself
 | `data/pricing.edn` | Model pricing table used for usage and cost reporting. |
 | `docs/` | Public documentation for the release. |
 | `docs/language-overview.md` | Short conceptual guide to completions, self-calls, quines, context management, and agents. |
+| `LICENSE` | MIT license text. |
+
+## Agent Quick Start
+
+Prerequisites:
+
+- Java 11+
+- Clojure CLI (`clj`)
+- At least one LLM provider credential or local provider
+
+On macOS with Homebrew:
+
+```bash
+brew install clojure/tools/clojure
+```
+
+Provider setup:
+
+- Codex tool-call provider, the CLI default: install the OpenAI Codex CLI and run `codex` once so `~/.codex/auth.json` exists.
+- Anthropic API: set `ANTHROPIC_API_KEY`.
+- OpenAI API: set `OPENAI_API_KEY`.
+- Fireworks API: set `FIREWORKS_API_KEY`.
+- Ollama: run a local Ollama server and pass an `ollama:<model>` model spec.
+
+Install from a fresh checkout:
+
+```bash
+git clone https://github.com/lukejoconnor/spell.git
+cd spell
+```
+
+No build step is required for normal CLI use. The `bin/spell` wrapper runs the Clojure CLI entry point with `clj -M:run`.
+
+Smoke test without making an LLM API call:
+
+```bash
+bin/spell -h
+bin/spell -t "Return a short greeting"
+```
+
+The `-t` flag uses the test provider and is useful for checking Java, Clojure, dependencies, and CLI wiring.
 
 ## Core Runtime Files
 
@@ -98,6 +139,8 @@ clj -M:test-fast
 clj -M:test-slow
 ```
 
+The fast suite covers parser, evaluator, provider, agent, web, API, trace, macro, and prompt-facing behavior. The slow suite covers concurrency, I/O, runtime, globals, and user-provider behavior. `deps.edn` is the authoritative list of test aliases and included namespaces.
+
 Use `-T` to record an execution trace under the temporary Spell trace directory. The trace tool can inspect a trace directory directly, for example:
 
 ```bash
@@ -140,3 +183,4 @@ For examples:
 - Agent files can inherit from other `.agent.edn` files with `:base`; resolve relative paths from the current agent file.
 - Provider-prefixed model specs are parsed in `src/spell/cli.clj`.
 - `SERPER_API_KEY` is only needed when using the `web` namespace with Serper-backed search.
+- License is MIT; the full text is in `LICENSE`.

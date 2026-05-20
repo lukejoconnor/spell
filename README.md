@@ -1,149 +1,49 @@
 # Self-programmed execution language for LMs
 
-Self-programmed execution is an architecture for LM agents in which a LM-written program, not a fixed agent loop, is responsible for orchestration policy. Spell (self-programmed execution language for LMs) is a language designed for SPE. SPE and Spell are described in [this paper](https://arxiv.org/abs/2605.06898).  The language provides primitives for self-calls, program self-reference, context management, and concurrency, and multi-agent communication. It is based upon and embedded within Clojure.
+Self-programmed execution (SPE) is an architecture for LM agents in which a LM-written program, not a fixed agent loop, is responsible for orchestration policy. Spell (self-programmed execution language for LMs) is a language designed for SPE. SPE and Spell are described in [this paper](https://arxiv.org/abs/2605.06898).  The language provides primitives for self-calls, program self-reference, context management, and concurrency, and multi-agent communication. It is based upon and embedded within Clojure. Spell is currently a prototype intended for academic research.
 
-## Quick Start
+## Core semantics
 
-### Prerequisites
+In SPE, the same data---a model completion---is both the content of the model's context window and the program specifying what context becomes the prefix or prompt for a subsequent turn. Typically, this prefix is constructed by editing or appending to the existing context window. This creates two major challenges, which Spell addresses.
 
-- Java 11+
-- Clojure CLI (`clj`)
+One challenge is that a program must often reference its own source code; this is done using the `quine` form. The expression `(quine name inner-expr)` first binds to `name` the entire expression - not just `inner-expr` - as data. Then, it evaluates `inner-expr`, and the expression's value is that of `inner-expr`.
 
-On macOS with Homebrew:
+A second challenge is that a Spell program must often be re-evaluated as the prefix of a newly generated program, and this is problematic if it has side effects (in particular, LM self-calls). To address this, Spell programs are pure except for expressions which are explicitly evaluated by `eval`, and they have a special structure, called the Spell wrapper:
 
-  ```bash
-  brew install clojure/tools/clojure
-  ```
-
-You also need access to at least one LLM provider:
-
-- Codex tool-call provider, the CLI default: install the OpenAI Codex CLI and run `codex` once so `~/.codex/auth.json` exists.
-- Anthropic API: set `ANTHROPIC_API_KEY`.
-- OpenAI API: set `OPENAI_API_KEY`.
-- Fireworks API: set `FIREWORKS_API_KEY`.
-- Ollama: run a local Ollama server and pass an `ollama:<model>` model spec.
-
-### Install
-
-```bash
-git clone https://github.com/lukejoconnor/spell.git
-cd spell
+```clojure
+(quine completion          ; 1. bind the current completion as data
+  (eval                    ; 4. evaluate the trailing expression
+    (do
+      ...                  ; 2. ordinary local computation
+      '(effectful-expression)))) ; 3. return quoted trailing expression
 ```
 
-No build step is required for normal use. The `bin/spell` wrapper runs the Clojure CLI entry point with `clj -M:run`.
+The outer `quine` form binds the program source code as data. The inner `do` block returns the value of its last expression, which is the quoted trailing expression. Because it is quoted, this expression is not evaluated until it is passed to `eval`, at which time effect functions, including self-calls, are made available. If the model appends an expression after the current quoted trailing expression, the old trailing expression becomes inert data.
 
-### Smoke Test
+## Quick start
 
-Run the CLI without making an LLM API call:
+Clone the repo and ask your agent to perform setup; it should locate prompts/skills with installation, API provider auth, agent config, etc. The prerequisites are Java, Clojure, and an API key or Codex auth.
 
-```bash
-bin/spell -h
-bin/spell -t "Return a short greeting"
-```
-
-The `-t` flag uses a dummy provider and is useful for checking that Java, Clojure, and dependencies are installed correctly.
-
-### Run Examples
+The most convenient way to run Spell is via the CLI:
 
 ```bash
-# Run a bundled example with the default provider
+# Run a bundled example
 bin/spell -e hello-world
 
-# Show raw LLM responses while running an example
-bin/spell -v -e coin-flip
-
-# Run a .spl file directly
-bin/spell examples/twenty-questions.spl -d 40
-```
-
-More examples are listed in `examples/README.md`. Good first examples are:
-
-- `examples/hello-world.spl`: minimal self-call example.
-- `examples/coin-flip.spl`: recursive control flow.
-- `examples/twenty-questions.spl`: multi-agent worker/checker loop.
-- `examples/telephone.spl`: sequential relay loop.
-- `examples/chat.spl`: simple interactive communication pattern.
-
-### Talk To The Spell Agent
-
-The default CLI agent is `config/agents/cli.agent.edn`. It exposes the core language plus `io`, `web`, `patterns`, `agents`, and `globals` namespaces.
-
-```bash
-# Default model is codex-tc:gpt-5.3
+# Ask the default agent to do something
 bin/spell "Inspect the examples directory and suggest one example to run next."
 
-# Use an explicit provider-prefixed model spec
-bin/spell -m openai-tc:gpt-5.4 "Explain this repository in three bullets."
+# Run a .spl file directly
+bin/spell examples/twenty-questions.spl
 
-# Let yourself provide the next suffix manually instead of using an LLM
-bin/spell -m user "Hello me!"
+# See options
+bin/spell -h
 ```
 
-Use `-b` to cap spend, `-d` to cap recursion depth, `-T` to record traces, and `--log FILE` to save verbose output.
+Use `-b` to cap spend, `-d` to cap recursion depth, `-T` to record traces, and `--log FILE` to save verbose output. Run `bin/spell -h` for the authoritative CLI help from the checked-out code.
 
-## CLI Reference
-
-```
-Usage: spell [options] <prompt>
-       spell [options] <file.spl>
-       spell -a <agent.edn> <prompt>
-       spell -e <example>
-
-Options:
-  -t, --test                     Use dummy LLM provider
-  -e, --example NAME             Run a named example from examples/
-  -a, --agent FILE               Use an agent definition from a .agent.edn file
-  -m, --model MODEL              Model spec or alias
-  -d, --depth DEPTH              Max recursion depth; 0 means unlimited
-  -b, --budget DOLLARS           Max spend in dollars; 0 means unlimited
-  -M, --max-tokens TOKENS        Max tokens per LLM response
-  -K, --thinking BUDGET          Anthropic thinking budget
-  -R, --reasoning-effort EFFORT  OpenAI reasoning effort
-      --verbosity LEVEL          OpenAI verbosity
-      --suffix-grammar           Enable prefix-aware OpenAI suffix grammar constraints
-      --grammar-max-chars CHARS  Max generated grammar chars before fallback
-      --responses-api            Force OpenAI Responses API
-  -T, --trace                    Record an execution trace
-  -l, --log FILE                 Log verbose output to FILE
-  -v, --verbose                  Show raw LLM responses
-  -S, --setup CMD                Shell command to run before Spell execution
-  -C, --cleanup CMD              Shell command to run after Spell execution
-  -h, --help                     Show help
-```
-
-Common model specs:
-
-- Provider-prefixed specs: `codex-tc:<model>`, `openai-tc:<model>`, `anthropic-tc:<model>`, `anthropic-pf:<model>`, `fireworks:<model>`, `fireworks-tc:<model>`, `ollama:<model>`.
-
-Run `bin/spell -h` for the authoritative CLI help from the checked-out code.
-
-## Source Map
-
-- `src/spell/cli.clj`: command-line interface.
-- `src/spell/api.clj`: programmatic entry point.
-- `src/spell/eval.clj`: evaluator and special forms.
-- `src/spell/macros.clj`: macro registry and macro implementations.
-- `src/spell/runtime.clj`: agent runtime, spawning, ask/reply, and inbox flow.
-- `src/spell/llm.clj`: LLM call wiring and prompt construction.
-- `src/spell/provider.clj`: provider implementations.
-- `src/spell/stdlib.clj`, `io.clj`, `web.clj`, `globals.clj`, `patterns.clj`: standard namespaces exposed to Spell programs.
-- `config/agents/`: agent capability profiles.
-- `config/prompts/`: transport-specific system prompts.
-- `config/lm-profiles/`: LM profile configuration.
-- `examples/`: runnable `.spl` examples.
-- `test/`: Clojure test suite.
-
-`AGENTS.public.md` gives a more detailed orientation for AI agents or reviewers navigating the source tree.
-
-## Tests
-
-```bash
-clj -M:test-fast
-clj -M:test-slow
-```
-
-The fast suite covers parser, evaluator, provider, agent, and prompt-facing behavior. The slow suite covers concurrency, I/O, runtime, globals, and user-provider behavior.
+For a short conceptual guide, read `docs/language-overview.md`. Agent-facing setup, source map, and test commands live in `AGENTS.public.md`.
 
 ## License
 
-MIT
+Spell is released under the MIT License. See `LICENSE`.
