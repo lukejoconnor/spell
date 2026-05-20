@@ -55,6 +55,8 @@
 (def cli-options
   [["-t" "--test" "Use dummy LLM provider (returns 'hello world')"]
    ["-e" "--example NAME" "Run a named example from examples/"]
+   ["-i" "--init PROGRAM" "Run a complete Spell program string directly instead of wrapping a natural-language prompt"]
+   ["-I" "--init-file FILE" "Run a complete Spell program file directly instead of wrapping it as a natural-language prompt"]
    ["-a" "--agent-profile FILE" "Use agent profile from .agent.edn file"]
    ["-m" "--model MODEL" "Model/provider spec: codex-tc:<model>, openai-tc:<model>, anthropic-pf:<model>, anthropic-tc:<model>, fireworks:<model>, fireworks-tc:<model>, ollama:<model>, user (default: codex-tc:gpt-5.3)"]
    ["-d" "--depth DEPTH" "Max recursion depth (default: unlimited, 0 = unlimited)"
@@ -94,7 +96,9 @@
          ["Spell - A Lisp for LLM self-orchestration"
           ""
           "Usage: spell [options] <prompt>"
-          "       spell [options] <file.spl>"
+          "       spell [options] <file.spl>          # natural-language prompt file"
+          "       spell --init '<program>'            # complete Spell program"
+          "       spell --init-file <file.spl>        # complete Spell program file"
           "       spell -a <agent-profile.edn> <prompt>"
           "       spell -e <example>"
           ""
@@ -109,6 +113,8 @@
           "  spell -m fireworks:glm-5 'Return 42'"
           "  spell -m fireworks-tc:kimi-k2p6 'Return 42'"
           "  spell examples/hello-world.spl"
+          "  spell -t --init '(do (+ 20 22))'"
+          "  spell --init-file scratch/my-program.spl"
           "  spell -e hello-world"
           "  spell -e twenty-questions -d 40"
           "  spell -a config/agent-profiles/io-tc.agent.edn 'Fix the bug'"]
@@ -129,6 +135,31 @@
 
       errors
       {:exit-message (error-msg errors) :ok? false}
+
+      (and (:example options) (or (:init options) (:init-file options)))
+      {:exit-message "Cannot combine --example with --init or --init-file"
+       :ok? false}
+
+      (and (:init options) (:init-file options))
+      {:exit-message "Specify only one of --init or --init-file"
+       :ok? false}
+
+      (and (:init options) (seq arguments))
+      {:exit-message "--init does not accept a positional prompt or file"
+       :ok? false}
+
+      (and (:init-file options) (seq arguments))
+      {:exit-message "--init-file does not accept a positional prompt or file"
+       :ok? false}
+
+      (:init options)
+      {:init (:init options) :options options}
+
+      (:init-file options)
+      (if-let [init (load-file-prompt (:init-file options))]
+        {:init init :options options}
+        {:exit-message (str "File not found: " (:init-file options))
+         :ok? false})
 
       (:example options)
       (if-let [{:keys [prompt setup cleanup]} (load-example (:example options))]
@@ -194,10 +225,11 @@
         "anthropic-pf"
         (provider/anthropic-pf-provider base-opts)))))
 
-(defn run-prompt
-  [prompt {:keys [depth verbose log budget trace agent-profile model thinking reasoning-effort verbosity
-                  suffix-grammar grammar-max-chars]
-           :as opts}
+(defn run-input
+  [{:keys [prompt init]}
+   {:keys [depth verbose log budget trace agent-profile model thinking reasoning-effort verbosity
+           suffix-grammar grammar-max-chars]
+    :as opts}
    usage-atom]
   (let [max-depth (cond
                     (nil? depth) nil    ; default: no depth limit
@@ -211,8 +243,7 @@
         resolved-agent-profile (or agent-profile "config/agent-profiles/cli.agent.edn")
         log-writer (when log (io/writer (io/file log) :append true))]
     (try
-      (api/run-internal (cond-> {:prompt prompt
-                                 :model-profile prov
+      (api/run-internal (cond-> {:model-profile prov
                                  :agent-profile resolved-agent-profile
                                  :log-writer (when (or verbose log) (or log-writer *out*))
                                  :budget (cond
@@ -227,6 +258,8 @@
                                  :suffix-grammar? suffix-grammar
                                  :grammar-max-chars grammar-max-chars
                                  :usage-tracker usage-atom}
+                          prompt (assoc :prompt prompt)
+                          init (assoc :init init)
                           trace (assoc :trace-dir (spell-trace/default-trace-dir))
                           (and (some? (. System console)) (not= model "user"))
                           (assoc :user-reader (io/reader System/in))))
@@ -301,7 +334,7 @@
       (.exitValue proc))))
 
 (defn -main [& args]
-  (let [{:keys [prompt options exit-message ok?]} (validate-args args)]
+  (let [{:keys [prompt init options exit-message ok?]} (validate-args args)]
     (if exit-message
       (do
         (println exit-message)
@@ -317,7 +350,7 @@
                                       (println (format "\nCost: $%.4f" c))))))))]
         (.addShutdownHook (Runtime/getRuntime) shutdown-hook)
         (run-shell (:setup options))
-        (let [{:keys [result error error-data usage-tracker trace-dir]} (run-prompt prompt options usage-atom)
+        (let [{:keys [result error error-data usage-tracker trace-dir]} (run-input {:prompt prompt :init init} options usage-atom)
               usage usage-tracker]
           (run-shell (:cleanup options))
           (when trace-dir

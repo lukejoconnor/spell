@@ -40,6 +40,32 @@
       (is (= "Return 42" (:prompt result)))
       (is (= "none" (get-in result [:options :reasoning-effort]))))))
 
+(deftest validate-args-supports-direct-init-programs
+  (testing "--init passes a complete Spell program instead of a prompt"
+    (let [result (cli/validate-args ["--init" "(do 42)"])]
+      (is (= "(do 42)" (:init result)))
+      (is (nil? (:prompt result)))))
+
+  (testing "--init-file loads a complete Spell program"
+    (let [tmp (java.io.File/createTempFile "spell-cli-init-" ".spl")]
+      (try
+        (spit tmp "(do (+ 20 22))")
+        (let [result (cli/validate-args ["--init-file" (.getAbsolutePath tmp)])]
+          (is (= "(do (+ 20 22))" (:init result)))
+          (is (nil? (:prompt result))))
+        (finally
+          (.delete tmp)))))
+
+  (testing "prompt/file modes remain distinct from init modes"
+    (is (false? (:ok? (cli/validate-args ["--init" "(do 42)" "Return 42"]))))
+    (is (false? (:ok? (cli/validate-args ["--init-file" "program.spl" "Return 42"]))))
+    (is (false? (:ok? (cli/validate-args ["--init" "(do 42)" "--init-file" "program.spl"]))))
+    (is (false? (:ok? (cli/validate-args ["--example" "hello-world" "--init" "(do 42)"]))))))
+
+(deftest run-input-evaluates-direct-init-without-llm-call
+  (let [result (cli/run-input {:init "(do (+ 20 22))"} {:test true} (atom {:by-model {}}))]
+    (is (= 42 (:result result)))))
+
 (deftest make-provider-resolves-shared-model-aliases-test
   (testing "bare gpt alias routes to OpenAI tool-call transport"
     (let [captured (atom nil)]
@@ -82,6 +108,8 @@
     (is (str/includes? exit-message "codex-tc:<model>"))
     (is (str/includes? exit-message "openai-tc:gpt-5.4"))
     (is (str/includes? exit-message "fireworks-tc:kimi-k2p6"))
+    (is (str/includes? exit-message "spell -t --init '(do (+ 20 22))'"))
+    (is (str/includes? exit-message "spell --init-file scratch/my-program.spl"))
     (doseq [example ["hello-world" "coin-flip" "twenty-questions"
                      "telephone" "auction" "chat"]]
       (is (str/includes? exit-message example)))
