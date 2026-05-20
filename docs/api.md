@@ -174,7 +174,7 @@ LM profile files live under `config/lm-profiles/` and use EDN maps.
 | `:auth-file` | `:codex-tc` | keep LM profile | Path to Codex/ChatGPT auth JSON. |
 | `:account-id` | `:codex-tc` | keep LM profile | ChatGPT account id header override. |
 | `:chat-template` | `:fireworks` | keep LM profile | Fireworks completions chat template keyword or explicit template map. |
-| `:convert-think?` | `:fireworks` | delete from public spec | Current provider code defaults this behavior on for the Fireworks completions provider, and the historical checked-in EDN occurrence was the Fireworks provider profile. Paper benchmark runs through `spell.benchmark-api` construct Fireworks providers directly and do not need this exposed as a public profile switch. |
+| `:convert-think?` | `:fireworks` | delete from public spec | Current provider code defaults this behavior on for the Fireworks completions provider, and the historical checked-in EDN occurrence was the Fireworks provider profile. Higher-level adapters can construct Fireworks providers directly if they need this internal switch. |
 | `:responses` | `:test` | keep LM profile test-only | Declarative response sequence for tests. |
 | `:response-rules` | `:test` | keep LM profile test-only | Prompt-matching response rules for tests. |
 | `:response` | `:test` | keep LM profile test-only | Single fixed test response. |
@@ -184,7 +184,7 @@ The public LM profile does not expose separate `:thinking` and `:reasoning-effor
 
 The public LM profile also does not expose `:prefill?`. Prefill is a transport capability and prompt style implied by the provider plus the selected agent prompt profile. The provider reports whether it supports assistant prefill, and higher-level defaults can pair prefill-capable providers with `base-pf.agent.edn`; users do not need a separate boolean.
 
-The suffix grammar options, `:suffix-grammar?` and `:grammar-max-chars`, are omitted from the public config spec. They exist in code and tests, and there was an old suffix-grammar pilot notebook entry, but they are not used in current checked-in config files or the paper-facing run configurations found in the repo.
+The suffix grammar options, `:suffix-grammar?` and `:grammar-max-chars`, are omitted from the public config spec. They exist in code and tests, but they are not used by current checked-in config files or the documented public API.
 
 Low-level provider constructor functions may accept direct `:api-key` values for programmatic use. Public LM profile files use `:api-key-env` instead, so secrets do not land in the repository.
 
@@ -226,7 +226,7 @@ Agent files live under `config/agents/` and use EDN maps.
 | `:thinking` | move to provider-neutral reasoning effort | Public config uses `:default-reasoning-effort` on the LM profile instead. |
 | `:reasoning-effort` | move to LM profile as `:default-reasoning-effort` | Reasoning effort changes provider request parameters and is also exposed as a run override. |
 | `:verbosity` | move to LM profile | Verbosity changes provider request parameters. |
-| `:suffix-grammar?` | delete from public spec | Not used by current configs or paper-facing run configurations. |
+| `:suffix-grammar?` | delete from public spec | Not used by current configs or the documented public API. |
 | `:grammar-max-chars` | delete from public spec | Only relevant to omitted suffix grammar support. |
 | `:llms` | rename to `:available-agents` | Sub-agent set exposed through the `llms/` namespace. The current discovery behavior should be revisited before this becomes a stable public interface. |
 | `:namespaces` | keep agent | Spell namespaces exposed to the agent. |
