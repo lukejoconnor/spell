@@ -16,6 +16,13 @@
 
 (declare make-leaf-llm build-init)
 
+(defrecord DirectInit [program])
+
+(defn direct-init
+  "Mark a complete Spell program so compiled agents evaluate it directly."
+  [program]
+  (->DirectInit program))
+
 ;; ---------------------------------------------------------------------------
 ;; Core namespaces — always available, never need to be configured
 ;; ---------------------------------------------------------------------------
@@ -468,7 +475,9 @@
                  :recover-fn recover-fn}
         _ (deliver final-config config')
         start-root (fn start-root [prompt handle]
-                     (let [prompt' (cond
+                     (let [direct-init? (instance? DirectInit prompt)
+                           prompt (if direct-init? (:program prompt) prompt)
+                           prompt' (cond
                                      (and (seq? prompt) (= 'quine (first prompt)))
                                      (eval/serialize-quine-prefix prompt)
                                      (or (seq? prompt) (list? prompt))
@@ -476,9 +485,11 @@
                                      :else
                                      prompt)
                            prompt-str (if (string? prompt') prompt' (str prompt'))
-                           init-program (if (.startsWith (.trim ^String prompt-str) "(")
+                           init-program (if direct-init?
                                           prompt-str
-                                          (build-init prompt-str))
+                                          (if (.startsWith (.trim ^String prompt-str) "(")
+                                            prompt-str
+                                            (build-init prompt-str)))
                            trace-data (atom nil)
                            inbox-fn (make-inbox-fn config' trace-data)
                            awake-fn (runtime/make-awake-fn handle inbox-fn)]

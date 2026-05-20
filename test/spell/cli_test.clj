@@ -64,7 +64,13 @@
 
 (deftest run-input-evaluates-direct-init-without-llm-call
   (let [result (cli/run-input {:init "(do (+ 20 22))"} {:test true} (atom {:by-model {}}))]
-    (is (= 42 (:result result)))))
+    (is (= 42 (:result result))))
+
+  (testing "atom and literal init programs are not treated as prompts"
+    (doseq [[program expected] [["42" 42]
+                                ["\"hello\"" "hello"]]]
+      (let [result (cli/run-input {:init program} {:test true} (atom {:by-model {}}))]
+        (is (= expected (:result result)))))))
 
 (deftest make-provider-resolves-shared-model-aliases-test
   (testing "bare gpt alias routes to OpenAI tool-call transport"

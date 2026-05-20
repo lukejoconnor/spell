@@ -129,7 +129,21 @@
                            :model-profile p
                            :agent-profile test-agent})]
       (is (= 42 (:result result)))
-      (is (= 1 @call-count)))))
+      (is (= 1 @call-count))))
+
+  (testing "non-list init programs evaluate directly"
+    (doseq [[program expected] [["42" 42]
+                                ["\"hello\"" "hello"]]]
+      (let [call-count (atom 0)
+            p (provider/test-provider
+                {:response-fn (fn [_]
+                                (swap! call-count inc)
+                                "unused")})
+            result (api/run {:init program
+                             :model-profile p
+                             :agent-profile test-agent})]
+        (is (= expected (:result result)))
+        (is (= 0 @call-count))))))
 
 ;; =============================================================================
 ;; Budget and options tests

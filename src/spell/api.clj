@@ -60,7 +60,7 @@
                      (:grammar-max-chars opts) (assoc :grammar-max-chars (:grammar-max-chars opts))
                      (:format opts) (assoc :format (:format opts)))
         agent-fn (agent/compile-agent-spec agent-spec)
-        run-input (if init init (llm/build-init prompt))
+        run-input (if init (llm/direct-init init) (llm/build-init prompt))
         effective-budget (cond
                            (nil? budget) (or (:budget agent-spec) provider/*budget*)
                            (zero? budget) nil
