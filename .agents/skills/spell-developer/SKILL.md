@@ -11,6 +11,12 @@ Use this skill when working inside the Spell implementation. Prefer the checked-
 
 `v0.2.0` is unreleased. The active public-release branch is `v0.2.0-dev` unless the user says otherwise. Public API and configuration details live in `docs/api.md`.
 
+## GitHub Issues and Pull Requests
+
+For Spell development, it is encouraged to raise GitHub issues when they clarify bugs, design questions, release tasks, or follow-up work. Issues may be AI-authored.
+
+AI-authored GitHub pull requests are allowed but not encouraged. If an AI-authored pull request is opened, its description must be human-reviewed at minimum and must include the task or prompt given to the AI that resulted in the pull request.
+
 ## Core Semantics
 
 Spell is a Lisp dialect for self-programmed execution. A model completion is a program. The evaluator runs it, and the program can call back into an LLM, spawn agents, manage context, and use configured namespaces.
