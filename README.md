@@ -45,6 +45,9 @@ The most convenient way to run Spell is via the CLI:
 # Run a bundled example
 bin/spell -v -e hello-world
 
+# Chat with the agent
+bin/spell -v -e chat
+
 # Ask the default agent to do something
 bin/spell "Inspect the examples directory and suggest one example to run next."
 
