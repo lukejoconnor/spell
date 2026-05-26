@@ -21,7 +21,7 @@ Self-programmed execution (SPE) is when a language model (LM) acts as a self-orc
 
 ## Core semantics
 
-In SPE, the same data---a model completion---is both the content of the model's context window and the program specifying what context is passed to a subsequent turn. Typically, this prefix is constructed by editing or appending the source code of the Spell program itself. For this reason, Spell is a Lisp dialect. It supports programmatic self-reference via a `quine` form: the expression `(quine name inner-expr)` binds to `name` the entire expression - not just `inner-expr` - as data, and then evaluates `inner-expr`. It also features *edit markers*, which direct an `apply-edits` function to excize or replace certain expressions inside a `quote` or `quine` form.
+In SPE, the same data, a model completion, is both the content of the model's context window and the program specifying what context is passed to a subsequent turn. Typically, this prefix is constructed by editing or appending the source code of the Spell program itself. For this reason, Spell is a Lisp dialect. It supports programmatic self-reference via a `quine` form: the expression `(quine name inner-expr)` binds to `name` the entire expression, not just `inner-expr`, as data, and then evaluates `inner-expr`. It also features *edit markers*, which direct an `apply-edits` function to excize or replace certain expressions inside a `quote` or `quine` form.
 
 A Spell program is often re-evaluated as the prefix of a newly generated program, and this is problematic if it has side effects (in particular, LM self-calls). To address this, Spell programs are pure except for expressions which are explicitly evaluated by `eval`, and they have a special structure, called the Spell wrapper:
 
