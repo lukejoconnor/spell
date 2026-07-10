@@ -337,6 +337,18 @@
                            :cache_creation_input_tokens 0}))
       (is (= 2.4505 (double (provider/current-cost usage-atom)))))))
 
+(deftest current-cost-prices-latest-models-test
+  (testing "shared pricing covers the latest configured model families"
+    (doseq [[model expected-input expected-output]
+            [["gpt-5.5" 5.0 30.0]
+             ["gpt-5.6-sol" 5.0 30.0]
+             ["claude-opus-4-8" 5.0 25.0]
+             ["claude-fable-5" 10.0 50.0]
+             ["accounts/fireworks/models/glm-5p2" 1.4 4.4]]]
+      (let [cost (#'provider/lookup-cost model provider/default-costs)]
+        (is (= expected-input (:input cost)) model)
+        (is (= expected-output (:output cost)) model)))))
+
 ;; =============================================================================
 ;; compile-agent factory tests
 ;; =============================================================================

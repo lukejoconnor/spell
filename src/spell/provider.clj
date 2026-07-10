@@ -607,7 +607,12 @@
 
 (defn- anthropic-adaptive-thinking-model?
   [model]
-  (str/includes? (str model) "opus-4-7"))
+  (let [model (str model)]
+    (or (str/includes? model "opus-4-7")
+        (str/includes? model "opus-4-8")
+        (str/includes? model "sonnet-5")
+        (str/includes? model "fable-5")
+        (str/includes? model "mythos-5"))))
 
 (defn- anthropic-output-effort
   [reasoning-effort]
@@ -657,9 +662,9 @@
                         {:status status :body (:body response)})))))
   (plain-text-provider [this] this)
   (supports-prefill [_]
-    ;; Opus 4.6+ does not support assistant prefill (returns 400 error)
+    ;; Current Opus and Claude 5 models do not support assistant prefill.
     (not (or (str/includes? (str model) "opus-4-6")
-             (str/includes? (str model) "opus-4-7")))))
+             (anthropic-adaptive-thinking-model? model)))))
 
 (defn anthropic-pf-provider
   "Create an Anthropic provider.

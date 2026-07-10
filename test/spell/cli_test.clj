@@ -81,7 +81,7 @@
                       {:provider :openai-tc :opts opts})]
         (is (= :openai-tc
                (:provider ((var cli/make-provider) {:model "gpt"}))))
-        (is (= "gpt-5.4" (:model @captured)))
+        (is (= "gpt-5.6-sol" (:model @captured)))
         (is (:use-responses-api @captured))
         (is (:force-tool-call @captured)))))
 
@@ -93,10 +93,11 @@
                       {:provider :anthropic-tc :opts opts})]
         (is (= :anthropic-tc
                (:provider ((var cli/make-provider) {:model "opus"}))))
-        (is (= "claude-opus-4-6" (:model @captured))))))
+        (is (= "claude-opus-4-8" (:model @captured))))))
 
   (testing "bare open-weight aliases route to Fireworks tool-call transport"
-    (doseq [[alias expected] [["glm51" "glm-5p1"]
+    (doseq [[alias expected] [["glm" "glm-5p2"]
+                             ["glm51" "glm-5p1"]
                              ["kimi26" "kimi-k2p6"]
                              ["qwen36p" "qwen3p6-plus"]]]
       (let [captured (atom nil)]
@@ -112,7 +113,8 @@
   (let [{:keys [exit-message ok?]} (cli/validate-args ["--help"])]
     (is ok?)
     (is (str/includes? exit-message "codex-tc:<model>"))
-    (is (str/includes? exit-message "openai-tc:gpt-5.4"))
+    (is (str/includes? exit-message "openai-tc:gpt-5.6-sol"))
+    (is (str/includes? exit-message "anthropic-tc:claude-opus-4-8"))
     (is (str/includes? exit-message "fireworks-tc:kimi-k2p6"))
     (is (str/includes? exit-message "spell -t --init '(do (+ 20 22))'"))
     (is (str/includes? exit-message "spell --init-file scratch/my-program.spl"))
