@@ -337,6 +337,23 @@
                            :cache_creation_input_tokens 0}))
       (is (= 2.4505 (double (provider/current-cost usage-atom)))))))
 
+(deftest current-cost-prices-latest-models-test
+  (testing "shared pricing covers input, cached input, and output for the latest configured model families"
+    (doseq [[model expected-input expected-cache-read expected-cache-write expected-output]
+            [["gpt-5.5" 5.0 0.5 5.0 30.0]
+             ["gpt-5.6-sol" 5.0 0.5 5.0 30.0]
+             ["claude-sonnet-5" 3.0 0.3 3.75 15.0]
+             ["claude-opus-4-8" 5.0 0.5 6.25 25.0]
+             ["claude-fable-5" 10.0 1.0 12.5 50.0]
+             ["accounts/fireworks/models/glm-5p2" 1.4 0.14 1.4 4.4]
+             ["accounts/fireworks/models/kimi-k2p7-code" 0.95 0.19 0.95 4.0]
+             ["accounts/fireworks/models/qwen3p7-plus" 0.4 0.08 0.4 1.6]]]
+      (let [cost (#'provider/lookup-cost model provider/default-costs)]
+        (is (= expected-input (:input cost)) model)
+        (is (= expected-cache-read (:cache-read-input cost)) model)
+        (is (= expected-cache-write (:cache-write-input cost)) model)
+        (is (= expected-output (:output cost)) model)))))
+
 ;; =============================================================================
 ;; compile-agent factory tests
 ;; =============================================================================
@@ -917,7 +934,7 @@
     (let [p (provider/fireworks-tc-provider {:api-key "fw-test"})]
       (is (instance? spell.provider.FireworksTcProvider p))
       (is (= "https://api.fireworks.ai/inference/v1" (:base-url p)))
-      (is (= "accounts/fireworks/models/kimi-k2p6" (:model p)))
+      (is (= "accounts/fireworks/models/kimi-k2p7-code" (:model p)))
       (is (= 32768 (:max-tokens p)))
       (is (= 600 (:request-timeout-sec p))
           "Default request-timeout-sec is 600 seconds, matching anthropic-tc")

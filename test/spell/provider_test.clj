@@ -159,6 +159,12 @@
         (is (true? (provider/retryable? ex)))))))
 
 (deftest sse-timeout-config-test
+  (testing "Anthropic constructors default to the current Sonnet model"
+    (is (= "claude-sonnet-5"
+           (:model (provider/anthropic-pf-provider {:api-key "test"}))))
+    (is (= "claude-sonnet-5"
+           (:model (provider/anthropic-tc-provider {:api-key "test"})))))
+
   (testing "streaming provider constructors install SSE timeout defaults"
     (let [anthropic-pf (provider/anthropic-pf-provider {:api-key "test"})
           anthropic-tc (provider/anthropic-tc-provider {:api-key "test"})
@@ -532,13 +538,15 @@
 
 (deftest fireworks-reasoning-effort-request-test
   (testing "emits Fireworks reasoning_effort on completions requests"
-    (let [request (#'provider/fireworks-completions-request
-                    "test" "https://api.fireworks.ai/inference/v1"
-                    "accounts/fireworks/models/glm-5p1"
-                    "prompt" "system" nil nil nil nil "high" 600)
-          body (request-json-body request)]
-      (is (= "high" (:reasoning_effort body)))
-      (is (not (contains? body :thinking)))))
+    (doseq [model ["accounts/fireworks/models/glm-5p1"
+                   "accounts/fireworks/models/glm-5p2"]]
+      (let [request (#'provider/fireworks-completions-request
+                      "test" "https://api.fireworks.ai/inference/v1"
+                      model
+                      "prompt" "system" nil nil nil nil "high" 600)
+            body (request-json-body request)]
+        (is (= "high" (:reasoning_effort body)) model)
+        (is (not (contains? body :thinking)) model))))
 
   (testing "positive integer budgets are emitted as JSON strings"
     (let [request (#'provider/fireworks-completions-request
@@ -591,17 +599,19 @@
     (let [p (provider/anthropic-pf-provider {:api-key "test" :model "claude-opus-4-5-20250901"})]
       (is (true? (provider/supports-prefill p))))))
 
-(deftest anthropic-opus47-thinking-request-test
-  (testing "tool-call path treats reasoning-effort as adaptive thinking on opus-4-7"
-    (let [request (#'provider/anthropic-tc-request "test" "claude-opus-4-7-20250416"
-                                                   "prompt" "system" nil false nil
-                                                   "medium" nil 600)
-          body (request-json-body request)]
-      (is (= 32768 (:max_tokens body)))
-      (is (= {:type "auto"} (:tool_choice body)))
-      (is (= {:type "adaptive"} (:thinking body)))
-      (is (= {:effort "medium"} (:output_config body)))
-      (is (= 600 (request-timeout-seconds request)))))
+(deftest anthropic-adaptive-thinking-request-test
+  (testing "tool-call path uses adaptive thinking on current model families"
+    (doseq [model ["claude-opus-4-7" "claude-opus-4-8"
+                   "claude-sonnet-5" "claude-fable-5"]]
+      (let [request (#'provider/anthropic-tc-request "test" model
+                                                     "prompt" "system" nil false nil
+                                                     "medium" nil 600)
+            body (request-json-body request)]
+        (is (= 32768 (:max_tokens body)) model)
+        (is (= {:type "auto"} (:tool_choice body)) model)
+        (is (= {:type "adaptive"} (:thinking body)) model)
+        (is (= {:effort "medium"} (:output_config body)) model)
+        (is (= 600 (request-timeout-seconds request)) model))))
 
   (testing "plain-text path uses adaptive thinking and drops assistant prefill on opus-4-7"
     (let [request (#'provider/anthropic-pf-request "test" "claude-opus-4-7-20250416"

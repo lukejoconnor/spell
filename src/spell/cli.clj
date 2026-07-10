@@ -71,9 +71,9 @@
    ["-K" "--thinking BUDGET" "Enable Anthropic adaptive thinking (budget_tokens, e.g. 10000)"
     :parse-fn #(Integer/parseInt %)
     :validate [pos? "Must be positive"]]
-   ["-R" "--reasoning-effort EFFORT" "OpenAI reasoning effort (none, low, medium, high, xhigh)"
-    :validate [#(contains? #{"none" "low" "medium" "high" "xhigh"} %)
-               "Must be none, low, medium, high, or xhigh"]]
+   ["-R" "--reasoning-effort EFFORT" "OpenAI reasoning effort (none, low, medium, high, xhigh, max)"
+    :validate [#(contains? #{"none" "low" "medium" "high" "xhigh" "max"} %)
+               "Must be none, low, medium, high, xhigh, or max"]]
    [nil "--verbosity LEVEL" "OpenAI verbosity (low, auto)"
     :validate [#(contains? #{"low" "auto"} %) "Must be low or auto"]]
    [nil "--suffix-grammar" "Enable prefix-aware OpenAI suffix grammar constraints"]
@@ -109,9 +109,10 @@
           "  spell 'Return 42'"
           "  spell -t 'Test prompt'"
           "  spell -m codex-tc:gpt-5.3 'Return 42'"
-          "  spell -m openai-tc:gpt-5.4 'Return 42'"
-          "  spell -m fireworks:glm-5 'Return 42'"
-          "  spell -m fireworks-tc:kimi-k2p6 'Return 42'"
+          "  spell -m openai-tc:gpt-5.6-sol 'Return 42'"
+          "  spell -m anthropic-tc:claude-opus-4-8 'Return 42'"
+          "  spell -m fireworks:glm-5p2 'Return 42'"
+          "  spell -m fireworks-tc:kimi-k2p7-code 'Return 42'"
           "  spell examples/hello-world.spl"
           "  spell -t --init '(do (+ 20 22))'"
           "  spell --init-file scratch/my-program.spl"
