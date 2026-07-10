@@ -1,6 +1,7 @@
 {
  "claude-3-5-haiku" {"input" 0.80 "cache-read-input" 0.08 "cache-write-input" 1.00 "output" 4.00}
  "claude-haiku-4-5" {"input" 1.00 "cache-read-input" 0.10 "cache-write-input" 1.25 "output" 5.00}
+ ;; Introductory pricing through 2026-08-31; then $3 input / $15 output.
  "claude-sonnet-5" {"input" 2.00 "cache-read-input" 0.20 "cache-write-input" 2.50 "output" 10.00}
  "claude-sonnet-4-6" {"input" 3.00 "cache-read-input" 0.30 "cache-write-input" 3.75 "output" 15.00}
  "claude-sonnet-4" {"input" 3.00 "cache-read-input" 0.30 "cache-write-input" 3.75 "output" 15.00}
