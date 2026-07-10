@@ -671,7 +671,7 @@
 
    Options:
    - :api-key - API key (default: ANTHROPIC_API_KEY env var)
-   - :model - Model name (default: claude-sonnet-4-20250514)
+   - :model - Model name (default: claude-sonnet-5)
    - :max-tokens - Max tokens per response (default: 16384)
    - :request-timeout-sec - Per-HTTP-call timeout in seconds (default: 600)
    - :sse-idle-timeout-sec - Max seconds without stream bytes (default: 100)
@@ -680,7 +680,7 @@
   ([] (anthropic-pf-provider {}))
   ([{:keys [api-key model max-tokens request-timeout-sec sse-idle-timeout-sec
             sse-completion-timeout-sec costs]
-     :or {model "claude-sonnet-4-5-20250929"
+     :or {model "claude-sonnet-5"
           request-timeout-sec 600
           sse-idle-timeout-sec default-sse-idle-timeout-sec
           sse-completion-timeout-sec default-sse-completion-timeout-sec}}]
@@ -884,7 +884,7 @@
 
    Options:
    - :api-key - API key (default: ANTHROPIC_API_KEY env var)
-   - :model - Model name (default: claude-sonnet-4-5-20250929)
+   - :model - Model name (default: claude-sonnet-5)
    - :max-tokens - Max tokens per response (default: 16384)
    - :request-timeout-sec - Per-HTTP-call timeout in seconds (default: 600)
    - :sse-idle-timeout-sec - Max seconds without stream bytes (default: 100)
@@ -893,7 +893,7 @@
   ([] (anthropic-tc-provider {}))
   ([{:keys [api-key model max-tokens request-timeout-sec sse-idle-timeout-sec
             sse-completion-timeout-sec costs]
-     :or {model "claude-sonnet-4-5-20250929"
+     :or {model "claude-sonnet-5"
           request-timeout-sec 600
           sse-idle-timeout-sec default-sse-idle-timeout-sec
           sse-completion-timeout-sec default-sse-completion-timeout-sec}}]
@@ -1575,8 +1575,10 @@
   (let [model (str/lower-case (or model ""))]
     (or (str/includes? model "glm-5p1")
         (str/includes? model "glm-5p2")
+        (str/includes? model "kimi-k2p7-code")
         (str/includes? model "deepseek-v4-pro")
-        (str/includes? model "qwen3p6-plus"))))
+        (str/includes? model "qwen3p6-plus")
+        (str/includes? model "qwen3p7-plus"))))
 
 (defn- fireworks-completions-request
   [api-key base-url model prompt system-prompt prefix max-tokens chat-template thinking reasoning-effort
@@ -2044,7 +2046,7 @@
    Options:
    - :api-key             - API key (default: FIREWORKS_API_KEY env var)
    - :base-url            - API base URL (default: https://api.fireworks.ai/inference/v1)
-   - :model               - Model name or Fireworks account path (default: kimi-k2p6)
+   - :model               - Model name or Fireworks account path (default: kimi-k2p7-code)
    - :max-tokens          - Max tokens per response
    - :request-timeout-sec - Per-HTTP-call timeout in seconds (default: 600)
    - :sse-idle-timeout-sec - Max seconds without stream bytes (default: 100)
@@ -2053,7 +2055,7 @@
   ([] (fireworks-tc-provider {}))
   ([{:keys [api-key base-url model max-tokens request-timeout-sec sse-idle-timeout-sec
             sse-completion-timeout-sec costs]
-     :or {model "kimi-k2p6"
+     :or {model "kimi-k2p7-code"
           base-url "https://api.fireworks.ai/inference/v1"
           max-tokens fireworks-tc-default-max-tokens
           request-timeout-sec 600

@@ -159,6 +159,12 @@
         (is (true? (provider/retryable? ex)))))))
 
 (deftest sse-timeout-config-test
+  (testing "Anthropic constructors default to the current Sonnet model"
+    (is (= "claude-sonnet-5"
+           (:model (provider/anthropic-pf-provider {:api-key "test"}))))
+    (is (= "claude-sonnet-5"
+           (:model (provider/anthropic-tc-provider {:api-key "test"})))))
+
   (testing "streaming provider constructors install SSE timeout defaults"
     (let [anthropic-pf (provider/anthropic-pf-provider {:api-key "test"})
           anthropic-tc (provider/anthropic-tc-provider {:api-key "test"})

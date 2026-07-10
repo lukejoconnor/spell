@@ -7,8 +7,10 @@
     "anthropic-pf" "anthropic-tc" "fireworks" "fireworks-tc" "test"})
 
 (def model-aliases
-  {"haiku"   "claude-haiku-4-5-20251001"
-   "sonnet"  "claude-sonnet-4-5-20250929"
+  {"haiku"    "claude-haiku-4-5-20251001"
+   "sonnet"   "anthropic-tc:claude-sonnet-5"
+   "sonnet5"  "anthropic-tc:claude-sonnet-5"
+   "sonnet46" "anthropic-tc:claude-sonnet-4-6"
    "fable"    "anthropic-tc:claude-fable-5"
    "fable5"   "anthropic-tc:claude-fable-5"
    "opus"     "anthropic-tc:claude-opus-4-8"
@@ -26,9 +28,12 @@
    "glm"      "fireworks-tc:glm-5p2"
    "glm52"    "fireworks-tc:glm-5p2"
    "glm51"    "fireworks-tc:glm-5p1"
-   "kimi"     "fireworks-tc:kimi-k2p6"
+   "kimi"     "fireworks-tc:kimi-k2p7-code"
+   "kimi27"   "fireworks-tc:kimi-k2p7-code"
+   "kimi27code" "fireworks-tc:kimi-k2p7-code"
    "kimi26"   "fireworks-tc:kimi-k2p6"
-   "qwen"     "fireworks-tc:qwen3p6-plus"
+   "qwen"     "fireworks-tc:qwen3p7-plus"
+   "qwen37p"  "fireworks-tc:qwen3p7-plus"
    "qwen36p"  "fireworks-tc:qwen3p6-plus"})
 
 (defn parse-model-spec

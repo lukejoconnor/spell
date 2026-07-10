@@ -27,6 +27,8 @@
            (model-spec/resolve-model-spec "gpt52"))))
 
   (testing "full-spec aliases select provider and model"
+    (is (= {:provider "anthropic-tc" :model "claude-sonnet-5"}
+           (model-spec/resolve-model-spec "sonnet")))
     (is (= {:provider "anthropic-tc" :model "claude-opus-4-8"}
            (model-spec/resolve-model-spec "opus")))
     (is (= {:provider "anthropic-tc" :model "claude-fable-5"}
@@ -37,6 +39,10 @@
            (model-spec/resolve-model-spec "gpt55")))
     (is (= {:provider "fireworks-tc" :model "glm-5p2"}
            (model-spec/resolve-model-spec "glm")))
+    (is (= {:provider "fireworks-tc" :model "kimi-k2p7-code"}
+           (model-spec/resolve-model-spec "kimi")))
+    (is (= {:provider "fireworks-tc" :model "qwen3p7-plus"}
+           (model-spec/resolve-model-spec "qwen")))
     (is (= {:provider "fireworks-tc" :model "glm-5p1"}
            (model-spec/resolve-model-spec "glm51")))
     (is (= {:provider "fireworks-tc" :model "kimi-k2p6"}

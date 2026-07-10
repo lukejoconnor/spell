@@ -1,7 +1,7 @@
 {
  "claude-3-5-haiku" {"input" 0.80 "cache-read-input" 0.08 "cache-write-input" 1.00 "output" 4.00}
  "claude-haiku-4-5" {"input" 1.00 "cache-read-input" 0.10 "cache-write-input" 1.25 "output" 5.00}
- "claude-sonnet-5" {"input" 3.00 "cache-read-input" 0.30 "cache-write-input" 3.75 "output" 15.00}
+ "claude-sonnet-5" {"input" 2.00 "cache-read-input" 0.20 "cache-write-input" 2.50 "output" 10.00}
  "claude-sonnet-4-6" {"input" 3.00 "cache-read-input" 0.30 "cache-write-input" 3.75 "output" 15.00}
  "claude-sonnet-4" {"input" 3.00 "cache-read-input" 0.30 "cache-write-input" 3.75 "output" 15.00}
  "claude-fable-5" {"input" 10.00 "cache-read-input" 1.00 "cache-write-input" 12.50 "output" 50.00}
@@ -40,7 +40,9 @@
  "accounts/fireworks/models/qwen3-235b" {"input" 0.20 "cache-read-input" 0.10 "cache-write-input" 0.25 "output" 0.60}
  "accounts/fireworks/models/qwen3-coder-480b-a35b-instruct" {"input" 0.45 "cache-read-input" 0.22 "cache-write-input" 0.5625 "output" 1.80}
  "accounts/fireworks/models/qwen3p6-plus" {"input" 0.50 "cache-read-input" 0.10 "cache-write-input" 0.625 "output" 3.00}
+ "accounts/fireworks/models/qwen3p7-plus" {"input" 0.40 "cache-read-input" 0.08 "cache-write-input" 0.50 "output" 1.60}
  "accounts/fireworks/models/kimi-k2p5" {"input" 0.60 "cache-read-input" 0.10 "cache-write-input" 0.75 "output" 3.00}
  "accounts/fireworks/models/kimi-k2p6" {"input" 0.95 "cache-read-input" 0.16 "cache-write-input" 1.1875 "output" 4.00}
+ "accounts/fireworks/models/kimi-k2p7-code" {"input" 0.95 "cache-read-input" 0.19 "cache-write-input" 1.1875 "output" 4.00}
 
 }
