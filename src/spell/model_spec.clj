@@ -17,7 +17,7 @@
    "opus45"   "anthropic-tc:claude-opus-4-5-20251101"
    "o3"       "o3"
    "o4-mini"  "o4-mini"
-   "gpt"      "openai-tc:gpt-5.6-sol"
+   "gpt"      "openai-tc:gpt-5.5"
    "gpt52"    "gpt-5.2"
    "gpt53"    "gpt-5.3"
    "gpt54"    "openai-tc:gpt-5.4"

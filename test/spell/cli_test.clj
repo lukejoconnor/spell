@@ -81,7 +81,7 @@
                       {:provider :openai-tc :opts opts})]
         (is (= :openai-tc
                (:provider ((var cli/make-provider) {:model "gpt"}))))
-        (is (= "gpt-5.6-sol" (:model @captured)))
+        (is (= "gpt-5.5" (:model @captured)))
         (is (:use-responses-api @captured))
         (is (:force-tool-call @captured)))))
 
@@ -124,3 +124,9 @@
     (doseq [removed ["famous-greeting" "fix-bug" "comm-ask"
                      "globals-basic" "negotiate" "test-compact"]]
       (is (not (str/includes? exit-message removed))))))
+
+(deftest reasoning-effort-accepts-gpt-5-6-max-test
+  (testing "CLI accepts GPT-5.6's max reasoning effort"
+    (let [result (cli/validate-args ["-m" "gpt56sol" "-R" "max" "Return 42"])]
+      (is (= "Return 42" (:prompt result)))
+      (is (= "max" (get-in result [:options :reasoning-effort]))))))

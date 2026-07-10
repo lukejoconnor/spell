@@ -71,9 +71,9 @@
    ["-K" "--thinking BUDGET" "Enable Anthropic adaptive thinking (budget_tokens, e.g. 10000)"
     :parse-fn #(Integer/parseInt %)
     :validate [pos? "Must be positive"]]
-   ["-R" "--reasoning-effort EFFORT" "OpenAI reasoning effort (none, low, medium, high, xhigh)"
-    :validate [#(contains? #{"none" "low" "medium" "high" "xhigh"} %)
-               "Must be none, low, medium, high, or xhigh"]]
+   ["-R" "--reasoning-effort EFFORT" "OpenAI reasoning effort (none, low, medium, high, xhigh, max)"
+    :validate [#(contains? #{"none" "low" "medium" "high" "xhigh" "max"} %)
+               "Must be none, low, medium, high, xhigh, or max"]]
    [nil "--verbosity LEVEL" "OpenAI verbosity (low, auto)"
     :validate [#(contains? #{"low" "auto"} %) "Must be low or auto"]]
    [nil "--suffix-grammar" "Enable prefix-aware OpenAI suffix grammar constraints"]
