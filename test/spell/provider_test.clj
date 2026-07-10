@@ -532,13 +532,15 @@
 
 (deftest fireworks-reasoning-effort-request-test
   (testing "emits Fireworks reasoning_effort on completions requests"
-    (let [request (#'provider/fireworks-completions-request
-                    "test" "https://api.fireworks.ai/inference/v1"
-                    "accounts/fireworks/models/glm-5p1"
-                    "prompt" "system" nil nil nil nil "high" 600)
-          body (request-json-body request)]
-      (is (= "high" (:reasoning_effort body)))
-      (is (not (contains? body :thinking)))))
+    (doseq [model ["accounts/fireworks/models/glm-5p1"
+                   "accounts/fireworks/models/glm-5p2"]]
+      (let [request (#'provider/fireworks-completions-request
+                      "test" "https://api.fireworks.ai/inference/v1"
+                      model
+                      "prompt" "system" nil nil nil nil "high" 600)
+            body (request-json-body request)]
+        (is (= "high" (:reasoning_effort body)) model)
+        (is (not (contains? body :thinking)) model))))
 
   (testing "positive integer budgets are emitted as JSON strings"
     (let [request (#'provider/fireworks-completions-request
