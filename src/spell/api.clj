@@ -118,7 +118,8 @@
             (.removeShutdownHook (Runtime/getRuntime) shutdown-hook)
             (catch IllegalStateException _)))
         (when log-writer
-          (.flush ^java.io.Writer log-writer))))))
+          (.flush ^java.io.Writer log-writer))
+        (agent/close-compiled-agent! agent-fn)))))
 
 (defn run
   "Run a Spell agent with the v0.2.0 public API.
