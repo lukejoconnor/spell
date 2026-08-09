@@ -10,6 +10,10 @@
 (def client-info {"name" "Spell" "version" "0.2.0-dev"})
 (def max-model-text-chars 200000)
 (def max-model-structured-chars 500000)
+(def max-model-total-chars 500000)
+(def max-model-content-blocks 128)
+(def max-model-prompt-messages 128)
+(def max-model-completion-values 1000)
 (def required-meta-keys
   ["io.modelcontextprotocol/protocolVersion"
    "io.modelcontextprotocol/clientInfo"
@@ -243,30 +247,65 @@
   [result]
   (bounded-string (text-content result) max-model-text-chars))
 
+(defn- bounded-block [block]
+  (let [rendered
+        (case (get block "type")
+          "text" (update block "text" #(bounded-string (or % "") max-model-text-chars))
+          "image" (-> block (dissoc "data")
+                      (assoc "bytes" (quot (* 3 (count (get block "data" ""))) 4)))
+          "audio" (-> block (dissoc "data")
+                      (assoc "bytes" (quot (* 3 (count (get block "data" ""))) 4)))
+          "resource" (let [resource (get block "resource")]
+                       (if (contains? resource "blob")
+                         (assoc block "resource"
+                                (-> resource (dissoc "blob")
+                                    (assoc "bytes"
+                                           (quot (* 3 (count (get resource "blob" ""))) 4))))
+                         block))
+          block)
+        chars (count (json-encode rendered))]
+    (if (> chars max-model-structured-chars)
+      {"type" (or (get block "type") "unknown")
+       "omitted" true
+       "reason" "model rendering limit"
+       "jsonChars" chars}
+      rendered)))
+
 (defn bounded-content
   [result]
-  (mapv (fn [block]
-          (let [rendered
-                (case (get block "type")
-                  "text" (update block "text" #(bounded-string (or % "") max-model-text-chars))
-                  "image" (-> block (dissoc "data")
-                              (assoc "bytes" (quot (* 3 (count (get block "data" ""))) 4)))
-                  "audio" (-> block (dissoc "data")
-                              (assoc "bytes" (quot (* 3 (count (get block "data" ""))) 4)))
-                  "resource" (let [resource (get block "resource")]
-                               (if (contains? resource "blob")
-                                 (assoc block "resource"
-                                        (-> resource (dissoc "blob")
-                                            (assoc "bytes" (quot (* 3 (count (get resource "blob" ""))) 4))))
-                                 block))
-                  block)
-                chars (count (json-encode rendered))]
-            (if (> chars max-model-structured-chars)
-              {"type" (or (get block "type") "unknown")
-               "omitted" true
-               "jsonChars" chars}
-              rendered)))
-        (get result "content" [])))
+  (loop [remaining (seq (get result "content" []))
+         rendered []
+         rendered-chars 0
+         block-count 0]
+    (cond
+      (nil? remaining)
+      rendered
+
+      (>= block-count max-model-content-blocks)
+      (conj rendered {"type" "omitted"
+                      "omitted" true
+                      "reason" "model block-count limit"
+                      "omittedBlocks" (count remaining)})
+
+      :else
+      (let [block (bounded-block (first remaining))
+            block-chars (count (json-encode block))]
+        (if (> (+ rendered-chars block-chars) max-model-total-chars)
+          (conj rendered {"type" "omitted"
+                          "omitted" true
+                          "reason" "aggregate model rendering limit"
+                          "omittedBlocks" (count remaining)})
+          (recur (next remaining) (conj rendered block)
+                 (+ rendered-chars block-chars) (inc block-count)))))))
+
+(defn- enforce-model-total [value]
+  (let [chars (count (json-encode value))]
+    (if (<= chars max-model-total-chars)
+      value
+      (merge (select-keys value ["mcp/server" "mcp/operation" "isError"])
+             {"omitted" true
+              "reason" "aggregate model rendering limit"
+              "jsonChars" chars}))))
 
 (defn model-value
   [server operation result]
@@ -276,54 +315,82 @@
         structured-size (when structured? (count (json-encode structured)))
         text (bounded-text-content result)
         content (bounded-content result)]
-    (cond-> {"mcp/server" (name server)
-             "mcp/operation" operation}
-      (and structured? (<= structured-size max-model-structured-chars))
-      (assoc "structuredContent" structured)
-      (and structured? (> structured-size max-model-structured-chars))
-      (assoc "structuredContentOmitted"
-             {"reason" "model rendering limit" "jsonChars" structured-size})
-      (seq content) (assoc "content" content)
-      semantic-error? (assoc "isError" true "error" (if (str/blank? text)
-                                                        "MCP tool call failed"
-                                                        text)))))
+    (enforce-model-total
+     (cond-> {"mcp/server" (name server)
+              "mcp/operation" operation}
+       (and structured? (<= structured-size max-model-structured-chars))
+       (assoc "structuredContent" structured)
+       (and structured? (> structured-size max-model-structured-chars))
+       (assoc "structuredContentOmitted"
+              {"reason" "model rendering limit" "jsonChars" structured-size})
+       (seq content) (assoc "content" content)
+       semantic-error? (assoc "isError" true "error" (if (str/blank? text)
+                                                         "MCP tool call failed"
+                                                         text))))))
 
 (defn model-resource-value [server result]
-  {"mcp/server" (name server)
-   "mcp/operation" "resources/read"
-   "contents" (mapv (fn [resource]
-                       (get (first (bounded-content
-                                    {"content" [{"type" "resource" "resource" resource}]}))
-                            "resource"))
-                     (get result "contents" []))})
+  (let [content (bounded-content
+                 {"content" (mapv #(hash-map "type" "resource" "resource" %)
+                                   (get result "contents" []))})]
+    (enforce-model-total
+     {"mcp/server" (name server)
+      "mcp/operation" "resources/read"
+      "contents" (mapv #(or (get % "resource") %) content)})))
 
 (defn model-prompt-value [server result]
-  {"mcp/server" (name server)
-   "mcp/operation" "prompts/get"
-   "description" (some-> (get result "description")
-                           (bounded-string max-model-text-chars))
-   "messages" (mapv (fn [message]
-                       (update message "content"
-                               #(first (bounded-content {"content" [%]}))))
-                     (get result "messages" []))})
+  (let [messages (get result "messages" [])
+        limited (take max-model-prompt-messages messages)
+        rendered (bounded-content
+                  {"content" (mapv #(hash-map "type" "prompt-message"
+                                              "message" %)
+                                    limited)})
+        rendered (mapv #(or (get % "message") %) rendered)
+        rendered (cond-> rendered
+                   (> (count messages) max-model-prompt-messages)
+                   (conj {"omitted" true
+                          "reason" "model message-count limit"
+                          "omittedMessages" (- (count messages)
+                                                max-model-prompt-messages)}))]
+    (enforce-model-total
+     {"mcp/server" (name server)
+      "mcp/operation" "prompts/get"
+      "description" (some-> (get result "description")
+                              (bounded-string max-model-text-chars))
+      "messages" rendered})))
+
+(defn- bounded-completion-values [values]
+  (loop [remaining (seq values)
+         rendered []
+         rendered-chars 0
+         value-count 0]
+    (cond
+      (nil? remaining) rendered
+      (>= value-count max-model-completion-values)
+      (conj rendered (str "[… omitted " (count remaining) " completion values]"))
+      :else
+      (let [value (first remaining)
+            value (if (string? value) (bounded-string value max-model-text-chars) value)
+            value-chars (count (json-encode value))]
+        (if (> (+ rendered-chars value-chars) max-model-total-chars)
+          (conj rendered (str "[… omitted " (count remaining) " completion values]"))
+          (recur (next remaining) (conj rendered value)
+                 (+ rendered-chars value-chars) (inc value-count)))))))
 
 (defn model-completion-value [server result]
   (let [completion (get result "completion" {})]
-    {"mcp/server" (name server)
-     "mcp/operation" "completion/complete"
-     "completion" (update completion "values"
-                          #(mapv (fn [value]
-                                   (if (string? value)
-                                     (bounded-string value max-model-text-chars)
-                                     value))
-                                 (take 1000 (or % []))))}))
+    (enforce-model-total
+     {"mcp/server" (name server)
+      "mcp/operation" "completion/complete"
+      "completion" (update completion "values"
+                           #(bounded-completion-values (or % [])))})))
 
 (defn model-info-value [server discovery]
-  (cond-> (assoc (select-keys discovery
-                              ["supportedVersions" "capabilities" "_meta" "ttlMs" "cacheScope"
-                               "catalogCache" "excludedTools"])
-                 "mcp/server" (name server)
-                 "mcp/operation" "server/discover")
-    (string? (get discovery "instructions"))
-    (assoc "instructions" (bounded-string (get discovery "instructions")
-                                          max-model-text-chars))))
+  (enforce-model-total
+   (cond-> (assoc (select-keys discovery
+                               ["supportedVersions" "capabilities" "_meta" "ttlMs" "cacheScope"
+                                "catalogCache" "excludedTools"])
+                  "mcp/server" (name server)
+                  "mcp/operation" "server/discover")
+     (string? (get discovery "instructions"))
+     (assoc "instructions" (bounded-string (get discovery "instructions")
+                                           max-model-text-chars)))))
