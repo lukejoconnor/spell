@@ -76,8 +76,12 @@
                                       "properties" many-properties}})
                     (range 20))
         signature (mcp-ns/compact-signature (first tools) :tool0)
-        namespace-map (with-redefs [client/tools (constantly tools)]
-                        (mcp-ns/tool-namespace :demo ::client :all))
+        namespace-map
+        (with-redefs [client/open-client (fn [& _] ::client)
+                      client/catalog (constantly {:tools tools})
+                      client/tools (constantly tools)]
+          (get-in (mcp-ns/compile-servers {'demo dummy-server} ".")
+                  [:namespaces 'demo]))
         guide (get-in namespace-map [:docs :guide])
         system-prompt (prompt/generate-system-prompt {'demo namespace-map})]
     (testing "individual descriptions and signatures are bounded"
@@ -88,3 +92,67 @@
       (is (<= (count guide) mcp-ns/max-namespace-guide-chars))
       (is (not (.contains system-prompt long-description)))
       (is (< (count system-prompt) 2000)))))
+
+(deftest automatic-tool-selection-excludes-unsafe-server-names-test
+  (let [tools [{"name" "safe_tool"
+                "description" "Safe"
+                "inputSchema" {"type" "object"}}
+               {"name" "unsafe/tool"
+                "description" "Unsafe without an alias"
+                "inputSchema" {"type" "object"}}]
+        protocol-exclusion {:name "invalid-schema"
+                            :type :invalid-mcp-tool-schema
+                            :message "Invalid schema"}
+        namespace-map (with-redefs [client/tools (constantly tools)]
+                        (mcp-ns/tool-namespace :demo ::client :all))
+        [info refresh]
+        (with-redefs [client/tools (constantly tools)
+                      client/info (constantly {"excludedTools" [protocol-exclusion]})
+                      client/refresh! (constantly {:tools tools
+                                                   :resources []
+                                                   :resource-templates []
+                                                   :prompts []
+                                                   :excluded-tools [protocol-exclusion]
+                                                   :cache {}})]
+          (let [mcp-map (mcp-ns/mcp-namespace {:demo ::client}
+                                              {:demo {:tools :all}})]
+            [((:info mcp-map) :demo)
+             ((:refresh mcp-map) :demo)]))]
+    (testing ":all keeps safe tools and does not let server-controlled names break startup"
+      (is (fn? (:safe_tool namespace-map)))
+      (is (nil? (get namespace-map (keyword "unsafe" "tool")))))
+    (testing "unsafe names are reported alongside protocol-level exclusions"
+      (is (= [protocol-exclusion
+             {:name "unsafe/tool"
+               :type :invalid-mcp-tool-alias
+               :message "MCP tool needs an explicit Spell-safe alias: unsafe/tool"}]
+             (get info "excludedTools")))
+      (is (= (get info "excludedTools") (:excluded-tools refresh))))))
+
+(deftest explicit-unsafe-tool-selection-remains-strict-test
+  (let [tools [{"name" "safe_tool" "inputSchema" {"type" "object"}}
+               {"name" "unsafe/tool" "inputSchema" {"type" "object"}}]]
+    (testing "an explicit safe alias can expose an otherwise unsafe remote name"
+      (let [called (atom nil)
+            _ (with-redefs [client/tools (constantly tools)
+                            client/call-tool! (fn [_ tool arguments]
+                                                (reset! called [tool arguments])
+                                                {"ok" true})]
+                (let [namespace-map
+                      (mcp-ns/tool-namespace :demo ::client {'safe_alias "unsafe/tool"})]
+                  ((:safe_alias namespace-map) {})))]
+        (is (= ["unsafe/tool" {}] @called))))
+    (testing "explicit selection without a safe alias is a configuration error"
+      (is (= :invalid-mcp-tool-alias
+             (try
+               (with-redefs [client/tools (constantly tools)]
+                 (mcp-ns/tool-namespace :demo ::client ["unsafe/tool"]))
+               nil
+               (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))))
+    (testing "an explicitly unsafe exposed alias is a configuration error"
+      (is (= :invalid-mcp-tool-alias
+             (try
+               (with-redefs [client/tools (constantly tools)]
+                 (mcp-ns/tool-namespace :demo ::client {"unsafe/alias" "safe_tool"}))
+               nil
+               (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))))))

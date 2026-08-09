@@ -26,7 +26,9 @@
 
 (defn- bounded-conj [values value limit]
   (let [next (conj values value)]
-    (if (> (count next) limit) (subvec next (- (count next) limit)) next)))
+    (if (> (count next) limit)
+      (into [] (subvec next (- (count next) limit)))
+      next)))
 
 (defn- decode-utf8
   [bytes replace-invalid?]
@@ -207,6 +209,20 @@
 (defn send-notification! [transport method params]
   (write-message! transport (protocol/notification method params)))
 
+(defn abort-request!
+  "Immediately fail one local request and notify the server that it was
+   cancelled, without tearing down unrelated requests on the transport."
+  [transport request-id error]
+  (locking (:write-lock transport)
+    (when-not @(:closed? transport)
+      (when-let [response (get @(:pending transport) request-id)]
+        (deliver response {:request-error error})
+        (swap! (:pending transport) dissoc request-id))
+      (write-message-under-lock!
+       transport
+       (protocol/notification "notifications/cancelled" {"requestId" request-id}))))
+  nil)
+
 (defn send-request!
   ([transport message] (send-request! transport message default-timeout-ms))
   ([transport message timeout-ms]
@@ -227,6 +243,8 @@
            (throw (ex-info transport-error
                            {:type :mcp-stdio-error
                             :stderr (stderr-tail transport)})))
+         (when-let [request-error (:request-error value)]
+           (throw request-error))
          (protocol/parse-response (protocol/json-encode value) id))
        (finally
          (swap! (:pending transport) dissoc id))))))

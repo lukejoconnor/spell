@@ -3,6 +3,7 @@
             [spell.api :as api]
             [spell.runtime :as runtime]
             [spell.globals :as globals]
+            [spell.mcp.namespace :as mcp]
             [spell.provider :as provider])
   (:import [java.io StringReader StringWriter]))
 
@@ -67,6 +68,34 @@
                            :agent-profile test-agent})]
       (is (contains? result :error))
       (is (some? (:usage-tracker result))))))
+
+(deftest run-closes-namespace-embedded-agent-test
+  (testing "api/run closes MCP resources owned by an agent profile in :namespaces"
+    (let [root (.toFile (java.nio.file.Files/createTempDirectory
+                         "spell-api-namespace-close-"
+                         (make-array java.nio.file.attribute.FileAttribute 0)))
+          parent-file (java.io.File. root "parent.agent.edn")
+          child-file (java.io.File. root "child.agent.edn")
+          opened (atom 0)
+          closed (atom 0)]
+      (try
+        (spit child-file (pr-str {:provider {:type :test :response "unused"}
+                                  :mcp-servers {'child-mcp {}}}))
+        (spit parent-file (pr-str {:namespaces {'child 'child.agent.edn}}))
+        (let [result (with-redefs [mcp/compile-servers
+                                   (fn [_ _]
+                                     (swap! opened inc)
+                                     {:namespaces {}
+                                      :close! #(swap! closed inc)})]
+                       (api/run {:init "(do 42)"
+                                 :model-profile (provider/test-provider {:response "unused"})
+                                 :agent-profile (.getPath parent-file)}))]
+          (is (= 42 (:result result)))
+          (is (= 1 @opened))
+          (is (= 1 @closed)))
+        (finally
+          (doseq [file (reverse (file-seq root))]
+            (.delete file)))))))
 
 ;; =============================================================================
 ;; Validation tests

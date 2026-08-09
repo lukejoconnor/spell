@@ -71,6 +71,16 @@
                (fn [] (doseq [close! close-fns] (close!)))))
       compiled-agent)))
 
+(defn- owned-close-fns [values]
+  (keep (comp :spell/close! meta) values))
+
+(defn- namespace-close-fns [namespaces]
+  (owned-close-fns (vals (or namespaces {}))))
+
+(defn- close-owned-values! [values]
+  (doseq [close! (owned-close-fns values)]
+    (close!)))
+
 (defn- resolve-stdlib-path
   "Resolve a stdlib/X or stdlib/X/Y path.
    Returns the namespace or nested item."
@@ -198,12 +208,20 @@
 
     ;; Vector - merge resolved namespace maps
     (vector? value)
-    (let [resolved (mapv #(resolve-namespace-value % base-dir clj-cache compile-agent-fn) value)]
-      (when-not (every? map? resolved)
-        (throw (ex-info "Vector namespace values must resolve to namespace maps"
-                        {:value value
-                         :resolved-types (mapv type resolved)})))
-      (apply merge-namespace-maps resolved))
+    (let [resolved-ref (atom [])]
+      (try
+        (doseq [item value]
+          (swap! resolved-ref conj
+                 (resolve-namespace-value item base-dir clj-cache compile-agent-fn)))
+        (let [resolved @resolved-ref]
+          (when-not (every? map? resolved)
+            (throw (ex-info "Vector namespace values must resolve to namespace maps"
+                            {:value value
+                             :resolved-types (mapv type resolved)})))
+          (apply merge-namespace-maps resolved))
+        (catch Throwable e
+          (close-owned-values! @resolved-ref)
+          (throw e))))
 
     ;; Symbol - check pattern
     (symbol? value)
@@ -238,11 +256,30 @@
 (defn- resolve-namespaces
   "Resolve all namespace entries in the agent profile definition."
   [namespaces base-dir compile-agent-fn]
-  (let [clj-cache (atom {})]
-    (into {}
-          (map (fn [[k v]]
-                 [(symbol k) (resolve-namespace-value v base-dir clj-cache compile-agent-fn)])
-               namespaces))))
+  (let [normalized-entries
+        (reduce (fn [{:keys [seen entries] :as state} [key value]]
+                  (let [normalized-key (symbol key)]
+                    (when (contains? seen normalized-key)
+                      (throw (ex-info
+                              (str "Duplicate agent namespace after normalization: " normalized-key)
+                              {:type :duplicate-agent-namespace
+                               :namespace normalized-key})))
+                    (assoc state
+                           :seen (conj seen normalized-key)
+                           :entries (conj entries [normalized-key value]))))
+                {:seen #{} :entries []}
+                namespaces)
+        clj-cache (atom {})
+        resolved-ref (atom {})]
+    (try
+      (doseq [[k v] (:entries normalized-entries)]
+        (swap! resolved-ref assoc
+               k
+               (resolve-namespace-value v base-dir clj-cache compile-agent-fn)))
+      @resolved-ref
+      (catch Throwable e
+        (close-owned-values! (vals @resolved-ref))
+        (throw e)))))
 
 ;; =============================================================================
 ;; System prompt resolution
@@ -459,12 +496,16 @@
                         (provider/resolve-provider (:provider spec) spec-base-dir)
                         parent-provider)
         system (resolve-system-prompt (:system spec) spec-base-dir)
-        spec-namespaces (when (:namespaces spec)
-                          (resolve-namespaces (:namespaces spec) spec-base-dir compile-agent-fn))
-        mcp-bundle (when (seq (:mcp-servers spec))
-                     (mcp/compile-servers (:mcp-servers spec) spec-base-dir))]
+        spec-namespaces-ref (atom nil)
+        mcp-bundle-ref (atom nil)]
     (try
-      (let [mcp-namespaces (:namespaces mcp-bundle)
+      (let [spec-namespaces (when (:namespaces spec)
+                              (resolve-namespaces (:namespaces spec) spec-base-dir compile-agent-fn))
+            _ (reset! spec-namespaces-ref spec-namespaces)
+            mcp-bundle (when (seq (:mcp-servers spec))
+                         (mcp/compile-servers (:mcp-servers spec) spec-base-dir))
+            _ (reset! mcp-bundle-ref mcp-bundle)
+            mcp-namespaces (:namespaces mcp-bundle)
             occupied (set (concat (keys spec-namespaces)
                                   (keys extra-namespaces)
                                   (keys llm/core-namespaces)))
@@ -479,9 +520,11 @@
                                                                 :provider spec-provider
                                                                 :system system
                                                                 :namespaces all-namespaces})]
-        (attach-close compiled [(:close! mcp-bundle)]))
+        (attach-close compiled (cons (:close! mcp-bundle)
+                                     (namespace-close-fns spec-namespaces))))
       (catch Throwable e
-        (when-let [close! (:close! mcp-bundle)] (close!))
+        (when-let [close! (:close! @mcp-bundle-ref)] (close!))
+        (close-owned-values! (vals (or @spec-namespaces-ref {})))
         (throw e)))))
 
 (defn resolve-workers
@@ -581,13 +624,18 @@
         resolved-provider (when provider
                             (provider/resolve-provider provider base-dir))
         compile-agent-fn compile-agent-spec
-        resolved-namespaces (when namespaces
-                              (resolve-namespaces namespaces base-dir compile-agent-fn))
-        mcp-bundle (when (seq mcp-servers)
-                     (mcp/compile-servers mcp-servers (or base-dir (System/getProperty "user.dir"))))
+        resolved-namespaces-ref (atom nil)
+        mcp-bundle-ref (atom nil)
         workers-ns-ref (atom nil)]
     (try
-      (let [mcp-namespaces (:namespaces mcp-bundle)
+      (let [resolved-namespaces (when namespaces
+                                  (resolve-namespaces namespaces base-dir compile-agent-fn))
+            _ (reset! resolved-namespaces-ref resolved-namespaces)
+            mcp-bundle (when (seq mcp-servers)
+                         (mcp/compile-servers mcp-servers
+                                              (or base-dir (System/getProperty "user.dir"))))
+            _ (reset! mcp-bundle-ref mcp-bundle)
+            mcp-namespaces (:namespaces mcp-bundle)
             collisions (set/intersection (set (concat (keys resolved-namespaces)
                                                       (keys llm/core-namespaces)))
                                          (set (keys mcp-namespaces)))
@@ -611,9 +659,12 @@
                                                                 :provider resolved-provider
                                                                 :system resolved-system
                                                                 :namespaces all-namespaces})]
-        (attach-close compiled (cons (:close! mcp-bundle) worker-close-fns)))
+        (attach-close compiled (concat [(:close! mcp-bundle)]
+                                       worker-close-fns
+                                       (namespace-close-fns resolved-namespaces))))
       (catch Throwable e
-        (when-let [close! (:close! mcp-bundle)] (close!))
+        (when-let [close! (:close! @mcp-bundle-ref)] (close!))
         (doseq [close! (keep (comp :spell/close! meta val) @workers-ns-ref)]
           (close!))
+        (close-owned-values! (vals (or @resolved-namespaces-ref {})))
         (throw e)))))

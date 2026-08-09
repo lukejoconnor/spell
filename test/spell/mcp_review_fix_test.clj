@@ -1,9 +1,181 @@
 (ns spell.mcp-review-fix-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest is testing]]
             [spell.http :as http]
             [spell.mcp.client :as client]
             [spell.mcp.http :as mcp-http]
-            [spell.mcp.protocol :as protocol]))
+            [spell.mcp.protocol :as protocol]
+            [spell.mcp.stdio :as stdio])
+  (:import [java.io BufferedWriter ByteArrayInputStream StringWriter]
+           [java.net URI]
+           [java.net.http HttpClient$Version HttpHeaders HttpResponse]
+           [java.util Optional]
+           [java.util.function BiPredicate]))
+
+(deftest http-client-is-created-once-and-shared-by-calls-and-listen-test
+  (let [shared-client (http/make-client)
+        make-count (atom 0)
+        observed-clients (atom [])]
+    (with-redefs [http/make-client
+                  (fn [& _]
+                    (swap! make-count inc)
+                    shared-client)
+                  mcp-http/send-request!
+                  (fn [config _message _tool]
+                    (swap! observed-clients conj [:call (:client config)])
+                    {"supportedVersions" [protocol/protocol-version]
+                     "capabilities" {}})
+                  mcp-http/listen!
+                  (fn [config _message on-notification _on-open _on-close]
+                    (swap! observed-clients conj [:listen (:client config)])
+                    (on-notification
+                     {"method" "notifications/subscriptions/acknowledged"})
+                    {"resultType" "complete"})]
+      (with-open [mcp-client
+                  (client/open-client :demo
+                                      {:transport {:http {:url "https://example.com/mcp"}}})]
+        (client/discover! mcp-client)
+        (client/listen! mcp-client {"toolsListChanged" true} (fn [_]))))
+    (is (= 1 @make-count))
+    (is (= [:call :listen] (mapv first @observed-clients)))
+    (is (every? #(identical? shared-client (second %)) @observed-clients))))
+
+(deftest pagination-cache-metadata-is-conservative-across-pages-test
+  (let [responses (atom [{"items" [1]
+                          "nextCursor" "second"
+                          "ttlMs" 9000
+                          "cacheScope" "public"}
+                         {"items" [2]
+                          "ttlMs" 4000
+                          "cacheScope" "private"}])
+        clock (atom [1000 5000])]
+    (with-redefs-fn
+      {#'spell.mcp.client/send!
+       (fn [_ _ _]
+         (let [response (first @responses)]
+           (swap! responses subvec 1)
+           response))
+       #'spell.mcp.client/now-ms
+       (fn []
+         (let [value (first @clock)]
+           (swap! clock subvec 1)
+           value))}
+      #(is (= {:items [1 2]
+               :cache {"ttlMs" 4000 "cacheScope" "private"}
+               :cache-expires-at 9000}
+              (#'spell.mcp.client/paginate! nil "items/list" "items")))))
+  (let [responses (atom [{"items" [1] "nextCursor" "second" "ttlMs" 9000}
+                         {"items" [2]}])
+        clock (atom [1000 5000])]
+    (with-redefs-fn
+      {#'spell.mcp.client/send!
+       (fn [_ _ _]
+         (let [response (first @responses)]
+           (swap! responses subvec 1)
+           response))
+       #'spell.mcp.client/now-ms
+       (fn []
+         (let [value (first @clock)]
+           (swap! clock subvec 1)
+           value))}
+      #(is (= {:items [1 2] :cache {} :cache-expires-at nil}
+              (#'spell.mcp.client/paginate! nil "items/list" "items"))))))
+
+(deftest reusable-catalog-deadline-includes-discovery-and-every-page-test
+  (let [catalog {:discovery {"ttlMs" 10000}
+                 :cache {:tools {"ttlMs" 9000}
+                         :resources {"ttlMs" 4000}
+                         :prompts nil}
+                 :cache-expiries {:discovery 11000
+                                  :tools 10000
+                                  :resources 9000}}]
+    (is (= 9000 (#'spell.mcp.client/catalog-expires-at catalog)))
+    (is (nil? (#'spell.mcp.client/catalog-expires-at
+               (assoc-in catalog [:cache :resources] {}))))))
+
+(deftest non-2xx-subscription-always-raises-status-error-and-closes-body-test
+  (let [closed? (atom false)
+        request-id "listen-request"
+        response-body (protocol/json-encode
+                       {"jsonrpc" "2.0"
+                        "id" request-id
+                        "result" {"resultType" "complete"}})
+        body (proxy [ByteArrayInputStream]
+               [(.getBytes response-body "UTF-8")]
+               (close []
+                 (reset! closed? true)
+                 (proxy-super close)))
+        headers (HttpHeaders/of
+                 {"Content-Type" ["application/json"]}
+                 (reify BiPredicate
+                   (test [_ _ _] true)))
+        response (reify HttpResponse
+                   (statusCode [_] 503)
+                   (request [_] nil)
+                   (previousResponse [_] (Optional/empty))
+                   (headers [_] headers)
+                   (body [_] body)
+                   (sslSession [_] (Optional/empty))
+                   (uri [_] (URI/create "https://example.com/mcp"))
+                   (version [_] HttpClient$Version/HTTP_1_1))
+        message {"jsonrpc" "2.0"
+                 "id" request-id
+                 "method" "subscriptions/listen"
+                 "params" {}}
+        error (with-redefs [http/send-request (fn [& _] response)]
+                (try
+                  (mcp-http/listen! {:url "https://example.com/mcp"}
+                                    message (fn [_]))
+                  nil
+                  (catch clojure.lang.ExceptionInfo e e)))]
+    (is (= :mcp-http-error (:type (ex-data error))))
+    (is (= 503 (:status (ex-data error))))
+    (is (= {"resultType" "complete"} (:result (ex-data error))))
+    (is @closed?)))
+
+(deftest invalid-first-stdio-subscription-notification-aborts-immediately-test
+  (let [output (StringWriter.)
+        transport (stdio/->StdioTransport nil (BufferedWriter. output)
+                                          (atom {}) (atom #{}) (atom [])
+                                          (Object.) (atom false) [])
+        mcp-client (client/map->MCPClient
+                    {:alias :demo
+                     :transport-type :stdio
+                     :transport-config {:subscription-timeout-ms 60000}
+                     :stdio-transport transport
+                     :subscription-streams (atom #{})
+                     :subscription-ids (atom #{})
+                     :closed? (atom false)
+                     :lifecycle-lock (Object.)})
+        delivered (atom [])
+        listening (future
+                    (try
+                      (client/listen! mcp-client {"toolsListChanged" true}
+                                      #(swap! delivered conj %))
+                      nil
+                      (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))
+        [listener request-id]
+        (loop [attempt 0]
+          (let [listener (first @(:listeners transport))
+                request-id (first (keys @(:pending transport)))]
+            (if (and listener request-id)
+              [listener request-id]
+              (if (< attempt 100)
+                (do (Thread/sleep 5) (recur (inc attempt)))
+                (throw (ex-info "stdio subscription request was not registered" {}))))))]
+    (listener {"jsonrpc" "2.0"
+               "method" "notifications/tools/list_changed"
+               "params" {"_meta" {"io.modelcontextprotocol/subscriptionId"
+                                      request-id}}})
+    (is (= :invalid-mcp-subscription-stream (deref listening 1000 ::timed-out)))
+    (is (empty? @delivered))
+    (is (= "notifications/cancelled"
+           (get (protocol/json-decode (last (str/split-lines (str output)))) "method")))
+    (listener {"jsonrpc" "2.0"
+               "method" "notifications/subscriptions/acknowledged"
+               "params" {"_meta" {"io.modelcontextprotocol/subscriptionId"
+                                      request-id}}})
+    (is (empty? @delivered) "a late acknowledgement must not revive the subscription")))
 
 (deftest configured-header-names-must-be-case-insensitively-unique-test
   (is (= :duplicate-mcp-header
