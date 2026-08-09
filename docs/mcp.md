@@ -18,7 +18,10 @@ A stdio profile uses an argument vector, not a shell command:
 
 ```clojure
 {:transport {:stdio {:command ["my-mcp-server" "--stdio"]
-                     :env {"SERVICE_TOKEN" {:env "EXAMPLE_MCP_TOKEN"}}}}
+                     :env {"SERVICE_TOKEN" {:env "EXAMPLE_MCP_TOKEN"}}
+                     :max-message-bytes 16777216
+                     :stderr-max-line-bytes 65536
+                     :stderr-max-lines 200}}
  :timeout-ms 120000}
 ```
 
@@ -46,7 +49,7 @@ Subscriptions use the protocol filter shape, for example `(mcp/listen-send :rese
 
 Catalogs are completely paginated, sorted by their protocol identity, and fixed for the generated tool namespace during a compiled run. Catalogs above 20 permitted tools use summary disclosure: the base prompt contains only the namespace summary, `!describe` shows compact signatures, and item-level `!describe` retains the full schema. `mcp/refresh` refreshes protocol catalogs without silently changing that run's callable functions. Positive server `ttlMs` values permit in-memory reuse across compiles with the same alias, endpoint, and credential context; `ttlMs: 0` disables that reuse. Subscription notifications invalidate reusable catalog entries.
 
-Server descriptions, instructions, schemas, annotations, and extension metadata remain attributed, untrusted data. Spell does not insert server instructions into its system prompt. Tool arguments and structured outputs are validated with JSON Schema 2020-12, and external schema references are rejected rather than fetched.
+Server descriptions, instructions, schemas, annotations, and extension metadata remain attributed, untrusted data. Spell does not insert server instructions into its system prompt. Compact signatures and aggregate namespace documentation are bounded, as are the block count and total serialized size of every model-facing result. Tool arguments and structured outputs are validated with JSON Schema 2020-12, and external schema references are rejected rather than fetched.
 
 ## Explore from the CLI
 

@@ -27,7 +27,10 @@
                                    "-n" "spell.macros-test"
                                    "-n" "spell.provider-test"
                                    "-n" "spell.mcp-protocol-test"
-                                   "-n" "spell.mcp-client-test"]}
+                                   "-n" "spell.mcp-client-test"
+                                   "-n" "spell.mcp-regression-test"
+                                   "-n" "spell.mcp-review-fix-test"
+                                   "-n" "spell.mcp-stdio-limits-test"]}
            ;; Slow tests — concurrency, I/O, filesystem watchers (~12s)
            :test-slow {:extra-paths ["test"]
                        :extra-deps {io.github.cognitect-labs/test-runner

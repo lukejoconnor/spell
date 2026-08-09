@@ -13,20 +13,22 @@
 (defonce ^:private reusable-catalog-lock (Object.))
 
 (defrecord MCPClient [alias transport-type transport-config stdio-transport catalog lock cache-key
-                      subscription-streams subscription-ids catalog-permissions]
+                      subscription-streams subscription-ids catalog-permissions closed? lifecycle-lock]
   Closeable
   (close [_]
-    (doseq [stream @subscription-streams]
-      (try (.close ^Closeable stream) (catch Exception _)))
-    (reset! subscription-streams #{})
-    (when stdio-transport
-      (doseq [request-id @subscription-ids]
-        (try
-          (stdio/send-notification! stdio-transport "notifications/cancelled"
-                                    {"requestId" request-id})
-          (catch Exception _)))
-      (reset! subscription-ids #{})
-      (.close ^Closeable stdio-transport))))
+    (locking lifecycle-lock
+      (when (compare-and-set! closed? false true)
+        (doseq [stream @subscription-streams]
+          (try (.close ^Closeable stream) (catch Exception _)))
+        (reset! subscription-streams #{})
+        (when stdio-transport
+          (doseq [request-id @subscription-ids]
+            (try
+              (stdio/send-notification! stdio-transport "notifications/cancelled"
+                                        {"requestId" request-id})
+              (catch Exception _)))
+          (reset! subscription-ids #{})
+          (.close ^Closeable stdio-transport))))))
 
 (defn- sha256 [value]
   (let [digest (.digest (MessageDigest/getInstance "SHA-256")
@@ -77,11 +79,17 @@
     (let [catalog-permissions (get config :catalog-permissions :all)]
       (->MCPClient alias transport-type transport-config stdio-transport (atom nil) (Object.)
                    (client-cache-key alias transport-type transport-config catalog-permissions)
-                   (atom #{}) (atom #{}) catalog-permissions))))
+                   (atom #{}) (atom #{}) catalog-permissions (atom false) (Object.)))))
+
+(defn- ensure-open! [client]
+  (when @(:closed? client)
+    (throw (ex-info "MCP client is closed"
+                    {:type :mcp-client-closed :server (:alias client)}))))
 
 (defn- send!
   ([client method params] (send! client method params nil))
   ([client method params tool]
+   (ensure-open! client)
    (let [message (protocol/request method params)]
      (case (:transport-type client)
        :http (mcp-http/send-request! (:transport-config client) message tool)
@@ -251,19 +259,28 @@
                  (throw (ex-info (str "MCP tool not found or not permitted: " name)
                                  {:type :mcp-tool-not-found :tool name})))
         arguments (or arguments {})]
-    (schema/validate! (get tool "inputSchema") arguments (str "Arguments for MCP tool " name))
-    (let [invoke #(send! client "tools/call"
-                         {"name" name "arguments" arguments}
-                         tool)
-          result (try
-                   (invoke)
-                   (catch clojure.lang.ExceptionInfo e
-                     (if (and (= :mcp-json-rpc-error (:type (ex-data e)))
-                              (= -32020 (:code (ex-data e)))
-                              (= :http (:transport-type client)))
-                       (do (refresh! client) (invoke))
-                       (throw e))))]
-      (when-let [output-schema (get tool "outputSchema")]
+    (let [invoke (fn [active-tool]
+                   (schema/validate! (get active-tool "inputSchema") arguments
+                                     (str "Arguments for MCP tool " name))
+                   (send! client "tools/call"
+                          {"name" name "arguments" arguments}
+                          active-tool))
+          [active-tool result]
+          (try
+            [tool (invoke tool)]
+            (catch clojure.lang.ExceptionInfo e
+              (if (and (= :mcp-json-rpc-error (:type (ex-data e)))
+                       (= -32020 (:code (ex-data e)))
+                       (= :http (:transport-type client)))
+                (let [_ (refresh! client)
+                      refreshed-tool (or (find-tool client name)
+                                         (throw (ex-info
+                                                 (str "MCP tool disappeared after catalog refresh: " name)
+                                                 {:type :mcp-tool-not-found :tool name}
+                                                 e)))]
+                  [refreshed-tool (invoke refreshed-tool)])
+                (throw e))))]
+      (when-let [output-schema (get active-tool "outputSchema")]
         (when (contains? result "structuredContent")
           (schema/validate! output-schema (get result "structuredContent")
                             (str "Output from MCP tool " name))))
@@ -314,6 +331,7 @@
   "Block on subscriptions/listen and invoke on-notification for each granted
    notification. The caller controls threading and cancellation."
   [client notifications on-notification]
+  (ensure-open! client)
   (let [message (protocol/request "subscriptions/listen"
                                   {"notifications" (validate-subscription-filter! notifications)})
         request-id (get message "id")
@@ -336,8 +354,18 @@
             (case (:transport-type client)
               :http
               (mcp-http/listen! (:transport-config client) message handle-notification
-                                #(swap! (:subscription-streams client) conj %)
-                                #(swap! (:subscription-streams client) disj %))
+                                (fn [stream]
+                                  (locking (:lifecycle-lock client)
+                                    (if @(:closed? client)
+                                      (do
+                                        (try (.close ^Closeable stream) (catch Exception _))
+                                        (throw (ex-info "MCP client closed while opening subscription"
+                                                        {:type :mcp-client-closed
+                                                         :server (:alias client)})))
+                                      (swap! (:subscription-streams client) conj stream))))
+                                (fn [stream]
+                                  (locking (:lifecycle-lock client)
+                                    (swap! (:subscription-streams client) disj stream))))
 
               :stdio
               (let [remove-listener
