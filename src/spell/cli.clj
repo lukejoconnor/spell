@@ -4,6 +4,7 @@
             [clojure.string :as str]
             [clojure.java.io :as io]
             [spell.api :as api]
+            [spell.mcp.cli :as mcp-cli]
             [spell.model-spec :as model-spec]
             [spell.provider :as provider]
             [spell.trace :as spell-trace])
@@ -335,7 +336,12 @@
       (.exitValue proc))))
 
 (defn -main [& args]
-  (let [{:keys [prompt init options exit-message ok?]} (validate-args args)]
+  (if (= "mcp" (first args))
+    (let [{:keys [status out err]} (mcp-cli/execute (rest args))]
+      (when-not (str/blank? out) (println (str/trim-newline out)))
+      (when err (binding [*out* *err*] (println "Error:" err)))
+      (System/exit status))
+    (let [{:keys [prompt init options exit-message ok?]} (validate-args args)]
     (if exit-message
       (do
         (println exit-message)
@@ -377,4 +383,4 @@
               (System/exit 1))
             (do
               (println result)
-              (System/exit 0))))))))
+              (System/exit 0)))))))))

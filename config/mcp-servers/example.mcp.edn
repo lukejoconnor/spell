@@ -1,0 +1,5 @@
+;; Copy this profile and replace the endpoint and environment-variable names.
+{:transport {:http {:url "https://example.com/mcp"}}
+ :auth {:bearer-token-env "EXAMPLE_MCP_TOKEN"}
+ :timeout-sec 120
+ :max-response-bytes 16777216}

@@ -12,6 +12,7 @@ Notable release-surface changes relative to v0.1.0:
 - Consolidated public documentation around `README.md`, `AGENTS.md`, and `docs/api.md`.
 - Removed the experimental React namespace/profile from the public release surface.
 - Added repo-local Spell skills for setup, configuration, and source navigation.
+- Added a new-spec-only MCP `2026-07-28` client with generated permissioned namespaces, Streamable HTTP and stdio transports, tools, resources, prompts, completion, subscriptions, and an explorer-style `spell mcp` CLI.
 
 ## v0.1.0 - 2026-05-06
 

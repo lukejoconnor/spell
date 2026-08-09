@@ -14,7 +14,9 @@
   "Extract per-function doc entries from a namespace map, filtering out
    :guide and :_ meta-entries."
   [ns-map]
-  (dissoc (:docs ns-map) :guide :_))
+  (if (= :summary (:disclosure ns-map))
+    {}
+    (dissoc (:docs ns-map) :guide :_)))
 
 (defn- namespaces-section
   "Generate the NAMESPACES section from namespace metadata.
@@ -37,11 +39,13 @@
                            (str "## " ns-sym
                                 (when (:short-docs ns-map)
                                   (str " — " (:short-docs ns-map)))
-                                "\n"
-                                (str/join "\n"
-                                  (map (fn [[k desc]]
-                                         (str "  " (name k) ": " desc))
-                                       docs)))))
+                                (if (= :summary (:disclosure ns-map))
+                                  "\n  Large namespace: use (!describe namespace) for compact item signatures."
+                                  (str "\n"
+                                       (str/join "\n"
+                                         (map (fn [[k desc]]
+                                                (str "  " (name k) ": " desc))
+                                              docs)))))))
                        effect-namespaces))
                 "\n\n"))
          "Usage:\n"

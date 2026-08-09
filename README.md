@@ -6,6 +6,7 @@ Self-programmed execution (SPE) is when a language model (LM) acts as a self-orc
 
 - [Core semantics](#core-semantics)
 - [Quick start](#quick-start)
+- [MCP servers](#mcp-servers)
 - [Spell language overview](#spell-language-overview)
   - [Relationship with Clojure](#relationship-with-clojure)
   - [The completion is the program](#the-completion-is-the-program)
@@ -56,6 +57,10 @@ bin/spell -h
 ```
 
 To run `spell` directly instead of `bin/spell`, put this checkout's `bin/` directory on your `PATH`.
+
+## MCP servers
+
+Spell can turn a configured stateless MCP `2026-07-28` server into ordinary, permissioned Spell namespaces. Server profiles contain connection and environment-backed authentication settings; agent profiles select which tools, resources, prompts, completion, and subscriptions are available. Explore a server with `bin/spell mcp list SERVER` and see [the MCP client guide](docs/mcp.md) for configuration, CLI commands, supported features, and deliberate exclusions.
 
 ## Spell language overview
 

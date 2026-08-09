@@ -18,6 +18,8 @@ This repo includes Spell-specific skills under `.agents/skills/`. Use them as th
 
 - Edit marker: a source form, such as `prune`, `rethink`, or `persist`, that affects how `apply-edits` rewrites a completion for a later turn.
 - Edit time: the phase when `apply-edits` applies edit markers to a completion before it is used as a model prefix.
+- MCP server profile: a reusable `.mcp.edn` connection and environment-backed authentication definition.
+- Server alias: the agent-profile name that identifies an MCP server and becomes its generated Spell namespace.
 
 ## Top-Level Layout
 

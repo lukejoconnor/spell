@@ -1,0 +1,5 @@
+[project]
+name = "spell-mcp-interop"
+version = "0.0.0"
+requires-python = ">=3.10"
+dependencies = ["mcp==2.0.0"]

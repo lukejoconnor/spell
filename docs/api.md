@@ -67,6 +67,8 @@ On failure:
 
 The API catches evaluation and provider exceptions and returns them as data. Input validation errors, such as supplying both `:prompt` and `:init`, throw.
 
+At the end of a run, the API closes resources owned by the compiled agent, including MCP subscription streams and stdio subprocesses. Embedders that call `spell.agent/compile-agent-spec` directly should call `spell.agent/close-compiled-agent!` when they are finished with the compiled function.
+
 ## Examples
 
 Run a natural-language task:
@@ -230,6 +232,7 @@ Agent profile files live under `config/agent-profiles/` and use EDN maps.
 | `:grammar-max-chars` | delete from public spec | Only relevant to omitted suffix grammar support. |
 | `:available-agents` | keep agent | Explicit sub-agent set exposed through the `workers/` namespace. Omit it for no additional workers beyond inherited base profile settings. |
 | `:namespaces` | keep agent | Spell namespaces exposed to the agent. |
+| `:mcp-servers` | keep agent | Configured stateless MCP servers and per-capability permissions. Child profiles merge this map by server alias. See [MCP Client](mcp.md). |
 | `:api` | delete | Loaded and inherited by older configs but unused by the runtime. It is not part of the public config surface. |
 
 ### Namespace Values
