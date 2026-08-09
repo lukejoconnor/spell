@@ -24,6 +24,16 @@
         (< (System/currentTimeMillis) deadline) (do (Thread/sleep 10) (recur))
         :else false))))
 
+(deftest stderr-ring-buffer-does-not-retain-trimmed-prefix-test
+  (let [bounded-conj #'spell.mcp.stdio/bounded-conj
+        values (reduce (fn [current value]
+                         (bounded-conj current value 200))
+                       []
+                       (range 100000))]
+    (is (= (vec (range 99800 100000)) values))
+    (is (= clojure.lang.PersistentVector (class values))
+        "trimmed stderr history must copy out of SubVector backing storage")))
+
 (defn- exercise-reader-failure! [expression]
   (let [c (client/open-client
            :stdio-failure

@@ -1,6 +1,7 @@
 (ns spell.mcp.client
   "Transport-independent MCP 2026-07-28 client."
-  (:require [spell.mcp.http :as mcp-http]
+  (:require [spell.http :as http]
+            [spell.mcp.http :as mcp-http]
             [spell.mcp.protocol :as protocol]
             [spell.mcp.schema :as schema]
             [spell.mcp.stdio :as stdio])
@@ -11,6 +12,8 @@
 (def max-pagination-pages 1000)
 (defonce ^:private reusable-catalogs (atom {}))
 (defonce ^:private reusable-catalog-lock (Object.))
+
+(defn- now-ms [] (System/currentTimeMillis))
 
 (defrecord MCPClient [alias transport-type transport-config stdio-transport catalog lock cache-key
                       subscription-streams subscription-ids catalog-permissions closed? lifecycle-lock]
@@ -64,8 +67,15 @@
         [transport-type transport-config]
         (cond
           (:http transport)
-          [:http (merge (:http transport)
-                        (select-keys config [:auth :headers :timeout-sec :max-response-bytes]))]
+          (let [http-config (merge (:http transport)
+                                   (select-keys config [:auth :headers :timeout-sec
+                                                        :max-response-bytes]))]
+            [:http (assoc http-config :client
+                          (or (:client http-config)
+                              (http/make-client
+                               {:connect-timeout-sec
+                                (or (:connect-timeout-sec http-config)
+                                    http/default-connect-timeout-sec)})))])
 
           (:stdio transport)
           [:stdio (merge (:stdio transport)
@@ -100,6 +110,7 @@
 (defn discover!
   [client]
   (let [result (send! client "server/discover" {})
+        received-at (now-ms)
         supported (set (get result "supportedVersions"))]
     (when-not (contains? supported protocol/protocol-version)
       (throw (ex-info (str "MCP server does not support required protocol "
@@ -107,7 +118,29 @@
                       {:type :unsupported-mcp-version
                        :required protocol/protocol-version
                        :supported (vec supported)})))
-    result))
+    (with-meta result (assoc (meta result) ::received-at received-at))))
+
+(defn- aggregate-page-cache
+  "Conservatively combine cache metadata for a fully paginated result. The
+   aggregate may be reused only when every page supplies a positive TTL."
+  [page-caches]
+  (let [ttls (map #(get % "ttlMs") page-caches)
+        scopes (keep #(get % "cacheScope") page-caches)
+        ttl-ms (when (and (seq ttls)
+                          (every? #(and (integer? %) (pos? %)) ttls))
+                 (apply min ttls))
+        expires-at (when (and ttl-ms
+                              (every? integer? (map ::expires-at page-caches)))
+                     (apply min (map ::expires-at page-caches)))
+        cache-scope (cond
+                      (some #{"private"} scopes) "private"
+                      (and (= (count scopes) (count page-caches))
+                           (apply = scopes)) (first scopes)
+                      :else nil)]
+    (cond-> {}
+      ttl-ms (assoc "ttlMs" ttl-ms)
+      expires-at (assoc ::expires-at expires-at)
+      cache-scope (assoc "cacheScope" cache-scope))))
 
 (defn- paginate!
   [client method result-key]
@@ -115,18 +148,27 @@
          seen #{}
          page 0
          items []
-         cache nil]
+         page-caches []]
     (when (>= page max-pagination-pages)
       (throw (ex-info "MCP pagination exceeded page limit"
                       {:type :pagination-limit :method method
                        :max-pages max-pagination-pages})))
     (let [result (send! client method (cond-> {} cursor (assoc "cursor" cursor)))
+          received-at (now-ms)
           next-cursor (get result "nextCursor")
           items' (into items (get result result-key []))
-          cache' (select-keys result ["ttlMs" "cacheScope"])]
+          page-cache (select-keys result ["ttlMs" "cacheScope"])
+          page-cache (cond-> page-cache
+                       (and (integer? (get page-cache "ttlMs"))
+                            (pos? (get page-cache "ttlMs")))
+                       (assoc ::expires-at (+ received-at (get page-cache "ttlMs"))))
+          page-caches' (conj page-caches page-cache)]
       (cond
         (nil? next-cursor)
-        {:items items' :cache (or cache' cache)}
+        (let [aggregate (aggregate-page-cache page-caches')]
+          {:items items'
+           :cache (dissoc aggregate ::expires-at)
+           :cache-expires-at (::expires-at aggregate)})
 
         (contains? seen next-cursor)
         (throw (ex-info "MCP server repeated a pagination cursor"
@@ -134,7 +176,7 @@
                          :method method :cursor next-cursor}))
 
         :else
-        (recur next-cursor (conj seen next-cursor) (inc page) items' (or cache cache'))))))
+        (recur next-cursor (conj seen next-cursor) (inc page) items' page-caches')))))
 
 (defn- capability? [discovery name]
   (contains? (get discovery "capabilities" {}) name))
@@ -150,29 +192,39 @@
 
 (defn- reusable-catalog [client]
   (when-let [{:keys [catalog expires-at]} (get @reusable-catalogs (:cache-key client))]
-    (if (> expires-at (System/currentTimeMillis))
+    (if (> expires-at (now-ms))
       catalog
       (do (swap! reusable-catalogs dissoc (:cache-key client)) nil))))
 
-(defn- catalog-ttl-ms [catalog]
-  (let [metadata (cons (select-keys (:discovery catalog) ["ttlMs" "cacheScope"])
-                       (remove nil? (vals (:cache catalog))))
-        ttls (map #(get % "ttlMs") metadata)]
-    (if (and (seq ttls) (every? #(and (integer? %) (pos? %)) ttls))
-      (apply min ttls)
-      0)))
+(defn- catalog-expires-at [catalog]
+  (let [pairs (cons [(:discovery catalog) (get-in catalog [:cache-expiries :discovery])]
+                    (keep (fn [[key metadata]]
+                            (when metadata
+                              [metadata (get-in catalog [:cache-expiries key])]))
+                          (:cache catalog)))]
+    (when (and (seq pairs)
+               (every? (fn [[metadata expires-at]]
+                         (and (integer? (get metadata "ttlMs"))
+                              (pos? (get metadata "ttlMs"))
+                              (integer? expires-at)))
+                       pairs))
+      (apply min (map second pairs)))))
 
 (defn- store-reusable-catalog! [client catalog]
-  (let [ttl-ms (catalog-ttl-ms catalog)]
-    (when (pos? ttl-ms)
+  (let [expires-at (catalog-expires-at catalog)]
+    (when (and expires-at (> expires-at (now-ms)))
       (swap! reusable-catalogs assoc (:cache-key client)
              {:catalog catalog
-              :expires-at (+ (System/currentTimeMillis) ttl-ms)})))
+              :expires-at expires-at})))
   catalog)
 
 (defn- fetch-catalog!
   [client]
     (let [discovery (discover! client)
+          discovery-received-at (or (::received-at (meta discovery)) (now-ms))
+          discovery-expires-at (let [ttl-ms (get discovery "ttlMs")]
+                                 (when (and (integer? ttl-ms) (pos? ttl-ms))
+                                   (+ discovery-received-at ttl-ms)))
           tools-page (when (and (capability? discovery "tools")
                                 (catalog-enabled? client :tools))
                        (paginate! client "tools/list" "tools"))
@@ -207,7 +259,12 @@
                    :cache {:tools (:cache tools-page)
                            :resources (:cache resources-page)
                            :resource-templates (:cache templates-page)
-                           :prompts (:cache prompts-page)}}]
+                           :prompts (:cache prompts-page)}
+                   :cache-expiries {:discovery discovery-expires-at
+                                    :tools (:cache-expires-at tools-page)
+                                    :resources (:cache-expires-at resources-page)
+                                    :resource-templates (:cache-expires-at templates-page)
+                                    :prompts (:cache-expires-at prompts-page)}}]
       (store-reusable-catalog! client catalog)))
 
 (defn load-catalog!
@@ -339,12 +396,21 @@
         protocol-error (atom nil)
         handle-notification
         (fn [notification]
-          (if-not @acknowledged?
+          (cond
+            @protocol-error
+            nil
+
+            (not @acknowledged?)
             (if (= "notifications/subscriptions/acknowledged" (get notification "method"))
               (reset! acknowledged? true)
-              (reset! protocol-error
-                      (ex-info "MCP subscription did not begin with an acknowledgement"
-                               {:type :invalid-mcp-subscription-stream})))
+              (let [error (ex-info "MCP subscription did not begin with an acknowledgement"
+                                   {:type :invalid-mcp-subscription-stream})]
+                (reset! protocol-error error)
+                (case (:transport-type client)
+                  :http (throw error)
+                  :stdio (stdio/abort-request! (:stdio-transport client) request-id error))))
+
+            :else
             (do
               (invalidate! client)
               (on-notification notification))))]

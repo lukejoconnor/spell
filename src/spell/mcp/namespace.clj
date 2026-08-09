@@ -102,38 +102,61 @@
 (defn- normalize-tool-selection
   [selection tools]
   (let [by-name (into {} (map (juxt #(get % "name") identity)) tools)
+        unsafe-tool-exclusion (fn [tool]
+                                (let [raw-name (str (get tool "name"))]
+                                  (when-not (re-matches spell-item-pattern raw-name)
+                                    {:name raw-name
+                                     :type :invalid-mcp-tool-alias
+                                     :message (str "MCP tool needs an explicit Spell-safe alias: "
+                                                   raw-name)})))
         automatic-name (fn [raw-name]
                          (let [raw-name (str raw-name)]
                            (when-not (re-matches spell-item-pattern raw-name)
                              (throw (ex-info (str "MCP tool needs an explicit Spell-safe alias: " raw-name)
                                              {:type :invalid-mcp-tool-alias :tool raw-name})))
-                           (keyword raw-name)))]
+                           (keyword raw-name)))
+        exposed-name (fn [exposed]
+                       (when-not (or (string? exposed)
+                                     (instance? clojure.lang.Named exposed))
+                         (throw (ex-info (str "Invalid MCP tool alias: " exposed)
+                                         {:type :invalid-mcp-tool-alias :tool exposed})))
+                       (when (and (instance? clojure.lang.Named exposed) (namespace exposed))
+                         (throw (ex-info (str "MCP tool alias may not be namespaced: " exposed)
+                                         {:type :invalid-mcp-tool-alias :tool exposed})))
+                       (automatic-name (name exposed)))]
     (cond
       (= selection :all)
-      (mapv (fn [tool] [(automatic-name (get tool "name")) tool]) tools)
+      (reduce (fn [result tool]
+                (if-let [excluded (unsafe-tool-exclusion tool)]
+                  (update result :excluded-tools conj excluded)
+                  (update result :selected conj
+                          [(automatic-name (get tool "name")) tool])))
+              {:selected [] :excluded-tools []}
+              tools)
 
       (map? selection)
-      (mapv (fn [[exposed raw-name]]
-              (let [tool (get by-name (str raw-name))]
-                (when-not tool
-                  (throw (ex-info (str "Configured MCP tool was not discovered: " raw-name)
-                                  {:type :configured-mcp-tool-missing :tool (str raw-name)})))
-                (when (and (instance? clojure.lang.Named exposed) (namespace exposed))
-                  (throw (ex-info (str "MCP tool alias may not be namespaced: " exposed)
-                                  {:type :invalid-mcp-tool-alias :tool exposed})))
-                [(keyword (name exposed)) tool]))
-            selection)
+      {:selected
+       (mapv (fn [[exposed raw-name]]
+               (let [tool (get by-name (str raw-name))]
+                 (when-not tool
+                   (throw (ex-info (str "Configured MCP tool was not discovered: " raw-name)
+                                   {:type :configured-mcp-tool-missing :tool (str raw-name)})))
+                 [(exposed-name exposed) tool]))
+             selection)
+       :excluded-tools []}
 
       (or (vector? selection) (set? selection) (seq? selection))
-      (mapv (fn [raw-name]
-              (let [tool (get by-name (str raw-name))]
-                (when-not tool
-                  (throw (ex-info (str "Configured MCP tool was not discovered: " raw-name)
-                                  {:type :configured-mcp-tool-missing :tool (str raw-name)})))
-                [(automatic-name raw-name) tool]))
-            selection)
+      {:selected
+       (mapv (fn [raw-name]
+               (let [tool (get by-name (str raw-name))]
+                 (when-not tool
+                   (throw (ex-info (str "Configured MCP tool was not discovered: " raw-name)
+                                   {:type :configured-mcp-tool-missing :tool (str raw-name)})))
+                 [(automatic-name raw-name) tool]))
+             selection)
+       :excluded-tools []}
 
-      (nil? selection) []
+      (nil? selection) {:selected [] :excluded-tools []}
 
       :else
       (throw (ex-info "MCP :tools must be :all, a collection, or an alias map"
@@ -141,8 +164,8 @@
 
 (defn tool-namespace
   [server-alias mcp-client selection]
-  (let [selected (vec (sort-by (comp name first)
-                               (normalize-tool-selection selection (client/tools mcp-client))))
+  (let [{:keys [selected]} (normalize-tool-selection selection (client/tools mcp-client))
+        selected (vec (sort-by (comp name first) selected))
         duplicate (->> selected (map first) frequencies (some #(when (> (val %) 1) (key %))))]
     (when duplicate
       (throw (ex-info (str "Duplicate exposed MCP tool name " duplicate)
@@ -186,6 +209,13 @@
                                                  :tool (get tool "name")})))
                               (client/call-tool! mcp-client (get tool "name") arguments)))])
                         selected))))))
+
+(defn- reported-excluded-tools
+  [selection tools excluded-tools]
+  (let [automatic-exclusions
+        (when (= selection :all)
+          (:excluded-tools (normalize-tool-selection :all tools)))]
+    (vec (concat (or excluded-tools []) automatic-exclusions))))
 
 (defn- allowed? [permission value]
   (cond
@@ -269,17 +299,29 @@
                  (protocol/model-completion-value
                   server (client/complete! (lookup-client clients server) reference argument))))
    :info (fn [server]
-           (let [server (keyword server)]
-             (protocol/model-info-value server (client/info (lookup-client clients server)))))
+           (let [server (keyword server)
+                 mcp-client (lookup-client clients server)
+                 info (client/info mcp-client)]
+             (protocol/model-info-value
+              server
+              (assoc info "excludedTools"
+                     (reported-excluded-tools
+                      (get-in entries [server :tools])
+                      (client/tools mcp-client)
+                      (get info "excludedTools"))))))
    :refresh (fn [server]
               (let [server (keyword server)
-                    catalog (client/refresh! (lookup-client clients server))]
+                    catalog (client/refresh! (lookup-client clients server))
+                    excluded-tools (reported-excluded-tools
+                                    (get-in entries [server :tools])
+                                    (:tools catalog)
+                                    (:excluded-tools catalog))]
                 {:server server
                  :tool-count (count (:tools catalog))
                  :resource-count (count (:resources catalog))
                  :resource-template-count (count (:resource-templates catalog))
                  :prompt-count (count (:prompts catalog))
-                 :excluded-tools (:excluded-tools catalog)
+                 :excluded-tools excluded-tools
                  :cache (:cache catalog)}))
    :listen-send
    (fn [server notifications handle]

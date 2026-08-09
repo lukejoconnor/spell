@@ -161,14 +161,29 @@
                status (.statusCode response)
                content-type (http/content-type response)]
            (when-not (<= 200 status 299)
-             (let [body (http/read-bounded (.body response)
-                                           (or (:max-response-bytes config)
-                                               http/default-max-response-bytes))]
-               (try
-                 (protocol/parse-response body request-id)
-                 (catch Exception e
-                   (throw (ex-info (str "MCP subscription failed with HTTP " status)
-                                   {:type :mcp-http-error :status status} e))))))
+             (let [body-result
+                   (try
+                     {:body (http/read-bounded
+                             (.body response)
+                             (or (:max-response-bytes config)
+                                 http/default-max-response-bytes))}
+                     (catch Exception e
+                       {:error e}))
+                   parsed-result
+                   (when-let [body (:body body-result)]
+                     (try
+                       {:result (protocol/parse-response body request-id)}
+                       (catch Exception e
+                         {:error e})))
+                   cause (or (:error body-result) (:error parsed-result))
+                   data (cond-> {:type :mcp-http-error :status status}
+                          (contains? parsed-result :result)
+                          (assoc :result (:result parsed-result)))]
+               (throw (if cause
+                        (ex-info (str "MCP subscription failed with HTTP " status)
+                                 data cause)
+                        (ex-info (str "MCP subscription failed with HTTP " status)
+                                 data)))))
            (let [body (.body response)]
              (require-sse! content-type body)
              (try
