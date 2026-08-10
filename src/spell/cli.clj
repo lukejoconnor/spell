@@ -116,7 +116,7 @@
           "  spell -m openai-tc:gpt-5.6-sol 'Return 42'"
           "  spell -m anthropic-tc:claude-opus-4-8 'Return 42'"
           "  spell -m fireworks:glm-5p2 'Return 42'"
-          "  spell -m fireworks-tc:kimi-k2p7-code 'Return 42'"
+          "  spell -m fireworks-tc:kimi-k3 'Return 42'"
           "  spell examples/hello-world.spl"
           "  spell -t --init '(do (+ 20 22))'"
           "  spell --init-file scratch/my-program.spl"

@@ -1,6 +1,6 @@
 {:provider :fireworks-tc
  :api-key-env "FIREWORKS_API_KEY"
  :base-url "https://api.fireworks.ai/inference/v1"
- :default-model "accounts/fireworks/models/kimi-k2p7-code"
+ :default-model "accounts/fireworks/models/kimi-k3"
  :max-tokens 32768
  :default-agent-profile "../agent-profiles/base-tc.agent.edn"}

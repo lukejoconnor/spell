@@ -539,7 +539,8 @@
 (deftest fireworks-reasoning-effort-request-test
   (testing "emits Fireworks reasoning_effort on completions requests"
     (doseq [model ["accounts/fireworks/models/glm-5p1"
-                   "accounts/fireworks/models/glm-5p2"]]
+                   "accounts/fireworks/models/glm-5p2"
+                   "accounts/fireworks/models/kimi-k3"]]
       (let [request (#'provider/fireworks-completions-request
                       "test" "https://api.fireworks.ai/inference/v1"
                       model

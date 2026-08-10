@@ -39,8 +39,12 @@
            (model-spec/resolve-model-spec "gpt55")))
     (is (= {:provider "fireworks-tc" :model "glm-5p2"}
            (model-spec/resolve-model-spec "glm")))
-    (is (= {:provider "fireworks-tc" :model "kimi-k2p7-code"}
+    (is (= {:provider "fireworks-tc" :model "kimi-k3"}
            (model-spec/resolve-model-spec "kimi")))
+    (is (= {:provider "fireworks-tc" :model "kimi-k3"}
+           (model-spec/resolve-model-spec "kimi3")))
+    (is (= {:provider "fireworks-tc" :model "kimi-k2p7-code"}
+           (model-spec/resolve-model-spec "kimi27")))
     (is (= {:provider "fireworks-tc" :model "qwen3p7-plus"}
            (model-spec/resolve-model-spec "qwen")))
     (is (= {:provider "fireworks-tc" :model "glm-5p1"}

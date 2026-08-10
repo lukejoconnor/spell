@@ -1557,6 +1557,7 @@
     (or (str/includes? model "glm-5p1")
         (str/includes? model "glm-5p2")
         (str/includes? model "kimi-k2p7-code")
+        (str/includes? model "kimi-k3")
         (str/includes? model "deepseek-v4-pro")
         (str/includes? model "qwen3p6-plus")
         (str/includes? model "qwen3p7-plus"))))
@@ -2027,7 +2028,7 @@
    Options:
    - :api-key             - API key (default: FIREWORKS_API_KEY env var)
    - :base-url            - API base URL (default: https://api.fireworks.ai/inference/v1)
-   - :model               - Model name or Fireworks account path (default: kimi-k2p7-code)
+   - :model               - Model name or Fireworks account path (default: kimi-k3)
    - :max-tokens          - Max tokens per response
    - :request-timeout-sec - Per-HTTP-call timeout in seconds (default: 600)
    - :sse-idle-timeout-sec - Max seconds without stream bytes (default: 100)
@@ -2036,7 +2037,7 @@
   ([] (fireworks-tc-provider {}))
   ([{:keys [api-key base-url model max-tokens request-timeout-sec sse-idle-timeout-sec
             sse-completion-timeout-sec costs]
-     :or {model "kimi-k2p7-code"
+     :or {model "kimi-k3"
           base-url "https://api.fireworks.ai/inference/v1"
           max-tokens fireworks-tc-default-max-tokens
           request-timeout-sec 600
