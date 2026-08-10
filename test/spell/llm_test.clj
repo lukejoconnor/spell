@@ -939,12 +939,16 @@
       (is (= 32768 (:max-tokens p)))
       (is (= 600 (:request-timeout-sec p))
           "Default request-timeout-sec is 600 seconds, matching anthropic-tc")
+      (is (true? (:chat-fallback? p)))
       (is (false? (provider/supports-prefill p)))
       (is (instance? spell.provider.FireworksProvider (provider/plain-text-provider p)))))
 
-  (testing "fireworks-tc-provider accepts custom request-timeout-sec"
-    (let [p (provider/fireworks-tc-provider {:api-key "fw-test" :request-timeout-sec 120})]
-      (is (= 120 (:request-timeout-sec p)))))
+  (testing "fireworks-tc-provider accepts custom request timeout and fallback policy"
+    (let [p (provider/fireworks-tc-provider {:api-key "fw-test"
+                                             :request-timeout-sec 120
+                                             :chat-fallback? false})]
+      (is (= 120 (:request-timeout-sec p)))
+      (is (false? (:chat-fallback? p)))))
 
   (testing "fireworks-tc request uses Anthropic-compatible messages and forces spell_suffix"
     (let [body (#'provider/fireworks-tc-request-body
@@ -1221,7 +1225,17 @@
              @calls))
       (is (= 2 (get-in @usage [:by-model "accounts/fireworks/models/kimi-k2p6" :calls])))
       (is (= 15 (get-in @usage [:by-model "accounts/fireworks/models/kimi-k2p6" :input_tokens])))
-      (is (= 5 (get-in @usage [:by-model "accounts/fireworks/models/kimi-k2p6" :output_tokens]))))))
+      (is (= 5 (get-in @usage [:by-model "accounts/fireworks/models/kimi-k2p6" :output_tokens])))
+
+      (testing "chat fallback can be disabled to require the Messages tool call"
+        (reset! calls [])
+        (reset! responses [[200 primary-body]])
+        (let [messages-only (assoc p :chat-fallback? false)]
+          (is (thrown-with-msg?
+               clojure.lang.ExceptionInfo
+               #"missing spell_suffix tool_use"
+               (provider/call-llm messages-only "prompt" {:system "system"})))
+          (is (= ["https://api.fireworks.ai/inference/v1/messages"] @calls)))))))
 
 (deftest anthropic-tc-provider-constructor-test
   (testing "constructs with explicit api-key and model"

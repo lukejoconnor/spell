@@ -1972,7 +1972,8 @@
                       {:status status :body (:body response)})))))
 
 (defrecord FireworksTcProvider [api-key base-url model max-tokens http-client request-timeout-sec
-                                sse-idle-timeout-sec sse-completion-timeout-sec costs]
+                                sse-idle-timeout-sec sse-completion-timeout-sec costs
+                                chat-fallback?]
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt opts]
@@ -2003,7 +2004,7 @@
             text)
           (catch clojure.lang.ExceptionInfo ex
             (let [data (ex-data ex)]
-              (if (= :missing-tool-call (:type data))
+              (if (and (= :missing-tool-call (:type data)) chat-fallback?)
                 (do
                   (when-let [usage (:usage data)]
                     (track-usage! effective-model usage costs))
@@ -2033,16 +2034,18 @@
    - :request-timeout-sec - Per-HTTP-call timeout in seconds (default: 600)
    - :sse-idle-timeout-sec - Max seconds without stream bytes (default: 100)
    - :sse-completion-timeout-sec - Max seconds until stream body completes (default: 1000)
+   - :chat-fallback?      - Fall back to OpenAI-compatible chat when Messages omits the tool (default: true)
    - :costs               - Cost table {model-prefix price-spec}"
   ([] (fireworks-tc-provider {}))
   ([{:keys [api-key base-url model max-tokens request-timeout-sec sse-idle-timeout-sec
-            sse-completion-timeout-sec costs]
+            sse-completion-timeout-sec costs chat-fallback?]
      :or {model "kimi-k2p7-code"
           base-url "https://api.fireworks.ai/inference/v1"
           max-tokens fireworks-tc-default-max-tokens
           request-timeout-sec 600
           sse-idle-timeout-sec default-sse-idle-timeout-sec
-          sse-completion-timeout-sec default-sse-completion-timeout-sec}}]
+          sse-completion-timeout-sec default-sse-completion-timeout-sec
+          chat-fallback? true}}]
    (let [key (or api-key (System/getenv "FIREWORKS_API_KEY"))
          effective-model (fireworks-model-id model)
          url (str/replace (or base-url "https://api.fireworks.ai/inference/v1") #"/$" "")]
@@ -2054,7 +2057,8 @@
                             request-timeout-sec
                             sse-idle-timeout-sec
                             sse-completion-timeout-sec
-                            costs))))
+                            costs
+                            chat-fallback?))))
 
 ;; ---------------------------------------------------------------------------
 ;; Test Provider (declarative testing)

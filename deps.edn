@@ -48,6 +48,14 @@
                               :main-opts ["-m" "cognitect.test-runner"
                                           "-d" "test-interop"
                                           "-n" "spell.mcp-interop-test"]}
+           ;; Credential-gated live smoke; excluded from all offline test roots.
+           :test-live-fireworks-kimi3
+           {:extra-paths ["test-live"]
+            :extra-deps {io.github.cognitect-labs/test-runner
+                         {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+            :main-opts ["-m" "cognitect.test-runner"
+                        "-d" "test-live"
+                        "-n" "spell.fireworks-kimi3-live-test"]}
            :run {:main-opts ["-m" "spell.cli"]}
            :uberjar {:replace-deps {com.github.seancorfield/depstar {:mvn/version "2.1.303"}}
                      :exec-fn hf.depstar/uberjar
