@@ -33,7 +33,7 @@
            (model-spec/resolve-model-spec "opus")))
     (is (= {:provider "anthropic-tc" :model "claude-fable-5"}
            (model-spec/resolve-model-spec "fable5")))
-    (is (= {:provider "openai-tc" :model "gpt-5.5"}
+    (is (= {:provider "openai-tc" :model "gpt-5.6-sol"}
            (model-spec/resolve-model-spec "gpt")))
     (is (= {:provider "openai-tc" :model "gpt-5.5"}
            (model-spec/resolve-model-spec "gpt55")))

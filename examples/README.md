@@ -18,7 +18,7 @@ bin/spell -v -e auction
 
 Most examples make live provider calls, and recursive or multi-agent examples can make several calls. Use `-b` to cap spend and `-d` to cap recursion depth while experimenting.
 
-Spell accepts provider-prefixed model specs such as `codex-tc:<model>`, `openai-tc:<model>`, `anthropic-tc:<model>`, `anthropic-pf:<model>`, `fireworks:<model>`, `fireworks-tc:<model>`, and `ollama:<model>`. The unprefixed CLI default uses the Codex CLI tool-call provider.
+Spell accepts provider-prefixed model specs such as `codex-tc:<model>`, `openai-tc:<model>`, `anthropic-tc:<model>`, `anthropic-pf:<model>`, `fireworks:<model>`, `fireworks-tc:<model>`, and `ollama:<model>`. The CLI default is `openai-tc:gpt-5.6-sol` with medium reasoning.
 
 ## Public Example Set
 

@@ -1,6 +1,7 @@
 (ns spell.cli-test
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
+            [spell.api :as api]
             [spell.cli :as cli]
             [spell.provider :as provider]))
 
@@ -73,6 +74,18 @@
         (is (= expected (:result result)))))))
 
 (deftest make-provider-resolves-shared-model-aliases-test
+  (testing "the CLI default uses GPT-5.6 Sol through OpenAI tool-call transport"
+    (let [captured (atom nil)]
+      (with-redefs [provider/openai-provider
+                    (fn [opts]
+                      (reset! captured opts)
+                      {:provider :openai-tc :opts opts})]
+        (is (= :openai-tc
+               (:provider ((var cli/make-provider) {}))))
+        (is (= "gpt-5.6-sol" (:model @captured)))
+        (is (:use-responses-api @captured))
+        (is (:force-tool-call @captured)))))
+
   (testing "bare gpt alias routes to OpenAI tool-call transport"
     (let [captured (atom nil)]
       (with-redefs [provider/openai-provider
@@ -81,7 +94,7 @@
                       {:provider :openai-tc :opts opts})]
         (is (= :openai-tc
                (:provider ((var cli/make-provider) {:model "gpt"}))))
-        (is (= "gpt-5.5" (:model @captured)))
+        (is (= "gpt-5.6-sol" (:model @captured)))
         (is (:use-responses-api @captured))
         (is (:force-tool-call @captured)))))
 
@@ -111,9 +124,33 @@
                  (:provider ((var cli/make-provider) {:model alias}))))
           (is (= expected (:model @captured))))))))
 
+(deftest run-input-default-reasoning-effort-test
+  (let [seen (atom nil)
+        run! (fn [opts]
+               (with-redefs [provider/openai-provider
+                             (fn [_] (provider/test-provider {:response "unused"}))
+                             api/run-internal
+                             (fn [run-opts]
+                               (reset! seen run-opts)
+                               {:result 42})]
+                 (cli/run-input {:prompt "Return 42"} opts (atom {:by-model {}}))))]
+    (testing "the default model uses medium reasoning"
+      (run! {})
+      (is (= "medium" (:reasoning-effort @seen))))
+
+    (testing "an explicit reasoning effort overrides the default"
+      (run! {:reasoning-effort "high"})
+      (is (= "high" (:reasoning-effort @seen))))
+
+    (testing "an explicit model keeps its provider-specific reasoning default"
+      (run! {:model "gpt55"})
+      (is (nil? (:reasoning-effort @seen))))))
+
 (deftest help-text-uses-public-provider-specs-and-curated-examples
   (let [{:keys [exit-message ok?]} (cli/validate-args ["--help"])]
     (is ok?)
+    (is (str/includes? exit-message "default: openai-tc:gpt-5.6-sol"))
+    (is (str/includes? exit-message "default: medium for the default model"))
     (is (str/includes? exit-message "codex-tc:<model>"))
     (is (str/includes? exit-message "openai-tc:gpt-5.6-sol"))
     (is (str/includes? exit-message "anthropic-tc:claude-opus-4-8"))

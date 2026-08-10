@@ -143,7 +143,7 @@ Model profile files live under `config/model-profiles/` and use EDN maps.
 {:provider :openai
  :model-profile-name openai-tc
  :api-key-env "OPENAI_API_KEY"
- :default-model "gpt-5.4"
+ :default-model "gpt-5.6-sol"
  :default-reasoning-effort "medium"
  :use-responses-api true
  :force-tool-call true

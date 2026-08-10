@@ -120,7 +120,7 @@
                       {:provider :openai-tc :opts opts})]
         (is (= :openai-tc
                (:provider ((var benchmark-api/make-provider) {:model "gpt"}))))
-        (is (= "gpt-5.5" (:model @captured)))
+        (is (= "gpt-5.6-sol" (:model @captured)))
         (is (:use-responses-api @captured))
         (is (:force-tool-call @captured))))))
 
