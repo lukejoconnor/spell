@@ -1,6 +1,6 @@
 # Examples Directory Guide
 
-This directory contains the public runnable `.spl` examples for the v0.2 release. Each example is a natural-language prompt that the model completes as a Spell program.
+This directory contains the public runnable `.spl` examples for the v0.3 release. Each example is a natural-language prompt that the model completes as a Spell program.
 
 ## Running
 

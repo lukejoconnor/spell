@@ -7,6 +7,8 @@
 
 (deftest exact-request-metadata-test
   (let [request (protocol/request "tools/list" {})]
+    (is (= {"name" "Spell" "version" "0.3.0"}
+           protocol/client-info))
     (is (= "2026-07-28"
            (get-in request ["params" "_meta" "io.modelcontextprotocol/protocolVersion"])))
     (is (= {} (get-in request ["params" "_meta"
