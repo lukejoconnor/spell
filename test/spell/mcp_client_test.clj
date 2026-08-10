@@ -62,6 +62,12 @@
                     ".")
             demo (get-in bundle [:namespaces 'demo])
             mcp (get-in bundle [:namespaces 'mcp])]
+        (is (re-find #"say\(\{\"text\" string\}\).*one argument map"
+                     (get-in demo [:docs :say])))
+        (is (str/includes? (get-in mcp [:docs :guide]) "ref/prompt"))
+        (is (str/includes? (get-in mcp [:docs :guide]) "resourceSubscriptions"))
+        (is (str/includes? (get-in mcp [:detail :complete]) "ref/prompt"))
+        (is (str/includes? (get-in mcp [:detail :listen-send]) "resourceSubscriptions"))
         (is (= {"echo" "hi"}
                (get ((:say demo) {"text" "hi"}) "structuredContent")))
         (is (= ["memory://readme"] (mapv #(get % "uri") ((:resources mcp) :demo))))
@@ -98,7 +104,7 @@
             called (mcp-cli/execute ["call" url "add" "-a" "a" "2" "-a" "b" "3" "--raw"])
             info (mcp-cli/execute ["doctor" url])]
         (is (= 0 (:status listed)))
-        (is (re-find #"echo\(text: string\)" (:out listed)))
+        (is (re-find #"echo\(\{\"text\" string\}\).*one argument map" (:out listed)))
         (is (= 0 (:status called)))
         (is (re-find #"\"text\":\"5\"" (str/replace (:out called) #"\s" "")))
         (is (= 0 (:status info)))

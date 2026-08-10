@@ -1,0 +1,14 @@
+Audit the configured `everything` MCP server by using every capability it exposes.
+
+Do not simulate MCP results. Derive every reported value from an actual call.
+
+Requirements:
+- Inspect the server metadata and report its description or instructions.
+- Call every tool. Add 20 and 22, then set the counter to 7.
+- List and read the static resources, and use the resource template to read item `alpha`.
+- List and get the `review` prompt for topic `Spell` with style `strict`.
+- Request completion suggestions for the `review` prompt's `style` argument with prefix `f`.
+- Before setting the counter, subscribe to updates for `demo://counter` and send notifications to `:main`. Continue until you have observed the resulting resource-update notification.
+
+Return one concise map with these keys: `:server-description`, `:sum`, `:counter`,
+`:description-resource`, `:template-resource`, `:prompt`, `:completion`, and `:notification`.

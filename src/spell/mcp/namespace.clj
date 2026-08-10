@@ -78,12 +78,13 @@
   (let [input-schema (get tool "inputSchema" {})
         required (set (get input-schema "required" []))
         params (for [[name parameter] (sort-by key (get input-schema "properties" {}))]
-                 (str name (when-not (contains? required name) "?")
-                      ": " (schema-type parameter)))
+                 (str "\"" name "\"" (when-not (contains? required name) "?")
+                      " " (schema-type parameter)))
         description (some-> (get tool "description") str/split-lines first str/trim
                             (bounded-text max-compact-description-chars))]
     (bounded-text
-     (str (name exposed-name) "(" (str/join ", " params) ")"
+     (str (name exposed-name) "({" (str/join ", " params) "})"
+          " [call with one argument map]"
           (when-not (str/blank? description) (str " — " description)))
      max-compact-signature-chars)))
 
@@ -249,7 +250,11 @@
   [clients entries]
   {:short-docs "Inspect and use configured MCP resources, prompts, completion, catalogs, and subscriptions."
    :docs
-   {:guide "MCP — Protocol operations for configured server aliases. Tool calls live in each server's own namespace."
+   {:guide (str "MCP — Protocol operations for configured server aliases. Tool calls live in each server's own namespace "
+                "and take one argument map when their schema has inputs. Inspect a server with (mcp/info :server). "
+                "Complete prompt arguments with (mcp/complete :server {\"type\" \"ref/prompt\" \"name\" \"prompt-name\"} "
+                "{\"name\" \"argument-name\" \"value\" \"prefix\"}). Subscribe before the triggering operation with "
+                "(mcp/listen-send :server {\"resourceSubscriptions\" [\"resource://uri\"]} :handle); notifications arrive as agent messages.")
     :servers "List configured MCP server aliases."
     :resources "List permitted resources for a configured server."
     :resource-templates "List permitted resource templates for a configured server."
@@ -263,8 +268,14 @@
    :detail
    {:read-resource "(mcp/read-resource :server \"resource://uri\")"
     :get-prompt "(mcp/get-prompt :server \"prompt-name\" {\"argument\" \"value\"})"
-   :complete "(mcp/complete :server reference argument)"
-   :listen-send "(mcp/listen-send :server {\"toolsListChanged\" true} :handle)"}
+    :complete (str "(mcp/complete :server {\"type\" \"ref/prompt\" \"name\" \"prompt-name\"} "
+                   "{\"name\" \"argument-name\" \"value\" \"prefix\"}); "
+                   "resource-template references use {\"type\" \"ref/resource\" \"uri\" \"resource://{argument}\"}.")
+    :listen-send (str "(mcp/listen-send :server filter :handle) starts an asynchronous listener and sends each "
+                      "notification to the agent handle. Filter fields are {\"toolsListChanged\" true, "
+                      "\"promptsListChanged\" true, \"resourcesListChanged\" true, "
+                      "\"resourceSubscriptions\" [\"resource://uri\"]}. Start it before the operation "
+                      "that emits the event; delivery appears as an agent message.")}
    :servers (fn [] (vec (sort (map (comp keyword name) (keys clients)))))
    :resources (fn [server]
                 (let [server (keyword server)]
