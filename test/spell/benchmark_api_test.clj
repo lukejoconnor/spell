@@ -98,7 +98,7 @@
 (deftest make-provider-resolves-shared-model-aliases-test
   (testing "bare open-weight aliases route to Fireworks tool-call transport"
     (doseq [[alias expected] [["glm" "glm-5p2"]
-                             ["kimi" "kimi-k3"]
+                             ["kimi" "kimi-k2p7-code"]
                              ["kimi3" "kimi-k3"]
                              ["kimi27" "kimi-k2p7-code"]
                              ["qwen" "qwen3p7-plus"]

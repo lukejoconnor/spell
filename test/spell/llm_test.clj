@@ -935,7 +935,7 @@
     (let [p (provider/fireworks-tc-provider {:api-key "fw-test"})]
       (is (instance? spell.provider.FireworksTcProvider p))
       (is (= "https://api.fireworks.ai/inference/v1" (:base-url p)))
-      (is (= "accounts/fireworks/models/kimi-k3" (:model p)))
+      (is (= "accounts/fireworks/models/kimi-k2p7-code" (:model p)))
       (is (= 32768 (:max-tokens p)))
       (is (= 600 (:request-timeout-sec p))
           "Default request-timeout-sec is 600 seconds, matching anthropic-tc")

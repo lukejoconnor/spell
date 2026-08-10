@@ -2028,7 +2028,7 @@
    Options:
    - :api-key             - API key (default: FIREWORKS_API_KEY env var)
    - :base-url            - API base URL (default: https://api.fireworks.ai/inference/v1)
-   - :model               - Model name or Fireworks account path (default: kimi-k3)
+   - :model               - Model name or Fireworks account path (default: kimi-k2p7-code)
    - :max-tokens          - Max tokens per response
    - :request-timeout-sec - Per-HTTP-call timeout in seconds (default: 600)
    - :sse-idle-timeout-sec - Max seconds without stream bytes (default: 100)
@@ -2037,7 +2037,7 @@
   ([] (fireworks-tc-provider {}))
   ([{:keys [api-key base-url model max-tokens request-timeout-sec sse-idle-timeout-sec
             sse-completion-timeout-sec costs]
-     :or {model "kimi-k3"
+     :or {model "kimi-k2p7-code"
           base-url "https://api.fireworks.ai/inference/v1"
           max-tokens fireworks-tc-default-max-tokens
           request-timeout-sec 600

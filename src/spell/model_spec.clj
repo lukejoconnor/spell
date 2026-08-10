@@ -28,7 +28,7 @@
    "glm"      "fireworks-tc:glm-5p2"
    "glm52"    "fireworks-tc:glm-5p2"
    "glm51"    "fireworks-tc:glm-5p1"
-   "kimi"     "fireworks-tc:kimi-k3"
+   "kimi"     "fireworks-tc:kimi-k2p7-code"
    "kimi3"    "fireworks-tc:kimi-k3"
    "kimi27"   "fireworks-tc:kimi-k2p7-code"
    "kimi27code" "fireworks-tc:kimi-k2p7-code"
