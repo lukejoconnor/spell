@@ -1,0 +1,15 @@
+{:base "../config/agent-profiles/base-tc.agent.edn"
+ :agent-name mcp-everything
+ :agent-description "Exercise every MCP capability supported by Spell"
+ :system-prompt {:file "../config/prompts/sysprompt-toolcall.txt"}
+ :namespaces
+ {agents stdlib/agents}
+ :mcp-servers
+ {everything
+  {:server mcp-everything.mcp.edn
+   :tools {add add
+           set-counter set_counter}
+   :resources :all
+   :prompts :all
+   :completion true
+   :subscriptions true}}}

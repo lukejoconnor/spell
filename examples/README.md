@@ -30,5 +30,6 @@ Spell accepts provider-prefixed model specs such as `codex-tc:<model>`, `openai-
 | `telephone.spl` | Sequential relay loop using fresh self-calls. | `bin/spell -e telephone -d 30` |
 | `auction.spl` | Parallel bidder agents and result collection. | `bin/spell -e auction -d 20` |
 | `chat.spl` | Interactive conversation through the agent communication namespace. | `bin/spell -e chat` |
+| `mcp-everything.spl` | Real-model discovery and use of every supported MCP capability. | `bin/spell -e mcp-everything -a examples/mcp-everything.agent.edn -m openai-tc:gpt-5.6-sol -R medium` |
 
 Each example has a companion `.md` file with a short explanation and expected behavior.
