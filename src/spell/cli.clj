@@ -10,6 +10,9 @@
             [spell.trace :as spell-trace])
   (:gen-class))
 
+(def ^:private default-model-spec "openai-tc:gpt-5.6-sol")
+(def ^:private default-reasoning-effort "medium")
+
 (defn parse-model-spec
   "Parse 'provider:model' into {:provider str :model str}."
   [s]
@@ -59,7 +62,7 @@
    ["-i" "--init PROGRAM" "Run a complete Spell program string directly instead of wrapping a natural-language prompt"]
    ["-I" "--init-file FILE" "Run a complete Spell program file directly instead of wrapping it as a natural-language prompt"]
    ["-a" "--agent-profile FILE" "Use agent profile from .agent.edn file"]
-   ["-m" "--model MODEL" "Model/provider spec: codex-tc:<model>, openai-tc:<model>, anthropic-pf:<model>, anthropic-tc:<model>, fireworks:<model>, fireworks-tc:<model>, ollama:<model>, user (default: codex-tc:gpt-5.3)"]
+   ["-m" "--model MODEL" "Model/provider spec: codex-tc:<model>, openai-tc:<model>, anthropic-pf:<model>, anthropic-tc:<model>, fireworks:<model>, fireworks-tc:<model>, ollama:<model>, user (default: openai-tc:gpt-5.6-sol)"]
    ["-d" "--depth DEPTH" "Max recursion depth (default: unlimited, 0 = unlimited)"
     :parse-fn #(Integer/parseInt %)
     :validate [#(>= % 0) "Must be non-negative"]]
@@ -72,7 +75,7 @@
    ["-K" "--thinking BUDGET" "Enable Anthropic adaptive thinking (budget_tokens, e.g. 10000)"
     :parse-fn #(Integer/parseInt %)
     :validate [pos? "Must be positive"]]
-   ["-R" "--reasoning-effort EFFORT" "OpenAI reasoning effort (none, low, medium, high, xhigh, max)"
+   ["-R" "--reasoning-effort EFFORT" "OpenAI reasoning effort (none, low, medium, high, xhigh, max; default: medium for the default model)"
     :validate [#(contains? #{"none" "low" "medium" "high" "xhigh" "max"} %)
                "Must be none, low, medium, high, xhigh, or max"]]
    [nil "--verbosity LEVEL" "OpenAI verbosity (low, auto)"
@@ -195,9 +198,8 @@
     (provider/user-provider)
 
     :else
-    (let [{:keys [provider model]} (if model
-                                     (model-spec/resolve-model-spec model)
-                                     {:provider "codex-tc" :model "gpt-5.3-codex"})
+    (let [{:keys [provider model]} (model-spec/resolve-model-spec
+                                     (or model default-model-spec))
           resolved-model model
           base-opts (cond-> {:costs provider/default-costs}
                       resolved-model (assoc :model resolved-model)
@@ -229,7 +231,7 @@
 
 (defn run-input
   [{:keys [prompt init]}
-   {:keys [depth verbose log budget trace agent-profile model thinking reasoning-effort verbosity
+   {:keys [depth verbose log budget trace agent-profile model thinking reasoning-effort verbosity test
            suffix-grammar grammar-max-chars]
     :as opts}
    usage-atom]
@@ -240,6 +242,9 @@
         resolved-model (some-> model model-spec/resolve-model-spec :model)
         opus? (and resolved-model (str/includes? resolved-model "opus"))
         thinking (or thinking (when opus? 16384))
+        effective-reasoning-effort (or reasoning-effort
+                                       (when (and (nil? model) (not test))
+                                         default-reasoning-effort))
         prov (make-provider opts)
         prefill? (and (provider/supports-prefill prov) (not thinking))
         resolved-agent-profile (or agent-profile "config/agent-profiles/cli.agent.edn")
@@ -255,7 +260,7 @@
                                  :depth max-depth
                                  :prefill? prefill?
                                  :thinking thinking
-                                 :reasoning-effort reasoning-effort
+                                 :reasoning-effort effective-reasoning-effort
                                  :verbosity verbosity
                                  :suffix-grammar? suffix-grammar
                                  :grammar-max-chars grammar-max-chars

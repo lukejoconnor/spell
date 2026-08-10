@@ -41,7 +41,7 @@ This repo includes Spell-specific skills under `.agents/skills/`. Use them as th
 Prerequisites:
 
 - Java 11+
-- Clojure CLI (`clj`)
+- Clojure CLI (`clojure`)
 - At least one LLM provider credential or local provider
 
 On macOS with Homebrew:
@@ -52,7 +52,8 @@ brew install clojure/tools/clojure
 
 Provider setup:
 
-- Codex tool-call provider, the CLI default: install the OpenAI Codex CLI and run `codex` once so `~/.codex/auth.json` exists.
+- OpenAI API, the CLI default: set `OPENAI_API_KEY`.
+- Codex tool-call provider: install the OpenAI Codex CLI and run `codex` once so `~/.codex/auth.json` exists. This path is experimental and must be selected explicitly.
 - Anthropic API: set `ANTHROPIC_API_KEY`.
 - OpenAI API: set `OPENAI_API_KEY`.
 - Fireworks API: set `FIREWORKS_API_KEY`.
@@ -65,7 +66,7 @@ git clone https://github.com/lukejoconnor/spell.git
 cd spell
 ```
 
-No build step is required for normal CLI use. The `bin/spell` wrapper runs the Clojure CLI entry point with `clj -M:run`.
+No build step is required for normal CLI use. The `bin/spell` wrapper runs the Clojure CLI entry point with `clojure -M:run`.
 
 Smoke test without making an LLM API call:
 
