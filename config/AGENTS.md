@@ -47,7 +47,7 @@ Key semantics:
 - `:namespaces` values support `stdlib/X`, `stdlib/X/Y`, `file.clj/var`, `file.agent.edn`, `{:file f}`, and `{:file f :items {...}}`.
 - `:mcp-servers` maps server aliases to inline connection profiles or `{:server "../mcp-servers/name.mcp.edn" ...}` plus explicit capability permissions.
 
-MCP profiles store environment-variable references rather than secret values. Spell supports exactly MCP `2026-07-28`; do not add legacy lifecycle or session settings. See `docs/mcp.md` for the profile shape and permissions.
+MCP profiles store environment-variable references rather than secret values. Spell supports exactly MCP `2026-07-28`; do not add legacy lifecycle or session settings. See `docs/api.md#mcp-server-profiles` for the profile shape and permissions.
 
 Rules:
 

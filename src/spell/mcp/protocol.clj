@@ -7,7 +7,7 @@
            [java.util Base64 UUID]))
 
 (def protocol-version "2026-07-28")
-(def client-info {"name" "Spell" "version" "0.2.0-dev"})
+(def client-info {"name" "Spell" "version" "0.3.0"})
 (def max-model-text-chars 200000)
 (def max-model-structured-chars 500000)
 (def max-model-total-chars 500000)

@@ -9,7 +9,7 @@ Use this skill when working inside the Spell implementation. Prefer the checked-
 
 ## Current Release State
 
-`v0.2.0` is unreleased. The active public-release branch is `v0.2.0-dev` unless the user says otherwise. Public API and configuration details live in `docs/api.md`.
+`v0.3.0` is unreleased. Public API and configuration details live in `docs/api.md`.
 
 ## GitHub Issues and Pull Requests
 

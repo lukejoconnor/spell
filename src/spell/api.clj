@@ -122,7 +122,7 @@
         (agent/close-compiled-agent! agent-fn)))))
 
 (defn run
-  "Run a Spell agent with the v0.2.0 public API.
+  "Run a Spell agent with the v0.3.0 public API.
 
    Required:
      :model-profile — model profile path, inline profile map, or provider instance

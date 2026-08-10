@@ -1,6 +1,12 @@
 # Changelog
 
-## v0.2.0 - Unreleased
+## v0.3.0 - Unreleased
+
+- Added a new-spec-only MCP `2026-07-28` client with generated permissioned namespaces, Streamable HTTP and stdio transports, tools, resources, prompts, completion, subscriptions, and an explorer-style `spell mcp` CLI.
+- Added a runnable MCP Everything-style example backed by the official Python SDK, including retained GPT-5.6 Sol real-model validation.
+- Integrated MCP server-profile, permission, CLI, security, and supported-surface documentation into the public API and configuration reference.
+
+## v0.2.0
 
 First public-facing software release.
 
@@ -12,7 +18,6 @@ Notable release-surface changes relative to v0.1.0:
 - Consolidated public documentation around `README.md`, `AGENTS.md`, and `docs/api.md`.
 - Removed the experimental React namespace/profile from the public release surface.
 - Added repo-local Spell skills for setup, configuration, and source navigation.
-- Added a new-spec-only MCP `2026-07-28` client with generated permissioned namespaces, Streamable HTTP and stdio transports, tools, resources, prompts, completion, subscriptions, and an explorer-style `spell mcp` CLI.
 
 ## v0.1.0 - 2026-05-06
 

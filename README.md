@@ -6,7 +6,6 @@ Self-programmed execution (SPE) is when a language model (LM) acts as a self-orc
 
 - [Core semantics](#core-semantics)
 - [Quick start](#quick-start)
-- [MCP servers](#mcp-servers)
 - [Spell language overview](#spell-language-overview)
   - [Relationship with Clojure](#relationship-with-clojure)
   - [The completion is the program](#the-completion-is-the-program)
@@ -58,9 +57,14 @@ bin/spell -h
 
 To run `spell` directly instead of `bin/spell`, put this checkout's `bin/` directory on your `PATH`.
 
-## MCP servers
+### Examples
 
-Spell can turn a configured stateless MCP `2026-07-28` server into ordinary, permissioned Spell namespaces. Server profiles contain connection and environment-backed authentication settings; agent profiles select which tools, resources, prompts, completion, and subscriptions are available. Explore a server with `bin/spell mcp list SERVER` and see [the MCP client guide](docs/mcp.md) for configuration, CLI commands, supported features, and deliberate exclusions.
+- [Hello world](examples/hello-world.md) makes one minimal model self-call and composes its result.
+- [Coin flip](examples/coin-flip.md) uses recursive self-calls with a programmatic stopping condition.
+- [Auction](examples/auction.md) runs bidder agents in parallel and collects their results.
+- [Chat](examples/chat.md) demonstrates an interactive conversation through agent communication.
+
+See the [examples guide](examples/README.md) for the complete runnable set, including sequential, game-loop, and MCP examples.
 
 ## Spell language overview
 
@@ -159,6 +163,10 @@ Optional effect namespaces:
 - `globals`: see below
 - `workers`: named child-agent entry points, when the selected agent defines them
 - `blocking`: helpers for awaiting concurrent work, available only inside of `future` threads
+
+### MCP server namespaces
+
+Spell can also turn a configured stateless MCP `2026-07-28` server into ordinary, permissioned effect namespaces. Server profiles hold connection and environment-backed authentication settings, while agent profiles select the tools, resources, prompts, completion, and subscriptions exposed to the model. See [MCP server profiles](docs/api.md#mcp-server-profiles) for configuration, CLI exploration, supported features, and deliberate exclusions.
 
 ## Multiple agents
 
