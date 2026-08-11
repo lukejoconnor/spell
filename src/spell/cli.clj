@@ -269,7 +269,7 @@
                           init (assoc :init init)
                           trace (assoc :trace-dir (spell-trace/default-trace-dir))
                           (and (some? (. System console)) (not= model "user"))
-                          (assoc :user-reader (io/reader System/in))))
+                          (assoc :interactive-user? true)))
       (finally
         (when log-writer
           (.close ^java.io.Writer log-writer))))))
