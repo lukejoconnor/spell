@@ -25,6 +25,7 @@ dev/
 .uv-cache/
 traces/
 logs/
+.spell/feedback.edn
 scripts/check-codex-auth.sh
 
 # Benchmarking (separate repo)

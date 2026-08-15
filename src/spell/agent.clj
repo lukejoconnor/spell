@@ -26,6 +26,7 @@
             [spell.runtime :as runtime]
             [spell.format :as format]
             [spell.globals :as globals]
+            [spell.feedback :as feedback]
             [spell.llm :as llm]
             [spell.provider :as provider]
             [spell.stdlib :as stdlib]
@@ -46,6 +47,7 @@
    'io-exec io/io-exec-namespace
    'web web/web-namespace
    'globals globals/globals-namespace
+   'feedback feedback/feedback-namespace
    'agents runtime/agents-namespace
    'builtins stdlib/builtins-namespace
    'reminders stdlib/reminders-namespace
