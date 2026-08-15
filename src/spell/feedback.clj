@@ -43,7 +43,16 @@
      (locking write-lock
        (when-let [parent (.getParentFile file)]
          (.mkdirs parent))
-       (spit file (str (pr-str entry) "\n") :append true))
+       (with-open [raf (java.io.RandomAccessFile. file "rw")
+                   channel (.getChannel raf)
+                   file-lock (.lock channel)]
+         (.position channel (.size channel))
+         (let [bytes (.getBytes (str (pr-str entry) "\n")
+                                java.nio.charset.StandardCharsets/UTF_8)]
+           (loop [buffer (java.nio.ByteBuffer/wrap bytes)]
+             (when (.hasRemaining buffer)
+               (.write channel buffer)
+               (recur buffer))))))
      (assoc entry :path path))))
 
 (def feedback-namespace
