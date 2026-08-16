@@ -45,19 +45,23 @@
   "Register a new node. Returns its ID.
    Called at the start of -llm / leaf-llm, before the LLM API call."
   [parent-id depth variant prompt]
-  (let [id (:next-id @*trace*)
-        node {:id id
-              :parent parent-id
-              :depth depth
-              :variant variant
-              :prompt (str prompt)
-              :start-ms (System/currentTimeMillis)
-              :children []}]
-    (swap! *trace* (fn [t]
-                     (-> t
-                         (update :nodes conj node)
-                         (update :next-id inc)
-                         (cond-> (nil? (:root t)) (assoc :root id)))))
+  (let [start-ms (System/currentTimeMillis)
+        [before _]
+        (swap-vals! *trace*
+                    (fn [t]
+                      (let [id (:next-id t)
+                            node {:id id
+                                  :parent parent-id
+                                  :depth depth
+                                  :variant variant
+                                  :prompt (str prompt)
+                                  :start-ms start-ms
+                                  :children []}]
+                        (-> t
+                            (update :nodes conj node)
+                            (update :next-id inc)
+                            (cond-> (nil? (:root t)) (assoc :root id))))))
+        id (:next-id before)]
     (when (some? parent-id)
       (swap! *trace* update-in [:nodes parent-id :children]
              conj {:child-id id :call-prompt (str prompt)}))

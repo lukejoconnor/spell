@@ -15,7 +15,7 @@ Check:
 
 ```bash
 java -version
-clj -Sdescribe
+clojure -Sdescribe
 bin/spell -h
 command -v spell || true
 ```

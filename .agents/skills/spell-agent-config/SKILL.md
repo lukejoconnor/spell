@@ -71,7 +71,7 @@ Run the smallest useful checks:
 ```bash
 bin/spell -h
 bin/spell -t "Return 42"
-clj -M:test-fast
+clojure -M:test-fast
 bin/spell mcp doctor SERVER
 ```
 

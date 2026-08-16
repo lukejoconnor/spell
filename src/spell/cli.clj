@@ -13,6 +13,7 @@
 (def ^:private default-model-spec "openai-tc:gpt-5.6-sol")
 (def ^:private default-reasoning-effort "medium")
 (def ^:private agents-md-max-bytes (* 32 1024))
+(def ^:private max-utf8-code-point-bytes 4)
 
 (defn- truncate-utf8
   "Return a valid UTF-8 prefix bounded by max-bytes."
@@ -34,8 +35,15 @@
 
 (defn- read-agents-md-file [file]
   (when (and (.exists ^java.io.File file) (.isFile ^java.io.File file))
-    (merge {:path (.getCanonicalPath ^java.io.File file)}
-           (truncate-utf8 (slurp file :encoding "UTF-8") agents-md-max-bytes))))
+    (with-open [input (io/input-stream file)]
+      (let [bytes (.readNBytes input (+ agents-md-max-bytes max-utf8-code-point-bytes))
+            decoded (String. bytes java.nio.charset.StandardCharsets/UTF_8)
+            prefix (truncate-utf8 decoded agents-md-max-bytes)]
+        (merge {:path (.getCanonicalPath ^java.io.File file)
+                :truncated? (> (alength bytes) agents-md-max-bytes)}
+               prefix
+               (when (> (alength bytes) agents-md-max-bytes)
+                 {:truncated? true}))))))
 
 (defn- load-cwd-agents-md []
   (read-agents-md-file (io/file "AGENTS.md")))
