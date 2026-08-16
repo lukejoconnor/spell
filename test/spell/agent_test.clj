@@ -225,6 +225,43 @@
       (is (= "ok" (th/run-agent-prefix (:helper workers-ns) "(do ")))
       (is (re-find #"Spell developer dogfooding" (:system @seen-opts))))))
 
+(deftest worker-namespace-precedence-test
+  (testing "ordinary worker profiles retain precedence over the generated workers namespace"
+    (let [seen-opts (atom nil)
+          prov (reify provider/LLMProvider
+                 (plain-text-provider [this] this)
+                 (call-llm [this prompt]
+                   (provider/call-llm this prompt {}))
+                 (call-llm [_ _prompt opts]
+                   (reset! seen-opts opts)
+                   "\"ok\")")
+                 (supports-prefill [_] true))
+          workers-ns (agent/resolve-workers
+                       {'helper {:doc "Helper agent"
+                                 :namespaces {'workers 'stdlib/strings}}}
+                       llm/compile-agent agent/compile-agent-spec nil prov nil)]
+      (is (= "ok" (th/run-agent-prefix (:helper workers-ns) "(do ")))
+      (is (re-find #"workers — String manipulation and regex"
+                   (:system @seen-opts)))))
+
+  (testing "run-level overrides still take precedence over a worker profile"
+    (let [seen-opts (atom nil)
+          prov (reify provider/LLMProvider
+                 (plain-text-provider [this] this)
+                 (call-llm [this prompt]
+                   (provider/call-llm this prompt {}))
+                 (call-llm [_ _prompt opts]
+                   (reset! seen-opts opts)
+                   "\"ok\")")
+                 (supports-prefill [_] true))
+          workers-ns (agent/resolve-workers
+                       {'helper {:doc "Helper agent"
+                                 :namespaces {'feedback 'stdlib/strings}}}
+                       llm/compile-agent agent/compile-agent-spec nil prov nil
+                       {'feedback feedback/feedback-namespace})]
+      (is (= "ok" (th/run-agent-prefix (:helper workers-ns) "(do ")))
+      (is (re-find #"Spell developer dogfooding" (:system @seen-opts))))))
+
 ;; =============================================================================
 ;; leaf-llm model inheritance (in compile-agent)
 ;; =============================================================================
