@@ -12,6 +12,49 @@
 
 (def ^:private default-model-spec "openai-tc:gpt-5.6-sol")
 (def ^:private default-reasoning-effort "medium")
+(def ^:private agents-md-max-bytes (* 32 1024))
+(def ^:private max-utf8-code-point-bytes 4)
+
+(defn- truncate-utf8
+  "Return a valid UTF-8 prefix bounded by max-bytes."
+  [value max-bytes]
+  (let [builder (StringBuilder.)]
+    (loop [offset 0
+           used-bytes 0]
+      (if (>= offset (count value))
+        {:text (str builder) :truncated? false}
+        (let [code-point (.codePointAt ^String value offset)
+              piece (String. (Character/toChars code-point))
+              piece-bytes (alength (.getBytes piece java.nio.charset.StandardCharsets/UTF_8))]
+          (if (> (+ used-bytes piece-bytes) max-bytes)
+            {:text (str builder) :truncated? true}
+            (do
+              (.append builder piece)
+              (recur (+ offset (Character/charCount code-point))
+                     (+ used-bytes piece-bytes)))))))))
+
+(defn- read-agents-md-file [file]
+  (when (and (.exists ^java.io.File file) (.isFile ^java.io.File file))
+    (with-open [input (io/input-stream file)]
+      (let [bytes (.readNBytes input (+ agents-md-max-bytes max-utf8-code-point-bytes))
+            decoded (String. bytes java.nio.charset.StandardCharsets/UTF_8)
+            prefix (truncate-utf8 decoded agents-md-max-bytes)]
+        (merge {:path (.getCanonicalPath ^java.io.File file)
+                :truncated? (> (alength bytes) agents-md-max-bytes)}
+               prefix
+               (when (> (alength bytes) agents-md-max-bytes)
+                 {:truncated? true}))))))
+
+(defn- load-cwd-agents-md []
+  (read-agents-md-file (io/file "AGENTS.md")))
+
+(defn- prepend-agents-md [prompt {:keys [path text truncated?]}]
+  (str "Project instructions from " path
+       (when truncated? " (truncated to 32 KiB of UTF-8 text)")
+       ":\n\n<agents_md>\n"
+       text
+       "\n</agents_md>\n\nTask:\n"
+       prompt))
 
 (defn parse-model-spec
   "Parse 'provider:model' into {:provider str :model str}."
@@ -86,7 +129,10 @@
     :validate [pos? "Must be positive"]]
    [nil "--responses-api" "Force OpenAI Responses API instead of Chat Completions"]
    [nil "--dogfood" "Enable Spell developer dogfooding feedback for this run"]
+   [nil "--agents-md" "Include cwd AGENTS.md (up to 32 KiB) in the task prompt"]
    ["-T" "--trace" "Record execution trace to a temp dir under java.io.tmpdir/spell-traces/"]
+   [nil "--trace-dir DIR" "Record execution trace to DIR"
+    :validate [#(not (str/blank? %)) "Must be non-blank"]]
    ["-l" "--log FILE" "Log verbose output to FILE (implies -v)"]
    ["-v" "--verbose" "Show raw LLM response"]
    ["-S" "--setup CMD" "Shell command to run before spell execution"]
@@ -133,7 +179,7 @@
 (defn error-msg [errors]
   (str "Error:\n" (str/join \newline errors)))
 
-(defn validate-args [args]
+(defn- validate-base-args [args]
   (let [{:keys [options arguments errors summary]} (parse-opts args cli-options)]
     (cond
       (:help options)
@@ -190,6 +236,25 @@
       :else
       {:exit-message (usage summary) :ok? false})))
 
+(defn validate-args [args]
+  (let [result (validate-base-args args)]
+    (cond
+      (not (get-in result [:options :agents-md]))
+      result
+
+      (:init result)
+      {:exit-message "--agents-md requires a natural-language prompt; it cannot be combined with --init or --init-file"
+       :ok? false}
+
+      (:prompt result)
+      (if-let [agents-md (load-cwd-agents-md)]
+        (update result :prompt prepend-agents-md agents-md)
+        {:exit-message (str "AGENTS.md not found in current directory: "
+                            (System/getProperty "user.dir"))
+         :ok? false})
+
+      :else result)))
+
 (defn- make-provider [{:keys [test model max-tokens responses-api]}]
   (cond
     test
@@ -232,7 +297,7 @@
 
 (defn run-input
   [{:keys [prompt init]}
-   {:keys [depth verbose log budget trace dogfood agent-profile model thinking reasoning-effort verbosity test
+   {:keys [depth verbose log budget trace trace-dir dogfood agent-profile model thinking reasoning-effort verbosity test
            suffix-grammar grammar-max-chars]
     :as opts}
    usage-atom]
@@ -270,7 +335,8 @@
                           init (assoc :init init)
                           dogfood (assoc :agent-namespace-overrides
                                          {'feedback 'stdlib/feedback})
-                          trace (assoc :trace-dir (spell-trace/default-trace-dir))
+                          (or trace trace-dir)
+                          (assoc :trace-dir (or trace-dir (spell-trace/default-trace-dir)))
                           (and (some? (. System console)) (not= model "user"))
                           (assoc :user-reader (io/reader System/in))))
       (finally

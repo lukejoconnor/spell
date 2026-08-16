@@ -100,8 +100,8 @@ Examples:
 Use focused tests first, then broader checks:
 
 ```bash
-clj -M:test-fast
-clj -M:test-slow
+clojure -M:test-fast
+clojure -M:test-slow
 ```
 
 The fast suite covers parser, evaluator, provider, agent, web, API, trace, macro, and prompt-facing behavior. The slow suite covers concurrency, I/O, runtime, globals, and user-provider behavior.
@@ -109,7 +109,7 @@ The fast suite covers parser, evaluator, provider, agent, web, API, trace, macro
 For trace debugging:
 
 ```bash
-clj -M -m spell.trace-tool --trace-dir DIR --summary
+clojure -M -m spell.trace-tool --trace-dir DIR --summary
 ```
 
 Use `bin/spell -h` as the authoritative CLI option reference for the current checkout.

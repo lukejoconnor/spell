@@ -155,16 +155,16 @@ bin/spell -h
 bin/spell -t "Return a greeting"
 bin/spell -e hello-world
 bin/spell "Explain the examples directory."
-clj -M:test-fast
-clj -M:test-slow
+clojure -M:test-fast
+clojure -M:test-slow
 ```
 
 The fast suite covers parser, evaluator, provider, agent, web, API, trace, macro, and prompt-facing behavior. The slow suite covers concurrency, I/O, runtime, globals, and user-provider behavior. `deps.edn` is the authoritative list of test aliases and included namespaces.
 
-Use `-T` to record an execution trace under the temporary Spell trace directory. The trace tool can inspect a trace directory directly, for example:
+Use `-T` to record an execution trace under the temporary Spell trace directory, or `--trace-dir DIR` to write it to an explicit durable location. Use `--dogfood` to expose the feedback namespace to the main agent and its workers. Use `--agents-md` to prepend the current working directory's `AGENTS.md`, capped at 32 KiB, to a natural-language task. The trace tool can inspect a trace directory directly, for example:
 
 ```bash
-clj -M -m spell.trace-tool --trace-dir DIR --summary
+clojure -M -m spell.trace-tool --trace-dir DIR --summary
 ```
 
 Use `--log FILE` or `-v` when you need to inspect model responses during development.

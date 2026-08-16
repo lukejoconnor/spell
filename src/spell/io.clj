@@ -587,16 +587,39 @@
        :out (str/trim @out-future)
        :err (str/trim @err-future)})))
 
+(defn- normalize-grep-patterns
+  [pattern]
+  (cond
+    (string? pattern)
+    [pattern]
+
+    (coll? pattern)
+    (do
+      (when (empty? pattern)
+        (throw (ex-info "io/grep: pattern collection must not be empty"
+                        {:pattern pattern})))
+      (when-let [invalids (seq (remove string? pattern))]
+        (let [invalid (first invalids)]
+          (throw (ex-info "io/grep: every pattern in the collection must be a string"
+                          {:pattern pattern :invalid invalid}))))
+      (vec pattern))
+
+    :else
+    (throw (ex-info "io/grep: pattern must be a string or a non-empty collection of strings"
+                    {:pattern pattern}))))
+
 (defn grep
-  "Search file contents for a pattern. Pattern is an extended regex (ERE):
-   supports alternation, +, ?, {n,m}, and (...) groups.
+  "Search file contents for one or more patterns. Each pattern is an independent
+   extended regex (ERE) supporting alternation, +, ?, {n,m}, and (...) groups.
+   Pass either a string or a non-empty collection of strings in the pattern position.
    Returns {:exit N :out \"...\" :err \"...\"}."
   ([pattern path] (grep pattern path {}))
   ([pattern path opts]
-   (ensure-string-args "io/grep: pattern and path" [pattern path] "")
+   (ensure-string-args "io/grep: path" [path] "")
    (when-let [include (:include opts)]
      (ensure-string-args "io/grep: :include" [include] ""))
-   (let [context (when (contains? opts :context)
+   (let [patterns (normalize-grep-patterns pattern)
+         context (when (contains? opts :context)
                    (normalize-natural-number-opt "io/grep: :context" (:context opts)))
          max-count (when (contains? opts :max-count)
                      (normalize-natural-number-opt "io/grep: :max-count" (:max-count opts)))
@@ -604,8 +627,8 @@
                  (:ignore-case opts) (conj "-i")
                  context (conj (str "-C" context))
                  max-count (conj (str "-m" max-count)))
-         grep-cmd (str "grep " (str/join " " flags)
-                       " -e " (shell-quote pattern))
+         pattern-args (str/join " " (map #(str "-e " (shell-quote %)) patterns))
+         grep-cmd (str "grep " (str/join " " flags) " " pattern-args)
          cmd (if-let [include (:include opts)]
                (str "find " (shell-quote path)
                     " -type f -name " (shell-quote include)
@@ -679,6 +702,7 @@
   (io/read-file path start end)
   (io/grep pattern path)           — recursive grep with line numbers (ERE by default; supports |, +, ?, {n,m}, and (...) groups)
   (io/grep pattern path {:ignore-case true :include \"*.clj\" :context 20 :max-count 50})
+  (io/grep [\"alpha\" \"beta\"] path opts) — multiple independent ERE patterns; do not pass patterns as extra arguments
   ;; :context N returns N lines around each match — one call gets both the hit and the surrounding code
   (io/glob pattern)
   (io/glob pattern path {:type \"f\" :max-depth 5})
@@ -820,10 +844,13 @@ For one-turn file peeks, use:
   '(!peek-now code (io/read-lines \"main.py\"))"
 
     :grep
-    "Search file contents recursively with line numbers. Pattern is an extended regex (ERE): supports |, +, ?, {n,m}, and (...) groups.
+    "Search file contents recursively with line numbers. Each pattern is an independent extended regex (ERE): supports |, +, ?, {n,m}, and (...) groups.
 
 (io/grep pattern path)
 (io/grep pattern path {:ignore-case true :include \"*.clj\" :context 20 :max-count 50})
+(io/grep [\"alpha\" \"beta\"] path opts)
+
+The pattern argument must be a string or a non-empty collection of strings. For multiple patterns, use the collection form rather than extra positional arguments.
 
 Returns {:exit N :out \"...\" :err \"...\"}.
 
@@ -1014,6 +1041,7 @@ The content is the raw file contents. For numbered lines, use io/read-file."}
   (io/read-lines path start end)   — read raw line range [start, end)
   (io/grep pattern path)           — recursive grep with line numbers (ERE by default)
   (io/grep pattern path {:context 20 :ignore-case true :max-count 50})
+  (io/grep [\"alpha\" \"beta\"] path opts) — multiple independent ERE patterns
                                     — :context N returns N lines around each match in one call
   (io/glob pattern)                — find files by name pattern
   (io/git \"status\")               — run an allowlisted read-only git subcommand
@@ -1030,7 +1058,7 @@ running arbitrary commands. For process execution, add io-exec separately."
     :slurp-bytes "Read entire file as raw bytes."
     :read-file "Read a file with numbered lines."
     :read-lines "Read a file as a vector of raw line strings."
-    :grep "Search file contents recursively with line numbers. Pattern is an extended regex (ERE)."
+    :grep "Search file contents recursively with line numbers. Pattern may be one ERE string or a non-empty collection of independent ERE strings."
     :glob "Find files by name pattern."
     :git "Run an allowlisted read-only git subcommand."
     :exists? "Check whether a path exists."

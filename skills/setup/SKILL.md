@@ -13,17 +13,17 @@ Check Java, the Clojure CLI, and the Spell wrapper:
 
 ```bash
 java -version
-clj -Sdescribe
+clojure -Sdescribe
 bin/spell -h
 ```
 
-Spell expects Java 11+ and the Clojure CLI. On macOS, if `clj` is missing, recommend:
+Spell expects Java 11+ and the Clojure CLI. On macOS, if `clojure` is missing, recommend:
 
 ```bash
 brew install clojure/tools/clojure
 ```
 
-No build step is required for normal CLI use. `bin/spell` runs the Clojure CLI entry point with `clj -M:run`.
+No build step is required for normal CLI use. `bin/spell` runs the Clojure CLI entry point with `clojure -M:run`.
 
 ## No-Provider Smoke Test
 

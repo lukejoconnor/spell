@@ -16,7 +16,7 @@
       "Bash(gh auth *)",
       "Bash(ls *)",
       "Bash(mkdir *)",
-      "Bash(clj *)"
+      "Bash(clojure *)"
     ]
   }
 }

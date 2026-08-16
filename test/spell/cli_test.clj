@@ -41,6 +41,51 @@
       (is (= "Return 42" (:prompt result)))
       (is (= "none" (get-in result [:options :reasoning-effort]))))))
 
+(deftest trace-dir-option-test
+  (testing "--trace-dir enables tracing at the requested path"
+    (let [result (cli/validate-args ["--trace-dir" "notebook/results/run-1/trace"
+                                     "Return 42"])]
+      (is (= "notebook/results/run-1/trace"
+             (get-in result [:options :trace-dir])))))
+
+  (testing "an explicit trace directory takes precedence over -T"
+    (with-redefs [api/run-internal identity]
+      (let [result (cli/run-input {:prompt "Return 42"}
+                                  {:test true
+                                   :trace true
+                                   :trace-dir "durable/trace"}
+                                  (atom {:by-model {}}))]
+        (is (= "durable/trace" (:trace-dir result)))))))
+
+(deftest agents-md-option-test
+  (testing "--agents-md prepends cwd instructions to a natural-language prompt"
+    (let [result (with-redefs-fn
+                   {#'spell.cli/load-cwd-agents-md
+                    (constantly {:path "/repo/AGENTS.md"
+                                 :text "Keep changes scoped."
+                                 :truncated? false})}
+                   #(cli/validate-args ["--agents-md" "Implement the feature"]))]
+      (is (str/includes? (:prompt result) "Project instructions from /repo/AGENTS.md"))
+      (is (str/includes? (:prompt result) "<agents_md>\nKeep changes scoped.\n</agents_md>"))
+      (is (str/ends-with? (:prompt result) "Task:\nImplement the feature"))))
+
+  (testing "--agents-md is rejected for direct Spell programs"
+    (let [result (cli/validate-args ["--agents-md" "--init" "(do 42)"])]
+      (is (false? (:ok? result)))
+      (is (str/includes? (:exit-message result) "requires a natural-language prompt"))))
+
+  (testing "AGENTS.md truncation preserves valid UTF-8 within the 32 KiB cap"
+    (let [tmp (java.io.File/createTempFile "spell-agents-md-" ".md")]
+      (try
+        (spit tmp (str (apply str (repeat 32767 "a")) "界tail"))
+        (let [{:keys [text truncated?]} (#'spell.cli/read-agents-md-file tmp)]
+          (is truncated?)
+          (is (= 32767
+                 (alength (.getBytes text java.nio.charset.StandardCharsets/UTF_8))))
+          (is (not (str/includes? text "界"))))
+        (finally
+          (.delete tmp))))))
+
 (deftest validate-args-supports-direct-init-programs
   (testing "--init passes a complete Spell program instead of a prompt"
     (let [result (cli/validate-args ["--init" "(do 42)"])]
@@ -185,8 +230,10 @@
     (is (str/includes? exit-message "anthropic-tc:claude-opus-4-8"))
     (is (str/includes? exit-message "fireworks-tc:kimi-k2p7-code"))
     (is (str/includes? exit-message "--dogfood"))
+    (is (str/includes? exit-message "--agents-md"))
     (is (str/includes? exit-message "spell -t --init '(do (+ 20 22))'"))
     (is (str/includes? exit-message "spell --init-file scratch/my-program.spl"))
+    (is (str/includes? exit-message "--trace-dir DIR"))
     (doseq [example ["hello-world" "coin-flip" "twenty-questions"
                      "telephone" "auction" "chat"]]
       (is (str/includes? exit-message example)))

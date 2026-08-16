@@ -22,7 +22,7 @@
     "\n"
     ["spell.benchmark-api - JSON interface for benchmarks"
      ""
-     "Usage: clj -M -m spell.benchmark-api [--request FILE|-] [--response FILE|-]"
+     "Usage: clojure -M -m spell.benchmark-api [--request FILE|-] [--response FILE|-]"
      ""
      summary]))
 
