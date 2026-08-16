@@ -232,7 +232,7 @@ Check dependencies and environment assumptions:
 
 Search for the real implementation site before editing:
   '(!peek def-hits
-      (io/grep \"def handle_request|class Handler\" \"src\" {:include \"*.py\" :context 8 :max-count 20}))
+      (io/grep [\"def handle_request\" \"class Handler\"] \"src\" {:include \"*.py\" :context 8 :max-count 20}))
   ;; end of turn 1 completion
   (prune 2)
   ;; start of turn 2 suffix

@@ -712,6 +712,61 @@
       (is (= 1 (:exit result)))
       (is (= "" (:out result))))))
 
+(deftest grep-multiple-patterns-test
+  (let [alpha-path (str test-dir "/alpha.clj")
+        beta-path (str test-dir "/beta.clj")
+        ignored-path (str test-dir "/ignored.txt")]
+    (spit alpha-path "before\nALPHAAA\nafter\nsecond alpha\n")
+    (spit beta-path "before\nbetty\nafter\n")
+    (spit ignored-path "alpha\n")
+    (let [result (io/grep ["alpha+" "bet(ty|a)"]
+                          test-dir
+                          {:include "*.clj"
+                           :ignore-case true
+                           :context 1
+                           :max-count 1})]
+      (is (= 0 (:exit result)))
+      (is (str/includes? (:out result) alpha-path))
+      (is (str/includes? (:out result) beta-path))
+      (is (str/includes? (:out result) "before"))
+      (is (str/includes? (:out result) "after"))
+      (is (not (str/includes? (:out result) ignored-path)))
+      (is (not (str/includes? (:out result) "second alpha"))))))
+
+(deftest grep-pattern-validation-test
+  (is (thrown-with-msg?
+       clojure.lang.ExceptionInfo
+       #"io/grep: pattern collection must not be empty"
+       (io/grep [] test-dir)))
+  (doseq [patterns [["needle" :not-a-string]
+                    ["needle" nil]
+                    ["needle" false]]]
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo
+         #"io/grep: every pattern in the collection must be a string"
+         (io/grep patterns test-dir))))
+  (is (thrown-with-msg?
+       clojure.lang.ExceptionInfo
+       #"io/grep: pattern must be a string or a non-empty collection of strings"
+       (io/grep :needle test-dir))))
+
+(deftest grep-multiple-patterns-are-shell-safe-test
+  (let [sentinel (str test-dir "/grep-injection-sentinel")
+        target (str test-dir "/shell-safe.txt")
+        malicious (str "needle'; touch " sentinel "; printf '")]
+    (spit target "ordinary\n")
+    (let [result (io/grep ["ordinary" malicious] target)]
+      (is (= 0 (:exit result)))
+      (is (not (.exists (jio/file sentinel)))))))
+
+(deftest grep-multiple-positional-patterns-remain-invalid-test
+  ;; Unsupported: (io/grep "alpha" "beta" "src" opts)
+  ;; Supported replacement: (io/grep ["alpha" "beta"] "src" opts)
+  (is (thrown-with-msg?
+       clojure.lang.ArityException
+       #"Wrong number of args \(5\) passed to: spell.io/grep"
+       (io/grep "alpha" "beta" "gamma" test-dir {}))))
+
 (deftest grep-rejects-non-numeric-options-test
   (is (thrown-with-msg?
        clojure.lang.ExceptionInfo
