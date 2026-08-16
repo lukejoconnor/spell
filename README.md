@@ -46,7 +46,7 @@ The most convenient way to run Spell is via the CLI:
 bin/spell -v -e hello-world
 
 # Chat with the agent
-bin/spell -v -e chat
+bin/spell -e chat
 
 # Ask the default agent to do something
 bin/spell "Inspect the examples directory and suggest one example to run next."
@@ -57,6 +57,14 @@ bin/spell -h
 
 To run `spell` directly instead of `bin/spell`, put this checkout's `bin/` directory on your `PATH`.
 
+### Examples
+
+- [Hello world](examples/hello-world.md) makes one minimal model self-call and composes its result.
+- [Coin flip](examples/coin-flip.md) uses recursive self-calls with a programmatic stopping condition.
+- [Chat](examples/chat.md) demonstrates an interactive conversation through agent communication.
+
+See the [examples guide](examples/README.md) for the complete runnable set, including sequential, game-loop, and MCP examples.
+
 ## Spell language overview
 
 This section is meant to explain key design choices and their rationale. For a practical guide to writing Spell code with examples, I recommend reading the [Spell system prompt](config/prompts/sysprompt-toolcall.txt).
@@ -65,7 +73,7 @@ This section is meant to explain key design choices and their rationale. For a p
 
 Spell is a dialect of Lisp embedded within Clojure. It is implemented in Clojure and copies most of Clojure's semantics. Clojure was chosen because it is a modern Lisp with a powerful concurrency model. Its concurrency features enable the multi-agent runtime. Spell resembles Clojure except when there is a reason to differ.
 
-One deliberate difference is scoping. Clojure's `eval` reads from and writes to the global environment. That is undesirable for Spell self-calls because the language model cannot inspect a hidden global environment: a parent binding could be overwritten by a child completion, or the environment could become cluttered with forgotten definitions. Spell therefore runs each self-call statelessly within its own local environment; only the argument to the self-call and its return value cross the turn boundary. Because of this choice, Spell has little use for closures. Closures are opaque function values which capture the environment in which they are defined. Such objects cannot pass through the turn boundary except when serialized as source code, which would defeat their point. Functions in Spell are therefore dynamically scoped: if a function body uses a free binding such as `completion`, that binding is looked up in the environment where the function is called.
+One deliberate difference is scoping. Clojure's `eval` reads from and writes to the global environment. That is undesirable for Spell self-calls because the language model cannot inspect a hidden global environment, and a parent binding could be overwritten by a child completion. Spell therefore runs each self-call statelessly within its own local environment; only the argument to the self-call and its return value cross the turn boundary. Because of this choice, Spell has little use for closures, which would be unable to pass through the turn boundary; therefore, functions in Spell are dynamically scoped.
 
 Spell also adds several features which are specifically motivated by SPE, and these are described below.
 
@@ -154,6 +162,10 @@ Optional effect namespaces:
 - `globals`: see below
 - `workers`: named child-agent entry points, when the selected agent defines them
 - `blocking`: helpers for awaiting concurrent work, available only inside of `future` threads
+
+### MCP server namespaces
+
+Spell can also turn a configured stateless MCP `2026-07-28` server into an effect namespace. Server profiles hold connection and environment-backed authentication settings, while agent profiles select the tools, resources, prompts, completion, and subscriptions exposed to the model. See [MCP server profiles](docs/api.md#mcp-server-profiles).
 
 ## Multiple agents
 

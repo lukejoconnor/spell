@@ -1,6 +1,12 @@
 # Changelog
 
-## v0.2.0 - Unreleased
+## v0.3.0 - Unreleased
+
+- Added a new-spec-only MCP `2026-07-28` client with generated permissioned namespaces, Streamable HTTP and stdio transports, tools, resources, prompts, completion, subscriptions, and an explorer-style `spell mcp` CLI.
+- Added a runnable MCP Everything-style example backed by the official Python SDK, including retained GPT-5.6 Sol real-model validation.
+- Integrated MCP server-profile, permission, CLI, security, and supported-surface documentation into the public API and configuration reference.
+
+## v0.2.0
 
 First public-facing software release.
 

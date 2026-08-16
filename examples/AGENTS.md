@@ -1,6 +1,6 @@
 # Examples Directory Guide
 
-This directory contains the public runnable `.spl` examples for the v0.2 release. Each example is a natural-language prompt that the model completes as a Spell program.
+This directory contains the public runnable `.spl` examples for the v0.3 release. Each example is a natural-language prompt that the model completes as a Spell program.
 
 ## Running
 
@@ -24,6 +24,7 @@ The public release keeps the example surface intentionally small. The primary ex
 | `telephone.spl` | Sequential relay loop with fresh self-calls. |
 | `auction.spl` | Parallel agents, notifications, and result collection. |
 | `chat.spl` | Interactive user conversation through agent communication. |
+| `mcp-everything.spl` | Real-model exercise of tools, resources, prompts, completion, and subscriptions from an MCP server. |
 
 ## Companion Files
 

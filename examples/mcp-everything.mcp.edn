@@ -1,0 +1,6 @@
+{:transport
+ {:stdio
+  {:command ["uv" "run" "--with" "mcp==2.0.0"
+             "python" "examples/mcp-everything-server.py"]
+   :cwd ".."}}
+ :timeout-ms 120000}

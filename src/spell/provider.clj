@@ -13,7 +13,8 @@
   (:require [clojure.data.json :as json]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
-            [clojure.string :as str])
+            [clojure.string :as str]
+            [spell.http :as http])
   (:import [java.net URI]
            [java.net.http HttpClient HttpClient$Version HttpRequest HttpRequest$BodyPublishers
                           HttpResponse$BodyHandlers]
@@ -315,41 +316,21 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- make-http-client
-  ([] (make-http-client nil))
+  ([] (http/make-client {:connect-timeout-sec nil}))
   ([{:keys [http-version connect-timeout-sec]}]
-   (let [builder (HttpClient/newBuilder)]
-     (when http-version
-       (.version builder http-version))
-     (when connect-timeout-sec
-       (.connectTimeout builder (Duration/ofSeconds (long connect-timeout-sec))))
-     (.build builder))))
+   (http/make-client {:http-version http-version
+                      :connect-timeout-sec connect-timeout-sec})))
 
 (defn- await-http-response
   "Wait for an async HTTP response, bounding the entire exchange including body read.
    This is stricter than HttpRequest.timeout, which does not reliably protect
    long-lived streaming body reads."
   [response-future timeout-sec]
-  (try
-    (if timeout-sec
-      (.get response-future (long timeout-sec) TimeUnit/SECONDS)
-      (.get response-future))
-    (catch TimeoutException _
-      (.cancel response-future true)
-      (throw (java.net.http.HttpTimeoutException.
-              (str "HTTP response timed out after " timeout-sec "s"))))
-    (catch InterruptedException e
-      (.cancel response-future true)
-      (.interrupt (Thread/currentThread))
-      (throw e))
-    (catch ExecutionException e
-      (let [cause (.getCause e)]
-        (throw (if (instance? Throwable cause)
-                 cause
-                 (ex-info "HTTP request failed" {:cause cause} e)))))))
+  (http/await-response response-future timeout-sec))
 
 (defn- send-http-request
   [http-client request body-handler timeout-sec]
-  (await-http-response (.sendAsync http-client request body-handler) timeout-sec))
+  (http/send-request http-client request body-handler timeout-sec))
 
 (defn- timeout-sec->millis
   [seconds]

@@ -3,6 +3,7 @@
             [spell.agent :as agent]
             [spell.runtime :as runtime]
             [spell.llm :as llm]
+            [spell.mcp.namespace :as mcp]
             [spell.provider :as provider]
             [spell.stdlib :as stdlib]
             [spell.test-helpers :as th]))
@@ -261,6 +262,113 @@
           (is (runtime/compiled-agent? v)))
         (finally
           (.delete child-file))))))
+
+(deftest resolve-namespaces-failure-closes-embedded-agent-test
+  (testing "a later namespace resolution failure closes an earlier embedded agent"
+    (let [root (.toFile (java.nio.file.Files/createTempDirectory
+                         "spell-namespace-close-"
+                         (make-array java.nio.file.attribute.FileAttribute 0)))
+          child-file (java.io.File. root "child.agent.edn")
+          closed (atom 0)]
+      (try
+        (spit child-file (pr-str {:provider {:type :test :response "unused"}
+                                  :mcp-servers {'child-mcp {}}}))
+        (with-redefs [mcp/compile-servers
+                      (fn [_ _]
+                        {:namespaces {}
+                         :close! #(swap! closed inc)})]
+          (is (thrown-with-msg?
+               clojure.lang.ExceptionInfo #"Unknown namespace value pattern"
+               (#'agent/resolve-namespaces
+                (array-map 'child 'child.agent.edn
+                           'broken 'unknown-namespace)
+                (.getPath root)
+                agent/compile-agent-spec))))
+        (is (= 1 @closed))
+        (finally
+          (doseq [file (reverse (file-seq root))]
+            (.delete file)))))))
+
+(deftest resolve-namespaces-rejects-normalized-key-collisions-before-opening-test
+  (let [root (.toFile (java.nio.file.Files/createTempDirectory
+                       "spell-namespace-key-collision-"
+                       (make-array java.nio.file.attribute.FileAttribute 0)))
+        child-file (java.io.File. root "child.agent.edn")
+        opened (atom 0)]
+    (try
+      (spit child-file (pr-str {:provider {:type :test :response "unused"}
+                                :mcp-servers {'child-mcp {}}}))
+      (is (= :duplicate-agent-namespace
+             (try
+               (with-redefs [mcp/compile-servers
+                             (fn [& _]
+                               (swap! opened inc)
+                               {:namespaces {} :close! (fn [])})]
+                 (#'agent/resolve-namespaces
+                  (array-map 'child 'child.agent.edn
+                             :child 'stdlib/math)
+                  (.getPath root)
+                  agent/compile-agent-spec))
+               nil
+               (catch clojure.lang.ExceptionInfo e (:type (ex-data e))))))
+      (is (zero? @opened) "invalid namespace keys must fail before acquiring resources")
+      (finally
+        (doseq [file (reverse (file-seq root))]
+          (.delete file))))))
+
+(deftest compile-agent-failure-closes-namespace-embedded-agent-test
+  (testing "top-level partial-failure cleanup owns agent profiles in :namespaces"
+    (let [root (.toFile (java.nio.file.Files/createTempDirectory
+                         "spell-agent-namespace-close-"
+                         (make-array java.nio.file.attribute.FileAttribute 0)))
+          parent-file (java.io.File. root "parent.agent.edn")
+          child-file (java.io.File. root "child.agent.edn")
+          closed (atom 0)]
+      (try
+        (spit child-file (pr-str {:provider {:type :test :response "unused"}
+                                  :mcp-servers {'child-mcp {}}}))
+        (spit parent-file
+              (pr-str {:provider {:type :test :response "unused"}
+                       :namespaces (array-map 'child 'child.agent.edn
+                                              'patterns 'stdlib/patterns)}))
+        (with-redefs [mcp/compile-servers
+                      (fn [_ _]
+                        {:namespaces {}
+                         :close! #(swap! closed inc)})]
+          (is (thrown-with-msg?
+               clojure.lang.ExceptionInfo #"requires namespaces"
+               (agent/compile-agent-spec
+                (agent/load-agent-spec (.getPath parent-file))))))
+        (is (= 1 @closed))
+        (finally
+          (doseq [file (reverse (file-seq root))]
+            (.delete file)))))))
+
+(deftest worker-compile-failure-closes-namespace-embedded-agent-test
+  (testing "worker partial-failure cleanup owns agent profiles in :namespaces"
+    (let [root (.toFile (java.nio.file.Files/createTempDirectory
+                         "spell-worker-namespace-close-"
+                         (make-array java.nio.file.attribute.FileAttribute 0)))
+          child-file (java.io.File. root "child.agent.edn")
+          closed (atom 0)]
+      (try
+        (spit child-file (pr-str {:provider {:type :test :response "unused"}
+                                  :mcp-servers {'child-mcp {}}}))
+        (with-redefs [mcp/compile-servers
+                      (fn [_ _]
+                        {:namespaces {}
+                         :close! #(swap! closed inc)})]
+          (is (thrown-with-msg?
+               clojure.lang.ExceptionInfo #"worker compile failed"
+               (agent/resolve-workers
+                {'worker {:namespaces {'child 'child.agent.edn}}}
+                (fn [_] (throw (ex-info "worker compile failed" {})))
+                agent/compile-agent-spec
+                nil nil (.getPath root)))))
+        (is (= 1 @closed))
+        (finally
+          (doseq [file (reverse (file-seq root))]
+            (.delete file)))))))
 
 (deftest resolve-namespace-value-vector-merge-test
   (testing "vector namespace values resolve and merge namespace maps"
