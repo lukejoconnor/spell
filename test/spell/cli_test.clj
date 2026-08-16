@@ -63,6 +63,35 @@
     (is (false? (:ok? (cli/validate-args ["--init" "(do 42)" "--init-file" "program.spl"]))))
     (is (false? (:ok? (cli/validate-args ["--example" "hello-world" "--init" "(do 42)"]))))))
 
+(deftest dogfood-flag-test
+  (testing "--dogfood is parsed as an explicit run-level gate"
+    (let [result (cli/validate-args ["--dogfood" "Return 42"])]
+      (is (= "Return 42" (:prompt result)))
+      (is (true? (get-in result [:options :dogfood])))))
+
+  (testing "dogfood adds feedback to the selected profile without changing the profile path"
+    (let [seen-opts (atom nil)
+          profile "config/agent-profiles/base-msg.agent.edn"]
+      (with-redefs [api/run-internal (fn [opts]
+                                      (reset! seen-opts opts)
+                                      {:result :ok})]
+        (is (= :ok (:result (cli/run-input {:init "(do 42)"}
+                                            {:test true
+                                             :dogfood true
+                                             :agent-profile profile}
+                                            (atom {:by-model {}})))))
+        (is (= profile (:agent-profile @seen-opts)))
+        (is (= {'feedback 'stdlib/feedback}
+               (:agent-namespace-overrides @seen-opts))))))
+
+  (testing "ordinary runs do not receive the feedback override"
+    (let [seen-opts (atom nil)]
+      (with-redefs [api/run-internal (fn [opts]
+                                      (reset! seen-opts opts)
+                                      {:result :ok})]
+        (cli/run-input {:init "(do 42)"} {:test true} (atom {:by-model {}}))
+        (is (not (contains? @seen-opts :agent-namespace-overrides)))))))
+
 (deftest run-input-evaluates-direct-init-without-llm-call
   (let [result (cli/run-input {:init "(do (+ 20 22))"} {:test true} (atom {:by-model {}}))]
     (is (= 42 (:result result))))
@@ -155,6 +184,7 @@
     (is (str/includes? exit-message "openai-tc:gpt-5.6-sol"))
     (is (str/includes? exit-message "anthropic-tc:claude-opus-4-8"))
     (is (str/includes? exit-message "fireworks-tc:kimi-k2p7-code"))
+    (is (str/includes? exit-message "--dogfood"))
     (is (str/includes? exit-message "spell -t --init '(do (+ 20 22))'"))
     (is (str/includes? exit-message "spell --init-file scratch/my-program.spl"))
     (doseq [example ["hello-world" "coin-flip" "twenty-questions"

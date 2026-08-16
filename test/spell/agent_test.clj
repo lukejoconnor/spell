@@ -1,6 +1,7 @@
 (ns spell.agent-test
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [spell.agent :as agent]
+            [spell.feedback :as feedback]
             [spell.runtime :as runtime]
             [spell.llm :as llm]
             [spell.mcp.namespace :as mcp]
@@ -189,6 +190,77 @@
              (stdlib/describe workers-ns)))
       ;; describe with key returns specific doc
       (is (= "Researches topics" (stdlib/describe workers-ns :researcher))))))
+
+(deftest namespace-overrides-reach-main-and-worker-agents-test
+  (testing "run-level namespace overrides are visible to the main agent"
+    (let [seen-opts (atom nil)
+          prov (reify provider/LLMProvider
+                 (plain-text-provider [this] this)
+                 (call-llm [this prompt]
+                   (provider/call-llm this prompt {}))
+                 (call-llm [_ _prompt opts]
+                   (reset! seen-opts opts)
+                   "\"ok\")")
+                 (supports-prefill [_] true))
+          compiled (agent/compile-agent-spec
+                    {:provider prov
+                     :namespace-overrides {'feedback 'stdlib/feedback}})]
+      (is (= "ok" (th/run-agent-prefix compiled "(do ")))
+      (is (re-find #"Spell developer dogfooding" (:system @seen-opts)))))
+
+  (testing "run-level namespace overrides are inherited by worker agents"
+    (let [seen-opts (atom nil)
+          prov (reify provider/LLMProvider
+                 (plain-text-provider [this] this)
+                 (call-llm [this prompt]
+                   (provider/call-llm this prompt {}))
+                 (call-llm [_ _prompt opts]
+                   (reset! seen-opts opts)
+                   "\"ok\")")
+                 (supports-prefill [_] true))
+          workers-ns (agent/resolve-workers
+                       {'helper {:doc "Helper agent"}}
+                       llm/compile-agent agent/compile-agent-spec nil prov nil
+                       {'feedback feedback/feedback-namespace})]
+      (is (= "ok" (th/run-agent-prefix (:helper workers-ns) "(do ")))
+      (is (re-find #"Spell developer dogfooding" (:system @seen-opts))))))
+
+(deftest worker-namespace-precedence-test
+  (testing "ordinary worker profiles retain precedence over the generated workers namespace"
+    (let [seen-opts (atom nil)
+          prov (reify provider/LLMProvider
+                 (plain-text-provider [this] this)
+                 (call-llm [this prompt]
+                   (provider/call-llm this prompt {}))
+                 (call-llm [_ _prompt opts]
+                   (reset! seen-opts opts)
+                   "\"ok\")")
+                 (supports-prefill [_] true))
+          workers-ns (agent/resolve-workers
+                       {'helper {:doc "Helper agent"
+                                 :namespaces {'workers 'stdlib/strings}}}
+                       llm/compile-agent agent/compile-agent-spec nil prov nil)]
+      (is (= "ok" (th/run-agent-prefix (:helper workers-ns) "(do ")))
+      (is (re-find #"workers — String manipulation and regex"
+                   (:system @seen-opts)))))
+
+  (testing "run-level overrides still take precedence over a worker profile"
+    (let [seen-opts (atom nil)
+          prov (reify provider/LLMProvider
+                 (plain-text-provider [this] this)
+                 (call-llm [this prompt]
+                   (provider/call-llm this prompt {}))
+                 (call-llm [_ _prompt opts]
+                   (reset! seen-opts opts)
+                   "\"ok\")")
+                 (supports-prefill [_] true))
+          workers-ns (agent/resolve-workers
+                       {'helper {:doc "Helper agent"
+                                 :namespaces {'feedback 'stdlib/strings}}}
+                       llm/compile-agent agent/compile-agent-spec nil prov nil
+                       {'feedback feedback/feedback-namespace})]
+      (is (= "ok" (th/run-agent-prefix (:helper workers-ns) "(do ")))
+      (is (re-find #"Spell developer dogfooding" (:system @seen-opts))))))
 
 ;; =============================================================================
 ;; leaf-llm model inheritance (in compile-agent)
@@ -556,6 +628,7 @@
       (let [spec (assoc (agent/load-agent-spec path)
                         :provider (provider/test-provider {:response "ok"}))
             result (agent/compile-agent-spec spec)]
+        (is (not (contains? (:namespaces spec) 'feedback)) path)
         (is (runtime/compiled-agent? result) path)))))
 
 (deftest compile-agent-spec-format-reaches-system-prompt-test
