@@ -1,6 +1,7 @@
 (ns spell.feedback
   "Structured, append-only dogfooding feedback for Spell agents."
-  (:require [clojure.java.io :as io]
+  (:require [clojure.edn :as edn]
+            [clojure.java.io :as io]
             [clojure.string :as str]))
 
 (def categories
@@ -26,6 +27,22 @@
     (throw (ex-info "Feedback metadata must be a map"
                     {:metadata metadata}))))
 
+(defn- serialize-entry! [entry]
+  (try
+    (let [serialized (pr-str entry)
+          eof (Object.)]
+      (with-open [reader (java.io.PushbackReader.
+                          (java.io.StringReader. serialized))]
+        (edn/read {:eof eof} reader)
+        (when-not (identical? eof (edn/read {:eof eof} reader))
+          (throw (ex-info "Serialized feedback entry contains trailing forms"
+                          {}))))
+      serialized)
+    (catch RuntimeException cause
+      (throw (ex-info "Feedback metadata must contain only EDN-readable values"
+                      {:metadata (:metadata entry)}
+                      cause)))))
+
 (defn log
   "Append one structured feedback entry and return it.
 
@@ -39,7 +56,8 @@
          entry {:timestamp (str (java.time.Instant/now))
                 :category category
                 :message message
-                :metadata metadata}]
+                :metadata metadata}
+         serialized (serialize-entry! entry)]
      (locking write-lock
        (when-let [parent (.getParentFile file)]
          (.mkdirs parent))
@@ -47,7 +65,7 @@
                    channel (.getChannel raf)
                    file-lock (.lock channel)]
          (.position channel (.size channel))
-         (let [bytes (.getBytes (str (pr-str entry) "\n")
+         (let [bytes (.getBytes (str serialized "\n")
                                 java.nio.charset.StandardCharsets/UTF_8)]
            (loop [buffer (java.nio.ByteBuffer/wrap bytes)]
              (when (.hasRemaining buffer)
