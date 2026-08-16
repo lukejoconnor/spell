@@ -85,6 +85,7 @@
     :parse-fn #(Integer/parseInt %)
     :validate [pos? "Must be positive"]]
    [nil "--responses-api" "Force OpenAI Responses API instead of Chat Completions"]
+   [nil "--dogfood" "Enable Spell developer dogfooding feedback for this run"]
    ["-T" "--trace" "Record execution trace to a temp dir under java.io.tmpdir/spell-traces/"]
    ["-l" "--log FILE" "Log verbose output to FILE (implies -v)"]
    ["-v" "--verbose" "Show raw LLM response"]
@@ -231,7 +232,7 @@
 
 (defn run-input
   [{:keys [prompt init]}
-   {:keys [depth verbose log budget trace agent-profile model thinking reasoning-effort verbosity test
+   {:keys [depth verbose log budget trace dogfood agent-profile model thinking reasoning-effort verbosity test
            suffix-grammar grammar-max-chars]
     :as opts}
    usage-atom]
@@ -267,6 +268,8 @@
                                  :usage-tracker usage-atom}
                           prompt (assoc :prompt prompt)
                           init (assoc :init init)
+                          dogfood (assoc :agent-namespace-overrides
+                                         {'feedback 'stdlib/feedback})
                           trace (assoc :trace-dir (spell-trace/default-trace-dir))
                           (and (some? (. System console)) (not= model "user"))
                           (assoc :user-reader (io/reader System/in))))

@@ -12,5 +12,4 @@
   web      stdlib/web
   patterns stdlib/patterns
   agents   stdlib/agents
-  globals  stdlib/globals
-  feedback stdlib/feedback}}
+  globals  stdlib/globals}}

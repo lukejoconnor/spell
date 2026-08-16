@@ -43,13 +43,15 @@
 
 (defn- execute-run
   [{:keys [prompt init model-profile agent-profile model reasoning-effort budget depth trace-dir
-           usage-tracker user-reader log-writer]
+           usage-tracker user-reader log-writer agent-namespace-overrides]
     :as opts}]
   (validate-required-run-opts! opts)
   (let [profile (provider/resolve-model-profile model-profile)
         resolved-provider (:provider profile)
         agent-spec (cond-> (agent/load-agent-spec agent-profile)
                      true (assoc :provider resolved-provider)
+                     (seq agent-namespace-overrides)
+                     (assoc :namespace-overrides agent-namespace-overrides)
                      (or model (:default-model profile)) (assoc :model (or model (:default-model profile)))
                      (or reasoning-effort (:default-reasoning-effort profile))
                      (assoc :reasoning-effort (or reasoning-effort (:default-reasoning-effort profile)))

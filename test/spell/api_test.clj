@@ -97,6 +97,18 @@
           (doseq [file (reverse (file-seq root))]
             (.delete file)))))))
 
+(deftest run-internal-agent-namespace-override-test
+  (testing "internal callers can overlay the dogfood namespace onto the selected profile"
+    (let [seen-opts (atom nil)
+          p (observing-provider seen-opts "(def answer 42))")
+          result (api/run-internal
+                  {:prompt "Return 42"
+                   :model-profile p
+                   :agent-profile test-agent
+                   :agent-namespace-overrides {'feedback 'stdlib/feedback}})]
+      (is (= 42 (:result result)))
+      (is (re-find #"Spell developer dogfooding" (:system @seen-opts))))))
+
 ;; =============================================================================
 ;; Validation tests
 ;; =============================================================================
