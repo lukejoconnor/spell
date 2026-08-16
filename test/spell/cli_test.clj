@@ -41,6 +41,22 @@
       (is (= "Return 42" (:prompt result)))
       (is (= "none" (get-in result [:options :reasoning-effort]))))))
 
+(deftest trace-dir-option-test
+  (testing "--trace-dir enables tracing at the requested path"
+    (let [result (cli/validate-args ["--trace-dir" "notebook/results/run-1/trace"
+                                     "Return 42"])]
+      (is (= "notebook/results/run-1/trace"
+             (get-in result [:options :trace-dir])))))
+
+  (testing "an explicit trace directory takes precedence over -T"
+    (with-redefs [api/run-internal identity]
+      (let [result (cli/run-input {:prompt "Return 42"}
+                                  {:test true
+                                   :trace true
+                                   :trace-dir "durable/trace"}
+                                  (atom {:by-model {}}))]
+        (is (= "durable/trace" (:trace-dir result)))))))
+
 (deftest validate-args-supports-direct-init-programs
   (testing "--init passes a complete Spell program instead of a prompt"
     (let [result (cli/validate-args ["--init" "(do 42)"])]
@@ -187,6 +203,7 @@
     (is (str/includes? exit-message "--dogfood"))
     (is (str/includes? exit-message "spell -t --init '(do (+ 20 22))'"))
     (is (str/includes? exit-message "spell --init-file scratch/my-program.spl"))
+    (is (str/includes? exit-message "--trace-dir DIR"))
     (doseq [example ["hello-world" "coin-flip" "twenty-questions"
                      "telephone" "auction" "chat"]]
       (is (str/includes? exit-message example)))

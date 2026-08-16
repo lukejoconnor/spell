@@ -187,8 +187,12 @@ Agent profile files live under `config/agent-profiles/` and use EDN maps.
   web      stdlib/web
   patterns stdlib/patterns
   agents   stdlib/agents
-  globals  stdlib/globals}}
+  globals  stdlib/globals
+  feedback stdlib/feedback}}
 ```
+
+For read-only exploration, `config/agent-profiles/explore.agent.edn` exposes
+`io-read`, web, and feedback without file-write or process-execution functions.
 
 ### Agent Options
 

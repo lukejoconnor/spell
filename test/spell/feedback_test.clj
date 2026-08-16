@@ -2,7 +2,9 @@
   (:require [clojure.edn :as edn]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
-            [spell.feedback :as feedback]))
+            [spell.feedback :as feedback]
+            [spell.runtime :as runtime]
+            [spell.trace :as trace]))
 
 
 (deftype TrailingForms [])
@@ -83,6 +85,21 @@
         (feedback/log :bug "Nested metadata" metadata)
         (is (= metadata
                (:metadata (edn/read-string (slurp path))))))
+      (finally
+        (.delete (java.io.File. path))))))
+
+(deftest log-annotates-agent-and-trace-context-test
+  (let [path (temp-path)]
+    (try
+      (with-redefs [feedback/feedback-path (constantly path)]
+        (binding [runtime/*current-handle* :reviewer
+                  trace/*trace-node-id* 42]
+          (let [returned (feedback/log :bug "Contextual failure")
+                persisted (edn/read-string (slurp path))]
+            (is (= :reviewer (:agent-handle returned)))
+            (is (= 42 (:trace-node-id returned)))
+            (is (= :reviewer (:agent-handle persisted)))
+            (is (= 42 (:trace-node-id persisted))))))
       (finally
         (.delete (java.io.File. path))))))
 

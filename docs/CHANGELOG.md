@@ -20,6 +20,8 @@ Notable release-surface changes relative to v0.1.0:
 - Consolidated public documentation around `README.md`, `AGENTS.md`, and `docs/api.md`.
 - Removed the experimental React namespace/profile from the public release surface.
 - Added repo-local Spell skills for setup, configuration, and source navigation.
+- Added `--trace-dir DIR` for durable CLI traces and automatic agent/trace context on feedback entries.
+- Expanded the read-only `explore` agent profile with web and feedback access while retaining its no-write, no-exec boundary.
 
 ## v0.1.0 - 2026-05-06
 

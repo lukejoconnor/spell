@@ -455,10 +455,12 @@
                    (:short-docs v))))))
 
 (deftest explore-agent-spec-test
-  (testing "explore.agent.edn resolves to read-only exploration helpers without shell execution"
+  (testing "explore.agent.edn combines read-only I/O with web and feedback"
     (let [spec (agent/load-agent-spec "config/agent-profiles/explore.agent.edn")
           namespaces (#'agent/resolve-namespaces (:namespaces spec) (:base-dir spec) agent/compile-agent-spec)
-          io-ns (get namespaces 'io)]
+          io-ns (get namespaces 'io)
+          web-ns (get namespaces 'web)
+          feedback-ns (get namespaces 'feedback)]
       (is (= 'explore (:name spec)))
       (is (= [] (:workers spec)))
       (is (contains? io-ns :read-file))
@@ -466,7 +468,9 @@
       (is (contains? io-ns :glob))
       (is (contains? io-ns :git))
       (is (not (contains? io-ns :sh)))
-      (is (not (contains? io-ns :write-file))))))
+      (is (not (contains? io-ns :write-file)))
+      (is (contains? web-ns :search))
+      (is (contains? feedback-ns :log)))))
 
 ;; =============================================================================
 ;; effect-ns-names includes 'workers
