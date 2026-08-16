@@ -41,7 +41,7 @@ These options are scoped to one invocation of `run`.
 | `:depth` | unlimited | Maximum recursive LLM depth for this run. |
 | `:trace-dir` | none | When non-nil, record a Spell execution trace in this directory. There is no separate `:trace` boolean. |
 | `:usage-tracker` | fresh atom | Existing usage atom to accumulate token and cost accounting into. |
-| `:user-reader` | none | When non-nil, register the interactive `:user` handle and read from this reader. There is no separate `:user?` boolean. |
+| `:user-reader` | none | When non-nil, register the interactive `:user` handle and read from this reader. The caller retains ownership of the reader. Spell requests cancellation of its reader task and clears input state when the run ends, so use a finite reader or one whose blocking read responds to thread interruption. An arbitrary reader that ignores interruption must be unblocked by its owner before reuse. There is no separate `:user?` boolean. |
 | `:log-writer` | none | Writer for raw LLM debugging output. Pass `*out*` or another writer for logging. There is no separate `:verbose` boolean. The caller owns the writer; the API flushes it but does not close it. |
 
 The API rejects unknown or removed options with a clear validation error. Silent ignore would make it too easy to believe a run used a specific model, format, or reasoning setting when it actually used a configured default.

@@ -18,8 +18,7 @@
 
 (deftest kimi3-fireworks-messages-spell-suffix-smoke
   (let [api-key (System/getenv "FIREWORKS_API_KEY")]
-    (if-not (and (live-enabled?) (not (str/blank? api-key)))
-      (is true "Skipped: requires SPELL_RUN_LIVE_TESTS=1 and FIREWORKS_API_KEY")
+    (when (and (live-enabled?) (not (str/blank? api-key)))
       (testing "Kimi K3 returns a usable raw suffix through mandatory spell_suffix"
         (let [prompt "(quine completion (eval (do (quine prompt \"Define answer as 42 and finish the program.\") "
               llm (provider/fireworks-tc-provider
