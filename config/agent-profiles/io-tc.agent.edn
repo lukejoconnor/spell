@@ -10,4 +10,5 @@
  {io       stdlib/io
   patterns stdlib/patterns
   agents   stdlib/agents
-  globals  stdlib/globals}}
+  globals  stdlib/globals
+  feedback stdlib/feedback}}

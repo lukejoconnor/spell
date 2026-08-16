@@ -4,6 +4,7 @@
    Re-exports key vars for public API."
   (:require [spell.runtime :as runtime]
             [spell.globals :as globals]
+            [spell.feedback :as feedback]
             [spell.grammar :as grammar]
             [spell.llm :as llm-engine]
             [spell.eval :as eval]
@@ -47,5 +48,6 @@
   {'io io/io-namespace
    'web web/web-namespace
    'globals globals/globals-namespace
+   'feedback feedback/feedback-namespace
    'agents runtime/agents-namespace
    'patterns stdlib/patterns})
