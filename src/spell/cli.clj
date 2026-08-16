@@ -12,6 +12,41 @@
 
 (def ^:private default-model-spec "openai-tc:gpt-5.6-sol")
 (def ^:private default-reasoning-effort "medium")
+(def ^:private agents-md-max-bytes (* 32 1024))
+
+(defn- truncate-utf8
+  "Return a valid UTF-8 prefix bounded by max-bytes."
+  [value max-bytes]
+  (let [builder (StringBuilder.)]
+    (loop [offset 0
+           used-bytes 0]
+      (if (>= offset (count value))
+        {:text (str builder) :truncated? false}
+        (let [code-point (.codePointAt ^String value offset)
+              piece (String. (Character/toChars code-point))
+              piece-bytes (alength (.getBytes piece java.nio.charset.StandardCharsets/UTF_8))]
+          (if (> (+ used-bytes piece-bytes) max-bytes)
+            {:text (str builder) :truncated? true}
+            (do
+              (.append builder piece)
+              (recur (+ offset (Character/charCount code-point))
+                     (+ used-bytes piece-bytes)))))))))
+
+(defn- read-agents-md-file [file]
+  (when (and (.exists ^java.io.File file) (.isFile ^java.io.File file))
+    (merge {:path (.getCanonicalPath ^java.io.File file)}
+           (truncate-utf8 (slurp file :encoding "UTF-8") agents-md-max-bytes))))
+
+(defn- load-cwd-agents-md []
+  (read-agents-md-file (io/file "AGENTS.md")))
+
+(defn- prepend-agents-md [prompt {:keys [path text truncated?]}]
+  (str "Project instructions from " path
+       (when truncated? " (truncated to 32 KiB of UTF-8 text)")
+       ":\n\n<agents_md>\n"
+       text
+       "\n</agents_md>\n\nTask:\n"
+       prompt))
 
 (defn parse-model-spec
   "Parse 'provider:model' into {:provider str :model str}."
@@ -86,6 +121,7 @@
     :validate [pos? "Must be positive"]]
    [nil "--responses-api" "Force OpenAI Responses API instead of Chat Completions"]
    [nil "--dogfood" "Enable Spell developer dogfooding feedback for this run"]
+   [nil "--agents-md" "Include cwd AGENTS.md (up to 32 KiB) in the task prompt"]
    ["-T" "--trace" "Record execution trace to a temp dir under java.io.tmpdir/spell-traces/"]
    [nil "--trace-dir DIR" "Record execution trace to DIR"
     :validate [#(not (str/blank? %)) "Must be non-blank"]]
@@ -135,7 +171,7 @@
 (defn error-msg [errors]
   (str "Error:\n" (str/join \newline errors)))
 
-(defn validate-args [args]
+(defn- validate-base-args [args]
   (let [{:keys [options arguments errors summary]} (parse-opts args cli-options)]
     (cond
       (:help options)
@@ -191,6 +227,25 @@
 
       :else
       {:exit-message (usage summary) :ok? false})))
+
+(defn validate-args [args]
+  (let [result (validate-base-args args)]
+    (cond
+      (not (get-in result [:options :agents-md]))
+      result
+
+      (:init result)
+      {:exit-message "--agents-md requires a natural-language prompt; it cannot be combined with --init or --init-file"
+       :ok? false}
+
+      (:prompt result)
+      (if-let [agents-md (load-cwd-agents-md)]
+        (update result :prompt prepend-agents-md agents-md)
+        {:exit-message (str "AGENTS.md not found in current directory: "
+                            (System/getProperty "user.dir"))
+         :ok? false})
+
+      :else result)))
 
 (defn- make-provider [{:keys [test model max-tokens responses-api]}]
   (cond

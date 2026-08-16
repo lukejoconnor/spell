@@ -36,7 +36,6 @@ Base agents define transport-level behavior and do not add effect namespaces:
 Public agent profiles inherit from a base agent and add namespaces:
 
 - `cli.agent.edn`: CLI default; enables `io`, `web`, `patterns`, `agents`, and `globals`.
-- `explore.agent.edn`: read-only exploration; enables `io-read`, `web`, and `feedback`, with no file-write or process-execution functions.
 - `io-pf.agent.edn`: I/O-capable prefill profile with `io`, `patterns`, `agents`, and `globals`; web is disabled by default.
 - `io-msg.agent.edn`: I/O-capable message profile with `io`, `patterns`, `agents`, and `globals`; web is disabled by default.
 - `io-tc.agent.edn`: I/O-capable tool-call profile with `io`, `patterns`, `agents`, and `globals`; web is disabled by default.

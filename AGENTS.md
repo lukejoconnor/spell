@@ -121,7 +121,6 @@ See `config/AGENTS.md` for a directory-specific guide.
 | `config/agent-profiles/base-msg.agent.edn` | Base message-transport agent. |
 | `config/agent-profiles/base-tc.agent.edn` | Base tool-call-transport agent. |
 | `config/agent-profiles/cli.agent.edn` | Default CLI agent; enables `io`, `web`, `patterns`, `agents`, and `globals`. |
-| `config/agent-profiles/explore.agent.edn` | Read-only exploration profile; enables `io-read`, `web`, and `feedback`, without file writes or process execution. |
 | `config/agent-profiles/io-pf.agent.edn` | I/O-capable prefill profile. |
 | `config/agent-profiles/io-msg.agent.edn` | I/O-capable message profile. |
 | `config/agent-profiles/io-tc.agent.edn` | I/O-capable tool-call profile. |
@@ -162,7 +161,7 @@ clj -M:test-slow
 
 The fast suite covers parser, evaluator, provider, agent, web, API, trace, macro, and prompt-facing behavior. The slow suite covers concurrency, I/O, runtime, globals, and user-provider behavior. `deps.edn` is the authoritative list of test aliases and included namespaces.
 
-Use `-T` to record an execution trace under the temporary Spell trace directory, or `--trace-dir DIR` to write it to an explicit durable location. The trace tool can inspect a trace directory directly, for example:
+Use `-T` to record an execution trace under the temporary Spell trace directory, or `--trace-dir DIR` to write it to an explicit durable location. Use `--dogfood` to expose the feedback namespace to the main agent and its workers. Use `--agents-md` to prepend the current working directory's `AGENTS.md`, capped at 32 KiB, to a natural-language task. The trace tool can inspect a trace directory directly, for example:
 
 ```bash
 clj -M -m spell.trace-tool --trace-dir DIR --summary

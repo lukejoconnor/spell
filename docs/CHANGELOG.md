@@ -7,6 +7,9 @@
 - Added a new-spec-only MCP `2026-07-28` client with generated permissioned namespaces, Streamable HTTP and stdio transports, tools, resources, prompts, completion, subscriptions, and an explorer-style `spell mcp` CLI.
 - Added a runnable MCP Everything-style example backed by the official Python SDK, including retained GPT-5.6 Sol real-model validation.
 - Integrated MCP server-profile, permission, CLI, security, and supported-surface documentation into the public API and configuration reference.
+- Added `--trace-dir DIR` for durable CLI traces and automatic agent/trace context on feedback entries.
+- Added `--dogfood` to expose the feedback namespace to the main agent and its workers only for explicit self-improvement runs.
+- Added `--agents-md` to prepend the current working directory's `AGENTS.md`, capped at 32 KiB, to natural-language CLI tasks.
 
 ## v0.2.0
 
@@ -20,8 +23,6 @@ Notable release-surface changes relative to v0.1.0:
 - Consolidated public documentation around `README.md`, `AGENTS.md`, and `docs/api.md`.
 - Removed the experimental React namespace/profile from the public release surface.
 - Added repo-local Spell skills for setup, configuration, and source navigation.
-- Added `--trace-dir DIR` for durable CLI traces and automatic agent/trace context on feedback entries.
-- Expanded the read-only `explore` agent profile with web and feedback access while retaining its no-write, no-exec boundary.
 
 ## v0.1.0 - 2026-05-06
 
