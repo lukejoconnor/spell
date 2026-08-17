@@ -299,7 +299,8 @@
    1. stdin-signal or expects-reply: display messages, show agent list,
       read input, parse :target routing, and deliver each segment. A plain
       response to the current actionable request fills that request's edge
-      slot; explicit routing remains a plain send.
+      slot. Explicit routing does the same when a selected recipient owns a
+      live request; other selected recipients receive plain sends.
    2. fire-and-forget: display messages, quine-restart (no stdin read)."
   [prompt-str]
   (let [balanced    (parse/balance-parens prompt-str)
@@ -329,15 +330,17 @@
                   (fn [default-target {:keys [recipients msg]}]
                     (if recipients
                       (do
-                        ;; Explicit routing is an independent message, even
-                        ;; when it names the sender of an actionable request.
                         (doseq [target recipients]
-                          (runtime/send target msg)
+                          (if-let [request (last (filter #(and (= target (:from %))
+                                                               (runtime/actionable-request-live? %))
+                                                         new-msgs))]
+                            (runtime/reply request msg)
+                            (runtime/send target msg))
                           (reset! last-sender target))
                         (or (last recipients) default-target))
                       (let [target (resolve-recipient nil default-target)
-                            request (last (filter #(and (:expects-response %)
-                                                        (= target (:from %)))
+                            request (last (filter #(and (= target (:from %))
+                                                        (runtime/actionable-request-live? %))
                                                   new-msgs))]
                         (if request
                           (runtime/reply request msg)

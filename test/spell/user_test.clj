@@ -2,7 +2,7 @@
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [spell.runtime :as runtime]
             [spell.user :as user])
-  (:import [java.io BufferedReader StringReader]))
+  (:import [java.io BufferedReader PipedReader PipedWriter StringReader]))
 
 ;; Clean registry and queue between tests
 (use-fixtures :each
@@ -19,6 +19,15 @@
   "Create a BufferedReader that reads from a string (one line per readLine)."
   [s]
   (BufferedReader. (StringReader. s)))
+
+(defn- one-line-blocking-reader
+  "Create a reader with one available line that remains open afterwards."
+  [line]
+  (let [pipe-reader (PipedReader.)
+        pipe-writer (PipedWriter. pipe-reader)]
+    (.write pipe-writer (str line "\n"))
+    (.flush pipe-writer)
+    [(BufferedReader. pipe-reader) pipe-writer]))
 
 (defn- wait-until
   [pred timeout-ms]
@@ -178,6 +187,41 @@
                           @(:state (get @runtime/registry h-agent))))
                 "one user response must produce exactly one message for the asker")))))))
 
+(deftest explicit-route-to-asker-replies-once-test
+  (testing "an explicit route to the live asker discharges its slot exactly once"
+    (let [[reader _keep-pipe-open] (one-line-blocking-reader
+                                     ":explicit-asker hello explicitly")
+          h-agent :explicit-asker
+          agent-raw "(quine completion (eval (do )))"
+          agent-started (promise)
+          first? (atom true)
+          agent-eval-fn (fn [raw]
+                          (if (compare-and-set! first? true false)
+                            (do (deliver agent-started true)
+                                (runtime/ask-builtin :user "Reply to me explicitly"))
+                            raw))]
+      (user/register-user-agent! reader)
+      (Thread/sleep 100)
+      (runtime/register! h-agent)
+      (let [initial (promise)]
+        (deliver initial agent-raw)
+        (let [asker-result (future
+                             (runtime/box h-agent initial
+                               (runtime/make-awake-fn h-agent agent-eval-fn)))]
+          (is (true? (deref agent-started 2000 false)))
+          (let [result (deref asker-result 5000 :timeout)]
+            (is (string? result))
+            (is (.contains ^String result ":from :user"))
+            (is (.contains ^String result ":body \"hello explicitly\""))
+            (is (wait-until #(= :finished
+                                (get-in @runtime/wait-graph [:nodes :user :status]))
+                            2000))
+            (Thread/sleep 50)
+            (is (empty? (:edges @runtime/wait-graph)))
+            (is (empty? (:inbox-macros
+                          @(:state (get @runtime/registry h-agent))))
+                "lifecycle completion must not enqueue a second answer")))))))
+
 (deftest expects-reply-replies-immediately-test
   (testing "default expects-reply path immediately fills the actionable request slot"
     ;; Directly exercise user-call-fn with an expects-response message.
@@ -214,11 +258,17 @@
     (runtime/register! :asker)
     (runtime/register! :other)
     (.put @#'user/stdin-queue ":other hello from user")
-    (let [prompt "(quine completion (eval (do (def msg-1 {:from :asker :expects-response true}) )))"
+    (let [edge-id (runtime/create-edge! :asker [:user])
+          prompt (str "(quine completion (eval (do (def msg-1 {:from :asker :expects-response true :edge-id "
+                      edge-id "}) )))")
           _ (binding [runtime/*current-handle* :user]
               (#'user/user-call-fn prompt))
           received (atom nil)
           p (promise)]
+      (is (= :pending
+             (get-in @runtime/wait-graph
+                     [:edges edge-id :slots :user :status]))
+          "routing to another handle must not discharge the asker's slot")
       (deliver p "(quine completion (eval (do )))")
       (runtime/box :other p (runtime/make-awake-fn :other (fn [raw] (reset! received raw) raw)))
       (is (string? @received))

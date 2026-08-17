@@ -85,7 +85,12 @@
                             (try
                               (write-trace-once! false)
                               (catch Exception _)))))]
+    ;; Public runs already replace the process-global registry and globals at
+    ;; this boundary, so independent execution assumes runs do not overlap.
+    ;; Reset both halves of agent coordination so an edge from an earlier run
+    ;; cannot bind a reused handle.
     (reset! runtime/registry {})
+    (runtime/reset-wait-graph!)
     (globals/reset-globals!)
     (globals/set-val :roles {:main {}})
     (when user-reader

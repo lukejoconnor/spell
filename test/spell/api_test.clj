@@ -10,8 +10,10 @@
 (use-fixtures :each
   (fn [f]
     (reset! runtime/registry {})
+    (runtime/reset-wait-graph!)
     (f)
-    (reset! runtime/registry {})))
+    (reset! runtime/registry {})
+    (runtime/reset-wait-graph!)))
 
 ;; =============================================================================
 ;; Basic run tests
@@ -68,6 +70,29 @@
                            :agent-profile test-agent})]
       (is (contains? result :error))
       (is (some? (:usage-tracker result))))))
+
+(deftest independent-runs-reset-wait-graph-test
+  (testing "a stale claimed edge cannot bind a reused handle in a later run"
+    (let [p (provider/test-provider {:response "unused"})]
+      (is (= 41 (:result (api/run {:init "(do 41)"
+                                   :model-profile p
+                                   :agent-profile test-agent}))))
+      ;; Model an edge left by an earlier run whose target lifecycle had
+      ;; already claimed its result position. Without a graph reset, the next
+      ;; :main lifecycle fills this edge and tries to notify a source removed
+      ;; by the registry reset.
+      (runtime/register! :stale-source)
+      (let [edge-id (runtime/create-edge! :stale-source [:main])]
+        (#'runtime/claim-slot! edge-id :main 1)
+        (is (= :pending
+               (get-in @runtime/wait-graph
+                       [:edges edge-id :slots :main :status]))))
+      (let [result (api/run {:init "(do 42)"
+                             :model-profile p
+                             :agent-profile test-agent})]
+        (is (= 42 (:result result)))
+        (is (nil? (:error result)))
+        (is (empty? (:edges @runtime/wait-graph)))))))
 
 (deftest run-closes-namespace-embedded-agent-test
   (testing "api/run closes MCP resources owned by an agent profile in :namespaces"

@@ -264,7 +264,7 @@
   (atom {:next-edge-id 1 :next-seq 1 :edges {} :nodes {}}))
 
 (defn reset-wait-graph!
-  "Reset the wait graph. Intended for tests."
+  "Reset all wait topology and node lifecycle bookkeeping."
   []
   (reset! wait-graph {:next-edge-id 1 :next-seq 1 :edges {} :nodes {}}))
 
@@ -675,6 +675,18 @@
   "True only for a live-request-shaped message, not an edge completion report."
   [msg]
   (true? (:expects-response msg)))
+
+(defn actionable-request-live?
+  "True when msg names a pending request slot owned by the current agent.
+   This is an internal host-side helper for interactive routing; it is not
+   exposed in agents-namespace."
+  [msg]
+  (when (and *current-handle* (actionable-request? msg) (:edge-id msg))
+    (let [edge (get-in @wait-graph [:edges (:edge-id msg)])]
+      (boolean
+        (and (= :pending (:status edge))
+             (= (:from msg) (:source edge))
+             (= :pending (get-in edge [:slots *current-handle* :status])))))))
 
 (defn- reply-target
   "Return a message's singleton sender or reject an aggregate completion report."
