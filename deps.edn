@@ -1,9 +1,10 @@
-{:paths ["src"]
+{:paths ["src" "skills"]
  :deps {org.clojure/data.json {:mvn/version "2.5.0"}
         org.clojure/tools.cli {:mvn/version "1.1.230"}
         org.jsoup/jsoup {:mvn/version "1.18.1"}
         com.networknt/json-schema-validator {:mvn/version "2.0.4"}
-        org.slf4j/slf4j-nop {:mvn/version "2.0.17"}}
+        org.slf4j/slf4j-nop {:mvn/version "2.0.17"}
+        org.yaml/snakeyaml {:mvn/version "2.3"}}
  :aliases {:dev {:extra-paths ["dev"]}
            :test {:extra-paths ["test"]
                   :extra-deps {io.github.cognitect-labs/test-runner
@@ -18,6 +19,7 @@
                                    "-n" "spell.parse-test"
                                    "-n" "spell.grammar-test"
                                    "-n" "spell.stdlib-test"
+                                   "-n" "spell.skills-test"
                                    "-n" "spell.eval-test"
                                    "-n" "spell.llm-test"
                                    "-n" "spell.agent-test"

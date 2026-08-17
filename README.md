@@ -151,7 +151,10 @@ Default namespaces:
 - `strings`
 - `math`
 - `builtins`: documentation-only namespace for functions available without a namespace prefix
-- `reminders`: documentation-only namespace for Spell-specific patterns, akin to skills
+- `skills`: generated prompt-only namespace containing the discovered Agent Skills catalog. Explicit `$name` activation and implicit description matches use `(!describe skills :name)` to disclose the complete matching `SKILL.md`.
+- `reminders`: documentation-only namespace for Spell execution reminders. `reminders/:coding` remains a compatibility alias loaded from the bundled `coding` skill.
+
+At agent compilation time, Spell snapshots skills from the bundled `skills/` directory, `.agents/skills` under the current working directory and each ancestor through the Git worktree root, and `$HOME/.agents/skills`. Skill directories may be symlinks. Each `SKILL.md` must use YAML frontmatter with matching `name` and directory names plus a non-blank `description`; malformed or unreadable entries are skipped without aborting compilation. Duplicate names and paths are retained. The initial prompt catalog is deterministic, capped at 8000 characters, and includes only activation guidance plus each skill's name, description, and `SKILL.md` path. Detail disclosure shows every duplicate candidate, its source and relative-resource base, and the complete file; skills add instructions, not capabilities.
 
 Optional effect namespaces:
 

@@ -12,6 +12,7 @@
             [spell.recovery :as recovery]
             [spell.runtime :as runtime]
             [spell.stdlib :as stdlib]
+            [spell.skills :as skills]
             [spell.trace :as trace]))
 
 (declare make-leaf-llm build-init)
@@ -393,16 +394,17 @@
   [{:keys [namespaces provider model system llm-var recover format prefill? thinking reasoning-effort verbosity
            suffix-grammar? grammar-max-chars]
     :or {namespaces {} model nil recover true prefill? true suffix-grammar? false grammar-max-chars 2000}}]
-  (let [core-ns-names (set (keys core-namespaces))
+  (let [compiled-core-namespaces (assoc core-namespaces 'skills (skills/skills-namespace))
+        core-ns-names (set (keys compiled-core-namespaces))
         ns-builtins (into {} (map (fn [[sym ns-map]] [sym ns-map]) namespaces))
         effect-ns-builtins (into {} (remove #(core-ns-names (key %)) ns-builtins))
         variant-builtins (merge eval/core-builtins
                                 {'describe-fn stdlib/describe}
-                                core-namespaces)
+                                compiled-core-namespaces)
         sys-prompt (prompt/compose-system-prompt
                      {:base system
                       :namespaces effect-ns-builtins
-                      :core-namespaces core-namespaces
+                      :core-namespaces compiled-core-namespaces
                       :format format})
         prev-prompt-atom (atom nil)
         call-fn (fn [prompt-str]
@@ -433,7 +435,7 @@
                     (if prefill?
                       response
                       (strip-prefix-echo prompt-str response))))
-        ns-recover (recovery/make-namespace-recover-fn (merge core-namespaces ns-builtins))
+        ns-recover (recovery/make-namespace-recover-fn (merge compiled-core-namespaces ns-builtins))
         recover-fn (cond
                      (false? recover) nil
                      (fn? recover) recover

@@ -175,6 +175,12 @@ Agent profiles describe the Spell runtime profile exposed to the model. They own
 
 Agent profile files live under `config/agent-profiles/` and use EDN maps.
 
+### Agent Skills
+
+Every compiled agent receives an always-available, prompt-only `skills` namespace. Compilation discovers skills once from the bundled `skills/` directory, `.agents/skills` in the current working directory and each ancestor through the Git worktree root, and `$HOME/.agents/skills`; no other locations are searched. Symlink skill directories are followed. Each skill directory contains `SKILL.md` with safely parsed YAML frontmatter, a required Agent Skills-compatible `name`, a required non-blank `description`, and a directory name identical to `name`.
+
+Malformed or unreadable skills become bounded diagnostics and do not abort compilation. Duplicate names and paths remain in deterministic discovery order. The generated initial catalog is at most 8000 characters and contains activation guidance plus only name, description, and `SKILL.md` path; descriptions are shortened before entries are omitted, and omission is explicit. For explicit `$name` references or implicit description matches, disclose details with `(!describe skills :name)`. Disclosure contains the complete `SKILL.md`, all duplicate candidates, each source root and relative-resource base, and does not grant tools, permissions, namespaces, or other capability escalation. The `reminders/:coding` compatibility alias is loaded from bundled `skills/coding/SKILL.md`; the skill file is the canonical coding guidance.
+
 ```clojure
 {:base base-tc.agent.edn
  :agent-name cli

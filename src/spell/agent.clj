@@ -510,7 +510,7 @@
             occupied (set (concat (keys spec-namespaces)
                                   (keys extra-namespaces)
                                   (keys namespace-overrides)
-                                  (keys llm/core-namespaces)))
+                                  (conj (set (keys llm/core-namespaces)) 'skills)))
             collisions (set/intersection occupied (set (keys mcp-namespaces)))
             _ (when (seq collisions)
                 (throw (ex-info (str "MCP server aliases collide with configured namespaces: "
@@ -599,7 +599,7 @@
 (defn- available-namespace-names
   [namespaces]
   (into future-only-namespaces
-        (concat (keys llm/core-namespaces)
+        (concat (conj (set (keys llm/core-namespaces)) 'skills)
                 (keys (or namespaces {})))))
 
 (defn- validate-pattern-dependencies!
@@ -650,7 +650,7 @@
             _ (reset! mcp-bundle-ref mcp-bundle)
             mcp-namespaces (:namespaces mcp-bundle)
             collisions (set/intersection (set (concat (keys profile-namespaces)
-                                                      (keys llm/core-namespaces)))
+                                                      (conj (set (keys llm/core-namespaces)) 'skills)))
                                          (set (keys mcp-namespaces)))
             _ (when (seq collisions)
                 (throw (ex-info (str "MCP server aliases collide with configured namespaces: "
