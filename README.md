@@ -173,7 +173,7 @@ Spell supports two broad multiple-agent delegation protocols.
 
 The simplest is a synchronous self-call. A parent program calls `!llm-self`, waits for the child completion to evaluate, and uses the returned value. With this protocol there is no clear distinction between different agents versus different turns of the same agent.
 
-The second protocol is asynchronous and operates via an optional `agents/` namespace. This provides functions like `spawn` (create an agent with a prompt), `send` (send a message asynchronously), and `!ask` (send a message and block for a response). The key design constraint of the multi-agent communication system is that it never causes deadlock: for example, if two agents simultaneously call `!ask`, then both awaken each other.
+The second protocol is asynchronous and operates via an optional `agents/` namespace. It provides functions such as `spawn` (create an agent with a prompt), `send` (send a message asynchronously), and `!ask` (send a request and sleep for its result). The runtime represents waiting as directed hyperedges among agents. Its ordering and wakeup rules prevent the communication topology itself from leaving every participant asleep, while allowing unrelated messages to awaken an agent without discarding its outstanding waits. See the [multi-agent system guide](docs/multi-agent.md) for the complete communication model, function reference, examples, inspection tools, and the scope of this guarantee.
 
 The `globals/` namespace allows synchronous or asynchronous agents to coordinate via globally available bindings. Like in Clojure, objects in Spell are immutable; whereas a `globals/` binding name can change what value it refers to, the underlying value never changes once fetched.
 

@@ -236,8 +236,7 @@
                                           (if (some? program') (pr-str program') raw))
                        indent (apply str (repeat eval/*llm-depth* "  "))
                        _ (when-let [handle runtime/*current-handle*]
-                           (when-let [last-raw (:last-raw (get @runtime/registry handle))]
-                             (reset! last-raw continuation-raw)))
+                           (runtime/record-last-raw! handle continuation-raw))
                        result (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
                                         eval/*raw-text*       continuation-raw
                                         eval/*builtins*       variant-builtins
@@ -306,7 +305,7 @@
           (reset! response-atom response)
           (eval/vlog (str indent "Response: " response))
           (deliver completion (str prompt-str response)))
-        (catch Exception e
+        (catch Throwable e
           (deliver completion e))))
     (try
       (let [result (binding [trace/*trace-node-id* node-id]

@@ -9,12 +9,14 @@
             [spell.stdlib :as stdlib]
             [spell.test-helpers :as th]))
 
-;; Clean registry between tests
+;; Clean registry and wait graph between tests
 (use-fixtures :each
   (fn [f]
     (reset! runtime/registry {})
+    (runtime/reset-wait-graph!)
     (f)
-    (reset! runtime/registry {})))
+    (reset! runtime/registry {})
+    (runtime/reset-wait-graph!)))
 
 (defn- identity-msg-macro []
   (#'runtime/identity-msg-macro))
@@ -277,7 +279,11 @@
         (deliver p (ex-info "boom" {}))
         (is (thrown-with-msg? Exception #"boom"
               (runtime/run-root-box handle p (runtime/make-awake-fn handle eval-fn) eval-fn)))
-        (is (= nil (deref cp 100 :timeout)))
+        (let [failure (deref cp 100 :timeout)]
+          (is (true? (:spell/child-failure failure)))
+          (is (= handle (:handle failure)))
+          (is (= :initialization (:phase failure)))
+          (is (= "boom" (get-in failure [:exception :message]))))
         ;; Pre-entry failure should still spawn the sleeping orphan for next turn.
         (Thread/sleep 100)
         (runtime/-send! handle (identity-msg-macro))
@@ -489,15 +495,18 @@
 (deftest spawn-default-agent-arity-test
   (testing "spawn(prompt) uses bound default agent"
     (let [parent-h :spawn-default-parent
+          called (promise)
           default-agent (th/compiled-agent-fn
-                         (fn [prompt _handle] (str "done:" prompt)))]
+                         (fn [prompt handle]
+                           (deliver called {:prompt prompt :handle handle})
+                           (str "done:" prompt)))]
       (runtime/register! parent-h)
       (binding [runtime/*current-handle* parent-h
                 runtime/*default-spawn-agent* default-agent]
         (let [child-h (runtime/spawn "prompt-default")]
           (is (keyword? child-h))
-          (is (= "done:prompt-default"
-                 (deref @(:completed (get @runtime/registry child-h)) 5000 :timeout)))))))
+          (is (= {:prompt "prompt-default" :handle child-h}
+                 (deref called 5000 :timeout)))))))
 
   (testing "spawn(prompt) throws when default agent is unavailable"
     (is (thrown-with-msg? Exception #"no default agent available"
@@ -549,8 +558,8 @@
         (is (= 1 @parent-wake-count)
             "parent should wake exactly once for the combined notifier message")))))
 
-(deftest spawn-ask-multi-specs-stale-notifier-does-not-wake-next-block-test
-  (testing "early explicit message wakes parent; stale notifier from original spawn-ask must not wake later block"
+(deftest spawn-ask-multi-specs-durable-edge-wakes-later-block-test
+  (testing "early explicit message wakes parent; retained spawn-ask edge stays durable and its completion wakes a later block"
     (let [parent-h :sa-stale-parent
           parent-raw "(quine completion (eval (do )))"
           child-a-sent-early (promise)
@@ -602,21 +611,19 @@
       ;; Complete the original two children after the second wait has started.
       (deliver child-a-may-finish true)
       (deliver child-b-may-finish true)
-      ;; If stale notifier handling is correct, old [A B] completion cannot wake this wait.
-      (is (= :timeout (deref parent-future 200 :timeout))
-          "parent must stay blocked; old notifier signal should be stale")
-      (is (= 1 @parent-wake-count)
-          "only the early explicit wake should have happened so far")
-      (deliver child-c-may-finish true)
+      ;; The retained [A B] edge is durable across the unrelated early wake:
+      ;; its completion report wakes the parent's later block (any-edge wake).
       (let [{:keys [second]} (deref parent-future 5000 :timeout)]
         (is (string? second))
-        ;; Parent wakes from child C completion, not from old [A B] notifier.
-        (is (.contains ^String second ":from :sa-stale-child-c"))
-        (is (.contains ^String second ":body :child-c-final"))
-        (is (not (.contains ^String second ":sa-stale-child-a")))
-        (is (not (.contains ^String second ":sa-stale-child-b")))
+        (is (.contains ^String second ":from :sa-stale-child-a"))
+        (is (.contains ^String second ":body :child-a-final"))
+        (is (.contains ^String second ":from :sa-stale-child-b"))
+        (is (.contains ^String second ":body :child-b-final"))
         (is (= 2 @parent-wake-count)
-            "second wake should come from child C completion only")))))
+            "second wake should come from the retained [A B] edge completion"))
+      ;; Child C keeps running independently; let it finish cleanly.
+      (deliver child-c-may-finish true))))
+
 
 (deftest spawn-ask-multi-prompts-default-agent-test
   (testing "spawn-ask([prompt ...]) uses bound default agent for all entries"
@@ -637,6 +644,23 @@
           (is (.contains ^String result "result:alpha"))
           (is (.contains ^String result "result:beta"))
           (is (.contains ^String result "result:gamma")))))))
+
+(deftest spawn-ask-multi-invalid-later-spec-registers-no-children-test
+  (testing "the whole multi-spawn batch is validated before any child registration"
+    (let [parent :invalid-multi-parent
+          valid-agent (th/compiled-agent-fn (fn [_prompt _handle] :unused))]
+      (runtime/register! parent)
+      (binding [runtime/*current-handle* parent
+                runtime/*current-raw* "(quine completion (eval (do )))"
+                runtime/*current-eval-fn* identity]
+        (is (thrown-with-msg? Exception #"explicit 3-item entries"
+              (runtime/spawn-ask [[valid-agent "valid" :must-not-remain]
+                                  [:not-a-compiled-agent "invalid" :never-created]]))))
+      (is (not (runtime/handle? :must-not-remain))
+          "an earlier valid spec must not leave a registered child behind")
+      (is (not (runtime/handle? :never-created)))
+      (is (nil? (get-in @runtime/wait-graph [:nodes :must-not-remain])))
+      (is (empty? (:edges @runtime/wait-graph))))))
 
 (deftest spawn-addressable-test
   (testing "spawned agent can be sent to (handle is registered)"
@@ -952,8 +976,8 @@
           (doseq [t targets]
             (is (.contains ^String result (name t)))))))))
 
-(deftest ask-multi-completion-notifier-test
-  (testing "completion notifier fires when all target root boxes complete"
+(deftest ask-multi-lifecycle-return-test
+  (testing "owned slots fill when all target root lifecycles complete"
     (let [h-parent :multi-cn-parent
           h-child-a :multi-cn-child-a
           h-child-b :multi-cn-child-b
@@ -980,7 +1004,7 @@
                     (runtime/make-awake-fn h-child-a eval-a) eval-a))
           (runtime/run-root-box h-child-b cp-b
             (runtime/make-awake-fn h-child-b eval-b) eval-b)
-          ;; Parent should wake via completion notifier with both results
+          ;; Parent should wake via all-target edge completion with both results
           (let [result (deref result-future 5000 :timeout)]
             (is (string? result))
             (is (.contains ^String result ":returned-a"))
@@ -1197,16 +1221,27 @@
               (runtime/spawn-ask leaf-fn "test prompt" :leaf-child-2)))))))
 
 (deftest spawn-future-exception-delivers-completed-test
-  (testing "spawn future exception delivers :completed (prevents deadlock)"
-    (let [bad-agent (th/compiled-agent-fn
-                     (fn [_prompt _handle] (throw (ex-info "boom" {}))))]
+  (testing "spawn future exception delivers a reader-safe structured failure"
+    (let [started (promise)
+          may-fail (promise)
+          bad-agent (th/compiled-agent-fn
+                     (fn [_prompt handle]
+                       (deliver started handle)
+                       @may-fail
+                       (throw (ex-info "boom" {:opaque (Object.)}))))]
       (runtime/register! :boom-parent)
       (binding [runtime/*current-handle* :boom-parent]
         (let [child-h (runtime/spawn bad-agent "test")]
-          ;; Give the future time to run and fail
-          (Thread/sleep 200)
-          ;; :completed should have been delivered (with nil)
-          (is (realized? @(:completed (get @runtime/registry child-h)))))))))
+          (is (= child-h (deref started 5000 :timeout)))
+          (let [completion @(:completed (get @runtime/registry child-h))]
+            (deliver may-fail true)
+            (let [failure (deref completion 5000 :timeout)]
+              (is (true? (:spell/child-failure failure)))
+              (is (= child-h (:handle failure)))
+              (is (= :initialization (:phase failure)))
+              (is (= "boom" (get-in failure [:exception :message])))
+              (is (= [failure] (vec (parse/read-all (pr-str failure))))))
+            (is (not (runtime/handle? child-h)))))))))
 
 (deftest spawn-rejects-non-agent-test
   (testing "spawn rejects non-agent values"
@@ -1334,3 +1369,550 @@
                                    :recover false)]
       (is (thrown-with-msg? Exception #"not inside an agent context|not registered"
             (llm "(eval (do '"))))))
+
+;; =============================================================================
+;; Wait graph (hypermultigraph waiting model)
+;; =============================================================================
+
+(defn- graph-node [h] (get-in @runtime/wait-graph [:nodes h]))
+(defn- graph-edge [id] (get-in @runtime/wait-graph [:edges id]))
+
+(deftest wait-graph-create-edge-test
+  (testing "create-edge! creates a pending edge, sleeps source, wakes targets"
+    (runtime/register! :src)
+    (runtime/register! :t1)
+    (runtime/register! :t2)
+    (let [eid (runtime/create-edge! :src [:t1 :t2])
+          edge (graph-edge eid)]
+      (is (= :pending (:status edge)))
+      (is (= :src (:source edge)))
+      (is (= [:t1 :t2] (:targets edge)))
+      (is (= :pending (get-in edge [:slots :t1 :status])))
+      (is (= :pending (get-in edge [:slots :t2 :status])))
+      (is (= :asleep (:status (graph-node :src))))
+      (is (= :awake (:status (graph-node :t1))))
+      (is (= :awake (:status (graph-node :t2))))))
+  (testing "targets must be registered, distinct, non-empty, and not the source"
+    (runtime/register! :src2)
+    (runtime/register! :t3)
+    (is (thrown? Exception (runtime/create-edge! :src2 [])))
+    (is (thrown? Exception (runtime/create-edge! :src2 [:t3 :t3])))
+    (is (thrown-with-msg? Exception #"source cannot also be a target"
+          (runtime/create-edge! :src2 [:src2])))
+    (is (thrown-with-msg? Exception #"not registered"
+          (runtime/create-edge! :src2 [:missing])))))
+
+(deftest wait-graph-fill-slot-test
+  (testing "fill-slot! fills exactly once and completes when all slots filled"
+    (runtime/register! :src)
+    (runtime/register! :a)
+    (runtime/register! :b)
+    (let [eid (runtime/create-edge! :src [:a :b])
+          r1 (runtime/fill-slot! eid :a "result-a")]
+      (is (:filled? r1))
+      (is (not (:completed? r1)))
+      ;; duplicate fill is a no-op
+      (let [r-dup (runtime/fill-slot! eid :a "other")]
+        (is (not (:filled? r-dup))))
+      (is (= "result-a" (get-in (graph-edge eid) [:slots :a :value])))
+      (is (= :asleep (:status (graph-node :src))))
+      ;; final fill completes and removes the edge, wakes source
+      (let [r2 (runtime/fill-slot! eid :b "result-b")]
+        (is (:filled? r2))
+        (is (:completed? r2))
+        (is (= "result-b" (get-in (:edge r2) [:slots :b :value]))))
+      (is (nil? (graph-edge eid)))
+      (is (= :awake (:status (graph-node :src))))
+      ;; completion report was delivered to source's inbox
+      (is (pos? (count (:inbox-macros @(:state (get @runtime/registry :src)))))))))
+
+(deftest wait-graph-multiple-edges-any-edge-test
+  (testing "multiple outgoing edges have separate identities and slots"
+    (runtime/register! :src)
+    (runtime/register! :a)
+    (let [e1 (runtime/create-edge! :src [:a])
+          e2 (runtime/create-edge! :src [:a])]
+      (is (not= e1 e2))
+      ;; filling one edge's slot does not touch the other
+      (let [r (runtime/fill-slot! e1 :a 1)]
+        (is (:completed? r)))
+      (is (nil? (graph-edge e1)))
+      (is (= :pending (get-in (graph-edge e2) [:slots :a :status])))
+      ;; source is awake (any-edge wake) but retains the other pending edge
+      (is (= :awake (:status (graph-node :src))))
+      (is (= 1 (count (#'runtime/pending-out-edges @runtime/wait-graph :src)))))))
+
+(deftest wait-graph-sleep-allowed-test
+  (testing "sleep ordering rule"
+    (runtime/register! :main)
+    (runtime/register! :w)
+    (runtime/register! :b)
+    ;; no outgoing edge -> not allowed
+    (is (not (runtime/sleep-allowed? :main)))
+    ;; retained outgoing edge, no incoming -> allowed
+    (let [out-eid (runtime/create-edge! :main [:w])]
+      (is (runtime/sleep-allowed? :main))
+      ;; newer incoming edge (b asks main) -> not allowed
+      (let [in-eid (runtime/create-edge! :b [:main])]
+        (is (not (runtime/sleep-allowed? :main)))
+        ;; answering the incoming slot restores eligibility
+        (binding [runtime/*current-handle* :main]
+          (runtime/reply {:from :b :edge-id in-eid :expects-response true}
+                         "clarified"))
+        (is (runtime/sleep-allowed? :main)))
+      ;; completing the outgoing edge removes eligibility again
+      (runtime/fill-slot! out-eid :w "done")
+      (is (not (runtime/sleep-allowed? :main))))))
+
+(deftest wait-graph-sleep-throws-test
+  (testing "!sleep fails without changing the graph when not allowed"
+    (runtime/register! :main)
+    (binding [runtime/*current-handle* :main]
+      (is (thrown? Exception (runtime/sleep!))))
+    (is (empty? (get @runtime/wait-graph :edges)))))
+
+(deftest wait-graph-cancel-test
+  (testing "cancel removes caller's pending outgoing edge without touching targets"
+    (runtime/register! :src)
+    (runtime/register! :t)
+    (let [eid (runtime/create-edge! :src [:t])]
+      ;; non-source may not cancel
+      (binding [runtime/*current-handle* :t]
+        (is (thrown? Exception (runtime/cancel-edge eid))))
+      (is (some? (graph-edge eid)))
+      (binding [runtime/*current-handle* :src]
+        (let [summary (runtime/cancel-edge eid)]
+          (is (= :cancelled (:status summary)))
+          (is (= eid (:id summary)))))
+      (is (nil? (graph-edge eid)))
+      ;; target node unaffected
+      (is (= :awake (:status (graph-node :t))))
+      ;; second cancel throws
+      (binding [runtime/*current-handle* :src]
+        (is (thrown? Exception (runtime/cancel-edge eid)))))))
+
+(deftest wait-graph-finish-agent-test
+  (testing "finish fills incoming slots, cancels outgoing edges, marks finished"
+    (runtime/register! :parent)
+    (runtime/register! :child)
+    (runtime/register! :grandchild)
+    (let [in-eid (runtime/create-edge! :parent [:child])
+          out-eid (runtime/create-edge! :child [:grandchild])]
+      (#'runtime/claim-slot! in-eid :child (#'runtime/node-generation :child))
+      (runtime/finish-agent! :child "final-result")
+      ;; incoming slot filled -> edge completed and removed, parent awake
+      (is (nil? (graph-edge in-eid)))
+      (is (= :awake (:status (graph-node :parent))))
+      ;; outgoing edge cancelled, grandchild untouched
+      (is (nil? (graph-edge out-eid)))
+      (is (= :awake (:status (graph-node :grandchild))))
+      (is (= :finished (:status (graph-node :child))))
+      ;; waking a finished handle bumps generation
+      (let [gen (:generation (graph-node :child))]
+        (runtime/mark-awake! :child)
+        (is (= :awake (:status (graph-node :child))))
+        (is (= (inc gen) (:generation (graph-node :child))))))))
+
+(deftest wait-graph-unconsumed-request-not-filled-by-old-lifecycle-test
+  (testing "a return cannot satisfy an ordinary request still queued for the next lifecycle"
+    (runtime/register! :request-source)
+    (runtime/register! :request-target)
+    (let [eid (runtime/create-edge! :request-source [:request-target])
+          request {:from :request-source :expects-response true :edge-id eid}
+          request-macro (#'runtime/create-request-msg 'msg-race request eid :request-target)]
+      ;; Queue the request while the target's old lifecycle is still awake,
+      ;; then deterministically return that lifecycle before inbox drain.
+      (runtime/send-msg-fn request-macro :request-target)
+      (runtime/finish-agent! :request-target :unrelated-old-result)
+      (is (= :pending (get-in (graph-edge eid) [:slots :request-target :status])))
+      (is (nil? (get-in (graph-edge eid) [:slots :request-target :generation])))
+      (is (= :asleep (:status (graph-node :request-source))))
+
+      ;; The next lifecycle drains and thereby owns the queued request.
+      (let [completion (promise)]
+        (deliver completion "(quine completion (eval (do )))")
+        (runtime/box :request-target completion
+          (runtime/make-awake-fn :request-target identity)))
+      (let [generation (:generation (graph-node :request-target))]
+        (is (= generation
+               (get-in (graph-edge eid) [:slots :request-target :generation])))
+        (runtime/finish-agent! :request-target :relevant-new-result))
+      (is (nil? (graph-edge eid)))
+      (is (= :awake (:status (graph-node :request-source))))
+      (is (= 1 (count (:inbox-macros
+                       @(:state (get @runtime/registry :request-source)))))))))
+
+(deftest reply-ask-sends-one-actionable-reverse-request-test
+  (testing "reply-ask suppresses the retired singleton report and its reverse request resolves"
+    (runtime/register! :conversation-a)
+    (runtime/register! :conversation-b)
+    (let [old-eid (runtime/create-edge! :conversation-a [:conversation-b])
+          old-msg {:from :conversation-a
+                   :body :question
+                   :expects-response true
+                   :edge-id old-eid}
+          exchange
+          (future
+            (binding [runtime/*current-handle* :conversation-b
+                      runtime/*current-raw* "(quine completion (eval (do )))"
+                      runtime/*current-eval-fn* identity]
+              (runtime/reply-ask old-msg :first-reply)))]
+      ;; Wait until the reverse request is installed and queued.
+      (loop [attempt 0]
+        (when (and (< attempt 100)
+                   (empty? (:inbox-macros
+                             @(:state (get @runtime/registry :conversation-a)))))
+          (Thread/sleep 10)
+          (recur (inc attempt))))
+      (is (nil? (graph-edge old-eid)))
+      (is (= 1 (count (:inbox-macros
+                       @(:state (get @runtime/registry :conversation-a)))))
+          "the sender receives only the new reverse request")
+      (let [reverse-edge (->> (:edges @runtime/wait-graph)
+                              vals
+                              (filter #(= :conversation-b (:source %)))
+                              first)
+            reverse-eid (:id reverse-edge)
+            completion (promise)
+            seen (atom nil)]
+        (is (= [:conversation-a] (:targets reverse-edge)))
+        (deliver completion "(quine completion (eval (do )))")
+        (runtime/box :conversation-a completion
+          (runtime/make-awake-fn :conversation-a
+            (fn [raw]
+              (reset! seen raw)
+              raw)))
+        (is (.contains ^String @seen ":body :first-reply"))
+        (is (.contains ^String @seen ":expects-response true"))
+        (is (.contains ^String @seen (str ":edge-id " reverse-eid)))
+        (binding [runtime/*current-handle* :conversation-a]
+          (runtime/reply {:from :conversation-b
+                          :edge-id reverse-eid
+                          :expects-response true}
+                         :second-reply))
+        (let [result (deref exchange 5000 :timeout)]
+          (is (string? result))
+          (is (.contains ^String result ":body :second-reply")))
+        (is (empty? (:edges @runtime/wait-graph)))))))
+
+(deftest reply-ask-preserves-multi-target-completion-test
+  (testing "reply-ask fills its old multi slot while preserving the combined report"
+    (doseq [handle [:multi-conversation-source :multi-conversation-b :multi-conversation-c]]
+      (runtime/register! handle))
+    (let [old-eid (runtime/create-edge! :multi-conversation-source
+                                        [:multi-conversation-b :multi-conversation-c])
+          old-msg {:from :multi-conversation-source
+                   :body :question
+                   :expects-response true
+                   :edge-id old-eid}
+          exchange
+          (future
+            (binding [runtime/*current-handle* :multi-conversation-b
+                      runtime/*current-raw* "(quine completion (eval (do )))"
+                      runtime/*current-eval-fn* identity]
+              (runtime/reply-ask old-msg :result-b)))]
+      (loop [attempt 0]
+        (when (and (< attempt 100)
+                   (empty? (:inbox-macros
+                             @(:state (get @runtime/registry :multi-conversation-source)))))
+          (Thread/sleep 10)
+          (recur (inc attempt))))
+      (is (= :filled (get-in (graph-edge old-eid)
+                             [:slots :multi-conversation-b :status])))
+      (is (= :pending (get-in (graph-edge old-eid)
+                              [:slots :multi-conversation-c :status])))
+      (let [reverse-eid (->> (:edges @runtime/wait-graph)
+                             vals
+                             (filter #(= :multi-conversation-b (:source %)))
+                             first
+                             :id)]
+        (binding [runtime/*current-handle* :multi-conversation-c]
+          (runtime/reply {:from :multi-conversation-source
+                          :edge-id old-eid
+                          :expects-response true}
+                         :result-c))
+        (is (nil? (graph-edge old-eid)))
+        (is (= 2 (count (:inbox-macros
+                         @(:state (get @runtime/registry :multi-conversation-source)))))
+            "the reverse request and the old all-target report are both retained")
+        (binding [runtime/*current-handle* :multi-conversation-source]
+          (runtime/reply {:from :multi-conversation-b
+                          :edge-id reverse-eid
+                          :expects-response true}
+                         :follow-up))
+        (is (string? (deref exchange 5000 :timeout)))))))
+
+(deftest ask-reply-reply-ask-round-trip-test
+  (testing "a singleton completion report can directly continue as a reverse request"
+    (runtime/register! :roundtrip-a)
+    (runtime/register! :roundtrip-b)
+    (let [raw "(quine completion (eval (do )))"
+          first-wait
+          (future
+            (binding [runtime/*current-handle* :roundtrip-a
+                      runtime/*current-raw* raw
+                      runtime/*current-eval-fn* identity]
+              (runtime/ask-builtin :roundtrip-b :question)))]
+      (loop [attempt 0]
+        (when (and (< attempt 100)
+                   (empty? (:inbox-macros
+                             @(:state (get @runtime/registry :roundtrip-b)))))
+          (Thread/sleep 10)
+          (recur (inc attempt))))
+      (let [first-eid (->> (:edges @runtime/wait-graph)
+                           vals
+                           (filter #(= :roundtrip-a (:source %)))
+                           first
+                           :id)
+            completion (promise)]
+        (deliver completion raw)
+        (runtime/box :roundtrip-b completion
+          (runtime/make-awake-fn :roundtrip-b identity))
+        (binding [runtime/*current-handle* :roundtrip-b]
+          (runtime/reply {:from :roundtrip-a
+                          :edge-id first-eid
+                          :expects-response true}
+                         :first-response))
+        (let [first-result (deref first-wait 5000 :timeout)
+              completion-report {:from :roundtrip-b
+                                 :body :first-response
+                                 :edge-id first-eid}
+              second-wait
+              (future
+                (binding [runtime/*current-handle* :roundtrip-a
+                          runtime/*current-raw* first-result
+                          runtime/*current-eval-fn* identity]
+                  (runtime/reply-ask completion-report :follow-up-question)))]
+          (loop [attempt 0]
+            (when (and (< attempt 100)
+                       (empty? (:inbox-macros
+                                 @(:state (get @runtime/registry :roundtrip-b)))))
+              (Thread/sleep 10)
+              (recur (inc attempt))))
+          (is (= 1 (count (:inbox-macros
+                           @(:state (get @runtime/registry :roundtrip-b)))))
+              "reply-ask on the completion report sends one actionable request")
+          (let [second-edge (->> (:edges @runtime/wait-graph)
+                                 vals
+                                 (filter #(= :roundtrip-a (:source %)))
+                                 first)
+                second-eid (:id second-edge)
+                second-completion (promise)
+                seen (atom nil)]
+            (deliver second-completion raw)
+            (runtime/box :roundtrip-b second-completion
+              (runtime/make-awake-fn :roundtrip-b
+                (fn [received]
+                  (reset! seen received)
+                  received)))
+            (is (.contains ^String @seen ":body :follow-up-question"))
+            (is (.contains ^String @seen ":expects-response true"))
+            (binding [runtime/*current-handle* :roundtrip-b]
+              (runtime/reply {:from :roundtrip-a
+                              :edge-id second-eid
+                              :expects-response true}
+                             :final-response))
+            (let [final-result (deref second-wait 5000 :timeout)]
+              (is (string? final-result))
+              (is (.contains ^String final-result ":body :final-response")))
+            (is (empty? (:edges @runtime/wait-graph)))))))))
+
+(deftest incoming-inspection-includes-filled-live-slots-test
+  (testing "inspection retains filled slots while sleep ordering ignores them"
+    (doseq [handle [:inspect-source :inspect-a :inspect-b :inspect-worker]]
+      (runtime/register! handle))
+    (let [eid (runtime/create-edge! :inspect-source [:inspect-a :inspect-b])]
+      (runtime/fill-slot! eid :inspect-a :done-a)
+      (binding [runtime/*current-handle* :inspect-a]
+        (let [incoming (runtime/in-edges)
+              status (runtime/agent-status)]
+          (is (= 1 (count incoming)))
+          (is (= :filled (:my-slot (first incoming))))
+          (is (= :filled (get-in (first incoming) [:slots :inspect-a :status])))
+          (is (= :filled (:my-slot (first (:in-edges status)))))
+          (is (empty? (#'runtime/pending-in-edges @runtime/wait-graph :inspect-a))))
+        (runtime/create-edge! :inspect-a [:inspect-worker])
+        (is (runtime/sleep-allowed? :inspect-a))))))
+
+(deftest wait-graph-inspection-test
+  (testing "status, graph, out-edges, in-edges"
+    (runtime/register! :src)
+    (runtime/register! :t)
+    (let [eid (runtime/create-edge! :src [:t])]
+      (binding [runtime/*current-handle* :src]
+        (let [st (runtime/agent-status)]
+          (is (= :src (:handle st)))
+          (is (= :asleep (:status st)))
+          (is (= 1 (count (:out-edges st))))
+          (is (= eid (:id (first (:out-edges st)))))
+          (is (empty? (:in-edges st))))
+        (is (empty? (runtime/in-edges)))
+        (is (= 1 (count (runtime/out-edges)))))
+      (binding [runtime/*current-handle* :t]
+        (let [ins (runtime/in-edges)]
+          (is (= 1 (count ins)))
+          (is (= :pending (:my-slot (first ins))))))
+      (let [st (runtime/agent-status :t)]
+        (is (= :awake (:status st)))
+        (is (pos? (:generation st))))
+      (is (thrown? Exception (runtime/agent-status :nonexistent)))
+      (let [g (runtime/graph-snapshot)]
+        (is (map? (:nodes g)))
+        (is (= 1 (count (:edges g))))
+        (is (= eid (:id (first (:edges g)))))))))
+
+(deftest stale-lifecycle-inspection-does-not-cross-run-boundary-test
+  (testing "stale request and sleep inspection cannot observe reused new-run topology"
+    (let [old-epoch @runtime/runtime-epoch]
+      (runtime/register! :user)
+      (runtime/begin-run!)
+      (runtime/register! :new-source)
+      (runtime/register! :user)
+      (runtime/register! :new-target)
+      (let [incoming-id (runtime/create-edge! :new-source [:user])
+            outgoing-id (runtime/create-edge! :user [:new-target])
+            new-graph @runtime/wait-graph
+            request {:from :new-source
+                     :expects-response true
+                     :edge-id incoming-id}
+            actionable-error
+            (try
+              (binding [runtime/*runtime-epoch* old-epoch
+                        runtime/*current-handle* :user]
+                (runtime/actionable-request-live? request))
+              nil
+              (catch clojure.lang.ExceptionInfo e e))
+            sleep-error
+            (try
+              (binding [runtime/*runtime-epoch* old-epoch
+                        runtime/*current-handle* :user
+                        runtime/*current-raw* "(do 0)"
+                        runtime/*current-eval-fn* identity]
+                (runtime/sleep!))
+              nil
+              (catch clojure.lang.ExceptionInfo e e))]
+        ;; These exact ids and handles exist in the new run. Without the epoch
+        ;; guard the stale request predicate returns true and !sleep reports
+        ;; the new run's incoming/outgoing edge summaries.
+        (is (contains? (:edges new-graph) incoming-id))
+        (is (contains? (:edges new-graph) outgoing-id))
+        (doseq [error [actionable-error sleep-error]]
+          (is (instance? clojure.lang.ExceptionInfo error))
+          (is (= :stale-runtime-epoch (:type (ex-data error))))
+          (is (= old-epoch (:lifecycle-epoch (ex-data error))))
+          (is (not (contains? (ex-data error) :out-edges)))
+          (is (not (contains? (ex-data error) :in-edges))))
+        (is (= new-graph @runtime/wait-graph))))))
+
+(deftest wait-graph-reply-fallback-test
+  (testing "reply without :edge-id falls back to plain send"
+    (runtime/register! :asker)
+    (runtime/register! :replier)
+    (binding [runtime/*current-handle* :replier]
+      (runtime/reply {:from :asker :body "q"} "a"))
+    (is (pos? (count (:inbox-macros @(:state (get @runtime/registry :asker))))))
+    ;; plain send marks recipient awake but creates no edge
+    (is (= :awake (:status (graph-node :asker))))
+    (is (empty? (get @runtime/wait-graph :edges)))))
+
+(deftest wait-graph-completion-report-reply-test
+  (testing "singleton completion reports reply by plain send despite retired edge ids"
+    (runtime/register! :report-recipient)
+    (runtime/register! :report-sender)
+    (binding [runtime/*current-handle* :report-recipient]
+      (runtime/reply {:from :report-sender :body :result :edge-id 42} :ack))
+    (is (= 1 (count (:inbox-macros
+                     @(:state (get @runtime/registry :report-sender)))))))
+  (testing "aggregate completion reports require choosing a specific target"
+    (runtime/register! :aggregate-recipient)
+    (binding [runtime/*current-handle* :aggregate-recipient]
+      (is (thrown-with-msg? Exception #"cannot reply to a multi-target completion report"
+            (runtime/reply {:from [:worker-a :worker-b]
+                            :body []
+                            :edge-id 43}
+                           :ambiguous))))))
+
+(deftest wait-graph-edge-reply-never-falls-back-to-send-test
+  (testing "duplicate and cancelled edge-bearing replies are no-ops"
+    (runtime/register! :source)
+    (runtime/register! :target)
+    (let [eid (runtime/create-edge! :source [:target])
+          request {:from :source :edge-id eid :expects-response true}]
+      (binding [runtime/*current-handle* :target]
+        (runtime/reply request :first)
+        (is (= 1 (count (:inbox-macros @(:state (get @runtime/registry :source)))))
+            "the completed edge delivers exactly one report")
+        (runtime/reply request :duplicate)
+        (is (= 1 (count (:inbox-macros @(:state (get @runtime/registry :source)))))
+            "a duplicate reply must not become a plain send")))
+    (runtime/register! :source-2)
+    (runtime/register! :target-2)
+    (let [eid (runtime/create-edge! :source-2 [:target-2])
+          request {:from :source-2 :edge-id eid :expects-response true}]
+      (binding [runtime/*current-handle* :source-2]
+        (runtime/cancel-edge eid))
+      (binding [runtime/*current-handle* :target-2]
+        (runtime/reply request :late))
+      (is (empty? (:inbox-macros @(:state (get @runtime/registry :source-2))))
+          "reply after cancellation must not wake the former source"))))
+
+(deftest wait-graph-sleep-transition-is-atomic-test
+  (testing "edge completion between eligibility evaluation and CAS forces a retry"
+    (runtime/register! :main)
+    (runtime/register! :worker)
+    (let [eid (runtime/create-edge! :main [:worker])
+          checked (promise)
+          proceed (promise)
+          calls (atom 0)
+          original runtime/sleep-allowed?
+          transition
+          (future
+            (runtime/mark-awake! :main)
+            (with-redefs [runtime/sleep-allowed?
+                          (fn [graph handle]
+                            (let [allowed? (original graph handle)]
+                              (when (= 1 (swap! calls inc))
+                                (deliver checked true)
+                                @proceed)
+                              allowed?))]
+              (#'runtime/mark-asleep-if-allowed! :main)))]
+      (is (= true (deref checked 5000 :timeout)))
+      (runtime/fill-slot! eid :worker :done)
+      (deliver proceed true)
+      (is (false? (deref transition 5000 :timeout)))
+      (is (empty? (:edges @runtime/wait-graph)))
+      (is (= :awake (:status (graph-node :main)))))))
+
+(deftest spawn-ask-installs-edge-before-child-launch-test
+  (testing "a child sees its incoming edge on its first instruction"
+    (let [parent :prepared-parent
+          child-agent
+          (th/compiled-agent-fn
+            (fn [_prompt handle]
+              (if (seq (#'runtime/pending-in-edges @runtime/wait-graph handle))
+                :edge-installed
+                :edge-missing)))]
+      (runtime/register! parent)
+      (let [result
+            (future
+              (binding [runtime/*current-handle* parent
+                        runtime/*current-raw* "(quine completion (eval (do )))"
+                        runtime/*current-eval-fn* identity]
+                (runtime/spawn-ask child-agent "return immediately" :prepared-child)))
+            raw (deref result 5000 :timeout)]
+        (is (string? raw))
+        (is (.contains ^String raw ":body :edge-installed"))
+        (is (empty? (:edges @runtime/wait-graph)))))))
+
+(deftest wait-graph-register-finish-send-state-test
+  (testing "registered handles are visible and send reawakens a finished generation"
+    (runtime/register! :persistent)
+    (is (= :awake (:status (get-in (runtime/graph-snapshot)
+                                    [:nodes :persistent]))))
+    (runtime/finish-agent! :persistent :done)
+    (let [generation (:generation (graph-node :persistent))]
+      (is (= :finished (:status (graph-node :persistent))))
+      (binding [runtime/*current-handle* :sender]
+        (runtime/send :persistent :again))
+      (is (= :awake (:status (graph-node :persistent))))
+      (is (= (inc generation) (:generation (graph-node :persistent)))))))

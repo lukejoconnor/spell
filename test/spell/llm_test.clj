@@ -12,6 +12,7 @@
             [clojure.java.io :as io]
             [clojure.string :as str]
             [spell.eval :as eval]
+            [spell.inbox :as inbox]
             [spell.prompt :as prompt]
             [spell.stdlib :as stdlib]
             [spell.parse :as parse]))
@@ -154,6 +155,47 @@
       (is (= 'quine (first reopened-form)))
       (is (some #(= '(def second-msg "open-me") %) body-exprs))
       (is (some #(= '(def injected :yes) %) body-exprs)))))
+
+(deftest stale-inbox-evaluation-cannot-overwrite-reused-handle-raw-test
+  (testing "an old inbox evaluation cannot write continuation raw into a newer run"
+    (let [variant-builtins (merge eval/core-builtins
+                                  {'describe-fn stdlib/describe})
+          eval-builtin (llm/make-eval variant-builtins {})
+          inbox-fn (llm/make-inbox-fn {:variant-builtins variant-builtins
+                                       :eval-builtin eval-builtin
+                                       :recover-fn nil}
+                                      (atom nil))
+          handle :main
+          old-epoch @runtime/runtime-epoch
+          old-started (promise)
+          release-old (promise)
+          apply-inbox-macros inbox/apply-inbox-macros]
+      (runtime/register! handle)
+      (runtime/record-last-raw! handle "old-run-raw")
+      (let [old-entry (get @runtime/registry handle)]
+        (with-redefs [inbox/apply-inbox-macros
+                      (fn [program inbox-macros opts]
+                        (deliver old-started true)
+                        @release-old
+                        (apply-inbox-macros program inbox-macros opts))]
+          (let [old-evaluation
+                (future
+                  (binding [runtime/*runtime-epoch* old-epoch
+                            runtime/*current-handle* handle]
+                    (inbox-fn "(do :old-result)" [])))]
+            (is (true? (deref old-started 2000 false)))
+
+            ;; Reuse :main only after the old evaluation has parsed its input
+            ;; and is held immediately before continuation-raw persistence.
+            (runtime/begin-run!)
+            (runtime/register! handle)
+            (is (true? (runtime/record-last-raw! handle "new-run-raw")))
+            (let [new-entry (get @runtime/registry handle)]
+              (deliver release-old true)
+              (is (= :old-result (deref old-evaluation 2000 :timeout)))
+              (is (= "new-run-raw" @(:last-raw new-entry)))
+              (is (= "old-run-raw" @(:last-raw old-entry)))
+              (is (not (identical? old-entry new-entry))))))))))
 
 ;; =============================================================================
 ;; File I/O task tests
