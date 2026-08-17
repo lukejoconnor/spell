@@ -220,7 +220,7 @@
     (:content skill)
     (throw (ex-info (str "Bundled skill not found or invalid: " name)
                     {:skill name}))))
-(defn- catalog-text [skills diagnostics description-limit diagnostic-limit omitted-skills]
+(defn- catalog-text [skills description-limit omitted-skills]
   (str "SKILLS — Discovered Agent Skills (prompt-only; no capability escalation).\n\n"
        "Activation: when task text explicitly names $name, or task intent implicitly matches a description below, use (!describe skills :name) before acting.\n"
        "The catalog is a deterministic snapshot taken once when this agent was compiled.\n\n"
@@ -231,29 +231,14 @@
        (when (pos? omitted-skills)
          (str "\nWARNING: " omitted-skills
               " skill catalog entr" (if (= omitted-skills 1) "y was" "ies were")
-              " omitted to keep this catalog within 8000 characters."))
-       (when (seq diagnostics)
-         (str "\n\nDISCOVERY DIAGNOSTICS (invalid or unreadable skills were skipped):\n"
-              (str/join "\n"
-                        (map (fn [{:keys [path message]}]
-                               (str "- " (shorten path diagnostic-limit) " — "
-                                    (shorten message diagnostic-limit)))
-                             diagnostics))))))
+              " omitted to keep this catalog within 8000 characters."))))
 (defn initial-catalog
   "Build a deterministic catalog no longer than 8000 characters, shortening descriptions
-  before omitting skill entries. Bounded discovery diagnostics are always surfaced."
-  [{:keys [skills diagnostics]}]
+  before omitting skill entries. Discovery diagnostics are not inserted into model context."
+  [{:keys [skills]}]
   (let [skills (vec skills)
-        ;; Keep this public formatter safe for caller-built snapshots as well as snapshots
-        ;; returned by discover-skills. At these bounds, the fixed text plus every
-        ;; diagnostic fits comfortably before skill entries are considered.
-        diagnostics (->> diagnostics
-                         (take max-diagnostics)
-                         (mapv (fn [{:keys [path message]}]
-                                 {:path (shorten path max-diagnostic-chars)
-                                  :message (bounded-message message)})))
         render (fn [included desc-limit omitted]
-                 (catalog-text included diagnostics desc-limit 120 omitted))
+                 (catalog-text included desc-limit omitted))
         full (some (fn [limit]
                      (let [text (render skills limit 0)]
                        (when (<= (count text) max-catalog-chars) text)))
@@ -269,6 +254,13 @@
                     (> (count next-text) max-catalog-chars))
               text
               (recur (conj included (first remaining)) (subvec remaining 1))))))))
+
+(defn- report-diagnostics! [diagnostics]
+  (binding [*out* *err*]
+    (doseq [{:keys [path message]} (take max-diagnostics diagnostics)]
+      (println (str "Spell skill skipped: "
+                    (shorten path max-diagnostic-chars) " — "
+                    (bounded-message message))))))
 
 (defn- skill-detail [name candidates]
   (str "SKILL DETAIL — " name "\n\n"
@@ -290,6 +282,7 @@
   "Generate the always-available prompt-only skills namespace from a discovery snapshot."
   ([] (skills-namespace (discover-skills)))
   ([snapshot]
+   (report-diagnostics! (:diagnostics snapshot))
    (let [skills (:skills snapshot)
          by-name (group-by :name skills)
          catalog (initial-catalog snapshot)
@@ -298,4 +291,5 @@
                               [(keyword name) (skill-detail name candidates)]))
                        (sort-by key by-name))]
      {:short-docs catalog
-      :docs (merge {:guide catalog} details)})))
+      :docs {:guide catalog}
+      :detail details})))

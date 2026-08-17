@@ -109,7 +109,7 @@
               (.getCanonicalPath (io/file home ".agents" "skills"))]
              paths)))))
 
-(deftest catalog-surfaces-bounded-diagnostics-test
+(deftest catalog-excludes-discovery-diagnostics-test
   (let [catalog (skills/initial-catalog
                  {:skills [{:name "valid"
                             :description (apply str (repeat 1000 "description "))
@@ -117,19 +117,35 @@
                   :diagnostics [{:path "/bad/SKILL.md"
                                  :message "malformed YAML"}]})]
     (is (<= (count catalog) 8000))
-    (is (str/includes? catalog "DISCOVERY DIAGNOSTICS"))
-    (is (str/includes? catalog "/bad/SKILL.md"))
-    (is (str/includes? catalog "malformed YAML"))))
+    (is (not (str/includes? catalog "DISCOVERY DIAGNOSTICS")))
+    (is (not (str/includes? catalog "/bad/SKILL.md")))
+    (is (not (str/includes? catalog "malformed YAML")))))
 
-(deftest catalog-bounds-untrusted-diagnostic-input-test
-  (let [catalog (skills/initial-catalog
-                 {:skills []
-                  :diagnostics (repeat 1000
-                                       {:path (apply str (repeat 10000 "p"))
-                                        :message (apply str (repeat 10000 "m"))})})]
-    (is (<= (count catalog) 8000))
-    (is (str/includes? catalog "DISCOVERY DIAGNOSTICS"))
-    (is (str/includes? catalog "..."))))
+(deftest discovery-diagnostics-go-to-stderr-test
+  (let [stderr (java.io.StringWriter.)
+        message (apply str (repeat 1000 "message "))]
+    (binding [*err* stderr]
+      (skills/skills-namespace
+       {:skills []
+        :diagnostics [{:path "/bad/SKILL.md"
+                       :message message}]}))
+    (let [reported (str stderr)]
+      (is (str/includes? reported "Spell skill skipped: /bad/SKILL.md"))
+      (is (str/includes? reported "..."))
+      (is (<= (count reported) 350)))))
+
+(deftest guide-named-skill-does-not-replace-namespace-guide-test
+  (let [snapshot {:skills [{:name "guide"
+                            :description "A valid skill named guide."
+                            :path "/guide/SKILL.md"
+                            :directory "/guide"
+                            :root "/"
+                            :content "---\nname: guide\ndescription: A valid skill named guide.\n---\nGUIDE SKILL BODY"}]
+                  :diagnostics []}
+        ns-map (skills/skills-namespace snapshot)]
+    (is (str/includes? (stdlib/describe ns-map) "SKILLS — Discovered Agent Skills"))
+    (is (not (str/includes? (stdlib/describe ns-map) "GUIDE SKILL BODY")))
+    (is (str/includes? (stdlib/describe ns-map :guide) "GUIDE SKILL BODY"))))
 
 (deftest bundled-skills-are-classpath-resources-test
   (let [snapshot (skills/discover-skills)
