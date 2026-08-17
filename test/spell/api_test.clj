@@ -94,6 +94,62 @@
         (is (nil? (:error result)))
         (is (empty? (:edges @runtime/wait-graph)))))))
 
+(deftest detached-old-lifecycle-cannot-mutate-new-run-test
+  (testing "a detached lifecycle cannot finish a reused handle in a later API run"
+    (runtime/register! :worker)
+    (let [old-started (promise)
+          release-old (promise)
+          initial (promise)
+          old-worker
+          (future
+            (runtime/run-root-box
+              :worker initial
+              (fn [_raw]
+                (deliver old-started true)
+                @release-old
+                :old-result)
+              identity))]
+      (deliver initial "(do 0)")
+      (is (true? (deref old-started 2000 false)))
+
+      ;; api/run advances the runtime epoch without waiting for :worker.
+      (let [p (provider/test-provider {:response "unused"})]
+        (is (= 42 (:result (api/run {:init "(do 42)"
+                                     :model-profile p
+                                     :agent-profile test-agent})))))
+
+      ;; Reuse the same handle and install a claimed result position in the
+      ;; new run before allowing the old lifecycle to return.
+      (runtime/register! :new-source)
+      (runtime/register! :worker)
+      (let [edge-id (runtime/create-edge! :new-source [:worker])
+            generation (get-in @runtime/wait-graph [:nodes :worker :generation])
+            _ (#'runtime/claim-slot! edge-id :worker generation)
+            edge-before (get-in @runtime/wait-graph [:edges edge-id])
+            node-before (get-in @runtime/wait-graph [:nodes :worker])
+            source-state-before @(:state (get @runtime/registry :new-source))
+            worker-state-before @(:state (get @runtime/registry :worker))
+            new-completion @(:completed (get @runtime/registry :worker))]
+        (deliver release-old true)
+        (is (= :old-result (deref old-worker 2000 :timeout)))
+        (is (= edge-before (get-in @runtime/wait-graph [:edges edge-id])))
+        (is (= node-before (get-in @runtime/wait-graph [:nodes :worker])))
+        (is (= source-state-before @(:state (get @runtime/registry :new-source))))
+        (is (= worker-state-before @(:state (get @runtime/registry :worker))))
+        (is (not (realized? new-completion)))
+
+        ;; The new lifecycle still owns the claimed slot and completes it
+        ;; normally after the stale lifecycle has been ignored.
+        (is (= :new-result
+               (runtime/run-root-box :worker "(do 0)"
+                                     (fn [_raw] :new-result)
+                                     identity)))
+        (is (= :new-result (deref new-completion 2000 :timeout)))
+        (is (nil? (get-in @runtime/wait-graph [:edges edge-id])))
+        (is (= :finished (get-in @runtime/wait-graph [:nodes :worker :status])))
+        (is (= 1 (count (:inbox-macros
+                         @(:state (get @runtime/registry :new-source))))))))))
+
 (deftest run-closes-namespace-embedded-agent-test
   (testing "api/run closes MCP resources owned by an agent profile in :namespaces"
     (let [root (.toFile (java.nio.file.Files/createTempDirectory

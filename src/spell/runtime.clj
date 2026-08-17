@@ -23,32 +23,76 @@
                                 :has-box (atom false),
                                 :completed (atom (promise)),
                                 :last-raw (atom nil),
-                                :parent-handle kw-or-nil}"
+                                :parent-handle kw-or-nil,
+                                :epoch runtime-run-id}"
   (atom {}))
 
-(declare wait-graph)
+(declare wait-graph swap-current-graph! swap-vals-current-graph!)
+
+(def runtime-epoch
+  "Monotonic identity for the currently active runtime run. Public API runs
+   advance this before replacing process-global runtime state so detached work
+   from an earlier run can recognize that its lifecycle is stale."
+  (atom 0))
+
+(def ^:dynamic *runtime-epoch*
+  "Epoch owned by the currently executing lifecycle. Nil outside a lifecycle."
+  nil)
+
+(defn- operation-epoch []
+  (or *runtime-epoch* @runtime-epoch))
+
+(defn- active-epoch?
+  [epoch]
+  (= epoch @runtime-epoch))
+
+(defn- entry-for-epoch
+  [handle epoch]
+  (let [entry (get @registry handle)]
+    (when (= epoch (:epoch entry))
+      entry)))
+
+(defn- require-active-epoch!
+  [caller]
+  (let [epoch (operation-epoch)]
+    (when-not (active-epoch? epoch)
+      (throw (ex-info (str caller ": lifecycle belongs to an earlier runtime run")
+                      {:type :stale-runtime-epoch
+                       :lifecycle-epoch epoch
+                       :runtime-epoch @runtime-epoch})))
+    epoch))
 
 (defn register!
   "Register a handle in the registry.
    Optional parent-handle records the spawning agent."
   ([handle] (register! handle nil))
   ([handle parent-handle]
-   (let [entry {:state         (atom {:inbox-macros [], :signal (promise)})
+   (let [epoch (require-active-epoch! "register!")
+         entry {:state         (atom {:inbox-macros [], :signal (promise)})
                 :has-box       (atom false)
                 :parent-handle parent-handle
                 :completed     (atom (promise))
-                :last-raw      (atom nil)}
+                :last-raw      (atom nil)
+                :epoch         epoch}
          [old new] (swap-vals! registry
                                (fn [entries]
-                                 (if (contains? entries handle)
+                                 (if (or (not (active-epoch? epoch))
+                                         (contains? entries handle))
                                    entries
                                    (assoc entries handle entry))))]
      (when (identical? old new)
-       (throw (ex-info "Handle already registered" {:handle handle}))))
-   ;; A registered handle is initially able to run. start-box changes truly
-   ;; dormant handles to :finished after registration; spawned and root handles
-   ;; remain :awake until their lifecycle returns.
-   (swap! wait-graph assoc-in [:nodes handle] {:status :awake :generation 1})))
+       (if (active-epoch? epoch)
+         (throw (ex-info "Handle already registered" {:handle handle}))
+         (throw (ex-info "register!: lifecycle belongs to an earlier runtime run"
+                         {:type :stale-runtime-epoch
+                          :lifecycle-epoch epoch
+                          :runtime-epoch @runtime-epoch}))))
+     ;; A registered handle is initially able to run. start-box changes truly
+     ;; dormant handles to :finished after registration; spawned and root handles
+     ;; remain :awake until their lifecycle returns.
+     (swap-current-graph! epoch
+                          #(assoc-in % [:nodes handle]
+                                     {:status :awake :generation 1})))))
 
 ;; =============================================================================
 ;; Dynamic vars
@@ -115,16 +159,18 @@
 (defn- current-completion
   "Return handle's current completion promise, or throw a useful handle error."
   [handle]
-  (let [entry (get @registry handle)]
+  (let [epoch (operation-epoch)
+        entry (entry-for-epoch handle epoch)]
     (when-not entry
-      (throw (ex-info "Handle not registered" {:handle handle})))
+      (throw (ex-info "Handle not registered in this runtime run"
+                      {:handle handle :runtime-epoch epoch})))
     @(:completed entry)))
 
 (defn- realize-completion!
   "Atomically rotate handle's completion promise, then deliver the old cycle.
    No-op if another lifecycle already rotated expected-completion."
   [handle expected-completion result]
-  (when-let [completed-atom (:completed (get @registry handle))]
+  (when-let [completed-atom (:completed (entry-for-epoch handle (operation-epoch)))]
     (let [next-completed (promise)]
       (when (compare-and-set! completed-atom expected-completion next-completed)
         (deliver expected-completion result)
@@ -135,18 +181,20 @@
    established a root lifecycle. Existing waiters retain expected-completion;
    no ownerless next lifecycle or addressable ghost handle is left behind."
   [handle expected-completion result]
-  (let [[old-registry new-registry]
+  (let [epoch (operation-epoch)
+        [old-registry new-registry]
         (swap-vals! registry
                     (fn [entries]
                       (let [entry (get entries handle)]
                         (if (and entry
+                                 (= epoch (:epoch entry))
                                  (identical? expected-completion @(:completed entry)))
                           (dissoc entries handle)
                           entries))))]
     (when (and (contains? old-registry handle)
                (not (contains? new-registry handle)))
       (finish-agent! handle result)
-      (swap! wait-graph update :nodes dissoc handle)
+      (swap-current-graph! epoch #(update % :nodes dissoc handle))
       (deliver expected-completion result)
       true)))
 
@@ -253,7 +301,8 @@
 ;; =============================================================================
 
 (def wait-graph
-  "Global wait graph: {:next-edge-id n
+  "Global wait graph: {:epoch runtime-run-id
+                        :next-edge-id n
                         :next-seq n
                         :edges {edge-id {:id n :source handle :targets [handle ...]
                                          :slots {handle {:status :pending|:filled
@@ -261,12 +310,39 @@
                                                          :generation n-or-nil}}
                                          :created-seq n :status :pending}}
                         :nodes {handle {:status :awake|:asleep|:finished :generation n}}}"
-  (atom {:next-edge-id 1 :next-seq 1 :edges {} :nodes {}}))
+  (atom {:epoch 0 :next-edge-id 1 :next-seq 1 :edges {} :nodes {}}))
+
+(defn- empty-wait-graph
+  [epoch]
+  {:epoch epoch :next-edge-id 1 :next-seq 1 :edges {} :nodes {}})
+
+(defn- swap-current-graph!
+  ([f] (swap-current-graph! (operation-epoch) f))
+  ([epoch f]
+   (swap! wait-graph #(if (= epoch (:epoch %)) (f %) %))))
+
+(defn- swap-vals-current-graph!
+  ([f] (swap-vals-current-graph! (operation-epoch) f))
+  ([epoch f]
+   (swap-vals! wait-graph #(if (= epoch (:epoch %)) (f %) %))))
 
 (defn reset-wait-graph!
   "Reset all wait topology and node lifecycle bookkeeping."
   []
-  (reset! wait-graph {:next-edge-id 1 :next-seq 1 :edges {} :nodes {}}))
+  (reset! wait-graph (empty-wait-graph @runtime-epoch)))
+
+(defn begin-run!
+  "Begin an independent runtime run and return its epoch.
+
+   The epoch advances before global state is replaced. Any detached lifecycle
+   that resumes during or after the reset therefore fails its epoch check and
+   cannot mutate the new registry or wait graph. This operation never waits for
+   old lifecycles to drain."
+  []
+  (let [epoch (swap! runtime-epoch inc)]
+    (reset! registry {})
+    (reset! wait-graph (empty-wait-graph epoch))
+    epoch))
 
 (defn- ensure-node
   [graph handle]
@@ -287,7 +363,7 @@
 (defn mark-awake!
   "Mark handle awake in the wait graph (bookkeeping only; no signal)."
   [handle]
-  (swap! wait-graph wake-node handle)
+  (swap-current-graph! #(wake-node % handle))
   nil)
 
 (defn create-edge!
@@ -296,7 +372,8 @@
    Targets must be distinct. Returns the new edge id.
    Does not deliver wake signals; callers wake targets through messaging."
   [source targets]
-  (let [targets (vec targets)]
+  (let [epoch (require-active-epoch! "create-edge!")
+        targets (vec targets)]
     (when (empty? targets)
       (throw (ex-info "create-edge!: edge requires at least one target" {:source source})))
     (when (not= (count targets) (count (distinct targets)))
@@ -304,32 +381,33 @@
     (when (some #{source} targets)
       (throw (ex-info "create-edge!: source cannot also be a target"
                       {:source source :targets targets})))
-    (when-let [unknown (seq (remove #(contains? @registry %) targets))]
+    (when-let [unknown (seq (remove #(entry-for-epoch % epoch) targets))]
       (throw (ex-info "create-edge!: target not registered"
                       {:source source :targets targets :unknown-targets (vec unknown)})))
     (let [new-graph
-          (swap! wait-graph
-                 (fn [g]
-                   (let [edge-id (:next-edge-id g)
-                         seq-n (:next-seq g)
-                         edge {:id edge-id
-                               :source source
-                               :targets targets
-                               ;; A pending slot is unowned until its request is
-                               ;; consumed by a target lifecycle. Spawn-ask
-                               ;; claims its prepared lifecycle before launch.
-                               :slots (into {} (map (fn [t] [t {:status :pending
-                                                                :value nil
-                                                                :generation nil}])
-                                                    targets))
-                               :created-seq seq-n
-                               :status :pending}
-                         g (reduce wake-node g targets)
-                         g (assoc-in (ensure-node g source) [:nodes source :status] :asleep)]
-                     (-> g
-                         (assoc :next-edge-id (inc edge-id))
-                         (assoc :next-seq (inc seq-n))
-                         (assoc-in [:edges edge-id] edge)))))]
+          (swap-current-graph!
+            epoch
+            (fn [g]
+              (let [edge-id (:next-edge-id g)
+                    seq-n (:next-seq g)
+                    edge {:id edge-id
+                          :source source
+                          :targets targets
+                          ;; A pending slot is unowned until its request is
+                          ;; consumed by a target lifecycle. Spawn-ask
+                          ;; claims its prepared lifecycle before launch.
+                          :slots (into {} (map (fn [t] [t {:status :pending
+                                                           :value nil
+                                                           :generation nil}])
+                                               targets))
+                          :created-seq seq-n
+                          :status :pending}
+                    g (reduce wake-node g targets)
+                    g (assoc-in (ensure-node g source) [:nodes source :status] :asleep)]
+                (-> g
+                    (assoc :next-edge-id (inc edge-id))
+                    (assoc :next-seq (inc seq-n))
+                    (assoc-in [:edges edge-id] edge)))))]
       (dec (:next-edge-id new-graph)))))
 
 (defn- fill-slot-op!
@@ -338,27 +416,30 @@
    Returns {:filled? bool :completed? bool :edge edge-with-fill} where :edge
    reflects the state after this fill (nil when the fill did not apply)."
   [edge-id target value]
-  (let [[old new]
-        (swap-vals! wait-graph
-                    (fn [g]
-                      (let [edge (get-in g [:edges edge-id])
-                            slot (get-in edge [:slots target])]
-                        (if (and edge
-                                 (= :pending (:status edge))
-                                 (= :pending (:status slot)))
-                          (let [edge' (-> edge
-                                         (assoc-in [:slots target :status] :filled)
-                                         (assoc-in [:slots target :value] value))
-                                completed? (every? #(= :filled (:status %)) (vals (:slots edge')))]
-                            (if completed?
-                              (-> g
-                                  (update :edges dissoc edge-id)
-                                  (wake-node (:source edge')))
-                              (assoc-in g [:edges edge-id] edge')))
-                          g))))
+  (let [epoch (operation-epoch)
+        [old new]
+        (swap-vals-current-graph!
+          epoch
+          (fn [g]
+            (let [edge (get-in g [:edges edge-id])
+                  slot (get-in edge [:slots target])]
+              (if (and edge
+                       (= :pending (:status edge))
+                       (= :pending (:status slot)))
+                (let [edge' (-> edge
+                                (assoc-in [:slots target :status] :filled)
+                                (assoc-in [:slots target :value] value))
+                      completed? (every? #(= :filled (:status %)) (vals (:slots edge')))]
+                  (if completed?
+                    (-> g
+                        (update :edges dissoc edge-id)
+                        (wake-node (:source edge')))
+                    (assoc-in g [:edges edge-id] edge')))
+                g))))
         old-edge (get-in old [:edges edge-id])
         old-slot (get-in old-edge [:slots target])
-        filled? (and old-edge
+        filled? (and (= epoch (:epoch old))
+                     old-edge
                      (= :pending (:status old-edge))
                      (= :pending (:status old-slot)))
         edge' (when filled?
@@ -376,21 +457,24 @@
    request. Claims are idempotent for the same generation and cannot transfer
    ownership from one lifecycle to another."
   [edge-id target generation]
-  (let [[old new]
-        (swap-vals! wait-graph
-                    (fn [g]
-                      (let [slot (get-in g [:edges edge-id :slots target])]
-                        (if (and (= :pending (:status slot))
-                                 (nil? (:generation slot)))
-                          (assoc-in g [:edges edge-id :slots target :generation]
-                                    generation)
-                          g))))
+  (let [epoch (operation-epoch)
+        [old new]
+        (swap-vals-current-graph!
+          epoch
+          (fn [g]
+            (let [slot (get-in g [:edges edge-id :slots target])]
+              (if (and (= :pending (:status slot))
+                       (nil? (:generation slot)))
+                (assoc-in g [:edges edge-id :slots target :generation]
+                          generation)
+                g))))
         old-slot (get-in old [:edges edge-id :slots target])
         new-slot (get-in new [:edges edge-id :slots target])]
-    (or (and (= :pending (:status old-slot))
-             (= generation (:generation old-slot)))
-        (and (= :pending (:status new-slot))
-             (= generation (:generation new-slot))))))
+    (and (= epoch (:epoch old))
+         (or (and (= :pending (:status old-slot))
+                  (= generation (:generation old-slot)))
+             (and (= :pending (:status new-slot))
+                  (= generation (:generation new-slot)))))))
 
 (defn- node-generation
   [handle]
@@ -400,17 +484,20 @@
   "Cancel edge-id when caller is its source and the edge is pending.
    Returns the cancelled edge map, or nil when no change was made."
   [edge-id caller]
-  (let [[old _]
-        (swap-vals! wait-graph
-                    (fn [g]
-                      (let [edge (get-in g [:edges edge-id])]
-                        (if (and edge
-                                 (= caller (:source edge))
-                                 (= :pending (:status edge)))
-                          (update g :edges dissoc edge-id)
-                          g))))
+  (let [epoch (operation-epoch)
+        [old _]
+        (swap-vals-current-graph!
+          epoch
+          (fn [g]
+            (let [edge (get-in g [:edges edge-id])]
+              (if (and edge
+                       (= caller (:source edge))
+                       (= :pending (:status edge)))
+                (update g :edges dissoc edge-id)
+                g))))
         edge (get-in old [:edges edge-id])]
-    (when (and edge (= caller (:source edge)) (= :pending (:status edge)))
+    (when (and (= epoch (:epoch old))
+               edge (= caller (:source edge)) (= :pending (:status edge)))
       edge)))
 
 (defn- pending-out-edges
@@ -453,13 +540,15 @@
   "Atomically validate the strict edge-order rule and mark handle asleep.
    Returns true on transition and false without changing the graph."
   [handle]
-  (let [[old new]
-        (swap-vals! wait-graph
-                    (fn [g]
-                      (if (and (= :awake (get-in g [:nodes handle :status]))
-                               (sleep-allowed? g handle))
-                        (assoc-in g [:nodes handle :status] :asleep)
-                        g)))]
+  (let [epoch (operation-epoch)
+        [old new]
+        (swap-vals-current-graph!
+          epoch
+          (fn [g]
+            (if (and (= :awake (get-in g [:nodes handle :status]))
+                     (sleep-allowed? g handle))
+              (assoc-in g [:nodes handle :status] :asleep)
+              g)))]
     (not (identical? old new))))
 
 (defn- edge-summary
@@ -494,8 +583,16 @@
     ;; Reassert it at actual lifecycle entry so a send that raced with the
     ;; previous lifecycle's finish cannot leave graph state stale.
     (mark-awake! handle)
-    (let [generation (node-generation handle)
-          state (:state (get @registry handle))
+    (let [epoch (operation-epoch)
+          entry (entry-for-epoch handle epoch)
+          _ (when-not entry
+              (throw (ex-info "Agent lifecycle belongs to an earlier runtime run"
+                              {:type :stale-runtime-epoch
+                               :handle handle
+                               :lifecycle-epoch epoch
+                               :runtime-epoch @runtime-epoch})))
+          generation (node-generation handle)
+          state (:state entry)
           [{:keys [inbox-macros]} _] (reset-vals! state {:inbox-macros [], :signal (promise)})]
       ;; Ownership follows consumption, not enqueueing: only requests in this
       ;; atomically drained batch may be satisfied by this lifecycle's return.
@@ -503,7 +600,7 @@
       (let [transformed-raw (if (and (seq inbox-macros) (not (inbox-aware-eval-fn? eval-fn)))
                               (inbox/materialize-inbox-raw raw inbox-macros {:builtins eval/core-builtins})
                               raw)]
-        (when-let [last-raw (:last-raw (get @registry handle))]
+        (when-let [last-raw (:last-raw entry)]
           (reset! last-raw transformed-raw))
         (binding [*current-eval-fn* eval-fn]
           (if (inbox-aware-eval-fn? eval-fn)
@@ -517,7 +614,14 @@
    by the enclosing box before sleep are preserved on fast-reply paths."
   [handle eval-fn]
   (fn [raw]
-    (let [state (:state (get @registry handle))]
+    (let [epoch (operation-epoch)
+          state (:state (entry-for-epoch handle epoch))]
+      (when-not state
+        (throw (ex-info "Agent lifecycle belongs to an earlier runtime run"
+                        {:type :stale-runtime-epoch
+                         :handle handle
+                         :lifecycle-epoch epoch
+                         :runtime-epoch @runtime-epoch})))
       (deref (:signal @state))
       (box handle raw (make-awake-fn handle eval-fn)))))
 
@@ -531,7 +635,9 @@
    No signal reset needed — make-awake-fn resets signal at phase 3 entry,
    and the orphan's asleep-fn will block on the signal created there."
   [handle eval-fn inside-fn]
-  (let [completed (current-completion handle)]
+  (let [epoch (operation-epoch)
+        entry (entry-for-epoch handle epoch)
+        completed (current-completion handle)]
     (fn [raw]
       (let [[result failure]
             (try
@@ -540,11 +646,18 @@
                 [(child-failure handle :execution e) e]))]
         ;; Finish is one wait-graph transition; completion rotation is bound
         ;; to the exact lifecycle promise captured when this root was built.
-        (finish-agent! handle result)
-        (realize-completion! handle completed result)
-        (let [orphan-raw @(:last-raw (get @registry handle))]
-          (future (box handle orphan-raw
-                    (make-root-fn handle eval-fn (make-asleep-fn handle eval-fn)))))
+        (binding [*runtime-epoch* epoch]
+          (finish-agent! handle result)
+          ;; Only the lifecycle that still owns this run's registry entry may
+          ;; rotate completion or create the next orphan. A detached lifecycle
+          ;; from an older API run returns to its caller without touching the
+          ;; replacement handle.
+          (when (and (realize-completion! handle completed result)
+                     (active-epoch? epoch))
+            (let [orphan-raw @(:last-raw entry)]
+              (future (binding [*runtime-epoch* epoch]
+                        (box handle orphan-raw
+                          (make-root-fn handle eval-fn (make-asleep-fn handle eval-fn))))))))
         (if failure
           (throw failure)
           result)))))
@@ -555,20 +668,25 @@
    - completion-source failures (before inside-fn ran) are handled here
    - inside-fn failures are handled by make-root-fn."
   [handle completion-source inside-fn eval-fn]
-  (let [completed (current-completion handle)
+  (let [epoch (operation-epoch)
+        completed (current-completion handle)
         root-fn (make-root-fn handle eval-fn inside-fn)]
-    (try
-      (box handle (resolve-completion-source completion-source) root-fn)
-      (catch Throwable e
-        ;; make-root-fn already rotated completion for execution failures.
-        ;; A successful CAS means failure happened before inside-fn took over.
-        (let [failure (child-failure handle :initialization e)]
-          (when (identical? completed (current-completion handle))
-            (finish-agent! handle failure))
-          (when (realize-completion! handle completed failure)
-            (future (box handle ""
-                      (make-root-fn handle eval-fn (make-asleep-fn handle eval-fn))))))
-        (throw e)))))
+    (binding [*runtime-epoch* epoch]
+      (try
+        (box handle (resolve-completion-source completion-source) root-fn)
+        (catch Throwable e
+          ;; make-root-fn already rotated completion for execution failures.
+          ;; A successful CAS means failure happened before inside-fn took over.
+          (let [failure (child-failure handle :initialization e)
+                entry (entry-for-epoch handle epoch)]
+            (when (and entry (identical? completed @(:completed entry)))
+              (finish-agent! handle failure))
+            (when (and (realize-completion! handle completed failure)
+                       (active-epoch? epoch))
+              (future (binding [*runtime-epoch* epoch]
+                        (box handle ""
+                          (make-root-fn handle eval-fn (make-asleep-fn handle eval-fn)))))))
+          (throw e))))))
 
 ;; =============================================================================
 ;; Box
@@ -583,15 +701,21 @@
    Updates :last-raw in registry so make-root-fn can read the innermost
    raw for orphan box creation (dynamic binding reverts on unwind)."
   [handle completion-source inside-fn]
-  (let [{:keys [has-box last-raw]} (get @registry handle)]
+  (let [epoch (operation-epoch)
+        {:keys [has-box last-raw]} (entry-for-epoch handle epoch)]
     (when-not has-box
-      (throw (ex-info "Handle not registered" {:handle handle})))
+      (throw (ex-info "Handle not registered in this runtime run"
+                      {:handle handle
+                       :type (when-not (active-epoch? epoch) :stale-runtime-epoch)
+                       :lifecycle-epoch epoch
+                       :runtime-epoch @runtime-epoch})))
     (let [raw (parse/balance-parens (resolve-completion-source completion-source))]
       (when-not (compare-and-set! has-box false true)
         (throw (ex-info "Box already active for handle" {:handle handle})))
       (reset! has-box false)
       (reset! last-raw raw)
-      (binding [*current-handle* handle
+      (binding [*runtime-epoch* epoch
+                *current-handle* handle
                 *current-raw*    raw]
         (inside-fn raw)))))
 
@@ -602,15 +726,24 @@
 (defn -send!
   "Low-level send: queue msg-macro into the inbox with FIFO ordering,
    then deliver signal. Both operations happen atomically via swap-vals!
-   on the combined :state atom."
+   on the combined :state atom. A delivery owned by a stale runtime epoch is
+   ignored so a late completion cannot address a reused handle."
   [handle msg-macro]
-  (let [state (:state (get @registry handle))]
-    (when-not state
-      (throw (ex-info "Handle not registered" {:handle handle})))
-    (let [[old _] (swap-vals! state
-                    (fn [{:keys [inbox-macros] :as s}]
-                      (assoc s :inbox-macros (conj inbox-macros msg-macro))))]
-      (deliver (:signal old) :wake))))
+  (let [epoch (operation-epoch)
+        state (:state (entry-for-epoch handle epoch))]
+    (cond
+      (not (active-epoch? epoch)) nil
+      (not state)
+      (throw (ex-info "Handle not registered in this runtime run"
+                      {:handle handle :runtime-epoch epoch}))
+      :else
+      (let [[old new] (swap-vals! state
+                        (fn [{:keys [inbox-macros] :as s}]
+                          (if (active-epoch? epoch)
+                            (assoc s :inbox-macros (conj inbox-macros msg-macro))
+                            s)))]
+        (when-not (identical? old new)
+          (deliver (:signal old) :wake))))))
 
 (defn send-msg-fn
   "Queue a Spell macro value to run against the target's parsed completion.
@@ -626,15 +759,18 @@
    from something else). Uses swap-vals! so staleness/realization check and
    inbox composition happen in one atomic state transition."
   [handle captured-signal msg-macro]
-  (let [state (:state (get @registry handle))
-        [old new] (swap-vals! state
-                    (fn [{:keys [inbox-macros signal] :as s}]
-                      (if (and (identical? signal captured-signal)
-                               (not (realized? signal)))
-                        (assoc s :inbox-macros (conj inbox-macros msg-macro))
-                        s)))]
-    (when-not (identical? old new)
-      (deliver captured-signal :wake))))
+  (let [epoch (operation-epoch)]
+    (when-let [state (:state (entry-for-epoch handle epoch))]
+      (when (active-epoch? epoch)
+        (let [[old new] (swap-vals! state
+                          (fn [{:keys [inbox-macros signal] :as s}]
+                            (if (and (active-epoch? epoch)
+                                     (identical? signal captured-signal)
+                                     (not (realized? signal)))
+                              (assoc s :inbox-macros (conj inbox-macros msg-macro))
+                              s)))]
+          (when-not (identical? old new)
+            (deliver captured-signal :wake)))))))
 
 ;; =============================================================================
 ;; Create-msg helper
@@ -705,29 +841,32 @@
    Injects (def <gensym> {:from sender :body val}) into recipient's completion.
    The recipient sees the def binding with the message map."
   [target value]
-  (when-not (contains? @registry target)
+  (let [epoch (require-active-epoch! "send")]
+    (when-not (entry-for-epoch target epoch)
     (throw (ex-info "send: target handle not registered" {:target target})))
-  (let [name (symbol (gensym "msg-"))
-        from *current-handle*
-        msg-macro (create-msg name {:from from :body value})]
-    (mark-awake! target)
-    (send-msg-fn msg-macro target)))
+    (let [name (symbol (gensym "msg-"))
+          from *current-handle*
+          msg-macro (create-msg name {:from from :body value})]
+      (mark-awake! target)
+      (send-msg-fn msg-macro target))))
 
 (defn- install-notifier
   "Watch target's :completed promise. When delivered, call
    (signal-fn handle result). signal-fn determines stale vs persistent."
   [signal-fn target]
-  (let [completed-p @(:completed (get @registry target))
+  (let [epoch (require-active-epoch! "install-notifier")
+        completed-p @(:completed (entry-for-epoch target epoch))
         handle *current-handle*]
     (future
-      (let [result @completed-p]
-        (signal-fn handle result)))))
+      (binding [*runtime-epoch* epoch]
+        (let [result @completed-p]
+          (signal-fn handle result))))))
 
 (defn- install-completion-notifier
   "Install stale notifier: sends target's completion result to self.
    Captures current :signal at install time; no-ops if self wakes first."
   [target]
-  (let [my-signal (:signal @(:state (get @registry *current-handle*)))]
+  (let [my-signal (:signal @(:state (entry-for-epoch *current-handle* (operation-epoch))))]
     (install-notifier
       (fn [handle result]
         (deliver-msg-fn handle my-signal
@@ -791,10 +930,12 @@
    the source with the edge's completion report. Returns the fill-slot-op!
    result map."
   [edge-id target value]
-  (let [result (fill-slot-op! edge-id target (continuation-safe-value value))]
-    (when (:completed? result)
-      (deliver-edge-completion! (:edge result)))
-    result))
+  (let [epoch (operation-epoch)]
+    (binding [*runtime-epoch* epoch]
+      (let [result (fill-slot-op! edge-id target (continuation-safe-value value))]
+        (when (:completed? result)
+          (deliver-edge-completion! (:edge result)))
+        result))))
 
 (defn- finish-transition
   "Pure atomic transition for one lifecycle return."
@@ -830,20 +971,25 @@
    2. cancel handle's pending outgoing edges (trace warning when any);
    3. mark handle finished."
   [handle result]
-  (let [slot-result (continuation-safe-value result)
+  (let [epoch (operation-epoch)
+        slot-result (continuation-safe-value result)
         [old _]
-        (swap-vals! wait-graph
-                    (fn [graph]
-                      (:graph (finish-transition graph handle slot-result))))
-        {:keys [completed cancelled]} (finish-transition old handle slot-result)]
-    (when (seq cancelled)
-      (trace/record-warning!
-        (str "Agent " handle " finished with " (count cancelled)
-             " unfinished outgoing edge(s); automatic result collection abandoned.")
-        {:handle handle
-         :detached-edges (mapv (fn [e] {:id (:id e) :targets (:targets e)}) cancelled)}))
-    (doseq [edge completed]
-      (deliver-edge-completion! edge))
+        (swap-vals-current-graph!
+          epoch
+          #(-> (finish-transition % handle slot-result) :graph))
+        applied? (= epoch (:epoch old))
+        {:keys [completed cancelled]} (if applied?
+                                        (finish-transition old handle slot-result)
+                                        {:completed [] :cancelled []})]
+    (binding [*runtime-epoch* epoch]
+      (when (seq cancelled)
+        (trace/record-warning!
+          (str "Agent " handle " finished with " (count cancelled)
+               " unfinished outgoing edge(s); automatic result collection abandoned.")
+          {:handle handle
+           :detached-edges (mapv (fn [e] {:id (:id e) :targets (:targets e)}) cancelled)}))
+      (doseq [edge completed]
+        (deliver-edge-completion! edge)))
     nil))
 
 (defn cancel-edge
@@ -860,12 +1006,23 @@
                       {:edge-id edge-id :caller caller})))
     (assoc (edge-summary edge) :status :cancelled)))
 
+(defn- inspection-graph
+  [caller]
+  (let [epoch (require-active-epoch! caller)
+        graph @wait-graph]
+    (when-not (= epoch (:epoch graph))
+      (throw (ex-info (str caller ": runtime run changed during inspection")
+                      {:type :stale-runtime-epoch
+                       :lifecycle-epoch epoch
+                       :runtime-epoch @runtime-epoch})))
+    [epoch graph]))
+
 (defn agent-status
   "Zero arity: inspect the caller's state plus concise incoming/outgoing edge
-   summaries. One arity: inspect another handle's state and lifecycle generation."
+  summaries. One arity: inspect another handle's state and lifecycle generation."
   ([]
-   (let [handle *current-handle*
-         graph @wait-graph
+   (let [[_ graph] (inspection-graph "agents/status")
+         handle *current-handle*
          node (get-in graph [:nodes handle] {:status :awake :generation 1})]
      {:handle handle
       :status (:status node)
@@ -876,18 +1033,18 @@
                                :my-slot (get-in e [:slots handle :status])))
                       (live-in-edges graph handle))}))
   ([handle]
-   (let [graph @wait-graph
+   (let [[epoch graph] (inspection-graph "agents/status")
          node (get-in graph [:nodes handle])]
      (if node
        {:handle handle :status (:status node) :generation (:generation node)}
-       (if (contains? @registry handle)
+       (if (entry-for-epoch handle epoch)
          {:handle handle :status :awake :generation 1}
          (throw (ex-info (str "agents/status: unknown handle " handle) {:handle handle})))))))
 
 (defn graph-snapshot
   "Read-only snapshot of the wait graph: nodes and pending hyperedges."
   []
-  (let [graph @wait-graph]
+  (let [[_ graph] (inspection-graph "agents/graph")]
     {:nodes (into {} (map (fn [[h n]] [h (select-keys n [:status :generation])])
                           (:nodes graph)))
      :edges (mapv edge-summary (sort-by :created-seq (vals (:edges graph))))}))
@@ -896,17 +1053,19 @@
   "Inspect the caller's pending outgoing edges, target slots, and collected
    outcomes."
   []
-  (mapv edge-summary (pending-out-edges @wait-graph *current-handle*)))
+  (let [[_ graph] (inspection-graph "agents/out-edges")]
+    (mapv edge-summary (pending-out-edges graph *current-handle*))))
 
 (defn in-edges
   "Inspect every live edge in which the caller has a target slot, including
-   filled slots on multi-target edges that remain live."
+  filled slots on multi-target edges that remain live."
   []
-  (let [handle *current-handle*]
+  (let [[_ graph] (inspection-graph "agents/in-edges")
+        handle *current-handle*]
     (mapv (fn [e]
             (assoc (edge-summary e)
                    :my-slot (get-in e [:slots handle :status])))
-          (live-in-edges @wait-graph handle))))
+          (live-in-edges graph handle))))
 
 ;; =============================================================================
 ;; Block-for-message (internal)
@@ -933,7 +1092,8 @@
   "Return await token for handle's current completion promise.
    Used by the future-gated blocking/ namespace."
   [handle]
-  (let [entry (get @registry handle)]
+  (let [epoch (require-active-epoch! "completion-promise")
+        entry (entry-for-epoch handle epoch)]
     (when-not entry
       (throw (ex-info "completion-promise: handle not registered" {:handle handle})))
     (completion-token @(:completed entry))))
@@ -1028,14 +1188,16 @@
    and delivers one combined message to self."
   [targets]
   ;; Install a single notifier that waits for all targets to complete
-  (let [handle *current-handle*
-        my-signal (:signal @(:state (get @registry handle)))
-        completed-promises (mapv #(-> @registry (get %) :completed deref) targets)]
+  (let [epoch (require-active-epoch! "wait-for-target-completions")
+        handle *current-handle*
+        my-signal (:signal @(:state (entry-for-epoch handle epoch)))
+        completed-promises (mapv #(-> (entry-for-epoch % epoch) :completed deref) targets)]
     (future
-      (let [results (mapv (fn [target cp] {:from target :body @cp})
-                          targets completed-promises)]
-        (deliver-msg-fn handle my-signal
-          (create-msg (symbol (gensym "msg-")) {:from targets :body results}))))))
+      (binding [*runtime-epoch* epoch]
+        (let [results (mapv (fn [target cp] {:from target :body @cp})
+                            targets completed-promises)]
+          (deliver-msg-fn handle my-signal
+            (create-msg (symbol (gensym "msg-")) {:from targets :body results})))))))
 
 (defn- ask-multi
   "Multi-target ask: create one all-targets edge, poke all targets, and go
@@ -1089,9 +1251,9 @@
 ;; =============================================================================
 
 (defn handle?
-  "Returns true if h is a registered handle."
+  "Returns true if h is registered in the caller's runtime run."
   [h]
-  (contains? @registry h))
+  (boolean (entry-for-epoch h (operation-epoch))))
 
 ;; =============================================================================
 ;; Start box helper
@@ -1105,13 +1267,15 @@
    (start-box handle eval-fn initial-completion nil))
   ([handle eval-fn initial-completion parent-handle]
    (register! handle parent-handle)
-   ;; This persistent handle has no active lifecycle until its first message.
-   ;; Represent that dormant physical waiter as :finished, not :asleep: the
-   ;; graph invariant reserves :asleep for nodes with outgoing wait edges.
-   (swap! wait-graph assoc-in [:nodes handle :status] :finished)
-   (future (run-root-box handle initial-completion
-             (make-asleep-fn handle eval-fn) eval-fn))
-   handle))
+   (let [epoch (operation-epoch)]
+     ;; This persistent handle has no active lifecycle until its first message.
+     ;; Represent that dormant physical waiter as :finished, not :asleep: the
+     ;; graph invariant reserves :asleep for nodes with outgoing wait edges.
+     (swap-current-graph! epoch #(assoc-in % [:nodes handle :status] :finished))
+     (future (binding [*runtime-epoch* epoch]
+               (run-root-box handle initial-completion
+                 (make-asleep-fn handle eval-fn) eval-fn)))
+     handle)))
 
 ;; =============================================================================
 ;; Spawn
@@ -1136,7 +1300,8 @@
   (let [handle (or handle-name (keyword (gensym "spawn-")))
         parent *current-handle*]
     (register! handle parent)
-    (let [initial-completed (current-completion handle)
+    (let [epoch (operation-epoch)
+          initial-completed (current-completion handle)
           started? (atom false)
           settle-direct!
           (fn [result]
@@ -1149,13 +1314,14 @@
             (when (compare-and-set! started? false true)
               (future
                 ((bound-fn []
-                   (try
-                     (let [result (agent prompt handle)]
-                       (settle-direct! result)
-                       result)
-                     (catch Throwable e
-                       (settle-direct! (child-failure handle :initialization e))
-                       (throw e))))))))]
+                   (binding [*runtime-epoch* epoch]
+                     (try
+                       (let [result (agent prompt handle)]
+                         (settle-direct! result)
+                         result)
+                       (catch Throwable e
+                         (settle-direct! (child-failure handle :initialization e))
+                         (throw e)))))))))]
       {:handle handle
        :completed initial-completed
        :start! start!})))
@@ -1218,26 +1384,29 @@
   "Remove a prepared child that has not been launched. Identity-check its
    lifecycle promise so rollback cannot remove a replacement registration."
   [{:keys [handle completed]}]
-  (let [[old new]
+  (let [epoch (operation-epoch)
+        [old new]
         (swap-vals! registry
                     (fn [entries]
                       (let [entry (get entries handle)]
                         (if (and entry
+                                 (= epoch (:epoch entry))
                                  (identical? completed @(:completed entry)))
                           (dissoc entries handle)
                           entries))))]
     (when (and (contains? old handle) (not (contains? new handle)))
-      (swap! wait-graph update :nodes dissoc handle))))
+      (swap-current-graph! epoch #(update % :nodes dissoc handle)))))
 
 (defn- prepare-multi-spawns!
   "Register every normalized child, rolling back the whole batch if any
    registration fails. No child is launched until this returns successfully."
   [normalized]
-  (let [explicit-handles (vec (keep :handle-name normalized))]
+  (let [epoch (require-active-epoch! "spawn-ask")
+        explicit-handles (vec (keep :handle-name normalized))]
     (when-not (= (count explicit-handles) (count (distinct explicit-handles)))
       (throw (ex-info "spawn-ask: child handles must be distinct"
                       {:handles explicit-handles})))
-    (when-let [registered (seq (filter #(contains? @registry %) explicit-handles))]
+    (when-let [registered (seq (filter #(entry-for-epoch % epoch) explicit-handles))]
       (throw (ex-info "spawn-ask: child handle already registered"
                       {:handles (vec registered)})))
     (let [prepared (atom [])]
@@ -1648,5 +1817,7 @@ Internal plumbing for the communication layer."}
    :out-edges out-edges
    :in-edges in-edges
    :current-handle (fn [] *current-handle*)
-   :parent-handle (fn [] (:parent-handle (get @registry *current-handle*)))
+   :parent-handle (fn []
+                    (let [epoch (require-active-epoch! "agents/parent-handle")]
+                      (:parent-handle (entry-for-epoch *current-handle* epoch))))
    :send-msg-fn send-msg-fn})

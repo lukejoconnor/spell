@@ -62,6 +62,9 @@
                      (:grammar-max-chars opts) (assoc :grammar-max-chars (:grammar-max-chars opts))
                      (:format opts) (assoc :format (:format opts)))
         agent-fn (agent/compile-agent-spec agent-spec)
+        ;; Advance before replacing coordination state. Detached lifecycles
+        ;; retain their older binding and cannot mutate reused handles.
+        run-epoch (runtime/begin-run!)
         run-input (if init (llm/direct-init init) (llm/build-init prompt))
         effective-budget (cond
                            (nil? budget) (or (:budget agent-spec) provider/*budget*)
@@ -85,25 +88,22 @@
                             (try
                               (write-trace-once! false)
                               (catch Exception _)))))]
-    ;; Public runs already replace the process-global registry and globals at
-    ;; this boundary, so independent execution assumes runs do not overlap.
-    ;; Reset both halves of agent coordination so an edge from an earlier run
-    ;; cannot bind a reused handle.
-    (reset! runtime/registry {})
-    (runtime/reset-wait-graph!)
+    ;; The boundary is non-blocking: it never joins or drains old agents.
     (globals/reset-globals!)
     (globals/set-val :roles {:main {}})
     (when user-reader
-      (user/register-user-agent!
-        (if (instance? java.io.BufferedReader user-reader)
-          user-reader
-          (java.io.BufferedReader. user-reader))))
+      (binding [runtime/*runtime-epoch* run-epoch]
+        (user/register-user-agent!
+          (if (instance? java.io.BufferedReader user-reader)
+            user-reader
+            (java.io.BufferedReader. user-reader)))))
     (try
       (when shutdown-hook
         (.addShutdownHook (Runtime/getRuntime) shutdown-hook))
       (binding [eval/*verbose* effective-verbose
                 eval/*log-writer* log-writer
                 eval/*max-llm-depth* depth
+                runtime/*runtime-epoch* run-epoch
                 provider/*usage* usage-atom
                 provider/*budget* effective-budget
                 provider/*retries* (or (:retries opts) (:retries profile) (:retries agent-spec) provider/*retries*)
