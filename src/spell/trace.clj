@@ -84,6 +84,16 @@
                                       (str error)))
              (nil? error) (assoc :value value)))))
 
+(defn record-warning!
+  "Record a warning entry in the trace when tracing is enabled.
+   No-op when *trace* is nil. Returns the warning map or nil."
+  [message data]
+  (when *trace*
+    (let [warning {:message (str message)
+                   :data data
+                   :timestamp-ms (System/currentTimeMillis)}]
+      (swap! *trace* update :warnings (fnil conj []) warning)
+      warning)))
 ;; ---------------------------------------------------------------------------
 ;; Output
 ;; ---------------------------------------------------------------------------

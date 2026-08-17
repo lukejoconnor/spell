@@ -362,7 +362,7 @@
       (try
         (let [response (user-call-fn prompt-str)]
           (deliver completion (str prompt-str response)))
-        (catch Exception e
+        (catch Throwable e
           (deliver completion e))))
     (runtime/box handle completion awake-fn)))
 

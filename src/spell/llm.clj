@@ -306,7 +306,7 @@
           (reset! response-atom response)
           (eval/vlog (str indent "Response: " response))
           (deliver completion (str prompt-str response)))
-        (catch Exception e
+        (catch Throwable e
           (deliver completion e))))
     (try
       (let [result (binding [trace/*trace-node-id* node-id]

@@ -10,7 +10,8 @@
   (:require [clojure.string :as str]
             [spell.eval :as eval]
             [spell.inbox :as inbox]
-            [spell.parse :as parse]))
+            [spell.parse :as parse]
+            [spell.trace :as trace]))
 
 ;; =============================================================================
 ;; Registry
@@ -24,6 +25,7 @@
                                 :parent-handle kw-or-nil}"
   (atom {}))
 
+(declare wait-graph)
 
 (defn register!
   "Register a handle in the registry.
@@ -37,7 +39,11 @@
            :has-box           (atom false)
            :parent-handle     parent-handle
            :completed         (atom (promise))
-           :last-raw          (atom nil)})))
+           :last-raw          (atom nil)})
+   ;; A registered handle is initially able to run. start-box changes truly
+   ;; dormant handles to :finished after registration; spawned and root handles
+   ;; remain :awake until their lifecycle returns.
+   (swap! wait-graph assoc-in [:nodes handle] {:status :awake :generation 1})))
 
 ;; =============================================================================
 ;; Dynamic vars
@@ -69,7 +75,7 @@
 ;; Forward declarations
 ;; =============================================================================
 
-(declare box ask-builtin)
+(declare box ask-builtin ask-one finish-agent! fill-slot!)
 
 (defn- default-spawn-agent
   "Resolve default agent for prompt-only spawn/spawn-ask forms."
@@ -86,12 +92,12 @@
 
 (defn- resolve-completion-source
   "Resolve completion source (promise/future/raw) to a raw value.
-   Throws if the resolved value is an exception."
+   Throws if the resolved value is a Throwable."
   [completion-source]
   (let [raw-or-ex (if (instance? clojure.lang.IDeref completion-source)
                     (deref completion-source)
                     completion-source)]
-    (when (instance? Exception raw-or-ex)
+    (when (instance? Throwable raw-or-ex)
       (throw raw-or-ex))
     raw-or-ex))
 
@@ -101,6 +107,373 @@
   {:spell/future true
    :ref completion-source})
 
+(defn- current-completion
+  "Return handle's current completion promise, or throw a useful handle error."
+  [handle]
+  (let [entry (get @registry handle)]
+    (when-not entry
+      (throw (ex-info "Handle not registered" {:handle handle})))
+    @(:completed entry)))
+
+(defn- realize-completion!
+  "Atomically rotate handle's completion promise, then deliver the old cycle.
+   No-op if another lifecycle already rotated expected-completion."
+  [handle expected-completion result]
+  (when-let [completed-atom (:completed (get @registry handle))]
+    (let [next-completed (promise)]
+      (when (compare-and-set! completed-atom expected-completion next-completed)
+        (deliver expected-completion result)
+        true))))
+
+(defn- retire-terminal-completion!
+  "Deliver a prepared spawn's fallback result and retire a handle that never
+   established a root lifecycle. Existing waiters retain expected-completion;
+   no ownerless next lifecycle or addressable ghost handle is left behind."
+  [handle expected-completion result]
+  (let [[old-registry new-registry]
+        (swap-vals! registry
+                    (fn [entries]
+                      (let [entry (get entries handle)]
+                        (if (and entry
+                                 (identical? expected-completion @(:completed entry)))
+                          (dissoc entries handle)
+                          entries))))]
+    (when (and (contains? old-registry handle)
+               (not (contains? new-registry handle)))
+      (finish-agent! handle result)
+      (swap! wait-graph update :nodes dissoc handle)
+      (deliver expected-completion result)
+      true)))
+
+(declare throwable->completion-exception)
+
+(def ^:private completion-failure-max-depth 8)
+(def ^:private completion-failure-max-items 100)
+
+(defn- reader-round-trippable?
+  [value]
+  (try
+    (= [value] (vec (parse/read-all (pr-str value))))
+    (catch Throwable _ false)))
+
+(defn- continuation-safe-value
+  "Convert host values to reader-safe plain data for completion messages."
+  ([value]
+   (continuation-safe-value value 0))
+  ([value depth]
+   (cond
+     (or (nil? value)
+         (string? value)
+         (boolean? value)
+         (number? value)
+         (char? value))
+     value
+
+     (or (keyword? value) (symbol? value))
+     (if (reader-round-trippable? value)
+       value
+       {:class (.getName (class value))
+        :value (str value)})
+
+     (>= depth completion-failure-max-depth)
+     {:spell/truncated true
+      :class (.getName (class value))}
+
+     (instance? Throwable value)
+     (throwable->completion-exception value (inc depth))
+
+     (map? value)
+     (into {}
+           (map (fn [[k v]] [(continuation-safe-value k (inc depth))
+                              (continuation-safe-value v (inc depth))]))
+           (take completion-failure-max-items value))
+
+     (vector? value)
+     (mapv #(continuation-safe-value % (inc depth))
+           (take completion-failure-max-items value))
+
+     (set? value)
+     (set (map #(continuation-safe-value % (inc depth))
+               (take completion-failure-max-items value)))
+
+     (list? value)
+     (apply list (map #(continuation-safe-value % (inc depth))
+                      (take completion-failure-max-items value)))
+
+     (sequential? value)
+     (mapv #(continuation-safe-value % (inc depth))
+           (take completion-failure-max-items value))
+
+     :else
+     {:class (.getName (class value))
+      :value (try
+               (str value)
+               (catch Throwable _ "<unprintable>"))})))
+
+(defn- throwable->completion-exception
+  "Convert a host Throwable to Spell exception data safe for continuations."
+  ([^Throwable throwable]
+   (throwable->completion-exception throwable 0))
+  ([^Throwable throwable depth]
+   (cond-> {:spell/exception true
+            :class (.getName (class throwable))
+            :message (or (ex-message throwable) (str throwable))
+            :data (continuation-safe-value (ex-data throwable) (inc depth))}
+     (and (< depth completion-failure-max-depth)
+          (some? (ex-cause throwable)))
+     (assoc :cause (throwable->completion-exception
+                     (ex-cause throwable) (inc depth))))))
+
+(defn- child-failure
+  "Build the explicit plain-data value delivered when a child lifecycle fails."
+  [handle phase throwable]
+  (try
+    {:spell/child-failure true
+     :handle handle
+     :phase phase
+     :exception (throwable->completion-exception throwable)}
+    (catch Throwable _
+      {:spell/child-failure true
+       :handle handle
+       :phase phase
+       :exception {:spell/exception true
+                   :class (.getName (class throwable))
+                   :message (try
+                              (or (ex-message throwable) (str throwable))
+                              (catch Throwable _ "Child lifecycle failed"))
+                   :data {:normalization-failed true}}})))
+
+;; =============================================================================
+;; Wait graph (directed hypermultigraph of waiting relationships)
+;; =============================================================================
+
+(def wait-graph
+  "Global wait graph: {:next-edge-id n
+                        :next-seq n
+                        :edges {edge-id {:id n :source handle :targets [handle ...]
+                                         :slots {handle {:status :pending|:filled
+                                                         :value v
+                                                         :generation n-or-nil}}
+                                         :created-seq n :status :pending}}
+                        :nodes {handle {:status :awake|:asleep|:finished :generation n}}}"
+  (atom {:next-edge-id 1 :next-seq 1 :edges {} :nodes {}}))
+
+(defn reset-wait-graph!
+  "Reset the wait graph. Intended for tests."
+  []
+  (reset! wait-graph {:next-edge-id 1 :next-seq 1 :edges {} :nodes {}}))
+
+(defn- ensure-node
+  [graph handle]
+  (if (get-in graph [:nodes handle])
+    graph
+    (assoc-in graph [:nodes handle] {:status :awake :generation 1})))
+
+(defn- wake-node
+  "Mark handle awake in graph. Bumps :generation when waking a finished handle."
+  [graph handle]
+  (let [graph (ensure-node graph handle)
+        node (get-in graph [:nodes handle])]
+    (if (= :finished (:status node))
+      (assoc-in graph [:nodes handle]
+                {:status :awake :generation (inc (:generation node 1))})
+      (assoc-in graph [:nodes handle :status] :awake))))
+
+(defn mark-awake!
+  "Mark handle awake in the wait graph (bookkeeping only; no signal)."
+  [handle]
+  (swap! wait-graph wake-node handle)
+  nil)
+
+(defn create-edge!
+  "Atomically create an outgoing wait edge from source to targets,
+   mark every target awake and the source asleep in the wait graph.
+   Targets must be distinct. Returns the new edge id.
+   Does not deliver wake signals; callers wake targets through messaging."
+  [source targets]
+  (let [targets (vec targets)]
+    (when (empty? targets)
+      (throw (ex-info "create-edge!: edge requires at least one target" {:source source})))
+    (when (not= (count targets) (count (distinct targets)))
+      (throw (ex-info "create-edge!: targets must be distinct" {:source source :targets targets})))
+    (when (some #{source} targets)
+      (throw (ex-info "create-edge!: source cannot also be a target"
+                      {:source source :targets targets})))
+    (when-let [unknown (seq (remove #(contains? @registry %) targets))]
+      (throw (ex-info "create-edge!: target not registered"
+                      {:source source :targets targets :unknown-targets (vec unknown)})))
+    (let [new-graph
+          (swap! wait-graph
+                 (fn [g]
+                   (let [edge-id (:next-edge-id g)
+                         seq-n (:next-seq g)
+                         edge {:id edge-id
+                               :source source
+                               :targets targets
+                               ;; A pending slot is unowned until its request is
+                               ;; consumed by a target lifecycle. Spawn-ask
+                               ;; claims its prepared lifecycle before launch.
+                               :slots (into {} (map (fn [t] [t {:status :pending
+                                                                :value nil
+                                                                :generation nil}])
+                                                    targets))
+                               :created-seq seq-n
+                               :status :pending}
+                         g (reduce wake-node g targets)
+                         g (assoc-in (ensure-node g source) [:nodes source :status] :asleep)]
+                     (-> g
+                         (assoc :next-edge-id (inc edge-id))
+                         (assoc :next-seq (inc seq-n))
+                         (assoc-in [:edges edge-id] edge)))))]
+      (dec (:next-edge-id new-graph)))))
+
+(defn- fill-slot-op!
+  "Fill target's result slot in edge-id if pending. When the fill completes
+   the edge, remove the edge and mark its source awake.
+   Returns {:filled? bool :completed? bool :edge edge-with-fill} where :edge
+   reflects the state after this fill (nil when the fill did not apply)."
+  [edge-id target value]
+  (let [[old new]
+        (swap-vals! wait-graph
+                    (fn [g]
+                      (let [edge (get-in g [:edges edge-id])
+                            slot (get-in edge [:slots target])]
+                        (if (and edge
+                                 (= :pending (:status edge))
+                                 (= :pending (:status slot)))
+                          (let [edge' (-> edge
+                                         (assoc-in [:slots target :status] :filled)
+                                         (assoc-in [:slots target :value] value))
+                                completed? (every? #(= :filled (:status %)) (vals (:slots edge')))]
+                            (if completed?
+                              (-> g
+                                  (update :edges dissoc edge-id)
+                                  (wake-node (:source edge')))
+                              (assoc-in g [:edges edge-id] edge')))
+                          g))))
+        old-edge (get-in old [:edges edge-id])
+        old-slot (get-in old-edge [:slots target])
+        filled? (and old-edge
+                     (= :pending (:status old-edge))
+                     (= :pending (:status old-slot)))
+        edge' (when filled?
+                (-> old-edge
+                    (assoc-in [:slots target :status] :filled)
+                    (assoc-in [:slots target :value] value)))
+        completed? (and filled?
+                        (every? #(= :filled (:status %)) (vals (:slots edge'))))]
+    {:filled? (boolean filled?)
+     :completed? (boolean completed?)
+     :edge edge'}))
+
+(defn- claim-slot!
+  "Associate a pending result slot with the target lifecycle that consumed its
+   request. Claims are idempotent for the same generation and cannot transfer
+   ownership from one lifecycle to another."
+  [edge-id target generation]
+  (let [[old new]
+        (swap-vals! wait-graph
+                    (fn [g]
+                      (let [slot (get-in g [:edges edge-id :slots target])]
+                        (if (and (= :pending (:status slot))
+                                 (nil? (:generation slot)))
+                          (assoc-in g [:edges edge-id :slots target :generation]
+                                    generation)
+                          g))))
+        old-slot (get-in old [:edges edge-id :slots target])
+        new-slot (get-in new [:edges edge-id :slots target])]
+    (or (and (= :pending (:status old-slot))
+             (= generation (:generation old-slot)))
+        (and (= :pending (:status new-slot))
+             (= generation (:generation new-slot))))))
+
+(defn- node-generation
+  [handle]
+  (get-in @wait-graph [:nodes handle :generation]))
+
+(defn- cancel-edge-op!
+  "Cancel edge-id when caller is its source and the edge is pending.
+   Returns the cancelled edge map, or nil when no change was made."
+  [edge-id caller]
+  (let [[old _]
+        (swap-vals! wait-graph
+                    (fn [g]
+                      (let [edge (get-in g [:edges edge-id])]
+                        (if (and edge
+                                 (= caller (:source edge))
+                                 (= :pending (:status edge)))
+                          (update g :edges dissoc edge-id)
+                          g))))
+        edge (get-in old [:edges edge-id])]
+    (when (and edge (= caller (:source edge)) (= :pending (:status edge)))
+      edge)))
+
+(defn- pending-out-edges
+  [graph handle]
+  (->> (vals (:edges graph))
+       (filter #(and (= handle (:source %)) (= :pending (:status %))))
+       (sort-by :created-seq)
+       vec))
+
+(defn- pending-in-edges
+  "Ordering-only view: edges in which handle holds a pending result slot."
+  [graph handle]
+  (->> (vals (:edges graph))
+       (filter #(and (= :pending (:status %))
+                     (= :pending (get-in % [:slots handle :status]))))
+       (sort-by :created-seq)
+       vec))
+
+(defn- live-in-edges
+  "Inspection view: every live edge containing a slot for handle, including
+   slots already filled while other targets remain pending."
+  [graph handle]
+  (->> (vals (:edges graph))
+       (filter #(and (= :pending (:status %))
+                     (contains? (:slots %) handle)))
+       (sort-by :created-seq)
+       vec))
+
+(defn sleep-allowed?
+  "True when handle has a pending outgoing edge created strictly after its
+   newest pending incoming edge (only pending incoming slots participate)."
+  ([handle] (sleep-allowed? @wait-graph handle))
+  ([graph handle]
+   (let [newest-out (last (map :created-seq (pending-out-edges graph handle)))
+         newest-in (last (map :created-seq (pending-in-edges graph handle)))]
+     (boolean (and newest-out
+                   (or (nil? newest-in) (> newest-out newest-in)))))))
+
+(defn- mark-asleep-if-allowed!
+  "Atomically validate the strict edge-order rule and mark handle asleep.
+   Returns true on transition and false without changing the graph."
+  [handle]
+  (let [[old new]
+        (swap-vals! wait-graph
+                    (fn [g]
+                      (if (and (= :awake (get-in g [:nodes handle :status]))
+                               (sleep-allowed? g handle))
+                        (assoc-in g [:nodes handle :status] :asleep)
+                        g)))]
+    (not (identical? old new))))
+
+(defn- edge-summary
+  [edge]
+  {:id (:id edge)
+   :source (:source edge)
+   :targets (:targets edge)
+   :created-seq (:created-seq edge)
+   :status (:status edge)
+   :slots (into {} (map (fn [[t slot]] [t (select-keys slot [:status :value :generation])])
+                        (:slots edge)))})
+
+(defn- claim-drained-request-slots!
+  "Claim request slots carried by the exact inbox batch this lifecycle drained."
+  [handle generation inbox-macros]
+  (doseq [msg-macro inbox-macros
+          :let [{:keys [edge-id target]} (::wait-slot msg-macro)]
+          :when (and edge-id (= handle target))]
+    (claim-slot! edge-id target generation)))
 ;; =============================================================================
 ;; Inside-fn constructors
 ;; =============================================================================
@@ -112,17 +485,25 @@
    the combined :state atom — no race window between the two operations."
   [handle eval-fn]
   (fn [raw]
-    (let [state (:state (get @registry handle))
-          [{:keys [inbox-macros]} _] (reset-vals! state {:inbox-macros [], :signal (promise)})
-          transformed-raw (if (and (seq inbox-macros) (not (inbox-aware-eval-fn? eval-fn)))
-                            (inbox/materialize-inbox-raw raw inbox-macros {:builtins eval/core-builtins})
-                            raw)]
-      (when-let [last-raw (:last-raw (get @registry handle))]
-        (reset! last-raw transformed-raw))
-      (binding [*current-eval-fn* eval-fn]
-        (if (inbox-aware-eval-fn? eval-fn)
-          (eval-fn raw inbox-macros)
-          (eval-fn transformed-raw))))))
+    ;; send/create-edge normally performs this transition before signaling.
+    ;; Reassert it at actual lifecycle entry so a send that raced with the
+    ;; previous lifecycle's finish cannot leave graph state stale.
+    (mark-awake! handle)
+    (let [generation (node-generation handle)
+          state (:state (get @registry handle))
+          [{:keys [inbox-macros]} _] (reset-vals! state {:inbox-macros [], :signal (promise)})]
+      ;; Ownership follows consumption, not enqueueing: only requests in this
+      ;; atomically drained batch may be satisfied by this lifecycle's return.
+      (claim-drained-request-slots! handle generation inbox-macros)
+      (let [transformed-raw (if (and (seq inbox-macros) (not (inbox-aware-eval-fn? eval-fn)))
+                              (inbox/materialize-inbox-raw raw inbox-macros {:builtins eval/core-builtins})
+                              raw)]
+        (when-let [last-raw (:last-raw (get @registry handle))]
+          (reset! last-raw transformed-raw))
+        (binding [*current-eval-fn* eval-fn]
+          (if (inbox-aware-eval-fn? eval-fn)
+            (eval-fn raw inbox-macros)
+            (eval-fn transformed-raw)))))))
 
 (defn- make-asleep-fn
   "Create an inside-fn that blocks on signal, then re-enters box awake.
@@ -145,22 +526,23 @@
    No signal reset needed — make-awake-fn resets signal at phase 3 entry,
    and the orphan's asleep-fn will block on the signal created there."
   [handle eval-fn inside-fn]
-  (fn [raw]
-    (try
-      (let [result (inside-fn raw)]
-        (deliver @(:completed (get @registry handle)) result)
-        (reset! (:completed (get @registry handle)) (promise))
+  (let [completed (current-completion handle)]
+    (fn [raw]
+      (let [[result failure]
+            (try
+              [(inside-fn raw) nil]
+              (catch Throwable e
+                [(child-failure handle :execution e) e]))]
+        ;; Finish is one wait-graph transition; completion rotation is bound
+        ;; to the exact lifecycle promise captured when this root was built.
+        (finish-agent! handle result)
+        (realize-completion! handle completed result)
         (let [orphan-raw @(:last-raw (get @registry handle))]
           (future (box handle orphan-raw
                     (make-root-fn handle eval-fn (make-asleep-fn handle eval-fn)))))
-        result)
-      (catch Exception e
-        (deliver @(:completed (get @registry handle)) nil)
-        (reset! (:completed (get @registry handle)) (promise))
-        (let [orphan-raw @(:last-raw (get @registry handle))]
-          (future (box handle orphan-raw
-                    (make-root-fn handle eval-fn (make-asleep-fn handle eval-fn)))))
-        (throw e)))))
+        (if failure
+          (throw failure)
+          result)))))
 
 (defn run-root-box
   "Public entry point for root lifecycle.
@@ -168,18 +550,20 @@
    - completion-source failures (before inside-fn ran) are handled here
    - inside-fn failures are handled by make-root-fn."
   [handle completion-source inside-fn eval-fn]
-  (let [root-fn (make-root-fn handle eval-fn inside-fn)
-        resolved (try
-                   (resolve-completion-source completion-source)
-                   (catch Exception e
-                     ;; completion-source exception (before inside-fn ran)
-                     (when-not (realized? @(:completed (get @registry handle)))
-                       (deliver @(:completed (get @registry handle)) nil)
-                       (reset! (:completed (get @registry handle)) (promise))
-                       (future (box handle ""
-                                 (make-root-fn handle eval-fn (make-asleep-fn handle eval-fn)))))
-                     (throw e)))]
-    (box handle resolved root-fn)))
+  (let [completed (current-completion handle)
+        root-fn (make-root-fn handle eval-fn inside-fn)]
+    (try
+      (box handle (resolve-completion-source completion-source) root-fn)
+      (catch Throwable e
+        ;; make-root-fn already rotated completion for execution failures.
+        ;; A successful CAS means failure happened before inside-fn took over.
+        (let [failure (child-failure handle :initialization e)]
+          (when (identical? completed (current-completion handle))
+            (finish-agent! handle failure))
+          (when (realize-completion! handle completed failure)
+            (future (box handle ""
+                      (make-root-fn handle eval-fn (make-asleep-fn handle eval-fn))))))
+        (throw e)))))
 
 ;; =============================================================================
 ;; Box
@@ -275,14 +659,42 @@
        (list 'def name value-form)
        (list 'quote (list '!extend))])))
 
+(defn- create-request-msg
+  "Create an ask request macro carrying private slot-claim metadata. The
+   metadata is consumed by make-awake-fn and is not exposed to Spell code."
+  [name value edge-id target]
+  (assoc (create-msg name value)
+         ::wait-slot {:edge-id edge-id :target target}))
+
+(defn- actionable-request?
+  "True only for a live-request-shaped message, not an edge completion report."
+  [msg]
+  (true? (:expects-response msg)))
+
+(defn- reply-target
+  "Return a message's singleton sender or reject an aggregate completion report."
+  [caller msg]
+  (let [target (:from msg)]
+    (when (sequential? target)
+      (throw (ex-info (str caller ": cannot reply to a multi-target completion report; "
+                           "reply to a specific target or start a new request")
+                      {:from target :edge-id (:edge-id msg)})))
+    (when-not target
+      (throw (ex-info (str caller ": message has no :from sender") {:message msg})))
+    target))
+
 (defn send
   "Send a message to target with auto-tagged sender handle.
    Injects (def <gensym> {:from sender :body val}) into recipient's completion.
    The recipient sees the def binding with the message map."
   [target value]
+  (when-not (contains? @registry target)
+    (throw (ex-info "send: target handle not registered" {:target target})))
   (let [name (symbol (gensym "msg-"))
-        from *current-handle*]
-    (send-msg-fn (create-msg name {:from from :body value}) target)))
+        from *current-handle*
+        msg-macro (create-msg name {:from from :body value})]
+    (mark-awake! target)
+    (send-msg-fn msg-macro target)))
 
 (defn- install-notifier
   "Watch target's :completed promise. When delivered, call
@@ -318,9 +730,166 @@
 
 (defn reply
   "Reply to a message (fire-and-forget).
-   Extracts sender from the message map and sends value back."
+   Actionable requests (:expects-response true) fill their edge slot. Stale,
+   duplicate, or cancelled actionable requests are no-ops. A singleton edge
+   completion report is an ordinary message and replies by plain send."
   [msg value]
-  (send (:from msg) value))
+  (if (actionable-request? msg)
+    ;; An edge-bearing request has exactly one result position. A stale,
+    ;; duplicate, cancelled, or foreign reply is a no-op; it must never turn
+    ;; into an unrelated plain message and create a second notification.
+    (if-let [edge-id (:edge-id msg)]
+      (do (fill-slot! edge-id *current-handle* value)
+          nil)
+      (throw (ex-info "agents/reply: actionable request has no :edge-id"
+                      {:message msg})))
+    ;; Completion reports and legacy/plain messages have no live incoming
+    ;; obligation. A singleton sender therefore gets a normal plain reply.
+    (send (reply-target "agents/reply" msg) value)))
+
+;; =============================================================================
+;; Wait graph messaging integration
+;; =============================================================================
+
+(defn- deliver-edge-completion!
+  "Deliver a completed edge's report to its source as a persistent message.
+   Single-target edges deliver {:from target :body value :edge-id id};
+   multi-target edges deliver {:from targets :body [{:from t :body v} ...] :edge-id id}."
+  [edge]
+  (let [source (:source edge)
+        targets (:targets edge)
+        msg (if (= 1 (count targets))
+              (let [t (first targets)]
+                {:from t
+                 :body (get-in edge [:slots t :value])
+                 :edge-id (:id edge)})
+              {:from targets
+               :body (mapv (fn [t] {:from t :body (get-in edge [:slots t :value])}) targets)
+               :edge-id (:id edge)})]
+    (send-msg-fn (create-msg (symbol (gensym "msg-")) msg) source)))
+
+(defn fill-slot!
+  "Fill target's result slot in edge-id with value. Fills at most once.
+   When the fill completes the edge, remove it from the wait graph and wake
+   the source with the edge's completion report. Returns the fill-slot-op!
+   result map."
+  [edge-id target value]
+  (let [result (fill-slot-op! edge-id target (continuation-safe-value value))]
+    (when (:completed? result)
+      (deliver-edge-completion! (:edge result)))
+    result))
+
+(defn- finish-transition
+  "Pure atomic transition for one lifecycle return."
+  [graph handle result]
+  (let [generation (get-in graph [:nodes handle :generation])
+        [graph completed]
+        (reduce
+          (fn [[g completed] edge]
+            (if (and (= :pending (get-in edge [:slots handle :status]))
+                     (= generation (get-in edge [:slots handle :generation])))
+              (let [edge' (-> edge
+                              (assoc-in [:slots handle :status] :filled)
+                              (assoc-in [:slots handle :value] result))]
+                (if (every? #(= :filled (:status %)) (vals (:slots edge')))
+                  [(-> g
+                       (update :edges dissoc (:id edge'))
+                       (wake-node (:source edge')))
+                   (conj completed edge')]
+                  [(assoc-in g [:edges (:id edge')] edge') completed]))
+              [g completed]))
+          [graph []]
+          (sort-by :created-seq (vals (:edges graph))))
+        cancelled (pending-out-edges graph handle)
+        graph (update graph :edges #(apply dissoc % (map :id cancelled)))
+        graph (assoc-in (ensure-node graph handle) [:nodes handle :status] :finished)]
+    {:graph graph
+     :completed completed
+     :cancelled cancelled}))
+
+(defn finish-agent!
+  "Record a lifecycle return in the wait graph:
+   1. fill every pending incoming result slot held by handle with result;
+   2. cancel handle's pending outgoing edges (trace warning when any);
+   3. mark handle finished."
+  [handle result]
+  (let [slot-result (continuation-safe-value result)
+        [old _]
+        (swap-vals! wait-graph
+                    (fn [graph]
+                      (:graph (finish-transition graph handle slot-result))))
+        {:keys [completed cancelled]} (finish-transition old handle slot-result)]
+    (when (seq cancelled)
+      (trace/record-warning!
+        (str "Agent " handle " finished with " (count cancelled)
+             " unfinished outgoing edge(s); automatic result collection abandoned.")
+        {:handle handle
+         :detached-edges (mapv (fn [e] {:id (:id e) :targets (:targets e)}) cancelled)}))
+    (doseq [edge completed]
+      (deliver-edge-completion! edge))
+    nil))
+
+(defn cancel-edge
+  "Cancel one of the caller's pending outgoing edges. Does not stop or
+   interrupt its targets. Returns a summary of the cancelled edge, or
+   throws when the edge does not exist, is not pending, or the caller is
+   not its source."
+  [edge-id]
+  (let [caller *current-handle*
+        edge (cancel-edge-op! edge-id caller)]
+    (when-not edge
+      (throw (ex-info (str "agents/cancel: no pending outgoing edge " edge-id
+                           " owned by " caller)
+                      {:edge-id edge-id :caller caller})))
+    (assoc (edge-summary edge) :status :cancelled)))
+
+(defn agent-status
+  "Zero arity: inspect the caller's state plus concise incoming/outgoing edge
+   summaries. One arity: inspect another handle's state and lifecycle generation."
+  ([]
+   (let [handle *current-handle*
+         graph @wait-graph
+         node (get-in graph [:nodes handle] {:status :awake :generation 1})]
+     {:handle handle
+      :status (:status node)
+      :generation (:generation node)
+      :out-edges (mapv edge-summary (pending-out-edges graph handle))
+      :in-edges (mapv (fn [e]
+                        (assoc (edge-summary e)
+                               :my-slot (get-in e [:slots handle :status])))
+                      (live-in-edges graph handle))}))
+  ([handle]
+   (let [graph @wait-graph
+         node (get-in graph [:nodes handle])]
+     (if node
+       {:handle handle :status (:status node) :generation (:generation node)}
+       (if (contains? @registry handle)
+         {:handle handle :status :awake :generation 1}
+         (throw (ex-info (str "agents/status: unknown handle " handle) {:handle handle})))))))
+
+(defn graph-snapshot
+  "Read-only snapshot of the wait graph: nodes and pending hyperedges."
+  []
+  (let [graph @wait-graph]
+    {:nodes (into {} (map (fn [[h n]] [h (select-keys n [:status :generation])])
+                          (:nodes graph)))
+     :edges (mapv edge-summary (sort-by :created-seq (vals (:edges graph))))}))
+
+(defn out-edges
+  "Inspect the caller's pending outgoing edges, target slots, and collected
+   outcomes."
+  []
+  (mapv edge-summary (pending-out-edges @wait-graph *current-handle*)))
+
+(defn in-edges
+  "Inspect every live edge in which the caller has a target slot, including
+   filled slots on multi-target edges that remain live."
+  []
+  (let [handle *current-handle*]
+    (mapv (fn [e]
+            (assoc (edge-summary e)
+                   :my-slot (get-in e [:slots handle :status])))
+          (live-in-edges @wait-graph handle))))
 
 ;; =============================================================================
 ;; Block-for-message (internal)
@@ -388,11 +957,50 @@
     (send handle msg)
     (blocking-await token)))
 
+(defn sleep!
+  "Go asleep on retained outgoing edges without sending any message or
+   creating any edge. Allowed only when the caller has a pending outgoing
+   edge created strictly after its newest pending incoming edge; otherwise
+   throws without changing the wait graph."
+  []
+  (assert-agent-context! "!sleep")
+  (let [me *current-handle*]
+    (when-not (mark-asleep-if-allowed! me)
+      (throw (ex-info (str "agents/!sleep: " me " has no pending outgoing edge "
+                           "newer than its newest pending incoming edge")
+                      {:handle me
+                       :out-edges (mapv edge-summary (pending-out-edges @wait-graph me))
+                       :in-edges (mapv edge-summary (pending-in-edges @wait-graph me))})))
+    (block-for-message)))
+
 (defn reply-ask
-  "Reply to a message and block for response.
-   Extracts sender from the message map, sends value, then blocks."
+  "Reply with value as a new reverse request, then go asleep until the sender
+   responds. For an actionable singleton request, retire its old slot without
+   also delivering a stale completion report. For a singleton completion report,
+   directly create the reverse request. In both cases the sender sees one
+   actionable message carrying value and the new live edge id. Multi-target
+   request completion remains all-target; aggregate reports are rejected."
   [msg value]
-  (ask-builtin (:from msg) value))
+  (assert-agent-context! "reply-ask")
+  (let [target (reply-target "agents/!reply-ask" msg)]
+    (when (actionable-request? msg)
+      (when-not (:edge-id msg)
+        (throw (ex-info "agents/!reply-ask: actionable request has no :edge-id"
+                        {:message msg})))
+      (let [result (fill-slot-op! (:edge-id msg) *current-handle*
+                                (continuation-safe-value value))]
+        (when-not (:filled? result)
+          (throw (ex-info "agents/!reply-ask: incoming edge slot is no longer pending"
+                          {:edge-id (:edge-id msg)
+                           :handle *current-handle*})))
+        ;; A completed singleton is superseded by the reverse request below. A
+        ;; multi-target edge retains its all-results completion report.
+        (when (and (:completed? result)
+                   (> (count (get-in result [:edge :targets])) 1))
+          (deliver-edge-completion! (:edge result)))))
+    ;; For a completion report there is no old live slot to fill: directly
+    ;; continue the conversation with one actionable reverse request.
+    (ask-one target true value)))
 
 ;; =============================================================================
 ;; Ask
@@ -413,17 +1021,30 @@
           (create-msg (symbol (gensym "msg-")) {:from targets :body results}))))))
 
 (defn- ask-multi
-  "Multi-target ask: poke all targets, wake when all have completed.
-   Installs a single notifier that derefs each target's :completed promise
-   in series, then delivers a combined result message."
+  "Multi-target ask: create one all-targets edge, poke all targets, and go
+   asleep. The edge completes when every target's result slot is filled by
+   a reply or lifecycle return."
   [targets]
-  ;; Send poke messages to all targets
-  (doseq [target targets]
-    (let [name (symbol (gensym "msg-"))
-          ask-msg {:from *current-handle* :expects-response true}]
-      (send-msg-fn (create-msg name ask-msg) target)))
-  (wait-for-target-completions targets)
-  (block-for-message))
+  (let [me *current-handle*
+        edge-id (create-edge! me (vec targets))]
+    (doseq [target targets]
+      (let [name (symbol (gensym "msg-"))
+            ask-msg {:from me :expects-response true :edge-id edge-id}]
+        (send-msg-fn (create-request-msg name ask-msg edge-id target) target)))
+    (block-for-message)))
+
+(defn- ask-one
+  "Create and send one request edge. include-body? distinguishes a bodyless poke
+   from an explicit nil body."
+  [target include-body? msg]
+  (assert-agent-context! "ask")
+  (let [me *current-handle*
+        edge-id (create-edge! me [target])
+        name (symbol (gensym "msg-"))
+        ask-msg (cond-> {:from me :expects-response true :edge-id edge-id}
+                  include-body? (assoc :body msg))]
+    (send-msg-fn (create-request-msg name ask-msg edge-id target) target)
+    (block-for-message)))
 
 (defn ask-builtin
   "Request-reply communication primitive.
@@ -440,15 +1061,9 @@
        (when (empty? target)
          (throw (ex-info "ask: empty target list" {})))
        (ask-multi target))
-     (ask-builtin target nil)))
+     (ask-one target false nil)))
   ([target msg]
-   (assert-agent-context! "ask")
-   (let [name (symbol (gensym "msg-"))
-         ask-msg (cond-> {:from *current-handle* :expects-response true}
-                   msg (assoc :body msg))]
-     (send-msg-fn (create-msg name ask-msg) target))
-   (install-completion-notifier target)
-   (block-for-message)))
+   (ask-one target true msg)))
 
 
 ;; =============================================================================
@@ -472,6 +1087,10 @@
    (start-box handle eval-fn initial-completion nil))
   ([handle eval-fn initial-completion parent-handle]
    (register! handle parent-handle)
+   ;; This persistent handle has no active lifecycle until its first message.
+   ;; Represent that dormant physical waiter as :finished, not :asleep: the
+   ;; graph invariant reserves :asleep for nodes with outgoing wait edges.
+   (swap! wait-graph assoc-in [:nodes handle :status] :finished)
    (future (run-root-box handle initial-completion
              (make-asleep-fn handle eval-fn) eval-fn))
    handle))
@@ -480,8 +1099,9 @@
 ;; Spawn
 ;; =============================================================================
 
-(defn- spawn*
-  "Internal spawn primitive that returns handle."
+(defn- prepare-spawn*
+  "Register a child and capture its exact lifecycle completion promise without
+   launching it. The returned :start! function is one-shot."
   [agent prompt handle-name]
   (when (:spell/leaf (meta agent))
     (throw (ex-info "leaf-llm cannot be used with agents/spawn (no agent lifecycle) — use !llm-self instead"
@@ -492,24 +1112,40 @@
                      :handle handle-name})))
   (let [handle (or handle-name (keyword (gensym "spawn-")))
         parent *current-handle*]
-    ;; Register synchronously — handle is live before future starts
     (register! handle parent)
-    (let [initial-completed @(:completed (get @registry handle))]
-      (future
-        ((bound-fn []
-           (try
-             (let [result (agent prompt handle)]
-               ;; Defensive fallback: run-root-box should have delivered :completed.
-               (when (identical? @(:completed (get @registry handle)) initial-completed)
-                 (when-not (realized? initial-completed)
-                   (deliver initial-completed result)))
-               result)
-             (catch Exception e
-               (when (identical? @(:completed (get @registry handle)) initial-completed)
-                 (when-not (realized? initial-completed)
-                   (deliver initial-completed nil)))
-               (throw e))))))
-      {:handle handle})))
+    (let [initial-completed (current-completion handle)
+          started? (atom false)
+          settle-direct!
+          (fn [result]
+            ;; Normal compiled agents rotate initial-completed in run-root-box.
+            ;; A direct return/throw has no persistent orphan lifecycle, so
+            ;; retire that handle after satisfying its existing observers.
+            (retire-terminal-completion! handle initial-completed result))
+          start!
+          (fn []
+            (when (compare-and-set! started? false true)
+              (future
+                ((bound-fn []
+                   (try
+                     (let [result (agent prompt handle)]
+                       (settle-direct! result)
+                       result)
+                     (catch Throwable e
+                       (settle-direct! (child-failure handle :initialization e))
+                       (throw e))))))))]
+      {:handle handle
+       :completed initial-completed
+       :start! start!})))
+
+(defn- start-prepared-spawn!
+  [prepared]
+  ((:start! prepared))
+  prepared)
+
+(defn- spawn*
+  "Internal spawn primitive. Registers and immediately launches a child."
+  [agent prompt handle-name]
+  (start-prepared-spawn! (prepare-spawn* agent prompt handle-name)))
 
 (defn spawn
   "Start an agent in a background future. Returns its handle immediately.
@@ -529,8 +1165,8 @@
   ([agent prompt handle-name]
    (:handle (spawn* agent prompt handle-name))))
 
-(defn- spawn-from-multi-spec
-  "Spawn child from a multi-spawn-ask entry.
+(defn- prepare-spawn-from-multi-spec
+  "Prepare a child from a multi-spawn-ask entry without launching it.
    Supports explicit entries:
      [agent prompt]
      [agent prompt handle-name]
@@ -542,34 +1178,43 @@
     (case (count spec)
       2 (let [[a b] spec]
           (if (compiled-agent? a)
-            (spawn a b)
-            (spawn (default-spawn-agent "spawn-ask") a b)))
+            (prepare-spawn* a b nil)
+            (prepare-spawn* (default-spawn-agent "spawn-ask") a b)))
       3 (let [[a b c] spec]
           (if (compiled-agent? a)
-            (spawn a b c)
+            (prepare-spawn* a b c)
             (throw (ex-info "spawn-ask: explicit 3-item entries must be [compiled-agent prompt handle-name]"
                             {:spec spec}))))
       (throw (ex-info "spawn-ask: each vector entry must be [compiled-agent prompt], [compiled-agent prompt handle-name], or [prompt handle-name]"
                       {:spec spec})))
-    (spawn (default-spawn-agent "spawn-ask") spec)))
+    (prepare-spawn* (default-spawn-agent "spawn-ask") spec nil)))
 
 (defn spawn-ask
-  "Spawn child agent(s) and block until completion messages arrive.
-   Prompt-only forms default the compiled agent to the current agent.
-   Vector form spawns multiple children, then waits for all completions
-   without sending wakeup messages to those children.
+  "Spawn child agent(s), create a completion edge, and go asleep until the
+   edge completes. Prompt-only forms default the compiled agent to the
+   current agent. Vector form spawns multiple children and creates one
+   all-targets edge; the parent wakes once with the combined report when
+   every child has returned.
    Combines spawn + block for safe use as a quoted trailing expression:
-     '(agents/!spawn-ask \"do X and send result to (parent-handle)\")
-   The child must send its result via (send (parent-handle) value).
-   Installs completion notifier so child's death wakes the parent."
+     '(agents/!spawn-ask \"do X and return the result\")
+   A child's lifecycle return fills its result slot; children do not need
+   to send the same result separately."
   ([arg]
    (assert-agent-context! "spawn-ask")
    (if (vector? arg)
      (do
        (when (empty? arg)
          (throw (ex-info "spawn-ask: empty spawn spec list" {})))
-       (let [children (mapv spawn-from-multi-spec arg)]
-         (wait-for-target-completions children)
+       (let [me *current-handle*
+             prepared (mapv prepare-spawn-from-multi-spec arg)
+             children (mapv :handle prepared)
+             edge-id (create-edge! me children)]
+         ;; Prepared spawn slots belong to the registered initial lifecycle;
+         ;; claim them before any child can run or return.
+         (doseq [{:keys [handle]} prepared]
+           (claim-slot! edge-id handle (node-generation handle)))
+         (doseq [child prepared]
+           (start-prepared-spawn! child))
          (block-for-message)))
      (spawn-ask (default-spawn-agent "spawn-ask") arg nil)))
   ([a b]
@@ -578,8 +1223,12 @@
      (spawn-ask (default-spawn-agent "spawn-ask") a b)))
   ([agent prompt handle-name]
    (assert-agent-context! "spawn-ask")
-   (let [child (spawn agent prompt handle-name)]
-     (install-completion-notifier child)
+   (let [me *current-handle*
+         {:keys [handle] :as prepared}
+         (prepare-spawn* agent prompt handle-name)
+         edge-id (create-edge! me [handle])]
+     (claim-slot! edge-id handle (node-generation handle))
+     (start-prepared-spawn! prepared)
      (block-for-message))))
 
 ;; =============================================================================
@@ -606,8 +1255,8 @@ Use from inside (future ...) orchestration code."
     :await-all "(blocking/await-all [f1 f2 ...]) — future-only await-many helper."
     :pmap "(blocking/pmap f coll) — future-only parallel map with blocking join."
     :plet "(blocking/plet [bindings] body...) — macro; parallel let using blocking/await."
-    :completion-promise "(blocking/completion-promise handle) — future-only completion token capture."
-    :send-await "(blocking/send-await handle msg) — future-only capture->send->await helper."}
+    :completion-promise "(blocking/completion-promise handle) — future-only completion token capture. Lifecycle failures resolve to tagged :spell/child-failure data; nil is a successful nil result."
+    :send-await "(blocking/send-await handle msg) — future-only capture->send->await helper. Lifecycle failures resolve to tagged :spell/child-failure data."}
    :await blocking-await
    :await-all blocking-await-all
    :pmap blocking-pmap
@@ -634,9 +1283,23 @@ Use from inside (future ...) orchestration code."
   (agents/!spawn-ask agent prompt) — spawn with explicit compiled agent, block until completion
   (agents/!spawn-ask [[agent prompt] [agent prompt :name] ...]) — spawn many, wait for all completions (no ask wakeup poke)
   (agents/!spawn-ask [prompt-a prompt-b ...]) — spawn many with the current agent, wait for all completions (no ask wakeup poke)
+  (agents/!sleep)                  — go back asleep on retained outgoing edges
+  (agents/cancel edge-id)          — cancel one of your outgoing edges (targets keep running)
+  (agents/status)                  — your state plus incoming/outgoing edge summary
+  (agents/status handle)           — another handle's awake/asleep/finished state
+  (agents/graph)                   — read-only snapshot of nodes and hyperedges
+  (agents/out-edges)               — your outgoing edges, target slots, collected outcomes
+  (agents/in-edges)                — edges in which you hold a (possibly pending) result slot
   (agents/current-handle)          — your handle
   (agents/parent-handle)           — handle of agent that spawned you (nil if you are main)
   (agents/send-msg-fn f handle)    — low-level / not recommended
+
+Waiting model: each !ask/!spawn-ask creates one outgoing wait edge with a
+result slot per target. An edge completes when every slot is filled by a
+reply or lifecycle return; completion wakes the asker once with the report.
+A plain send wakes its recipient but never creates or answers an edge. If an
+unrelated message wakes you while you still wait on earlier edges, handle it
+and call (agents/!sleep) to keep waiting on the retained edges.
 
 Use (!describe agents :fn-name) for detailed docs on any function.
 
@@ -750,20 +1413,28 @@ Re-evaluate and re-issue if still appropriate.
 
     :!reply-ask
     "Reply to a received message and block for the next response.
-Keeps the conversation open — sender gets your reply, you wait for theirs.
+Keeps the conversation open by turning your reply into a new reverse request.
 
 (agents/!reply-ask msg value)
   msg: the received message map (e.g. msg-0)
   value: your reply (any value)
 
-The sender's next turn sees (def msg-N {:from your-handle :body value}).
-Your next turn receives the sender's next message as a new def binding.
+The sender's next turn sees one actionable message:
+(def msg-N {:from your-handle :body value :expects-response true :edge-id ...}).
+They should answer that exact message with (agents/reply msg-N response).
+Your next turn receives their response as a new def binding.
+
+If msg is already a singleton completion report from an earlier !ask, there
+is no old live slot to fill; !reply-ask directly creates the new reverse
+request. A multi-target completion report has several senders and must not be
+passed to !reply-ask—choose one target and start a new !ask instead.
 
 Example (from a spawned agent's perspective):
   ;; received (def msg-0 {:from :main :body 100 :expects-response true})
   '(agents/!reply-ask msg-0 250)
-  ;; sends 250 back to :main, blocks for next message
-  ;; next turn: (def msg-1 {:from :main :body 150 :expects-response true})"
+  ;; :main receives msg-1 carrying 250 and a live reverse edge
+  ;; :main: '(agents/reply msg-1 150)
+  ;; your next turn receives (def msg-2 {:from :main :body 150 ...})"
 
     :reply
     "Reply to a received message (fire-and-forget). Ends the conversation from your side.
@@ -772,7 +1443,13 @@ Example (from a spawned agent's perspective):
   msg: the received message map (e.g. msg-0)
   value: your reply (any value)
 
-Does not block. Use as the final message in a conversation.
+Does not block. When msg has :expects-response true (as !ask requests do),
+reply fills your result slot in its edge; the asker wakes when the edge
+completes (all slots filled). A stale, duplicate, or cancelled request is a
+no-op. A singleton completion report has an old :edge-id but no
+:expects-response marker, so reply treats it as a normal message and sends a
+plain reply to :from. Multi-target completion reports cannot be replied to as
+one message; choose a specific target.
 Use !reply-ask instead when you want to continue back-and-forth.
 
 Example:
@@ -821,8 +1498,12 @@ Example:
        (agents/!ask :seller 100))"
 
     :!spawn-ask
-    "Spawn child agent(s) and block for result message(s).
+    "Spawn child agent(s), create a completion edge, and block until it completes.
 Combines spawn + block. One-shot delegation pattern.
+The child's lifecycle return fills its result slot; the child does not
+need to send the same result separately.
+Lifecycle failures fill the slot with reader-safe tagged
+{:spell/child-failure true ...} data; a successful nil result remains nil.
 
 (agents/!spawn-ask prompt)
 (agents/!spawn-ask prompt :name)
@@ -843,9 +1524,26 @@ Your next turn sees (def msg-N {:from child-handle :body result}).
   Your next turn sees :body as a vector of {:from child-handle :body result}.
 
 Example:
-	  '(agents/!spawn-ask \"Compute 6*7 and (agents/send (agents/parent-handle) result)\")
-	  ;; next turn: (def msg-0 {:from :spawn-42 :body 42})"
+	  '(agents/!spawn-ask \"Compute 6*7 and return the result.\")
+	  ;; next turn: (def msg-0 {:from :spawn-42 :body 42 :edge-id 3})"
 
+    :!sleep "(agents/!sleep) — go asleep on retained outgoing edges.
+
+No message is sent and no new edge is created. Allowed only when the caller
+has a pending outgoing edge created strictly after its newest pending
+incoming edge; otherwise throws without changing the wait graph.
+Use after being awakened by an unrelated message while still waiting on
+earlier !ask/!spawn-ask edges."
+    :cancel "(agents/cancel edge-id) — cancel one of the caller's pending outgoing edges.
+
+Detaches the waiting relationship but does not stop or interrupt the edge's
+targets. Returns a summary of the cancelled edge; throws when the edge does
+not exist, is not pending, or the caller is not its source."
+    :status "(agents/status) — inspect the caller's state and concise incoming/outgoing edge summaries.
+(agents/status handle) — inspect another handle's awake/asleep/finished state and lifecycle generation."
+    :graph "(agents/graph) — read-only snapshot of the wait graph: nodes with state/generation and pending hyperedges with slot status."
+    :out-edges "(agents/out-edges) — inspect the caller's pending outgoing edges, target slots, and collected outcomes."
+    :in-edges "(agents/in-edges) — inspect all live edges containing the caller's target slot, including slots already filled while other targets remain pending."
     :current-handle
     "Returns your handle as a keyword.
 
@@ -876,6 +1574,12 @@ Internal plumbing for the communication layer."}
    :!ask ask-builtin
    :spawn spawn
    :!spawn-ask spawn-ask
+   :!sleep sleep!
+   :cancel cancel-edge
+   :status agent-status
+   :graph graph-snapshot
+   :out-edges out-edges
+   :in-edges in-edges
    :current-handle (fn [] *current-handle*)
    :parent-handle (fn [] (:parent-handle (get @registry *current-handle*)))
    :send-msg-fn send-msg-fn})
