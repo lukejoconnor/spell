@@ -173,6 +173,9 @@ Low-level provider constructor functions may accept direct `:api-key` values for
 
 Agent profiles describe the Spell runtime profile exposed to the model. They own the system prompt, available Spell namespaces, sub-agent topology, output contract, and recovery behavior.
 
+For agent-to-agent messaging, waiting, lifecycle results, and the public
+`agents/` functions, see the [multi-agent system guide](multi-agent.md).
+
 Agent profile files live under `config/agent-profiles/` and use EDN maps.
 
 ```clojure
