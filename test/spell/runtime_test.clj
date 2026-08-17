@@ -645,6 +645,23 @@
           (is (.contains ^String result "result:beta"))
           (is (.contains ^String result "result:gamma")))))))
 
+(deftest spawn-ask-multi-invalid-later-spec-registers-no-children-test
+  (testing "the whole multi-spawn batch is validated before any child registration"
+    (let [parent :invalid-multi-parent
+          valid-agent (th/compiled-agent-fn (fn [_prompt _handle] :unused))]
+      (runtime/register! parent)
+      (binding [runtime/*current-handle* parent
+                runtime/*current-raw* "(quine completion (eval (do )))"
+                runtime/*current-eval-fn* identity]
+        (is (thrown-with-msg? Exception #"explicit 3-item entries"
+              (runtime/spawn-ask [[valid-agent "valid" :must-not-remain]
+                                  [:not-a-compiled-agent "invalid" :never-created]]))))
+      (is (not (runtime/handle? :must-not-remain))
+          "an earlier valid spec must not leave a registered child behind")
+      (is (not (runtime/handle? :never-created)))
+      (is (nil? (get-in @runtime/wait-graph [:nodes :must-not-remain])))
+      (is (empty? (:edges @runtime/wait-graph))))))
+
 (deftest spawn-addressable-test
   (testing "spawned agent can be sent to (handle is registered)"
     ;; spawn is an effect-builtin: accessed via eval double-evaluation.

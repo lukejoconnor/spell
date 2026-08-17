@@ -5,7 +5,8 @@
    Inbox drain + signal reset happen once per wake cycle in make-awake-fn
    (phase 3 entry). ask sends a message and blocks for reply. !spawn-ask spawns
    an agent and blocks for its message. send-msg-fn is low-level fire-and-forget.
-   Every wait wakes the target, preventing deadlocks."
+   Every wait wakes its targets, and edge ordering prevents all-asleep cycles
+   introduced by the communication topology."
   (:refer-clojure :exclude [send])
   (:require [clojure.string :as str]
             [spell.eval :as eval]
@@ -32,14 +33,18 @@
    Optional parent-handle records the spawning agent."
   ([handle] (register! handle nil))
   ([handle parent-handle]
-   (when (contains? @registry handle)
-     (throw (ex-info "Handle already registered" {:handle handle})))
-   (swap! registry assoc handle
-          {:state             (atom {:inbox-macros [], :signal (promise)})
-           :has-box           (atom false)
-           :parent-handle     parent-handle
-           :completed         (atom (promise))
-           :last-raw          (atom nil)})
+   (let [entry {:state         (atom {:inbox-macros [], :signal (promise)})
+                :has-box       (atom false)
+                :parent-handle parent-handle
+                :completed     (atom (promise))
+                :last-raw      (atom nil)}
+         [old new] (swap-vals! registry
+                               (fn [entries]
+                                 (if (contains? entries handle)
+                                   entries
+                                   (assoc entries handle entry))))]
+     (when (identical? old new)
+       (throw (ex-info "Handle already registered" {:handle handle}))))
    ;; A registered handle is initially able to run. start-box changes truly
    ;; dormant handles to :finished after registration; spawned and root handles
    ;; remain :awake until their lifecycle returns.
@@ -1053,7 +1058,8 @@
    (ask target) — poke target (wake it) and wait for a message. Use when
      woken by the wrong agent and you need to go back to sleep for a specific one.
    (ask [targets]) — multi-target ask. Poke all targets, wake when all complete.
-   Every form of ask wakes the target, preventing deadlocks."
+   Every form wakes its targets. The wait-edge ordering rule prevents an
+   all-asleep cycle introduced by the communication topology."
   ([target]
    (if (sequential? target)
      (do
@@ -1099,10 +1105,8 @@
 ;; Spawn
 ;; =============================================================================
 
-(defn- prepare-spawn*
-  "Register a child and capture its exact lifecycle completion promise without
-   launching it. The returned :start! function is one-shot."
-  [agent prompt handle-name]
+(defn- validate-spawn-agent!
+  [agent handle-name]
   (when (:spell/leaf (meta agent))
     (throw (ex-info "leaf-llm cannot be used with agents/spawn (no agent lifecycle) — use !llm-self instead"
                     {:handle handle-name})))
@@ -1110,6 +1114,13 @@
     (throw (ex-info "agents/spawn requires a compiled agent"
                     {:value agent
                      :handle handle-name})))
+  agent)
+
+(defn- prepare-spawn*
+  "Register a child and capture its exact lifecycle completion promise without
+   launching it. The returned :start! function is one-shot."
+  [agent prompt handle-name]
+  (validate-spawn-agent! agent handle-name)
   (let [handle (or handle-name (keyword (gensym "spawn-")))
         parent *current-handle*]
     (register! handle parent)
@@ -1165,8 +1176,8 @@
   ([agent prompt handle-name]
    (:handle (spawn* agent prompt handle-name))))
 
-(defn- prepare-spawn-from-multi-spec
-  "Prepare a child from a multi-spawn-ask entry without launching it.
+(defn- normalize-spawn-from-multi-spec
+  "Validate and normalize a multi-spawn-ask entry without registering it.
    Supports explicit entries:
      [agent prompt]
      [agent prompt handle-name]
@@ -1178,16 +1189,54 @@
     (case (count spec)
       2 (let [[a b] spec]
           (if (compiled-agent? a)
-            (prepare-spawn* a b nil)
-            (prepare-spawn* (default-spawn-agent "spawn-ask") a b)))
+            {:agent (validate-spawn-agent! a nil) :prompt b :handle-name nil}
+            (let [agent (default-spawn-agent "spawn-ask")]
+              {:agent (validate-spawn-agent! agent b) :prompt a :handle-name b})))
       3 (let [[a b c] spec]
           (if (compiled-agent? a)
-            (prepare-spawn* a b c)
+            {:agent (validate-spawn-agent! a c) :prompt b :handle-name c}
             (throw (ex-info "spawn-ask: explicit 3-item entries must be [compiled-agent prompt handle-name]"
                             {:spec spec}))))
       (throw (ex-info "spawn-ask: each vector entry must be [compiled-agent prompt], [compiled-agent prompt handle-name], or [prompt handle-name]"
                       {:spec spec})))
-    (prepare-spawn* (default-spawn-agent "spawn-ask") spec nil)))
+    (let [agent (default-spawn-agent "spawn-ask")]
+      {:agent (validate-spawn-agent! agent nil) :prompt spec :handle-name nil})))
+
+(defn- discard-unstarted-spawn!
+  "Remove a prepared child that has not been launched. Identity-check its
+   lifecycle promise so rollback cannot remove a replacement registration."
+  [{:keys [handle completed]}]
+  (let [[old new]
+        (swap-vals! registry
+                    (fn [entries]
+                      (let [entry (get entries handle)]
+                        (if (and entry
+                                 (identical? completed @(:completed entry)))
+                          (dissoc entries handle)
+                          entries))))]
+    (when (and (contains? old handle) (not (contains? new handle)))
+      (swap! wait-graph update :nodes dissoc handle))))
+
+(defn- prepare-multi-spawns!
+  "Register every normalized child, rolling back the whole batch if any
+   registration fails. No child is launched until this returns successfully."
+  [normalized]
+  (let [explicit-handles (vec (keep :handle-name normalized))]
+    (when-not (= (count explicit-handles) (count (distinct explicit-handles)))
+      (throw (ex-info "spawn-ask: child handles must be distinct"
+                      {:handles explicit-handles})))
+    (when-let [registered (seq (filter #(contains? @registry %) explicit-handles))]
+      (throw (ex-info "spawn-ask: child handle already registered"
+                      {:handles (vec registered)})))
+    (let [prepared (atom [])]
+      (try
+        (doseq [{:keys [agent prompt handle-name]} normalized]
+          (swap! prepared conj (prepare-spawn* agent prompt handle-name)))
+        @prepared
+        (catch Throwable e
+          (doseq [child (rseq (vec @prepared))]
+            (discard-unstarted-spawn! child))
+          (throw e))))))
 
 (defn spawn-ask
   "Spawn child agent(s), create a completion edge, and go asleep until the
@@ -1206,7 +1255,11 @@
        (when (empty? arg)
          (throw (ex-info "spawn-ask: empty spawn spec list" {})))
        (let [me *current-handle*
-             prepared (mapv prepare-spawn-from-multi-spec arg)
+             ;; Validate the complete batch before registration. If a registry
+             ;; race still makes preparation fail, prepare-multi-spawns! rolls
+             ;; back every child registered by this attempt.
+             normalized (mapv normalize-spawn-from-multi-spec arg)
+             prepared (prepare-multi-spawns! normalized)
              children (mapv :handle prepared)
              edge-id (create-edge! me children)]
          ;; Prepared spawn slots belong to the registered initial lifecycle;
@@ -1339,21 +1392,22 @@ Multi-part example:
 1. Main: spawn a summarizer, keep working, then block with !ask.
   ;; turn 1: start child + continue your own CoT
   ...▌'(do (agents/spawn
-         \"You are a summarizer. Read long-file.txt and send me a summary.\"
+         \"You are a summarizer. Read long-file.txt, then reply to my actionable request with the summary.\"
          :summarizer)
        (!extend))
   ;; next turn:
   ... ▌(think \"...\")(think \"Ok, I'll wait for summarizer now\")'(agents/!ask :summarizer)
   ;; main blocks until child responds
 
-2. Summarizer child: use send to return result.
-  ...(quine prompt \"You are a summarizer. Read long-file.txt and send me a summary.\")
+2. Summarizer child: reply to the request that created the wait edge.
+  ...(quine prompt \"You are a summarizer. Read long-file.txt, then reply to my actionable request with the summary.\")
   ▌'(!call-now file-contents (io/read-lines \"long-file.txt\"))
   ;; next turn
   ...(def file-contents \"...\")
+  (def msg-0 {:from :main :expects-response true})
   ▌(def summary \"...\")
-  '(agents/send (agents/parent-handle) summary)
-  ;; child turn ends after send
+  '(agents/reply msg-0 summary)
+  ;; reply fills the request slot; the child turn then ends
 
 3. Main: use !reply-ask to clarify and keep the conversation open.
   ...'(agents/!ask :summarizer)
@@ -1382,7 +1436,8 @@ Multi-part example:
   Pokes all targets, wakes when all have completed.
   Use for fan-out where you need all results.
 
-Every form wakes the target, preventing deadlocks.
+Every form wakes its targets. The wait-edge ordering rule prevents an
+all-asleep cycle introduced by the communication topology.
 Code after ask is dead code — ask blocks and triggers a new turn.
 
 Example — multi-turn conversation:

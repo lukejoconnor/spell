@@ -8,15 +8,26 @@
 (use-fixtures :each
   (fn [f]
     (reset! runtime/registry {})
+    (runtime/reset-wait-graph!)
     (user/reset-state!)
     (f)
     (reset! runtime/registry {})
+    (runtime/reset-wait-graph!)
     (user/reset-state!)))
 
 (defn- mock-reader
   "Create a BufferedReader that reads from a string (one line per readLine)."
   [s]
   (BufferedReader. (StringReader. s)))
+
+(defn- wait-until
+  [pred timeout-ms]
+  (let [deadline (+ (System/currentTimeMillis) timeout-ms)]
+    (loop []
+      (cond
+        (pred) true
+        (< (System/currentTimeMillis) deadline) (do (Thread/sleep 10) (recur))
+        :else false))))
 
 ;; =============================================================================
 ;; Pure function tests
@@ -158,26 +169,37 @@
           (let [result (deref fa 5000 :timeout)]
             (is (string? result))
             (is (.contains ^String result ":from :user"))
-            (is (.contains ^String result ":body \"hello from user\""))))))))
+            (is (.contains ^String result ":body \"hello from user\""))
+            (is (wait-until #(= :finished
+                                (get-in @runtime/wait-graph [:nodes :user :status]))
+                            2000)
+                "the user lifecycle should finish after replying")
+            (is (empty? (:inbox-macros
+                          @(:state (get @runtime/registry h-agent))))
+                "one user response must produce exactly one message for the asker")))))))
 
-(deftest expects-reply-sends-immediately-test
-  (testing "expects-reply path sends immediately and routes via parse-user-input"
+(deftest expects-reply-replies-immediately-test
+  (testing "default expects-reply path immediately fills the actionable request slot"
     ;; Directly exercise user-call-fn with an expects-response message.
-    ;; The reply should be sent via runtime/send immediately, and the returned
-    ;; completion suffix should split top-level forms without embedding send code.
+    ;; The reply should be delivered via runtime/reply immediately, and the
+    ;; returned completion suffix should split top-level forms without embedding code.
     ;; Plain input (no :handle prefix) goes to last-sender (the asker).
     (runtime/register! :user)
     (runtime/register! :target)
     (.put @#'user/stdin-queue "immediate-reply")
-    (let [prompt "(quine completion (eval (do (def msg-1 {:from :target :expects-response true}) )))"
+    (let [edge-id (runtime/create-edge! :target [:user])
+          prompt (str "(quine completion (eval (do (def msg-1 {:from :target :expects-response true :edge-id "
+                      edge-id "}) )))")
           suffix (binding [runtime/*current-handle* :user]
                    (#'user/user-call-fn prompt))
           received (atom nil)
           p (promise)]
       (is (string? suffix))
       (is (not (.contains ^String suffix "agents/send"))
-          "send should happen immediately, not via trailing expression code")
+          "reply should happen immediately, not via trailing expression code")
       (is (.contains ^String suffix "(quine completion (eval (do "))
+      (is (empty? (:edges @runtime/wait-graph))
+          "reply should discharge the actionable request edge")
       (deliver p "(quine completion (eval (do )))")
       (runtime/box :target p (runtime/make-awake-fn :target (fn [raw] (reset! received raw) raw)))
       (is (string? @received))
