@@ -213,13 +213,12 @@
    (discover-filesystem-skills roots)))
 
 (defn bundled-skill-content
-  "Read a complete bundled SKILL.md by its validated directory/name."
+  "Read a complete bundled SKILL.md by its validated directory/name, when available."
   [name]
-  (if-let [skill (first (filter #(= name (:name %))
-                                (:skills (discover-bundled-skills))))]
-    (:content skill)
-    (throw (ex-info (str "Bundled skill not found or invalid: " name)
-                    {:skill name}))))
+  (some->> (:skills (discover-bundled-skills))
+           (filter #(= name (:name %)))
+           first
+           :content))
 (defn- catalog-text [skills description-limit omitted-skills]
   (str "SKILLS — Discovered Agent Skills (prompt-only; no capability escalation).\n\n"
        "Activation: when task text explicitly names $name, or task intent implicitly matches a description below, use (!describe skills :name) before acting.\n"

@@ -184,3 +184,18 @@
                        "CONTEXT EFFICIENCY"))
     (is (str/includes? (get-in stdlib/reminders-namespace [:docs :guide])
                        "(!describe skills :coding)"))))
+
+(deftest invalid-bundled-coding-skill-omits-compatibility-alias-test
+  (with-redefs-fn {(ns-resolve 'spell.skills 'discover-bundled-skills)
+                   (fn [] {:skills []
+                           :diagnostics [{:path "coding/SKILL.md"
+                                          :message "malformed YAML"}]})}
+    (fn []
+      (let [coding (skills/bundled-skill-content "coding")
+            reminders (stdlib/reminders-namespace-with-coding coding)]
+        (is (nil? coding))
+        (is (nil? (get-in reminders [:docs :coding])))
+        (is (str/includes? (get-in reminders [:docs :guide])
+                           "(!describe skills :coding)"))
+        (is (str/includes? (get-in reminders [:docs :context-efficiency])
+                           "CONTEXT EFFICIENCY"))))))

@@ -200,11 +200,10 @@ Bind the result, inspect it on the next turn, then decide what to do next."}
 ;; reminders namespace (docs-only, context reminder for LLM)
 ;; =============================================================================
 
-(def reminders-namespace
+(def ^:private reminders-base-namespace
   "Docs-only namespace that reminds the LLM of the Spell execution context."
   {:short-docs "Context reminders for Spell program completion."
    :docs {:guide "REMINDER: This text belongs to the prefix of a Spell program that you are tasked with completing. Your entire response is code; embed all natural language within string literals. Follow the instructions on how to write correct Spell code in your system prompt.\n\nFor coding tasks, use the discovered coding skill: (!describe skills :coding). reminders/:coding remains a compatibility alias loaded from that bundled SKILL.md."
-          :coding (skills/bundled-skill-content "coding")
           :context-efficiency "CONTEXT EFFICIENCY — Minimize total context window usage.
 
 Context tokens are your scarcest resource. Prune aggressively to stay effective over long tasks.
@@ -252,6 +251,16 @@ Plan-clear pattern — reason and explore, then start fresh with a self-containe
     ;; next turn has only the plan as prefix — maximum working space
 
 Each extension should carry forward only what the next step needs."}})
+
+(defn reminders-namespace-with-coding
+  "Add the optional bundled coding compatibility alias to the reminders namespace."
+  [coding]
+  (cond-> reminders-base-namespace
+    coding (assoc-in [:docs :coding] coding)))
+
+(def reminders-namespace
+  "Docs-only namespace that reminds the LLM of the Spell execution context."
+  (reminders-namespace-with-coding (skills/bundled-skill-content "coding")))
 
 ;; =============================================================================
 ;; builtins namespace (docs-only, for progressive disclosure)
