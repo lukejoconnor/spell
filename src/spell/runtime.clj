@@ -166,6 +166,18 @@
                       {:handle handle :runtime-epoch epoch})))
     @(:completed entry)))
 
+(defn record-last-raw!
+  "Record continuation raw text on handle's entry in the caller's runtime run.
+   Returns true when recorded and nil when the lifecycle is stale or the handle
+   is not registered in that epoch. The entry is captured before mutation, so a
+   concurrent run reset can only leave an update on the detached old entry."
+  [handle raw]
+  (let [epoch (operation-epoch)
+        entry (entry-for-epoch handle epoch)]
+    (when (and (active-epoch? epoch) entry)
+      (reset! (:last-raw entry) raw)
+      true)))
+
 (defn- realize-completion!
   "Atomically rotate handle's completion promise, then deliver the old cycle.
    No-op if another lifecycle already rotated expected-completion."
@@ -603,8 +615,7 @@
       (let [transformed-raw (if (and (seq inbox-macros) (not (inbox-aware-eval-fn? eval-fn)))
                               (inbox/materialize-inbox-raw raw inbox-macros {:builtins eval/core-builtins})
                               raw)]
-        (when-let [last-raw (:last-raw entry)]
-          (reset! last-raw transformed-raw))
+        (record-last-raw! handle transformed-raw)
         (binding [*current-eval-fn* eval-fn]
           (if (inbox-aware-eval-fn? eval-fn)
             (eval-fn raw inbox-macros)
@@ -705,7 +716,7 @@
    raw for orphan box creation (dynamic binding reverts on unwind)."
   [handle completion-source inside-fn]
   (let [epoch (operation-epoch)
-        {:keys [has-box last-raw]} (entry-for-epoch handle epoch)]
+        {:keys [has-box]} (entry-for-epoch handle epoch)]
     (when-not has-box
       (throw (ex-info "Handle not registered in this runtime run"
                       {:handle handle
@@ -716,7 +727,7 @@
       (when-not (compare-and-set! has-box false true)
         (throw (ex-info "Box already active for handle" {:handle handle})))
       (reset! has-box false)
-      (reset! last-raw raw)
+      (record-last-raw! handle raw)
       (binding [*runtime-epoch* epoch
                 *current-handle* handle
                 *current-raw*    raw]
