@@ -55,15 +55,10 @@
                       error-msg
                       (assoc (if (= phase :reader) :parse-error :error) error-msg))))))
 
-(defn- recovery-prompt-text
-  "Instruction shown to the model during recovery attempts."
-  [error-msg]
-  (str "The previous Spell program threw an error. "
-       "Please recover from this error by writing a new program that fulfills "
-       "the intent of the previous program while avoiding the error. "
-       "The previous program is inert text; it will not be reevaluated. "
-       "Reminder: Emit Spell code only, not prose. "
-       "Error message: " error-msg))
+(def ^:private inert-recovery-prompt
+  "The previous Spell program threw an error. The previous program is visible during this recovery turn, but it will be pruned afterward, such that you will not see it on your next turn.
+
+Emit a `(quine task \"...\")` form describing the original task, followed by a (quine context-summary \"...\") form describing history, progress, and any context which should be retained on your next turn. If there are long file snippets which should be retained, restore these by re-reading from those files in your trailing expression. Emit Spell code only, not prose. Avoid repeating your previous error.")
 
 ;; ---------------------------------------------------------------------------
 ;; Prefix Echo Deduplication
@@ -106,78 +101,117 @@
 ;; LLM Engine
 ;; ---------------------------------------------------------------------------
 
+(defn- standard-completion-tail
+  "Return the canonical completion tail and quoted trailing value, or nil."
+  [program]
+  (when (and (seq? program)
+             (= 'quine (first program))
+             (= 'completion (second program)))
+    (let [tail (last program)]
+      (when (and (seq? tail)
+                 (= 2 (count tail))
+                 (= 'eval (first tail))
+                 (seq? (second tail))
+                 (= 'do (first (second tail))))
+        (let [body (rest (second tail))
+              trailing (last body)]
+          (when (and (seq body)
+                     (seq? trailing)
+                     (= 2 (count trailing))
+                     (= 'quote (first trailing)))
+            {:tail tail :trailing-value (second trailing)}))))))
+
+(defn- trailing-expression-error?
+  "True only when provenance and canonical source shape prove that the
+   failing inner form is the value of the actual quoted completion tail."
+  [program result]
+  (when-let [{:keys [tail trailing-value]} (standard-completion-tail program)]
+    (let [source (:result result)
+          failed-form (or (:containing-form source) (:expr source))]
+      (and (= :trailing-expression (:spell/recovery-phase result))
+           (= tail (:expr result))
+           (map? source)
+           (not (contains? source :result))
+           (= trailing-value failed-form)))))
+
+(defn- recovery-source-result [same-tail? result]
+  (if same-tail? (or (:result result) result) result))
+
+(defn- recovery-error-map [same-tail? result]
+  (let [source (recovery-source-result same-tail? result)
+        location-form (or (:containing-form source) (:expr source))]
+    (cond-> {:error (recovery/clean-error-message (:err source))}
+      location-form (assoc :in (list 'quote location-form))
+      (:trace source) (assoc :trace (:trace source)))))
+
+(defn- build-inert-recovery-quine [program error-map]
+  (let [recovery-arg (list 'eval
+                       (list 'do
+                         (list 'def '_recovery_prompt inert-recovery-prompt)
+                         (list 'def '_error error-map)
+                         (list 'quote (list '!llm-self (list 'reopen 'completion)))))]
+    (apply list (concat (seq program) ['(prune) recovery-arg]))))
+
+(defn- build-same-tail-recovery-quine [program error-map]
+  (eval/reopen program
+               (list 'def '_error error-map)
+               (list 'quote (list '!llm-self (list 'reopen 'completion)))))
+
 (defn- try-quine-recovery
-  "Attempt quine-extension recovery: append error info to the quine and reopen it.
-   Returns eval result (ok or err). Throws on non-quine or shared recovery limit.
-   If program doesn't start with (quine completion ...), wraps it first and recurses."
+  "Recover a canonical failing quoted tail in place; otherwise use an inert branch."
   [program result variant-builtins eval-builtin gated-ns-hints]
   (if-not (and (seq? program)
                (= 'quine (first program))
                (= 'completion (second program)))
-    ;; Not a (quine completion ...) form — wrap and recurse
     (let [indent (apply str (repeat eval/*llm-depth* "  "))
           wrapped (list 'quine 'completion program)]
       (eval/vlog (str indent "Wrapping in quine completion for recovery"))
       (try-quine-recovery wrapped result variant-builtins eval-builtin gated-ns-hints))
-    ;; Normal path: program is already (quine completion ...)
-    (let [error-map (cond-> {:error (recovery/clean-error-message (:err result))}
-                      (:containing-form result)
-                      (assoc :in (list 'quote (:containing-form result)))
-                      (:trace result)
-                      (assoc :trace (:trace result)))
+    (let [same-tail? (boolean (trailing-expression-error? program result))
+          error-map (recovery-error-map same-tail? result)
           indent (apply str (repeat eval/*llm-depth* "  "))
-          _     (throw-if-recovery-exhausted! :eval (:error error-map))
-          _     (eval/vlog (str indent "Recovery attempt: "
-                                (inc *recovery-depth*) "/" max-recovery-attempts))
-          recovery-prompt (recovery-prompt-text (:error error-map))
-          rethink-arg '(rethink "Error recovery - see _error for details.")
-          recovery-arg (list 'eval
-                         (list 'do
-                           (list 'def '_recovery_prompt recovery-prompt)
-                           (list 'def '_error error-map)
-                           (list 'quote (list '!llm-self (list 'reopen 'completion)))))
-          recovery-quine (apply list (concat (seq program) [rethink-arg recovery-arg]))
-          _     (eval/vlog (str indent "Recovery quine: " (pr-str recovery-quine)))
-          retry (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
-                          eval/*raw-text*       nil
-                          eval/*builtins*       variant-builtins
+          _ (throw-if-recovery-exhausted! :eval (:error error-map))
+          _ (eval/vlog (str indent "Recovery attempt: "
+                            (inc *recovery-depth*) "/" max-recovery-attempts))
+          recovery-quine (if same-tail?
+                           (build-same-tail-recovery-quine program error-map)
+                           (build-inert-recovery-quine program error-map))
+          _ (eval/vlog (str indent "Recovery quine: " (pr-str recovery-quine)))
+          retry (binding [eval/*llm-depth* (inc eval/*llm-depth*)
+                          eval/*raw-text* nil
+                          eval/*builtins* variant-builtins
                           eval/*gated-ns-hints* gated-ns-hints
-                          *recovery-depth*      (inc *recovery-depth*)]
+                          *recovery-depth* (inc *recovery-depth*)]
                   (eval/spell-eval recovery-quine {'eval eval-builtin}))]
       (if (eval/ok? retry)
         retry
         (throw (ex-info (:err result) {:result result}))))))
 
 (defn- try-reader-recovery
-  "Attempt recovery from a reader/parse error by embedding the raw text
-   as a string in a fresh recovery quine. The LLM sees its broken output
-   and the error message, then gets a fresh chance via !extend.
-   Shares the same retry budget as eval recovery."
+  "Recover from a reader error using one inert raw-program quine argument.
+   The prune marker removes that argument on the following reopened turn."
   [raw parse-error inbox-macros variant-builtins eval-builtin gated-ns-hints]
   (let [error-msg (or (.getMessage parse-error) "Unknown reader error")
-        indent    (apply str (repeat eval/*llm-depth* "  "))
-        _         (throw-if-recovery-exhausted! :reader error-msg)
-        _         (eval/vlog (str indent "=== Reader Error Recovery ==="))
-        _         (eval/vlog (str indent "Recovery attempt: "
-                                  (inc *recovery-depth*) "/" max-recovery-attempts))
-        _         (eval/vlog (str indent "Parse error: " error-msg))
-        recovery-prompt (recovery-prompt-text (str "Reader error: " error-msg))
+        indent (apply str (repeat eval/*llm-depth* "  "))
+        _ (throw-if-recovery-exhausted! :reader error-msg)
+        _ (eval/vlog (str indent "=== Reader Error Recovery ==="))
+        _ (eval/vlog (str indent "Recovery attempt: "
+                          (inc *recovery-depth*) "/" max-recovery-attempts))
         error-map {:error (str "Reader error: " error-msg) :raw raw}
-        recovery-quine (list 'quine 'completion
+        recovery-quine (list 'quine 'completion raw '(prune)
                          (list 'eval
                            (list 'do
-                             (list 'def '_recovery_prompt recovery-prompt)
-                             (list 'def '_previous_program raw)
+                             (list 'def '_recovery_prompt inert-recovery-prompt)
                              (list 'def '_error error-map)
-                             (list 'quote (list '!extend 'completion)))))
+                             (list 'quote (list '!llm-self (list 'reopen 'completion))))))
         recovery-program (inbox/apply-inbox-macros recovery-quine inbox-macros
                                                    {:env {'eval eval-builtin}})
-        result    (binding [eval/*llm-depth*           (inc eval/*llm-depth*)
-                            eval/*raw-text*            nil
-                            eval/*builtins*            variant-builtins
-                            eval/*gated-ns-hints*      gated-ns-hints
-                            *recovery-depth*           (inc *recovery-depth*)]
-                    (eval/spell-eval recovery-program {'eval eval-builtin}))]
+        result (binding [eval/*llm-depth* (inc eval/*llm-depth*)
+                         eval/*raw-text* nil
+                         eval/*builtins* variant-builtins
+                         eval/*gated-ns-hints* gated-ns-hints
+                         *recovery-depth* (inc *recovery-depth*)]
+                 (eval/spell-eval recovery-program {'eval eval-builtin}))]
     (if (eval/ok? result)
       (:ok result)
       (throw (ex-info (or (:err result)
@@ -348,7 +382,9 @@
                  (let [result (eval/spell-eval expr caller-env)]
                    (if (eval/ok? result)
                      (:ok result)
-                     (throw (ex-info (:err result) {:result result})))))))]
+                     (throw (ex-info (:err result)
+                                     {:result (assoc result :containing-form expr)
+                                      :spell/recovery-phase :trailing-expression})))))))]
      eval-builtin)))
 
 (defn- wrap-nl
