@@ -27,7 +27,7 @@
                                 :epoch runtime-run-id}"
   (atom {}))
 
-(declare wait-graph swap-current-graph! swap-vals-current-graph!)
+(declare wait-graph swap-current-graph! swap-vals-current-graph! inspection-graph)
 
 (def runtime-epoch
   "Monotonic identity for the currently active runtime run. Public API runs
@@ -478,7 +478,8 @@
 
 (defn- node-generation
   [handle]
-  (get-in @wait-graph [:nodes handle :generation]))
+  (let [[_ graph] (inspection-graph "lifecycle generation")]
+    (get-in graph [:nodes handle :generation])))
 
 (defn- cancel-edge-op!
   "Cancel edge-id when caller is its source and the edge is pending.
@@ -529,7 +530,9 @@
 (defn sleep-allowed?
   "True when handle has a pending outgoing edge created strictly after its
    newest pending incoming edge (only pending incoming slots participate)."
-  ([handle] (sleep-allowed? @wait-graph handle))
+  ([handle]
+   (let [[_ graph] (inspection-graph "sleep eligibility")]
+     (sleep-allowed? graph handle)))
   ([graph handle]
    (let [newest-out (last (map :created-seq (pending-out-edges graph handle)))
          newest-in (last (map :created-seq (pending-in-edges graph handle)))]
@@ -818,7 +821,8 @@
    exposed in agents-namespace."
   [msg]
   (when (and *current-handle* (actionable-request? msg) (:edge-id msg))
-    (let [edge (get-in @wait-graph [:edges (:edge-id msg)])]
+    (let [[_ graph] (inspection-graph "actionable request")
+          edge (get-in graph [:edges (:edge-id msg)])]
       (boolean
         (and (= :pending (:status edge))
              (= (:from msg) (:source edge))
@@ -1143,11 +1147,12 @@
   (assert-agent-context! "!sleep")
   (let [me *current-handle*]
     (when-not (mark-asleep-if-allowed! me)
-      (throw (ex-info (str "agents/!sleep: " me " has no pending outgoing edge "
-                           "newer than its newest pending incoming edge")
-                      {:handle me
-                       :out-edges (mapv edge-summary (pending-out-edges @wait-graph me))
-                       :in-edges (mapv edge-summary (pending-in-edges @wait-graph me))})))
+      (let [[_ graph] (inspection-graph "agents/!sleep")]
+        (throw (ex-info (str "agents/!sleep: " me " has no pending outgoing edge "
+                             "newer than its newest pending incoming edge")
+                        {:handle me
+                         :out-edges (mapv edge-summary (pending-out-edges graph me))
+                         :in-edges (mapv edge-summary (pending-in-edges graph me))}))))
     (block-for-message)))
 
 (defn reply-ask

@@ -1761,6 +1761,49 @@
         (is (= 1 (count (:edges g))))
         (is (= eid (:id (first (:edges g)))))))))
 
+(deftest stale-lifecycle-inspection-does-not-cross-run-boundary-test
+  (testing "stale request and sleep inspection cannot observe reused new-run topology"
+    (let [old-epoch @runtime/runtime-epoch]
+      (runtime/register! :user)
+      (runtime/begin-run!)
+      (runtime/register! :new-source)
+      (runtime/register! :user)
+      (runtime/register! :new-target)
+      (let [incoming-id (runtime/create-edge! :new-source [:user])
+            outgoing-id (runtime/create-edge! :user [:new-target])
+            new-graph @runtime/wait-graph
+            request {:from :new-source
+                     :expects-response true
+                     :edge-id incoming-id}
+            actionable-error
+            (try
+              (binding [runtime/*runtime-epoch* old-epoch
+                        runtime/*current-handle* :user]
+                (runtime/actionable-request-live? request))
+              nil
+              (catch clojure.lang.ExceptionInfo e e))
+            sleep-error
+            (try
+              (binding [runtime/*runtime-epoch* old-epoch
+                        runtime/*current-handle* :user
+                        runtime/*current-raw* "(do 0)"
+                        runtime/*current-eval-fn* identity]
+                (runtime/sleep!))
+              nil
+              (catch clojure.lang.ExceptionInfo e e))]
+        ;; These exact ids and handles exist in the new run. Without the epoch
+        ;; guard the stale request predicate returns true and !sleep reports
+        ;; the new run's incoming/outgoing edge summaries.
+        (is (contains? (:edges new-graph) incoming-id))
+        (is (contains? (:edges new-graph) outgoing-id))
+        (doseq [error [actionable-error sleep-error]]
+          (is (instance? clojure.lang.ExceptionInfo error))
+          (is (= :stale-runtime-epoch (:type (ex-data error))))
+          (is (= old-epoch (:lifecycle-epoch (ex-data error))))
+          (is (not (contains? (ex-data error) :out-edges)))
+          (is (not (contains? (ex-data error) :in-edges))))
+        (is (= new-graph @runtime/wait-graph))))))
+
 (deftest wait-graph-reply-fallback-test
   (testing "reply without :edge-id falls back to plain send"
     (runtime/register! :asker)
