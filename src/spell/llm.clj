@@ -410,8 +410,9 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
    - :system           - optional system prompt string override (nil uses generated prompt)
    - :llm-var          - optional var ref to bind as 'llm for self-recursion (e.g., #'llm)
    - :recover          - error recovery setting (default: true = enabled).
-                         - true: namespace recovery + quine-extension recovery
-                           (recovery quine adds error info + rethink, then reopens)
+                         - true: namespace recovery + path-specific quine recovery
+                           (proven trailing errors reopen in place; other errors use
+                           a prunable inert recovery context)
                          - false: disable recovery (errors propagate immediately)
                          - fn: custom namespace recovery function (result-map) -> fixed-expr
    - :prefill?         - whether the provider supports assistant prefill (default: true).

@@ -17,17 +17,17 @@ A frequent LM mistake is to use a symbol without the required namespace qualific
 
 ## Trailing expression error recovery
 
-When the program is successfully parsed and an error is proven to come from the quoted trailing expression inside the standard `(quine completion (eval (do ...)))` wrapper, it is possible to rescue the program by superseding that one expression. Spell appends an `_error` binding and a new self-call after the failing trailing expression inside the same `do` block, then re-invokes the model. The previous trailing expression becomes inert because it is no longer last. Earlier expressions in the same `do` block are re-evaluated first, and their bindings remain available if re-evaluation still succeeds. 
+When the program is successfully parsed and an error is proven to come from the quoted trailing expression inside the standard `(quine completion (eval (do ...)))` wrapper, it is possible to rescue the program by superseding that one expression. Spell appends an `_error` binding and a new self-call after the failing trailing expression inside the same `do` block, then re-invokes the model. The previous trailing expression becomes inert because it is no longer last. Earlier expressions in the same `do` block are re-evaluated first, and their bindings remain available if re-evaluation still succeeds.
 
 ## Other evaluation error recovery
 
-When another expression throws an error, the mechanism described above would fail because appending new expressions inside the `do` block could still allow the error to be re-triggered. Instead, three arguments are appended inside of the top-level `quine` form, following the `do` block: an error message, a `(prune 2)` marker, and a new `do` block, which marks the beginning of the next model-written program. The  error-causing program and the error message are visible for exactly one turn, after which the `prune` marker causes their disappearance. A 'recovery prompt' alongside the error message instructs the agent to retain whatever context it needs to continue its task. 
+When another expression throws an error, the mechanism described above would fail because appending new expressions inside the `do` block could still allow the error to be re-triggered. Instead, three arguments are appended inside the top-level `quine` form: an inert recovery-context `do` containing the recovery prompt and error, a `(prune 2)` marker, and a new `(eval (do ...))` block which marks the beginning of the next model-written program. The error-causing program and recovery context are visible for exactly one turn, after which the `prune` marker causes their disappearance. The recovery prompt instructs the agent to retain whatever context it needs to continue its task.
 
 For example, suppose the failing program contains an effect call outside the trailing expression:
 ```clojure
 (quine completion (eval (do
   (quine prompt "List the files.")
-  (def files (io/ls "."))         ;; throws: io/ is unbound here
+  (def files (io/ls "."))         ;; throws: io/ is effect-only here
   '(!call-now n (count files)))))
 ```
 The runtime catches the error and appends three arguments to the top-level `(quine completion ...)`: an inert recovery-context block containing the prompt and error, `(prune 2)`, and a fresh `(eval (do ...))` block. It then re-evaluates:
@@ -41,8 +41,9 @@ The runtime catches the error and appends three arguments to the top-level `(qui
   (do                             ;; inert recovery context
     (def _recovery_prompt
       "The previous Spell program threw an error. ...")
-    (def _error {:error "Unbound symbol: io/ls"
-                 :in '(io/ls ".")}))
+    (def _error
+      {:error "io/ls: io/ is an effect namespace - use it in the trailing expression via eval"
+       :in '(def files (io/ls "."))}))
   (prune 2)                       ;; drops the failed program and recovery context
   (eval (do                       ;; the new program begins here
     '(!llm-self (reopen completion)))))

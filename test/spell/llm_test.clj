@@ -1651,6 +1651,31 @@
         (is (not (str/includes? following-prefix "_error")))
         (is (not (str/includes? following-prefix "missing-body"))))))
 
+  (testing "repeated inert recovery prunes every stale program, prompt, and error"
+    (let [prompts (atom [])
+          llm (th/make-test-runner
+               {:response-fn (fn [prompt]
+                               (swap! prompts conj prompt)
+                               (case (count @prompts)
+                                 1 "(quine prompt \"original assignment\") first-body-failure '(!extend completion))"
+                                 2 "(quine task \"first restored assignment\") (quine context-summary \"first recovery history\") second-body-failure '(!extend completion))"
+                                 3 "(quine task \"newest assignment\") (quine context-summary \"newest history\") '(!extend completion))"
+                                 4 "42)"))}
+               :namespaces {} :prefill? false)]
+      (is (= 42 (llm "(quine completion (eval (do ")))
+      (is (= 4 (count @prompts)))
+      (let [following-prefix (nth @prompts 3)]
+        (is (str/includes? following-prefix "(quine task \"newest assignment\")"))
+        (is (str/includes? following-prefix "(quine context-summary \"newest history\")"))
+        (doseq [stale ["original assignment"
+                       "first restored assignment"
+                       "first recovery history"
+                       "first-body-failure"
+                       "second-body-failure"
+                       "_recovery_prompt"
+                       "_error"]]
+          (is (not (str/includes? following-prefix stale)))))))
+
   (testing "mismatched inner provenance is not classified as same-tail recovery"
     (let [program '(quine completion
                      (eval (do
@@ -1707,10 +1732,16 @@
                                    :namespaces {} :recover false)]
       (is (thrown? Exception (llm "(do ")))))
 
-  (testing "non-quine program propagates error"
-    (let [llm (th/make-test-runner {:response "undefined-symbol)"}
-                                   :namespaces {} :recover true)]
-      (is (thrown? Exception (llm "(do ")))))))
+  (testing "non-quine program is wrapped for inert recovery"
+    (let [prompts (atom [])
+          llm (th/make-test-runner
+               {:response-fn (fn [prompt]
+                               (swap! prompts conj prompt)
+                               (if (= 1 (count @prompts)) "undefined-symbol)" "42)"))}
+               :namespaces {} :recover true :prefill? false)]
+      (is (= 42 (llm "(do ")))
+      (is (= 2 (count @prompts)))
+      (is (str/includes? (second @prompts) "(quine completion (do undefined-symbol)"))))))
 
 (deftest reader-error-recovery-test
   (testing "reader error recovery via fresh quine — LLM retries successfully"
