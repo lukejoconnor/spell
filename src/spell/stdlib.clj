@@ -9,8 +9,7 @@
   (:require [clojure.string :as str]
             [spell.eval :as eval]
             [spell.runtime :as runtime]
-            [spell.patterns :as patterns-lib]
-            [spell.skills :as skills]))
+            [spell.patterns :as patterns-lib]))
 
 ;; =============================================================================
 ;; strings namespace (matches clojure.string)
@@ -195,72 +194,6 @@ Bind the result, inspect it on the next turn, then decide what to do next."}
 (def patterns
   "Reusable orchestration patterns (Spell-specific)."
   patterns-lib/patterns)
-
-;; =============================================================================
-;; reminders namespace (docs-only, context reminder for LLM)
-;; =============================================================================
-
-(def ^:private reminders-base-namespace
-  "Docs-only namespace that reminds the LLM of the Spell execution context."
-  {:short-docs "Context reminders for Spell program completion."
-   :docs {:guide "REMINDER: This text belongs to the prefix of a Spell program that you are tasked with completing. Your entire response is code; embed all natural language within string literals. Follow the instructions on how to write correct Spell code in your system prompt.\n\nFor coding tasks, use the discovered coding skill: (!describe skills :coding). reminders/:coding remains a compatibility alias loaded from that bundled SKILL.md."
-          :context-efficiency "CONTEXT EFFICIENCY — Minimize total context window usage.
-
-Context tokens are your scarcest resource. Prune aggressively to stay effective over long tasks.
-
-Prefer !peek-now over !call-now for disposable tool calls (auto-appends prune that removes the command and binding on the following extension):
-    '(!peek-now data (io/bash \"find . -name '*.py'\"))
-
-On the subsequent turn, persist what you need before extending:
-    ;; end of turn 1 completion
-    (def data \"... 200 lines ...\")
-    (prune)
-    ;; start of turn 2 suffix
-    ;; data is still in scope here
-    (persist targets (take 5 (strings/split-lines data)))
-    '(!extend)
-    ;; next turn: the !peek-now call and data are pruned; targets survive as literals
-
-When running a shell script or Python program that you do not need to rerun, keep it inside !peek-now:
-    '(!peek-now verify (io/sh \"cd /repo && python - <<'PY'\\nimport ...\\nPY\"))
-    ;; end of turn 1 completion
-    (prune)
-    ;; start of turn 2 suffix
-    (think \"Verification passed: the fix handles both edge cases.\")
-    '(!extend)
-    ;; next turn: both the command and result are gone
-
-When you need to rerun a script later, write it to disk first and then call it with !call-now.
-
-After extended reasoning, rethink to compress:
-    (think \"Long analysis of the bug... examining stack traces, testing hypotheses... the root cause is in parse_args line 42.\")
-    (rethink \"The bug is in parse_args, line 42: off-by-one in the loop bound.\")
-    '(!extend)
-
-When context grows large, compact:
-    '(!compact)
-
-Plan-clear pattern — reason and explore, then start fresh with a self-contained plan:
-    (think \"analyzing the problem...\" ...)
-    '(!peek-now files (io/ls \".\"))
-    ;; end of turn 1 completion
-    (def files [...])
-    (def plan \"Task: fix the calculator bug in calc.py\\n1. Edit line 12: fix off-by-one\\n2. Run tests\")
-    ;; start of turn 2 suffix
-    '(!llm-self plan)
-    ;; next turn has only the plan as prefix — maximum working space
-
-Each extension should carry forward only what the next step needs."}})
-
-(defn reminders-namespace-with-coding
-  "Add the optional bundled coding compatibility alias to the reminders namespace."
-  [coding]
-  (cond-> reminders-base-namespace
-    coding (assoc-in [:docs :coding] coding)))
-
-(def reminders-namespace
-  "Docs-only namespace that reminds the LLM of the Spell execution context."
-  (reminders-namespace-with-coding (skills/bundled-skill-content "coding")))
 
 ;; =============================================================================
 ;; builtins namespace (docs-only, for progressive disclosure)

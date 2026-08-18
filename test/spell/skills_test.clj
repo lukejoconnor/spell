@@ -152,6 +152,7 @@
         names (set (map :name (:skills snapshot)))]
     (is (some? (io/resource ".spell-skills-root")))
     (is (every? names ["coding"
+                        "context-efficiency"
                         "spell-api-and-cli"
                         "spell-custom-agents"
                         "spell-developer"
@@ -176,26 +177,16 @@
       (is (str/includes? system "compile snapshot marker"))
       (is (str/includes? system "skills — SKILLS")))))
 
-(deftest bundled-coding-alias-test
-  (let [coding (get-in stdlib/reminders-namespace [:docs :coding])]
-    (is (= coding (skills/bundled-skill-content "coding")))
+(deftest bundled-workflow-skills-test
+  (let [coding (skills/bundled-skill-content "coding")
+        context-efficiency (skills/bundled-skill-content "context-efficiency")]
     (is (str/includes? coding "CODING TASKS"))
-    (is (str/includes? (get-in stdlib/reminders-namespace [:docs :context-efficiency])
-                       "CONTEXT EFFICIENCY"))
-    (is (str/includes? (get-in stdlib/reminders-namespace [:docs :guide])
-                       "(!describe skills :coding)"))))
+    (is (str/includes? context-efficiency "CONTEXT EFFICIENCY"))))
 
-(deftest invalid-bundled-coding-skill-omits-compatibility-alias-test
+(deftest invalid-bundled-skill-is-omitted-test
   (with-redefs-fn {(ns-resolve 'spell.skills 'discover-bundled-skills)
                    (fn [] {:skills []
                            :diagnostics [{:path "coding/SKILL.md"
                                           :message "malformed YAML"}]})}
     (fn []
-      (let [coding (skills/bundled-skill-content "coding")
-            reminders (stdlib/reminders-namespace-with-coding coding)]
-        (is (nil? coding))
-        (is (nil? (get-in reminders [:docs :coding])))
-        (is (str/includes? (get-in reminders [:docs :guide])
-                           "(!describe skills :coding)"))
-        (is (str/includes? (get-in reminders [:docs :context-efficiency])
-                           "CONTEXT EFFICIENCY"))))))
+      (is (nil? (skills/bundled-skill-content "coding"))))))

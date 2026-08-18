@@ -214,7 +214,7 @@ The `:namespaces` map accepts several reference forms:
 | Form | Meaning |
 |---|---|
 | `stdlib/io` | Built-in stdlib namespace. |
-| `stdlib/reminders/coding` | Nested item from a stdlib namespace. |
+| `stdlib/io/read-file` | Nested item from a stdlib namespace. |
 | `[stdlib/io stdlib/patterns]` | Merge multiple namespace maps. |
 | `some_file.clj/some-var` | Load a Clojure file and resolve a public var. |
 | `{:file "path/to/file"}` | Read file content as a string. |
@@ -253,7 +253,7 @@ Skill directories may be symlinks. Malformed or unreadable skills are skipped wi
 
 ### Write and use a skill
 
-The directory name must match the skill's Agent Skills-compatible `name`; `description` tells the model when the skill applies:
+The directory name must match the skill's Agent Skills-compatible `name`; `description` tells the model when the skill applies. See OpenAI's [Build skills guide](https://learn.chatgpt.com/docs/build-skills) for the standard format:
 
 ```markdown
 ---
@@ -270,7 +270,7 @@ The initial prompt contains only each skill's name, description, and `SKILL.md` 
 '(!describe skills :review-results)
 ```
 
-Duplicate names remain visible with their source paths so the agent can choose the applicable candidate. The bundled `coding` skill is the canonical coding workflow; `(!describe reminders :coding)` remains a compatibility alias.
+Duplicate names remain visible with their source paths so the agent can choose the applicable candidate. Spell bundles canonical `coding` and `context-efficiency` workflow skills.
 
 ### Supporting files and permissions
 
