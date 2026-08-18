@@ -112,17 +112,23 @@
    the combined :state atom — no race window between the two operations."
   [handle eval-fn]
   (fn [raw]
-    (let [state (:state (get @registry handle))
-          [{:keys [inbox-macros]} _] (reset-vals! state {:inbox-macros [], :signal (promise)})
-          transformed-raw (if (and (seq inbox-macros) (not (inbox-aware-eval-fn? eval-fn)))
-                            (inbox/materialize-inbox-raw raw inbox-macros {:builtins eval/core-builtins})
-                            raw)]
-      (when-let [last-raw (:last-raw (get @registry handle))]
-        (reset! last-raw transformed-raw))
-      (binding [*current-eval-fn* eval-fn]
-        (if (inbox-aware-eval-fn? eval-fn)
-          (eval-fn raw inbox-macros)
-          (eval-fn transformed-raw))))))
+    (let [before-awake (:spell/before-awake (meta eval-fn))
+          after-awake (:spell/after-awake (meta eval-fn))]
+      (when before-awake (before-awake))
+      (try
+        (let [state (:state (get @registry handle))
+              [{:keys [inbox-macros]} _] (reset-vals! state {:inbox-macros [], :signal (promise)})
+              transformed-raw (if (and (seq inbox-macros) (not (inbox-aware-eval-fn? eval-fn)))
+                                (inbox/materialize-inbox-raw raw inbox-macros {:builtins eval/core-builtins})
+                                raw)]
+          (when-let [last-raw (:last-raw (get @registry handle))]
+            (reset! last-raw transformed-raw))
+          (binding [*current-eval-fn* eval-fn]
+            (if (inbox-aware-eval-fn? eval-fn)
+              (eval-fn raw inbox-macros)
+              (eval-fn transformed-raw))))
+        (finally
+          (when after-awake (after-awake)))))))
 
 (defn- make-asleep-fn
   "Create an inside-fn that blocks on signal, then re-enters box awake.

@@ -40,7 +40,7 @@ These options are scoped to one invocation of `run`.
 | `:depth` | unlimited | Maximum recursive LLM depth for this run. |
 | `:trace-dir` | none | When non-nil, record a Spell execution trace in this directory. |
 | `:usage-tracker` | fresh atom | Existing usage atom to accumulate token and cost accounting into. |
-| `:user-reader` | none | When non-nil, register the interactive `:user` handle and read from this reader. |
+| `:user-reader` | none | When non-nil, register the interactive `:user` handle and read from this reader. The caller retains ownership of the reader. Spell requests cancellation of its reader task and clears input state when the run ends, so use a finite reader or one whose blocking read responds to thread interruption. An arbitrary reader that ignores interruption must be unblocked by its owner before reuse. |
 | `:log-writer` | none | Writer for raw LLM debugging output. Pass `*out*` or another writer for logging. |
 
 
