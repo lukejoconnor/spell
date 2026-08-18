@@ -200,7 +200,7 @@ Agent profile files live under `config/agent-profiles/` and use EDN maps.
 | `:system-prompt` | System prompt, either an inline string or `{:file "relative/path.txt"}`. |
 | `:default-model-profile` | Default model profile. `spell.api/run :model-profile` may override it for one run. |
 | `:default-budget` | Default maximum spend in dollars. `spell.api/run :budget` may override it for one run. |
-| `:recover` | Recovery behavior used when evaluating model output fails. |
+| `:recover` | Recovery behavior used when evaluating model output fails. See [Error recovery](error-recovery.md). |
 | `:format` | Structured output contract used to validate and repair model output. |
 | `:format-retries` | Maximum format-repair attempts when `:format` is configured. |
 | `:available-agents` | Explicit sub-agent set exposed through the `workers/` namespace. Omit it to inherit the base profile's workers; use `[]` to disable them. |

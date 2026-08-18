@@ -10,6 +10,7 @@
 - Added `--trace-dir DIR` for durable CLI traces and automatic agent/trace context on feedback entries.
 - Added `--dogfood` to expose the feedback namespace to the main agent and its workers only for explicit self-improvement runs.
 - Added `--agents-md` to prepend the current working directory's `AGENTS.md`, capped at 32 KiB, to natural-language CLI tasks.
+- Changed error recovery so proven trailing-expression failures reopen in place, while other evaluation and reader failures use one-turn inert recovery context that is pruned before subsequent turns; added a public recovery guide.
 
 ## v0.2.0
 
