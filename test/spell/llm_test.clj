@@ -1646,7 +1646,10 @@
         (is (not (str/includes? exact-prompt "missing-body")))
         (is (str/includes? following-prefix "(quine task \"restored assignment\")"))
         (is (str/includes? following-prefix "(quine context-summary \"restored history\")"))
-        (is (not (str/includes? following-prefix "old assignment"))))))
+        (is (not (str/includes? following-prefix "old assignment")))
+        (is (not (str/includes? following-prefix "_recovery_prompt")))
+        (is (not (str/includes? following-prefix "_error")))
+        (is (not (str/includes? following-prefix "missing-body"))))))
 
   (testing "mismatched inner provenance is not classified as same-tail recovery"
     (let [program '(quine completion
@@ -1675,7 +1678,7 @@
       (is (= 42 (llm "(quine completion (eval (do ")))
       (let [prefix (second @prompts)]
         (is (str/includes? prefix "_recovery_prompt"))
-        (is (str/includes? prefix "(prune)")))))
+        (is (str/includes? prefix "(prune 2)")))))
 
   (testing "unexpected completion-tail shape uses inert recovery"
     (let [prompts (atom [])
@@ -1752,7 +1755,11 @@
         (is (str/includes? recovery-prefix "Reader error"))
         (is (str/includes? recovery-prefix "\\invalidchar"))
         (is (str/includes? following-prefix "(quine task \"reader task\")"))
-        (is (str/includes? following-prefix "(quine context-summary \"reader context\")")))))
+        (is (str/includes? following-prefix "(quine context-summary \"reader context\")"))
+        (is (not (str/includes? following-prefix "_recovery_prompt")))
+        (is (not (str/includes? following-prefix "_error")))
+        (is (not (str/includes? following-prefix "Reader error")))
+        (is (not (str/includes? following-prefix "\\invalidchar"))))))
 
   (testing "shared recovery limit stops parse-only runaway loops"
     (let [call-count (atom 0)

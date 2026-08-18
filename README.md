@@ -14,6 +14,7 @@ Self-programmed execution (SPE) is when a language model (LM) acts as a self-orc
   - [Effect boundary and `eval`](#effect-boundary-and-eval)
   - [The Spell wrapper](#the-spell-wrapper)
   - [Edit markers](#edit-markers)
+  - [Error recovery](#error-recovery)
   - [Namespaces](#namespaces)
   - [Multiple agents](#multiple-agents)
 - [Contributing](#contributing)
@@ -141,6 +142,10 @@ A common pattern is that a Spell program produces an edited copy of itself as th
 - `rethink` prunes previous sibling expressions, then leaves behind a `think` marker. Like `prune`, it defaults to one previous sibling unless given an explicit count.
 
 - `persist` is used to persist a computed value across turns when the value from which it is computed is pruned or otherwise dropped. At runtime, it is identical to `def`. At edit time, Spell replaces `expr` in `(persist name expr)` with the current value bound to `name`, when one is available. A common pattern is to read a large file and prune the result while persisting the relevant slice.
+
+## Error recovery
+
+Spell first attempts deterministic repair, then either reopens a proven failing trailing expression in place or presents other evaluation and reader errors in a prunable inert recovery turn. See [Error recovery](docs/error-recovery.md) for the full mechanics and recovery prompt.
 
 ## Namespaces
 

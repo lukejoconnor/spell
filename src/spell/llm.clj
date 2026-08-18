@@ -145,12 +145,13 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
       (:trace source) (assoc :trace (:trace source)))))
 
 (defn- build-inert-recovery-quine [program error-map]
-  (let [recovery-arg (list 'eval
+  (let [recovery-context (list 'do
+                           (list 'def '_recovery_prompt inert-recovery-prompt)
+                           (list 'def '_error error-map))
+        recovery-arg (list 'eval
                        (list 'do
-                         (list 'def '_recovery_prompt inert-recovery-prompt)
-                         (list 'def '_error error-map)
                          (list 'quote (list '!llm-self (list 'reopen 'completion)))))]
-    (apply list (concat (seq program) ['(prune) recovery-arg]))))
+    (apply list (concat (seq program) [recovery-context '(prune 2) recovery-arg]))))
 
 (defn- build-same-tail-recovery-quine [program error-map]
   (eval/reopen program
@@ -188,8 +189,8 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
         (throw (ex-info (:err result) {:result result}))))))
 
 (defn- try-reader-recovery
-  "Recover from a reader error using one inert raw-program quine argument.
-   The prune marker removes that argument on the following reopened turn."
+  "Recover from a reader error using inert raw-program and recovery-context
+   quine arguments. The prune marker removes both on the following turn."
   [raw parse-error inbox-macros variant-builtins eval-builtin gated-ns-hints]
   (let [error-msg (or (.getMessage parse-error) "Unknown reader error")
         indent (apply str (repeat eval/*llm-depth* "  "))
@@ -198,11 +199,12 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
         _ (eval/vlog (str indent "Recovery attempt: "
                           (inc *recovery-depth*) "/" max-recovery-attempts))
         error-map {:error (str "Reader error: " error-msg) :raw raw}
-        recovery-quine (list 'quine 'completion raw '(prune)
+        recovery-context (list 'do
+                           (list 'def '_recovery_prompt inert-recovery-prompt)
+                           (list 'def '_error error-map))
+        recovery-quine (list 'quine 'completion raw recovery-context '(prune 2)
                          (list 'eval
                            (list 'do
-                             (list 'def '_recovery_prompt inert-recovery-prompt)
-                             (list 'def '_error error-map)
                              (list 'quote (list '!llm-self (list 'reopen 'completion))))))
         recovery-program (inbox/apply-inbox-macros recovery-quine inbox-macros
                                                    {:env {'eval eval-builtin}})
