@@ -214,7 +214,7 @@ The `:namespaces` map accepts several reference forms:
 | Form | Meaning |
 |---|---|
 | `stdlib/io` | Built-in stdlib namespace. |
-| `stdlib/reminders/coding` | Nested item from a stdlib namespace. |
+| `stdlib/io/read-file` | Nested item from a stdlib namespace. |
 | `[stdlib/io stdlib/patterns]` | Merge multiple namespace maps. |
 | `some_file.clj/some-var` | Load a Clojure file and resolve a public var. |
 | `{:file "path/to/file"}` | Read file content as a string. |
@@ -234,6 +234,47 @@ The `:available-agents` option accepts:
 Inline mini specs can use agent profile options such as `:agent-description`, `:system-prompt`, `:default-model-profile`, `:format`, and `:namespaces`.
 
 Sub-agent resolution happens when the parent agent is compiled. Each `:available-agents` entry is resolved to an agent profile spec and compiled into a runnable function exposed in the `workers/` namespace. If the sub-agent profile spec has its own `:default-model-profile`, that profile is used. Otherwise the sub-agent inherits the parent agent's resolved model profile. Model differences should usually be represented by choosing a different `:default-model-profile`; otherwise the sub-agent uses the inherited profile's `:default-model`.
+
+## Agent Skills
+
+Agent Skills package reusable instructions in a directory containing `SKILL.md`. Every compiled Spell agent receives a prompt-only `skills` namespace that progressively discloses these files. Catalog injection is always on for compiled agents — including workers and other explicitly compiled sub-agents — for compatibility; there is no profile option to disable it.
+
+### Discover skills
+
+Spell snapshots three scopes when it compiles an agent:
+
+| Scope | Location |
+|---|---|
+| Bundled | `resources/skills/` shipped with Spell |
+| Repository | `.agents/skills` in the working directory and each parent through the Git worktree root |
+| User | `$HOME/.agents/skills` |
+
+Skill directories may be symlinks. Malformed or unreadable skills are skipped with bounded diagnostics instead of aborting compilation. Skills added after compilation are available to the next compiled agent.
+
+### Write and use a skill
+
+The directory name must match the skill's Agent Skills-compatible `name`; `description` tells the model when the skill applies. See the [Agent Skills specification](https://agentskills.io/) for the standard format:
+
+```markdown
+---
+name: review-results
+description: Review analysis results and report material statistical or presentation issues.
+---
+
+Inspect the analysis inputs and outputs, then report prioritized findings with supporting evidence.
+```
+
+The initial prompt contains only each skill's name, description, and `SKILL.md` path, within an 8000-character catalog. An explicit `$review-results` request or a matching task description tells the agent to load the complete instructions before acting:
+
+```clojure
+'(!describe skills :review-results)
+```
+
+Duplicate names are resolved at discovery time: the nearest repository-local root wins over more distant repository roots, repository-local wins over the user root, and the user root wins over bundled skills. Only the winning skill appears in the catalog and in `!describe` detail. On-demand `SKILL.md` disclosure is capped at 65536 characters, with a visible `... [truncated, N chars total]` notice appended when the cap applies. Spell bundles canonical `coding` and `context-efficiency` workflow skills.
+
+### Supporting files and permissions
+
+A skill may refer to adjacent `references/`, `scripts/`, and `assets/` paths. Spell reports the skill directory as their relative base. Loading a skill adds instructions only: supporting files still require an existing capability such as `io`, and skill metadata does not grant tools, namespaces, or permissions.
 
 ## MCP Server Profiles
 
