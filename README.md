@@ -151,7 +151,9 @@ Default namespaces:
 - `strings`
 - `math`
 - `builtins`: documentation-only namespace for functions available without a namespace prefix
-- `reminders`: documentation-only namespace for Spell-specific patterns, akin to skills
+- `skills`: generated prompt-only namespace containing the discovered Agent Skills catalog. Explicit `$name` activation and implicit description matches use `(!describe skills :name)` to disclose the complete matching `SKILL.md`.
+
+Spell discovers standard `SKILL.md` files and progressively discloses their complete instructions when relevant. See [Agent Skills](docs/api.md#agent-skills) for discovery scopes, authoring, and permissions.
 
 Optional effect namespaces:
 

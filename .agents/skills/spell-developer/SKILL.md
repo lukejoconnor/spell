@@ -53,7 +53,7 @@ Language and support:
 
 Namespaces:
 
-- `src/spell/stdlib.clj`: core `strings`, `math`, builtins, reminders, and namespace metadata.
+- `src/spell/stdlib.clj`: core `strings`, `math`, builtins, and namespace metadata.
 - `src/spell/io.clj`: filesystem and shell helpers.
 - `src/spell/web.clj`: search and fetch helpers.
 - `src/spell/globals.clj`: shared global store.
