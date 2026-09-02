@@ -115,10 +115,10 @@
    ["-M" "--max-tokens TOKENS" "Max tokens per LLM response (default: 16384)"
     :parse-fn #(Integer/parseInt %)
     :validate [pos? "Must be positive"]]
-   ["-K" "--thinking BUDGET" "Enable Anthropic adaptive thinking (budget_tokens, e.g. 10000)"
+   ["-K" "--thinking TOKENS" "Enable Anthropic thinking (token budget for extended thinking; adaptive for supported models)"
     :parse-fn #(Integer/parseInt %)
     :validate [pos? "Must be positive"]]
-   ["-R" "--reasoning-effort EFFORT" "OpenAI reasoning effort (none, low, medium, high, xhigh, max; default: medium for the default model)"
+   ["-R" "--reasoning-effort EFFORT" "Reasoning effort for OpenAI and adaptive Anthropic models (none, low, medium, high, xhigh, max; default: medium for the default model)"
     :validate [#(contains? #{"none" "low" "medium" "high" "xhigh" "max"} %)
                "Must be none, low, medium, high, xhigh, or max"]]
    [nil "--verbosity LEVEL" "OpenAI verbosity (low, auto)"

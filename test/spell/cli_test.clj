@@ -238,6 +238,8 @@
     (is ok?)
     (is (str/includes? exit-message "default: openai-tc:gpt-5.6-sol"))
     (is (str/includes? exit-message "default: medium for the default model"))
+    (is (str/includes? exit-message "token budget for extended thinking; adaptive for supported models"))
+    (is (str/includes? exit-message "Reasoning effort for OpenAI and adaptive Anthropic models"))
     (is (str/includes? exit-message "codex-tc:<model>"))
     (is (str/includes? exit-message "openai-tc:gpt-5.6-sol"))
     (is (str/includes? exit-message "anthropic-tc:claude-opus-4-8"))

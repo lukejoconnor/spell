@@ -337,17 +337,29 @@
                            :cache_creation_input_tokens 0}))
       (is (= 2.4505 (double (provider/current-cost usage-atom)))))))
 
-(deftest current-cost-leaves-fable-5-1-unpriced-test
-  (testing "an explicit unsupported row prevents Fable 5.1 from inheriting Fable 5 pricing"
-    (is (nil? (#'provider/lookup-cost "claude-fable-5-1" provider/default-costs)))
+(deftest current-cost-prices-fable-5-1-test
+  (testing "Fable 5.1 uses its lower cache-read price and enforces finite budgets"
+    (is (= {:input 10.0 :cache-read-input 0.25
+            :cache-write-input 12.5 :output 50.0}
+           (#'provider/lookup-cost "claude-fable-5-1" provider/default-costs)))
     (let [usage-atom (atom {:by-model {}})]
       (binding [provider/*usage* usage-atom
                 provider/*budget* nil]
         (provider/track-usage! "claude-fable-5-1"
                                {:input_tokens 1000000
+                                :cache_read_input_tokens 1000000
                                 :output_tokens 500000}))
-      (is (nil? (get-in @usage-atom [:by-model "claude-fable-5-1" :cost])))
-      (is (nil? (provider/current-cost usage-atom))))))
+      (is (= 35.25 (double (get-in @usage-atom [:by-model "claude-fable-5-1" :cost]))))
+      (is (= 35.25 (double (provider/current-cost usage-atom)))))
+    (let [usage-atom (atom {:by-model {}})]
+      (is (thrown-with-msg?
+            clojure.lang.ExceptionInfo
+            #"Budget exceeded"
+            (binding [provider/*usage* usage-atom
+                      provider/*budget* 0.001]
+              (provider/track-usage! "claude-fable-5-1"
+                                     {:input_tokens 1000000
+                                      :output_tokens 500000})))))))
 
 (deftest current-cost-prices-latest-models-test
   (testing "shared pricing covers input, cached input, and output for the latest configured model families"
@@ -356,6 +368,7 @@
              ["gpt-5.6-sol" 5.0 0.5 5.0 30.0]
              ["claude-sonnet-5" 3.0 0.3 3.75 15.0]
              ["claude-opus-4-8" 5.0 0.5 6.25 25.0]
+             ["claude-fable-5-1" 10.0 0.25 12.5 50.0]
              ["claude-fable-5" 10.0 1.0 12.5 50.0]
              ["accounts/fireworks/models/glm-5p2" 1.4 0.14 1.4 4.4]
              ["accounts/fireworks/models/kimi-k2p7-code" 0.95 0.19 0.95 4.0]
