@@ -71,7 +71,7 @@ response = client.run(
         "mode": "spell",
         "prompt": "Return 42.",
         "agent_profile": "config/agent-profiles/base-msg.agent.edn",
-        "model_profile": "config/model-profiles/openai-tc.edn",
+        "model": "openai-tc:gpt-5.6-sol",
     },
     timeout=300,
 )

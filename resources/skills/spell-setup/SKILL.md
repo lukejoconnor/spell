@@ -48,8 +48,8 @@ test -f "$HOME/.codex/auth.json" && echo "Codex auth exists" || echo "Codex auth
 
 If one or more are configured, tell the user they are ready to use those provider paths:
 
-- Codex auth (CLI default): `codex-tc:<model>`
-- `OPENAI_API_KEY`: `openai-tc:<model>`
+- Codex auth: `codex-tc:<model>`
+- `OPENAI_API_KEY` (CLI default): `openai-tc:<model>`
 - `ANTHROPIC_API_KEY`: `anthropic-tc:<model>`
 - `FIREWORKS_API_KEY`: `fireworks-tc:<model>`
 
