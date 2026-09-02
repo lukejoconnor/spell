@@ -11,6 +11,8 @@
 - Added `--dogfood` to expose the feedback namespace to the main agent and its workers only for explicit self-improvement runs.
 - Added `--agents-md` to prepend the current working directory's `AGENTS.md`, capped at 32 KiB, to natural-language CLI tasks.
 - Added Agent Skills discovery with on-demand `SKILL.md` disclosure via a prompt-only `skills` namespace, removed `reminders`, renamed bundled skills to `spell-*` names where applicable, and added SnakeYAML for safe skill metadata parsing.
+- Changed error recovery so proven trailing-expression failures reopen in place, while other evaluation and reader failures use one-turn inert recovery context that is pruned before subsequent turns; added a public recovery guide.
+- Added Claude Fable 5.1 model aliases, pricing, adaptive thinking support, and automatic tool choice.
 
 ## v0.2.0
 
