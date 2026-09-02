@@ -607,6 +607,10 @@
       (and (anthropic-adaptive-thinking-model? model)
            (anthropic-output-effort reasoning-effort))))
 
+(defn- anthropic-auto-tool-choice-only-model?
+  [model]
+  (str/includes? (str model) "fable-5-1"))
+
 (defrecord AnthropicPfProvider [api-key model max-tokens http-client request-timeout-sec
                                 sse-idle-timeout-sec sse-completion-timeout-sec costs]
   LLMProvider
@@ -704,8 +708,11 @@
                                     (or max-tokens 16384))
                       :messages [{:role "user" :content user-content}]
                       :tools [spell-suffix-tool]
-                      ;; thinking forbids forced tool use; use "auto" instead of "any"
-                      :tool_choice {:type (if thinking-enabled? "auto" "any")}}
+                      ;; Thinking and Fable 5.1 forbid forced tool use.
+                      :tool_choice {:type (if (or thinking-enabled?
+                                                 (anthropic-auto-tool-choice-only-model? model))
+                                           "auto"
+                                           "any")}}
                cached-system (assoc :system cached-system)
                stream? (assoc :stream true)
                ;; Opus 4.7 requires adaptive thinking; budget_tokens is rejected.

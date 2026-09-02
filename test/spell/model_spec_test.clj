@@ -31,6 +31,10 @@
            (model-spec/resolve-model-spec "sonnet")))
     (is (= {:provider "anthropic-tc" :model "claude-opus-4-8"}
            (model-spec/resolve-model-spec "opus")))
+    (is (= {:provider "anthropic-tc" :model "claude-fable-5-1"}
+           (model-spec/resolve-model-spec "fable")))
+    (is (= {:provider "anthropic-tc" :model "claude-fable-5-1"}
+           (model-spec/resolve-model-spec "fable51")))
     (is (= {:provider "anthropic-tc" :model "claude-fable-5"}
            (model-spec/resolve-model-spec "fable5")))
     (is (= {:provider "openai-tc" :model "gpt-5.6-sol"}

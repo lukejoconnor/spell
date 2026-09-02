@@ -112,6 +112,19 @@
                  (:provider ((var benchmark-api/make-provider) {:model alias}))))
           (is (= expected (:model @captured)))))))
 
+  (testing "Fable aliases route to the expected Anthropic tool-call models"
+    (doseq [[alias expected] [["fable" "claude-fable-5-1"]
+                              ["fable51" "claude-fable-5-1"]
+                              ["fable5" "claude-fable-5"]]]
+      (let [captured (atom nil)]
+        (with-redefs [provider/anthropic-tc-provider
+                      (fn [opts]
+                        (reset! captured opts)
+                        {:provider :anthropic-tc :opts opts})]
+          (is (= :anthropic-tc
+                 (:provider ((var benchmark-api/make-provider) {:model alias}))))
+          (is (= expected (:model @captured)))))))
+
   (testing "bare gpt alias routes to OpenAI tool-call transport"
     (let [captured (atom nil)]
       (with-redefs [provider/openai-provider

@@ -597,12 +597,16 @@
 
   (testing "opus-4-5 model returns true"
     (let [p (provider/anthropic-pf-provider {:api-key "test" :model "claude-opus-4-5-20250901"})]
-      (is (true? (provider/supports-prefill p))))))
+      (is (true? (provider/supports-prefill p)))))
+
+  (testing "Fable 5.1 returns false"
+    (let [p (provider/anthropic-pf-provider {:api-key "test" :model "claude-fable-5-1"})]
+      (is (false? (provider/supports-prefill p))))))
 
 (deftest anthropic-adaptive-thinking-request-test
   (testing "tool-call path uses adaptive thinking on current model families"
     (doseq [model ["claude-opus-4-7" "claude-opus-4-8"
-                   "claude-sonnet-5" "claude-fable-5"]]
+                   "claude-sonnet-5" "claude-fable-5" "claude-fable-5-1"]]
       (let [request (#'provider/anthropic-tc-request "test" model
                                                      "prompt" "system" nil false nil
                                                      "medium" nil 600)
@@ -613,16 +617,26 @@
         (is (= {:effort "medium"} (:output_config body)) model)
         (is (= 600 (request-timeout-seconds request)) model))))
 
-  (testing "plain-text path uses adaptive thinking and drops assistant prefill on opus-4-7"
-    (let [request (#'provider/anthropic-pf-request "test" "claude-opus-4-7-20250416"
-                                                   "prompt" "system" "prefill" nil false nil
-                                                   "high" nil 600)
+  (testing "Fable 5.1 uses automatic tool choice without thinking"
+    (let [request (#'provider/anthropic-tc-request "test" "claude-fable-5-1"
+                                                   "prompt" "system" nil false nil
+                                                   nil nil 600)
           body (request-json-body request)]
-      (is (= 32768 (:max_tokens body)))
-      (is (= [{:role "user" :content "prompt"}] (:messages body)))
-      (is (= {:type "adaptive"} (:thinking body)))
-      (is (= {:effort "high"} (:output_config body)))
-      (is (= 600 (request-timeout-seconds request))))))
+      (is (= {:type "auto"} (:tool_choice body)))
+      (is (nil? (:thinking body)))
+      (is (nil? (:output_config body)))))
+
+  (testing "plain-text path uses adaptive thinking and drops assistant prefill on no-prefill families"
+    (doseq [model ["claude-opus-4-7-20250416" "claude-fable-5-1"]]
+      (let [request (#'provider/anthropic-pf-request "test" model
+                                                     "prompt" "system" "prefill" nil false nil
+                                                     "high" nil 600)
+            body (request-json-body request)]
+        (is (= 32768 (:max_tokens body)) model)
+        (is (= [{:role "user" :content "prompt"}] (:messages body)) model)
+        (is (= {:type "adaptive"} (:thinking body)) model)
+        (is (= {:effort "high"} (:output_config body)) model)
+        (is (= 600 (request-timeout-seconds request)) model)))))
 
 (deftest make-http-client-connect-timeout-test
   (testing "applies connect timeout when requested"

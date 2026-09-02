@@ -182,6 +182,19 @@
                (:provider ((var cli/make-provider) {:model "opus"}))))
         (is (= "claude-opus-4-8" (:model @captured))))))
 
+  (testing "Fable aliases route to the expected Anthropic tool-call models"
+    (doseq [[alias expected] [["fable" "claude-fable-5-1"]
+                              ["fable51" "claude-fable-5-1"]
+                              ["fable5" "claude-fable-5"]]]
+      (let [captured (atom nil)]
+        (with-redefs [provider/anthropic-tc-provider
+                      (fn [opts]
+                        (reset! captured opts)
+                        {:provider :anthropic-tc :opts opts})]
+          (is (= :anthropic-tc
+                 (:provider ((var cli/make-provider) {:model alias}))))
+          (is (= expected (:model @captured)))))))
+
   (testing "bare open-weight aliases route to Fireworks tool-call transport"
     (doseq [[alias expected] [["glm" "glm-5p2"]
                              ["kimi" "kimi-k2p7-code"]
@@ -225,9 +238,12 @@
     (is ok?)
     (is (str/includes? exit-message "default: openai-tc:gpt-5.6-sol"))
     (is (str/includes? exit-message "default: medium for the default model"))
+    (is (str/includes? exit-message "token budget for extended thinking; adaptive for supported models"))
+    (is (str/includes? exit-message "Reasoning effort for OpenAI and adaptive Anthropic models"))
     (is (str/includes? exit-message "codex-tc:<model>"))
     (is (str/includes? exit-message "openai-tc:gpt-5.6-sol"))
     (is (str/includes? exit-message "anthropic-tc:claude-opus-4-8"))
+    (is (str/includes? exit-message "spell -m fable 'Use Claude Fable 5.1'"))
     (is (str/includes? exit-message "fireworks-tc:kimi-k2p7-code"))
     (is (str/includes? exit-message "--dogfood"))
     (is (str/includes? exit-message "--agents-md"))

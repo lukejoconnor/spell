@@ -115,10 +115,10 @@
    ["-M" "--max-tokens TOKENS" "Max tokens per LLM response (default: 16384)"
     :parse-fn #(Integer/parseInt %)
     :validate [pos? "Must be positive"]]
-   ["-K" "--thinking BUDGET" "Enable Anthropic adaptive thinking (budget_tokens, e.g. 10000)"
+   ["-K" "--thinking TOKENS" "Enable Anthropic thinking (token budget for extended thinking; adaptive for supported models)"
     :parse-fn #(Integer/parseInt %)
     :validate [pos? "Must be positive"]]
-   ["-R" "--reasoning-effort EFFORT" "OpenAI reasoning effort (none, low, medium, high, xhigh, max; default: medium for the default model)"
+   ["-R" "--reasoning-effort EFFORT" "Reasoning effort for OpenAI and adaptive Anthropic models (none, low, medium, high, xhigh, max; default: medium for the default model)"
     :validate [#(contains? #{"none" "low" "medium" "high" "xhigh" "max"} %)
                "Must be none, low, medium, high, xhigh, or max"]]
    [nil "--verbosity LEVEL" "OpenAI verbosity (low, auto)"
@@ -162,6 +162,7 @@
           "  spell -m codex-tc:gpt-5.3 'Return 42'"
           "  spell -m openai-tc:gpt-5.6-sol 'Return 42'"
           "  spell -m anthropic-tc:claude-opus-4-8 'Return 42'"
+          "  spell -m fable 'Use Claude Fable 5.1'"
           "  spell -m fireworks:glm-5p2 'Return 42'"
           "  spell -m fireworks-tc:kimi-k2p7-code 'Return 42'"
           "  spell examples/hello-world.spl"
