@@ -10,7 +10,13 @@
 (def ^:private max-diagnostics 20)
 (def ^:private max-diagnostic-chars 300)
 (def ^:private max-catalog-chars 8000)
+(def max-skill-content-chars
+  "Upper bound on on-demand SKILL.md content disclosed into model context.
+  64 KiB of characters keeps a single disclosure well under typical context
+  budgets while leaving room for genuinely long skill bodies."
+  65536)
 (def ^:private skill-name-pattern #"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+(def ^:private bundled-marker-resource "skills/.spell-skills-root")
 
 (defn- canonical-path [^File file]
   (try (.getCanonicalPath file)
@@ -36,7 +42,7 @@
       :else nil)))
 
 (defn- bundled-marker []
-  (io/resource ".spell-skills-root"))
+  (io/resource bundled-marker-resource))
 
 (defn discovery-roots
   "Return deterministic filesystem skill roots: cwd-to-worktree .agents/skills, then HOME.
@@ -86,6 +92,21 @@
     (when-not (and (string? value) (not (str/blank? value)))
       (throw (ex-info (str "SKILL.md frontmatter requires non-blank " key-name) {})))
     (str/trim value)))
+
+(defn truncate-skill-content
+  "Cap disclosed SKILL.md content at max-skill-content-chars, applied uniformly to
+  filesystem and bundled sources after metadata parsing/validation. The cut point
+  never splits a surrogate pair, and a visible truncation notice is appended."
+  [^String text]
+  (let [total (count text)]
+    (if (<= total max-skill-content-chars)
+      text
+      (let [cut (if (Character/isHighSurrogate (.charAt text (dec max-skill-content-chars)))
+                  (dec max-skill-content-chars)
+                  max-skill-content-chars)]
+        (str (subs text 0 cut)
+             "\n... [truncated, " total " chars total]")))))
+
 (defn- load-skill-text [dirname path directory root text]
   (let [metadata (parse-yaml (frontmatter text))
         name (required-string metadata "name")
@@ -107,7 +128,7 @@
      :path path
      :directory directory
      :root root
-     :content text}))
+     :content (truncate-skill-content text)}))
 
 (defn- load-skill [^File source-root ^File dir]
   (let [file (io/file dir "SKILL.md")]
@@ -153,18 +174,27 @@
          roots)]
     {:skills skills :diagnostics @diagnostics}))
 
+(defn bundled-entry-skill-name
+  "Return the skill name for a jar entry only when it matches Spell's bundled
+  layout skills/<valid-name>/SKILL.md. Unrelated top-level <name>/SKILL.md
+  entries in a shaded jar are rejected."
+  [entry-name]
+  (when-let [name (second (re-matches #"skills/([^/]+)/SKILL\.md" (str entry-name)))]
+    (when (and (<= (count name) 64) (re-matches skill-name-pattern name))
+      name)))
+
 (defn- jar-bundled-skills [^JarURLConnection connection]
   (let [jar (.getJarFile connection)
         root (str (.getJarFileURL connection) "!/")
         entries (->> (enumeration-seq (.entries jar))
                      (map #(.getName %))
-                     (keep #(second (re-matches #"([^/]+)/SKILL\.md" %)))
+                     (keep bundled-entry-skill-name)
                      sort)]
     (reduce
      (fn [{:keys [skills diagnostics]} name]
-       (let [entry-name (str name "/SKILL.md")
+       (let [entry-name (str "skills/" name "/SKILL.md")
              path (str root entry-name)
-             directory (str root name)]
+             directory (str root "skills/" name)]
          (try
            (with-open [stream (.getInputStream jar (.getJarEntry jar entry-name))]
              {:skills (conj skills
@@ -197,23 +227,40 @@
                         :message (bounded-message
                                   (or (.getMessage e) (.getName (class e))))}]}))
     {:skills []
-     :diagnostics [{:path ".spell-skills-root"
+     :diagnostics [{:path bundled-marker-resource
                     :message "bundled skills resource marker was not found"}]}))
 
+(defn dedupe-skills
+  "Keep the first skill for each :name, preserving the order of winners.
+  Callers must present skills in precedence order: nearest repository-local
+  root first, then more distant repository roots, then the user root, and
+  bundled skills last."
+  [skills]
+  (:winners
+   (reduce (fn [{:keys [seen winners] :as acc} {:keys [name] :as skill}]
+             (if (contains? seen name)
+               acc
+               {:seen (conj seen name) :winners (conj winners skill)}))
+           {:seen #{} :winners []}
+           skills)))
+
 (defn discover-skills
-  "Discover and load skills once. Invalid/unreadable entries become bounded diagnostics."
+  "Discover and load skills once, deduplicated by name. Precedence: nearest
+  repository-local root, then more distant repository roots, then the user
+  root, then bundled skills. Invalid/unreadable entries become bounded
+  diagnostics."
   ([]
-   (let [bundled (discover-bundled-skills)
-         external (discover-filesystem-skills (discovery-roots))]
-     {:skills (into (:skills bundled) (:skills external))
-      :diagnostics (->> (concat (:diagnostics bundled) (:diagnostics external))
+   (let [external (discover-filesystem-skills (discovery-roots))
+         bundled (discover-bundled-skills)]
+     {:skills (dedupe-skills (into (vec (:skills external)) (:skills bundled)))
+      :diagnostics (->> (concat (:diagnostics external) (:diagnostics bundled))
                         (take max-diagnostics)
                         vec)}))
   ([roots]
-   (discover-filesystem-skills roots)))
+   (update (discover-filesystem-skills roots) :skills dedupe-skills)))
 
 (defn bundled-skill-content
-  "Read a complete bundled SKILL.md by its validated directory/name, when available."
+  "Read bounded bundled SKILL.md content by its validated directory/name, when available."
   [name]
   (some->> (:skills (discover-bundled-skills))
            (filter #(= name (:name %)))
@@ -235,7 +282,7 @@
   "Build a deterministic catalog no longer than 8000 characters, shortening descriptions
   before omitting skill entries. Discovery diagnostics are not inserted into model context."
   [{:keys [skills]}]
-  (let [skills (vec skills)
+  (let [skills (vec (dedupe-skills skills))
         render (fn [included desc-limit omitted]
                  (catalog-text included desc-limit omitted))
         full (some (fn [limit]
@@ -261,34 +308,27 @@
                     (shorten path max-diagnostic-chars) " — "
                     (bounded-message message))))))
 
-(defn- skill-detail [name candidates]
+(defn- skill-detail [name {:keys [path directory root content]}]
   (str "SKILL DETAIL — " name "\n\n"
-       "All duplicate candidates are shown in deterministic discovery order. Choose the candidate whose source/root applies to the task.\n"
-       "Relative resource references must be resolved from that candidate's skill directory; its discovery root is also listed for provenance.\n"
+       "Duplicate skill names are resolved at discovery time; this is the winning candidate (nearest repository-local root, then more distant repository roots, then user root, then bundled).\n"
+       "Relative resource references must be resolved from this skill's directory; its discovery root is also listed for provenance.\n"
        "Skill disclosure provides instructions only and grants no new tools, permissions, namespaces, or capability escalation.\n\n"
-       (str/join
-        "\n\n"
-        (map-indexed
-         (fn [idx {:keys [path directory root content]}]
-           (str "CANDIDATE " (inc idx) "\n"
-                "SKILL.md: " path "\n"
-                "Skill directory (relative-resource base): " directory "\n"
-                "Source root: " root "\n\n"
-                content))
-         candidates))))
+       "SKILL.md: " path "\n"
+       "Skill directory (relative-resource base): " directory "\n"
+       "Source root: " root "\n\n"
+       content))
 
 (defn skills-namespace
   "Generate the always-available prompt-only skills namespace from a discovery snapshot."
   ([] (skills-namespace (discover-skills)))
   ([snapshot]
    (report-diagnostics! (:diagnostics snapshot))
-   (let [skills (:skills snapshot)
-         by-name (group-by :name skills)
-         catalog (initial-catalog snapshot)
+   (let [skills (dedupe-skills (:skills snapshot))
+         catalog (initial-catalog (assoc snapshot :skills skills))
          details (into {}
-                       (map (fn [[name candidates]]
-                              [(keyword name) (skill-detail name candidates)]))
-                       (sort-by key by-name))]
+                       (map (fn [{:keys [name] :as skill}]
+                              [(keyword name) (skill-detail name skill)]))
+                       (sort-by :name skills))]
      {:short-docs catalog
       :docs {:guide catalog}
       :detail details})))

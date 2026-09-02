@@ -237,7 +237,7 @@ Sub-agent resolution happens when the parent agent is compiled. Each `:available
 
 ## Agent Skills
 
-Agent Skills package reusable instructions in a directory containing `SKILL.md`. Every compiled Spell agent receives a prompt-only `skills` namespace that progressively discloses these files.
+Agent Skills package reusable instructions in a directory containing `SKILL.md`. Every compiled Spell agent receives a prompt-only `skills` namespace that progressively discloses these files. Catalog injection is always on for compiled agents — including workers and other explicitly compiled sub-agents — for compatibility; there is no profile option to disable it.
 
 ### Discover skills
 
@@ -245,7 +245,7 @@ Spell snapshots three scopes when it compiles an agent:
 
 | Scope | Location |
 |---|---|
-| Bundled | `skills/` shipped with Spell |
+| Bundled | `resources/skills/` shipped with Spell |
 | Repository | `.agents/skills` in the working directory and each parent through the Git worktree root |
 | User | `$HOME/.agents/skills` |
 
@@ -253,7 +253,7 @@ Skill directories may be symlinks. Malformed or unreadable skills are skipped wi
 
 ### Write and use a skill
 
-The directory name must match the skill's Agent Skills-compatible `name`; `description` tells the model when the skill applies. See OpenAI's [Build skills guide](https://learn.chatgpt.com/docs/build-skills) for the standard format:
+The directory name must match the skill's Agent Skills-compatible `name`; `description` tells the model when the skill applies. See the [Agent Skills specification](https://agentskills.io/) for the standard format:
 
 ```markdown
 ---
@@ -270,7 +270,7 @@ The initial prompt contains only each skill's name, description, and `SKILL.md` 
 '(!describe skills :review-results)
 ```
 
-Duplicate names remain visible with their source paths so the agent can choose the applicable candidate. Spell bundles canonical `coding` and `context-efficiency` workflow skills.
+Duplicate names are resolved at discovery time: the nearest repository-local root wins over more distant repository roots, repository-local wins over the user root, and the user root wins over bundled skills. Only the winning skill appears in the catalog and in `!describe` detail. On-demand `SKILL.md` disclosure is capped at 65536 characters, with a visible `... [truncated, N chars total]` notice appended when the cap applies. Spell bundles canonical `coding` and `context-efficiency` workflow skills.
 
 ### Supporting files and permissions
 
