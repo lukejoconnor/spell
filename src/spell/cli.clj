@@ -162,6 +162,7 @@
           "  spell -m codex-tc:gpt-5.3 'Return 42'"
           "  spell -m openai-tc:gpt-5.6-sol 'Return 42'"
           "  spell -m anthropic-tc:claude-opus-4-8 'Return 42'"
+          "  spell -m fable 'Use Claude Fable 5.1'"
           "  spell -m fireworks:glm-5p2 'Return 42'"
           "  spell -m fireworks-tc:kimi-k2p7-code 'Return 42'"
           "  spell examples/hello-world.spl"

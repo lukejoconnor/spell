@@ -337,6 +337,18 @@
                            :cache_creation_input_tokens 0}))
       (is (= 2.4505 (double (provider/current-cost usage-atom)))))))
 
+(deftest current-cost-leaves-fable-5-1-unpriced-test
+  (testing "an explicit unsupported row prevents Fable 5.1 from inheriting Fable 5 pricing"
+    (is (nil? (#'provider/lookup-cost "claude-fable-5-1" provider/default-costs)))
+    (let [usage-atom (atom {:by-model {}})]
+      (binding [provider/*usage* usage-atom
+                provider/*budget* nil]
+        (provider/track-usage! "claude-fable-5-1"
+                               {:input_tokens 1000000
+                                :output_tokens 500000}))
+      (is (nil? (get-in @usage-atom [:by-model "claude-fable-5-1" :cost])))
+      (is (nil? (provider/current-cost usage-atom))))))
+
 (deftest current-cost-prices-latest-models-test
   (testing "shared pricing covers input, cached input, and output for the latest configured model families"
     (doseq [[model expected-input expected-cache-read expected-cache-write expected-output]

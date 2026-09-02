@@ -4,6 +4,7 @@
  "claude-sonnet-5" {"input" 3.00 "cache-read-input" 0.30 "cache-write-input" 3.75 "output" 15.00}
  "claude-sonnet-4-6" {"input" 3.00 "cache-read-input" 0.30 "cache-write-input" 3.75 "output" 15.00}
  "claude-sonnet-4" {"input" 3.00 "cache-read-input" 0.30 "cache-write-input" 3.75 "output" 15.00}
+ "claude-fable-5-1" nil
  "claude-fable-5" {"input" 10.00 "cache-read-input" 1.00 "cache-write-input" 12.50 "output" 50.00}
  "claude-opus-4-8" {"input" 5.00 "cache-read-input" 0.50 "cache-write-input" 6.25 "output" 25.00}
  "claude-opus-4-5" {"input" 5.00 "cache-read-input" 0.50 "cache-write-input" 6.25 "output" 25.00}
