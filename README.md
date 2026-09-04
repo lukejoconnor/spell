@@ -14,6 +14,7 @@ Self-programmed execution (SPE) is when a language model (LM) acts as a self-orc
   - [Effect boundary and `eval`](#effect-boundary-and-eval)
   - [The Spell wrapper](#the-spell-wrapper)
   - [Edit markers](#edit-markers)
+  - [Error recovery](#error-recovery)
   - [Namespaces](#namespaces)
   - [Multiple agents](#multiple-agents)
 - [Contributing](#contributing)
@@ -37,7 +38,7 @@ The inner `do` block returns the value of its last expression, the trailing expr
 
 ## Quick start
 
-Clone the repo and ask your agent to perform setup; it should discover the repo-local `spell-setup` skill. The prerequisites are Java, Clojure, and an API key or Codex auth.
+Clone the repo and ask your agent to perform setup; it should discover the repo-local `spell-setup` skill. The prerequisites are Java, Clojure, and an OpenAI API key for the default GPT-5.6 Sol model. Other providers can be selected explicitly.
 
 The most convenient way to run Spell is via the CLI:
 
@@ -46,7 +47,7 @@ The most convenient way to run Spell is via the CLI:
 bin/spell -v -e hello-world
 
 # Chat with the agent
-bin/spell -v -e chat
+bin/spell -e chat
 
 # Ask the default agent to do something
 bin/spell "Inspect the examples directory and suggest one example to run next."
@@ -57,6 +58,14 @@ bin/spell -h
 
 To run `spell` directly instead of `bin/spell`, put this checkout's `bin/` directory on your `PATH`.
 
+### Examples
+
+- [Hello world](examples/hello-world.md) makes one minimal model self-call and composes its result.
+- [Coin flip](examples/coin-flip.md) uses recursive self-calls with a programmatic stopping condition.
+- [Chat](examples/chat.md) demonstrates an interactive conversation through agent communication.
+
+See the [examples guide](examples/README.md) for the complete runnable set, including sequential, game-loop, and MCP examples.
+
 ## Spell language overview
 
 This section is meant to explain key design choices and their rationale. For a practical guide to writing Spell code with examples, I recommend reading the [Spell system prompt](config/prompts/sysprompt-toolcall.txt).
@@ -65,7 +74,7 @@ This section is meant to explain key design choices and their rationale. For a p
 
 Spell is a dialect of Lisp embedded within Clojure. It is implemented in Clojure and copies most of Clojure's semantics. Clojure was chosen because it is a modern Lisp with a powerful concurrency model. Its concurrency features enable the multi-agent runtime. Spell resembles Clojure except when there is a reason to differ.
 
-One deliberate difference is scoping. Clojure's `eval` reads from and writes to the global environment. That is undesirable for Spell self-calls because the language model cannot inspect a hidden global environment: a parent binding could be overwritten by a child completion, or the environment could become cluttered with forgotten definitions. Spell therefore runs each self-call statelessly within its own local environment; only the argument to the self-call and its return value cross the turn boundary. Because of this choice, Spell has little use for closures. Closures are opaque function values which capture the environment in which they are defined. Such objects cannot pass through the turn boundary except when serialized as source code, which would defeat their point. Functions in Spell are therefore dynamically scoped: if a function body uses a free binding such as `completion`, that binding is looked up in the environment where the function is called.
+One deliberate difference is scoping. Clojure's `eval` reads from and writes to the global environment. That is undesirable for Spell self-calls because the language model cannot inspect a hidden global environment, and a parent binding could be overwritten by a child completion. Spell therefore runs each self-call statelessly within its own local environment; only the argument to the self-call and its return value cross the turn boundary. Because of this choice, Spell has little use for closures, which would be unable to pass through the turn boundary; therefore, functions in Spell are dynamically scoped.
 
 Spell also adds several features which are specifically motivated by SPE, and these are described below.
 
@@ -134,6 +143,10 @@ A common pattern is that a Spell program produces an edited copy of itself as th
 
 - `persist` is used to persist a computed value across turns when the value from which it is computed is pruned or otherwise dropped. At runtime, it is identical to `def`. At edit time, Spell replaces `expr` in `(persist name expr)` with the current value bound to `name`, when one is available. A common pattern is to read a large file and prune the result while persisting the relevant slice.
 
+## Error recovery
+
+Spell first attempts deterministic repair, then either reopens a proven failing trailing expression in place or presents other evaluation and reader errors in a prunable inert recovery turn. See [Error recovery](docs/error-recovery.md) for the full mechanics and recovery prompt.
+
 ## Namespaces
 
 Spell organizes many functions into namespaces. Some namespaces are default language namespaces and are always available. Others are optional effect namespaces: the selected agent profile must expose them, and their functions are only available across the effect boundary described above. All namespaces include documentation that the model can access programmatically; some are documentation-only.
@@ -143,7 +156,9 @@ Default namespaces:
 - `strings`
 - `math`
 - `builtins`: documentation-only namespace for functions available without a namespace prefix
-- `reminders`: documentation-only namespace for Spell-specific patterns, akin to skills
+- `skills`: generated prompt-only namespace containing the discovered Agent Skills catalog. Explicit `$name` activation and implicit description matches use `(!describe skills :name)` to disclose the complete matching `SKILL.md`.
+
+Spell discovers standard `SKILL.md` files and progressively discloses their complete instructions when relevant. See [Agent Skills](docs/api.md#agent-skills) for discovery scopes, authoring, and permissions.
 
 Optional effect namespaces:
 
@@ -154,6 +169,10 @@ Optional effect namespaces:
 - `globals`: see below
 - `workers`: named child-agent entry points, when the selected agent defines them
 - `blocking`: helpers for awaiting concurrent work, available only inside of `future` threads
+
+### MCP server namespaces
+
+Spell can also turn a configured stateless MCP `2026-07-28` server into an effect namespace. Server profiles hold connection and environment-backed authentication settings, while agent profiles select the tools, resources, prompts, completion, and subscriptions exposed to the model. See [MCP server profiles](docs/api.md#mcp-server-profiles).
 
 ## Multiple agents
 

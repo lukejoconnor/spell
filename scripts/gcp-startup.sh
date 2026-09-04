@@ -127,10 +127,6 @@ install_clojure_cli() {
   if command -v clojure >/dev/null 2>&1 && clojure -Sdescribe >/dev/null 2>&1; then
     return 0
   fi
-  if command -v clj >/dev/null 2>&1; then
-    return 0
-  fi
-
   local tmpdir
   tmpdir="$(mktemp -d)"
   curl -fsSL https://download.clojure.org/install/linux-install-1.11.1.1413.sh -o "${tmpdir}/install-clojure.sh"

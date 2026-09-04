@@ -2,7 +2,7 @@
 
 This file is a public orientation guide for agents, readers, and contributors working through the Spell source tree. Start with `README.md` for the human-facing project overview, CLI usage, and core language ideas, then use this file for installation checks, source-map lookup, tests, and implementation orientation.
 
-Current release state: `v0.2.0` is unreleased. The `v0.2.0-dev` branch is the active public-release preparation branch, with the public Clojure API and configuration surface documented in `docs/api.md`.
+Current release state: `v0.3.0` is unreleased. The public Clojure API and configuration surface is documented in `docs/api.md`.
 
 Spell is a Lisp dialect for LLM self-orchestration. A Spell completion is itself a program: the evaluator runs the program, and the program can call back into an LLM, spawn sub-agents, manage context, and use configured namespaces such as `io`, `web`, `agents`, `globals`, and `patterns`.
 
@@ -11,13 +11,15 @@ Spell is a Lisp dialect for LLM self-orchestration. A Spell completion is itself
 This repo includes Spell-specific skills under `.agents/skills/`. Use them as the first stop for task-oriented work:
 
 - `spell-setup`: install/check prerequisites, configure provider credentials, and run the first smoke tests or examples.
-- `spell-agent-config`: create or modify model profiles and agent profiles; use `docs/api.md` as the canonical API/config reference.
+- `spell-agent-config`: create or modify model profiles, agent profiles, and MCP server profiles; use `docs/api.md` as the canonical API/config reference.
 - `spell-developer`: navigate and modify the Spell source code, choose relevant files, and run focused checks.
 
 ## Terminology
 
 - Edit marker: a source form, such as `prune`, `rethink`, or `persist`, that affects how `apply-edits` rewrites a completion for a later turn.
 - Edit time: the phase when `apply-edits` applies edit markers to a completion before it is used as a model prefix.
+- MCP server profile: a reusable `.mcp.edn` connection and environment-backed authentication definition.
+- Server alias: the agent-profile name that identifies an MCP server and becomes its generated Spell namespace.
 
 ## Top-Level Layout
 
@@ -31,7 +33,7 @@ This repo includes Spell-specific skills under `.agents/skills/`. Use them as th
 | `test/` | Unit and integration tests. |
 | `data/pricing.edn` | Model pricing table used for usage and cost reporting. |
 | `docs/` | Public documentation for the release. |
-| `docs/CHANGELOG.md` | Release notes; `v0.2.0` is currently unreleased. |
+| `docs/CHANGELOG.md` | Release notes; `v0.3.0` is currently unreleased. |
 | `LICENSE` | MIT license text. |
 
 ## Agent Quick Start
@@ -39,7 +41,7 @@ This repo includes Spell-specific skills under `.agents/skills/`. Use them as th
 Prerequisites:
 
 - Java 11+
-- Clojure CLI (`clj`)
+- Clojure CLI (`clojure`)
 - At least one LLM provider credential or local provider
 
 On macOS with Homebrew:
@@ -50,7 +52,8 @@ brew install clojure/tools/clojure
 
 Provider setup:
 
-- Codex tool-call provider, the CLI default: install the OpenAI Codex CLI and run `codex` once so `~/.codex/auth.json` exists.
+- OpenAI API, the CLI default: set `OPENAI_API_KEY`.
+- Codex tool-call provider: install the OpenAI Codex CLI and run `codex` once so `~/.codex/auth.json` exists. This path is experimental and must be selected explicitly.
 - Anthropic API: set `ANTHROPIC_API_KEY`.
 - OpenAI API: set `OPENAI_API_KEY`.
 - Fireworks API: set `FIREWORKS_API_KEY`.
@@ -63,7 +66,7 @@ git clone https://github.com/lukejoconnor/spell.git
 cd spell
 ```
 
-No build step is required for normal CLI use. The `bin/spell` wrapper runs the Clojure CLI entry point with `clj -M:run`.
+No build step is required for normal CLI use. The `bin/spell` wrapper runs the Clojure CLI entry point with `clojure -M:run`.
 
 Smoke test without making an LLM API call:
 
@@ -94,7 +97,7 @@ The `-t` flag uses the test provider and is useful for checking Java, Clojure, d
 | `src/spell/trace_tool.clj` | Developer tooling for inspecting recorded traces. |
 | `src/spell/api.clj` | Programmatic entry point used by library callers; API details are documented separately. |
 
-The public API/configuration reference is `docs/api.md`. In `v0.2.0-dev`, `spell.api/run` requires `:model-profile` and `:agent-profile`, and rejects old public run keys such as `:provider`.
+The public API/configuration reference is `docs/api.md`. In `v0.3.0`, `spell.api/run` requires `:model-profile` and `:agent-profile`, and rejects old public run keys such as `:provider`.
 
 ## Standard Namespaces
 
@@ -152,16 +155,16 @@ bin/spell -h
 bin/spell -t "Return a greeting"
 bin/spell -e hello-world
 bin/spell "Explain the examples directory."
-clj -M:test-fast
-clj -M:test-slow
+clojure -M:test-fast
+clojure -M:test-slow
 ```
 
 The fast suite covers parser, evaluator, provider, agent, web, API, trace, macro, and prompt-facing behavior. The slow suite covers concurrency, I/O, runtime, globals, and user-provider behavior. `deps.edn` is the authoritative list of test aliases and included namespaces.
 
-Use `-T` to record an execution trace under the temporary Spell trace directory. The trace tool can inspect a trace directory directly, for example:
+Use `-T` to record an execution trace under the temporary Spell trace directory, or `--trace-dir DIR` to write it to an explicit durable location. Use `--dogfood` to expose the feedback namespace to the main agent and its workers. Use `--agents-md` to prepend the current working directory's `AGENTS.md`, capped at 32 KiB, to a natural-language task. The trace tool can inspect a trace directory directly, for example:
 
 ```bash
-clj -M -m spell.trace-tool --trace-dir DIR --summary
+clojure -M -m spell.trace-tool --trace-dir DIR --summary
 ```
 
 Use `--log FILE` or `-v` when you need to inspect model responses during development.

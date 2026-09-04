@@ -54,6 +54,22 @@
         (is (= 1 (:child-id (first (:children root)))))
         (is (= 2 (:child-id (second (:children root)))))))))
 
+(deftest begin-node-concurrent-ids-test
+  (testing "concurrent nodes receive unique contiguous IDs"
+    (binding [trace/*trace* (trace/new-trace)]
+      (let [start (promise)
+            workers (doall
+                     (repeatedly 100
+                                 #(future
+                                    @start
+                                    (trace/begin-node! nil 0 :default "(do "))))]
+        (deliver start true)
+        (let [ids (mapv deref workers)
+              {:keys [nodes next-id]} @trace/*trace*]
+          (is (= (set (range 100)) (set ids)))
+          (is (= (vec (range 100)) (mapv :id nodes)))
+          (is (= 100 next-id)))))))
+
 (deftest complete-node-success-test
   (testing "records value on success"
     (binding [trace/*trace* (trace/new-trace)]

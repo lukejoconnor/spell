@@ -1,6 +1,20 @@
 # Changelog
 
-## v0.2.0 - Unreleased
+## v0.3.0 - Unreleased
+
+- Changed the CLI and OpenAI model-profile default to GPT-5.6 Sol with medium reasoning, while retaining explicit provider and reasoning overrides.
+- Removed the CLI launcher's unnecessary dependency on `rlwrap` by invoking `clojure` directly.
+- Added a new-spec-only MCP `2026-07-28` client with generated permissioned namespaces, Streamable HTTP and stdio transports, tools, resources, prompts, completion, subscriptions, and an explorer-style `spell mcp` CLI.
+- Added a runnable MCP Everything-style example backed by the official Python SDK, including retained GPT-5.6 Sol real-model validation.
+- Integrated MCP server-profile, permission, CLI, security, and supported-surface documentation into the public API and configuration reference.
+- Added `--trace-dir DIR` for durable CLI traces and automatic agent/trace context on feedback entries.
+- Added `--dogfood` to expose the feedback namespace to the main agent and its workers only for explicit self-improvement runs.
+- Added `--agents-md` to prepend the current working directory's `AGENTS.md`, capped at 32 KiB, to natural-language CLI tasks.
+- Added Agent Skills discovery with on-demand `SKILL.md` disclosure via a prompt-only `skills` namespace, removed `reminders`, renamed bundled skills to `spell-*` names where applicable, and added SnakeYAML for safe skill metadata parsing.
+- Changed error recovery so proven trailing-expression failures reopen in place, while other evaluation and reader failures use one-turn inert recovery context that is pruned before subsequent turns; added a public recovery guide.
+- Added Claude Fable 5.1 model aliases, pricing, adaptive thinking support, and automatic tool choice.
+
+## v0.2.0
 
 First public-facing software release.
 

@@ -337,6 +337,30 @@
                            :cache_creation_input_tokens 0}))
       (is (= 2.4505 (double (provider/current-cost usage-atom)))))))
 
+(deftest current-cost-prices-fable-5-1-test
+  (testing "Fable 5.1 uses its lower cache-read price and enforces finite budgets"
+    (is (= {:input 10.0 :cache-read-input 0.25
+            :cache-write-input 12.5 :output 50.0}
+           (#'provider/lookup-cost "claude-fable-5-1" provider/default-costs)))
+    (let [usage-atom (atom {:by-model {}})]
+      (binding [provider/*usage* usage-atom
+                provider/*budget* nil]
+        (provider/track-usage! "claude-fable-5-1"
+                               {:input_tokens 1000000
+                                :cache_read_input_tokens 1000000
+                                :output_tokens 500000}))
+      (is (= 35.25 (double (get-in @usage-atom [:by-model "claude-fable-5-1" :cost]))))
+      (is (= 35.25 (double (provider/current-cost usage-atom)))))
+    (let [usage-atom (atom {:by-model {}})]
+      (is (thrown-with-msg?
+            clojure.lang.ExceptionInfo
+            #"Budget exceeded"
+            (binding [provider/*usage* usage-atom
+                      provider/*budget* 0.001]
+              (provider/track-usage! "claude-fable-5-1"
+                                     {:input_tokens 1000000
+                                      :output_tokens 500000})))))))
+
 (deftest current-cost-prices-latest-models-test
   (testing "shared pricing covers input, cached input, and output for the latest configured model families"
     (doseq [[model expected-input expected-cache-read expected-cache-write expected-output]
@@ -344,6 +368,7 @@
              ["gpt-5.6-sol" 5.0 0.5 5.0 30.0]
              ["claude-sonnet-5" 3.0 0.3 3.75 15.0]
              ["claude-opus-4-8" 5.0 0.5 6.25 25.0]
+             ["claude-fable-5-1" 10.0 0.25 12.5 50.0]
              ["claude-fable-5" 10.0 1.0 12.5 50.0]
              ["accounts/fireworks/models/glm-5p2" 1.4 0.14 1.4 4.4]
              ["accounts/fireworks/models/kimi-k2p7-code" 0.95 0.19 0.95 4.0]
@@ -1578,74 +1603,170 @@
 (deftest compile-agent-with-recovery-test
   (testing "custom recovery function is called on error"
     (let [recovery-called (atom false)
-          recovery-fn (fn [result]
+          recovery-fn (fn [_]
                         (reset! recovery-called true)
-                        ;; Return a fixed expression
                         '(def return 42))
           llm (th/make-test-runner
                {:response "undefined-symbol)"}
                :namespaces {} :recover recovery-fn)]
-      (let [result (llm "(do ")]
-        (is @recovery-called)
-        (is (= 42 result)))))
+      (is (= 42 (llm "(do ")))
+      (is @recovery-called)))
 
-  (testing "quine-extension recovery re-enters through the recovery quine"
-    ;; Program is a quine with an error. Quine-extension recovery appends
-    ;; a rethink marker plus a new arg with error info, then reopens the
-    ;; recovery quine. The second LLM call provides the fix.
+  (testing "true quoted trailing-expression recovery reopens the same completion tail"
+    (let [prompts (atom [])
+          llm (th/make-test-runner
+               {:response-fn (fn [prompt]
+                               (swap! prompts conj prompt)
+                               (if (= 1 (count @prompts))
+                                 "(quine prompt \"keep this assignment\") (def earlier 41) '(missing-tail))"
+                                 "(+ earlier 1))"))}
+               :namespaces {} :prefill? false)]
+      (is (= 42 (llm "(quine completion (eval (do ")))
+      (is (= 2 (count @prompts)))
+      (let [recovery-prefix (second @prompts)]
+        (is (str/includes? recovery-prefix "(quine prompt \"keep this assignment\")"))
+        (is (str/includes? recovery-prefix "(def earlier 41)"))
+        (is (str/includes? recovery-prefix "(quote (missing-tail))"))
+        (is (str/includes? recovery-prefix "(def _error"))
+        (is (not (str/includes? recovery-prefix "_recovery_prompt")))
+        (is (not (str/includes? recovery-prefix "(rethink")))
+        (is (not (str/includes? recovery-prefix "(prune"))))))
+
+  (testing "repeated same-tail recovery keeps prior failures inert and retains the original task"
+    (let [prompts (atom [])
+          llm (th/make-test-runner
+               {:response-fn (fn [prompt]
+                               (swap! prompts conj prompt)
+                               (case (count @prompts)
+                                 1 "(quine prompt \"original assignment\") (def kept 40) '(first-failure))"
+                                 2 "'(second-failure))"
+                                 3 "(+ kept 2))"))}
+               :namespaces {} :prefill? false)]
+      (is (= 42 (llm "(quine completion (eval (do ")))
+      (is (= 3 (count @prompts)))
+      (let [prefix (nth @prompts 2)]
+        (is (str/includes? prefix "original assignment"))
+        (is (str/includes? prefix "(quote (first-failure))"))
+        (is (str/includes? prefix "(quote (second-failure))"))
+        (is (not (str/includes? prefix "_recovery_prompt"))))))
+
+  (testing "earlier-body failures use inert recovery with exact prompt and separate error"
+    (let [prompts (atom [])
+          llm (th/make-test-runner
+               {:response-fn (fn [prompt]
+                               (swap! prompts conj prompt)
+                               (case (count @prompts)
+                                 1 "(quine prompt \"old assignment\") missing-body '(!extend completion))"
+                                 2 "(quine task \"restored assignment\") (quine context-summary \"restored history\") '(!extend completion))"
+                                 3 "42)"))}
+               :namespaces {} :prefill? false)
+          exact-prompt "The previous Spell program threw an error. The previous program is visible during this recovery turn, but it will be pruned afterward, such that you will not see it on your next turn.\n\nEmit a `(quine task \"...\")` form describing the original task, followed by a (quine context-summary \"...\") form describing history, progress, and any context which should be retained on your next turn. If there are long file snippets which should be retained, restore these by re-reading from those files in your trailing expression. Emit Spell code only, not prose. Avoid repeating your previous error."]
+      (is (= 42 (llm "(quine completion (eval (do ")))
+      (is (= 3 (count @prompts)))
+      (let [recovery-prefix (second @prompts)
+            following-prefix (nth @prompts 2)]
+        (is (str/includes? recovery-prefix (pr-str exact-prompt)))
+        (is (str/includes? recovery-prefix "(def _error"))
+        (is (str/includes? recovery-prefix "Unbound symbol: missing-body"))
+        (is (not (str/includes? exact-prompt "missing-body")))
+        (is (str/includes? following-prefix "(quine task \"restored assignment\")"))
+        (is (str/includes? following-prefix "(quine context-summary \"restored history\")"))
+        (is (not (str/includes? following-prefix "old assignment")))
+        (is (not (str/includes? following-prefix "_recovery_prompt")))
+        (is (not (str/includes? following-prefix "_error")))
+        (is (not (str/includes? following-prefix "missing-body"))))))
+
+  (testing "repeated inert recovery prunes every stale program, prompt, and error"
+    (let [prompts (atom [])
+          llm (th/make-test-runner
+               {:response-fn (fn [prompt]
+                               (swap! prompts conj prompt)
+                               (case (count @prompts)
+                                 1 "(quine prompt \"original assignment\") first-body-failure '(!extend completion))"
+                                 2 "(quine task \"first restored assignment\") (quine context-summary \"first recovery history\") second-body-failure '(!extend completion))"
+                                 3 "(quine task \"newest assignment\") (quine context-summary \"newest history\") '(!extend completion))"
+                                 4 "42)"))}
+               :namespaces {} :prefill? false)]
+      (is (= 42 (llm "(quine completion (eval (do ")))
+      (is (= 4 (count @prompts)))
+      (let [following-prefix (nth @prompts 3)]
+        (is (str/includes? following-prefix "(quine task \"newest assignment\")"))
+        (is (str/includes? following-prefix "(quine context-summary \"newest history\")"))
+        (doseq [stale ["original assignment"
+                       "first restored assignment"
+                       "first recovery history"
+                       "first-body-failure"
+                       "second-body-failure"
+                       "_recovery_prompt"
+                       "_error"]]
+          (is (not (str/includes? following-prefix stale)))))))
+
+  (testing "mismatched inner provenance is not classified as same-tail recovery"
+    (let [program '(quine completion
+                     (eval (do
+                             (quine prompt "assignment")
+                             (quote (expected-tail)))))
+          tail '(eval (do
+                        (quine prompt "assignment")
+                        (quote (expected-tail))))
+          result {:spell/recovery-phase :trailing-expression
+                  :expr tail
+                  :result {:err "Unbound symbol: unrelated-failure"
+                           :expr 'unrelated-failure
+                           :containing-form '(unrelated-failure)}}]
+      (is (false? (#'llm/trailing-expression-error? program result)))))
+
+  (testing "nested eval failure uses inert recovery rather than same-tail recovery"
+    (let [prompts (atom [])
+          llm (th/make-test-runner
+               {:response-fn (fn [prompt]
+                               (swap! prompts conj prompt)
+                               (if (= 1 (count @prompts))
+                                 "'(eval '(nested-failure)))"
+                                 "42)"))}
+               :namespaces {} :prefill? false)]
+      (is (= 42 (llm "(quine completion (eval (do ")))
+      (let [prefix (second @prompts)]
+        (is (str/includes? prefix "_recovery_prompt"))
+        (is (str/includes? prefix "(prune 2)")))))
+
+  (testing "unexpected completion-tail shape uses inert recovery"
+    (let [prompts (atom [])
+          llm (th/make-test-runner
+               {:response-fn (fn [prompt]
+                               (swap! prompts conj prompt)
+                               (if (= 1 (count @prompts)) "" "42)"))}
+               :namespaces {} :prefill? false)]
+      (is (= 42 (llm "(quine completion (eval missing-shape"))
+      (is (str/includes? (second @prompts) "_recovery_prompt"))))
+
+  (testing "shared recovery limit stops eval-only runaway loops"
     (let [call-count (atom 0)
           llm (th/make-test-runner
                {:response-fn (fn [_]
-                               (let [n (swap! call-count inc)]
-                                 (if (= n 1)
-                                   "undefined-symbol) '(!extend completion))"
-                                   "(def fix 42))")))
-                :prefill? true}
+                               (swap! call-count inc)
+                               "undefined-symbol)")}
                :namespaces {})]
-      ;; Use quine prefix so recovery can append
-      (let [result (llm "(quine completion (eval (do ")]
-        (is (= 2 @call-count))
-        (is (= 42 result)))))
-
-  (testing "quine-extension recovery injects rethink and reopens without _previous_program"
-    (let [prompts (atom [])]
-      (let [llm (th/make-test-runner
-                 {:response-fn (fn [prompt]
-                                 (swap! prompts conj prompt)
-                                 (if (= 1 (count @prompts))
-                                   "undefined-symbol) '(!extend completion))"
-                                   "(def fix 42))"))}
-                 :namespaces {} :prefill? false)]
-        (let [result (llm "(quine completion (eval (do ")
-              recovery-prompt (second @prompts)]
-          (is (= 42 result))
-          (is (str/includes? recovery-prompt "(rethink \"Error recovery - see _error for details.\")"))
-          (is (str/includes? recovery-prompt "!llm-self (reopen completion)"))
-          (is (not (str/includes? recovery-prompt "_previous_program")))))))
-
-  (testing "shared recovery limit stops eval-only runaway loops"
-    (let [call-count (atom 0)]
-      (let [llm (th/make-test-runner
-                 {:response-fn (fn [_]
-                                 (swap! call-count inc)
-                                 "undefined-symbol)")}
-                 :namespaces {})]
-        (let [invoke #(llm "(quine completion (eval (do ")]
-          (is (thrown-with-msg? Exception #"Recovery limit exceeded: 2 while handling eval error"
-                                (invoke))))
-        ;; Initial call + 2 eval recovery retries
-        (is (= 3 @call-count)))))
+      (is (thrown-with-msg? Exception
+                            #"Recovery limit exceeded: 2 while handling eval error"
+                            (llm "(quine completion (eval (do ")))
+      (is (= 3 @call-count))))
 
   (testing "no recovery when explicitly disabled"
     (let [llm (th/make-test-runner {:response "undefined-symbol)"}
                                    :namespaces {} :recover false)]
       (is (thrown? Exception (llm "(do ")))))
 
-  (testing "non-quine program propagates error (no quine-extension)"
-    ;; Plain (do ...) program can't use quine-extension recovery
-    (let [llm (th/make-test-runner {:response "undefined-symbol)"}
-                                   :namespaces {} :recover true)]
-      (is (thrown? Exception (llm "(do "))))))
+  (testing "non-quine program is wrapped for inert recovery"
+    (let [prompts (atom [])
+          llm (th/make-test-runner
+               {:response-fn (fn [prompt]
+                               (swap! prompts conj prompt)
+                               (if (= 1 (count @prompts)) "undefined-symbol)" "42)"))}
+               :namespaces {} :recover true :prefill? false)]
+      (is (= 42 (llm "(do ")))
+      (is (= 2 (count @prompts)))
+      (is (str/includes? (second @prompts) "(quine completion (do undefined-symbol)"))))))
 
 (deftest reader-error-recovery-test
   (testing "reader error recovery via fresh quine — LLM retries successfully"
@@ -1670,25 +1791,31 @@
                                    :namespaces {} :recover false)]
       (is (thrown? Exception (llm "(quine completion (eval (do ")))))
 
-  (testing "reader error recovery passes raw text in _error"
-    ;; Verify the LLM sees the broken raw text in the recovery prompt.
-    ;; The second call's prompt should contain the original raw text.
-    ;; Uses prefill? false so the recovery prefix is the prompt arg (not in :prefix opt).
+  (testing "reader inert recovery keeps exact prompt and error separate, then prunes raw program"
     (let [prompts (atom [])
           llm (th/make-test-runner
                {:response-fn (fn [prompt]
                                (swap! prompts conj prompt)
-                               (let [n (count @prompts)]
-                                 (if (= n 1)
-                                   "\\invalidchar)"
-                                   "42)")))}
-               :namespaces {} :prefill? false)]
-      (llm "(quine completion (eval (do ")
-      ;; The recovery prompt (second call) should mention the reader error
-      (let [recovery-prompt (second @prompts)]
-        (is (str/includes? recovery-prompt "The previous Spell program threw an error."))
-        (is (str/includes? recovery-prompt "Reader error"))
-        (is (str/includes? recovery-prompt "\\invalidchar")))))
+                               (case (count @prompts)
+                                 1 "\\invalidchar)"
+                                 2 "(quine task \"reader task\") (quine context-summary \"reader context\") '(!extend completion))"
+                                 3 "42)"))}
+               :namespaces {} :prefill? false)
+          exact-prompt "The previous Spell program threw an error. The previous program is visible during this recovery turn, but it will be pruned afterward, such that you will not see it on your next turn.\n\nEmit a `(quine task \"...\")` form describing the original task, followed by a (quine context-summary \"...\") form describing history, progress, and any context which should be retained on your next turn. If there are long file snippets which should be retained, restore these by re-reading from those files in your trailing expression. Emit Spell code only, not prose. Avoid repeating your previous error."]
+      (is (= 42 (llm "(quine completion (eval (do ")))
+      (let [recovery-prefix (second @prompts)
+            following-prefix (nth @prompts 2)]
+        (is (str/includes? recovery-prefix (pr-str exact-prompt)))
+        (is (not (str/includes? exact-prompt "invalidchar")))
+        (is (str/includes? recovery-prefix "(def _error"))
+        (is (str/includes? recovery-prefix "Reader error"))
+        (is (str/includes? recovery-prefix "\\invalidchar"))
+        (is (str/includes? following-prefix "(quine task \"reader task\")"))
+        (is (str/includes? following-prefix "(quine context-summary \"reader context\")"))
+        (is (not (str/includes? following-prefix "_recovery_prompt")))
+        (is (not (str/includes? following-prefix "_error")))
+        (is (not (str/includes? following-prefix "Reader error")))
+        (is (not (str/includes? following-prefix "\\invalidchar"))))))
 
   (testing "shared recovery limit stops parse-only runaway loops"
     (let [call-count (atom 0)

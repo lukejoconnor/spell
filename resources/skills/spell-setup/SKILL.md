@@ -13,17 +13,17 @@ Check Java, the Clojure CLI, and the Spell wrapper:
 
 ```bash
 java -version
-clj -Sdescribe
+clojure -Sdescribe
 bin/spell -h
 ```
 
-Spell expects Java 11+ and the Clojure CLI. On macOS, if `clj` is missing, recommend:
+Spell expects Java 11+ and the Clojure CLI. On macOS, if `clojure` is missing, recommend:
 
 ```bash
 brew install clojure/tools/clojure
 ```
 
-No build step is required for normal CLI use. `bin/spell` runs the Clojure CLI entry point with `clj -M:run`.
+No build step is required for normal CLI use. `bin/spell` runs the Clojure CLI entry point with `clojure -M:run`.
 
 ## No-Provider Smoke Test
 
@@ -48,8 +48,8 @@ test -f "$HOME/.codex/auth.json" && echo "Codex auth exists" || echo "Codex auth
 
 If one or more are configured, tell the user they are ready to use those provider paths:
 
-- Codex auth (CLI default): `codex-tc:<model>`
-- `OPENAI_API_KEY`: `openai-tc:<model>`
+- Codex auth: `codex-tc:<model>`
+- `OPENAI_API_KEY` (CLI default): `openai-tc:<model>`
 - `ANTHROPIC_API_KEY`: `anthropic-tc:<model>`
 - `FIREWORKS_API_KEY`: `fireworks-tc:<model>`
 

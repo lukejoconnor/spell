@@ -4,10 +4,57 @@
             [clojure.string :as str]
             [clojure.java.io :as io]
             [spell.api :as api]
+            [spell.mcp.cli :as mcp-cli]
             [spell.model-spec :as model-spec]
             [spell.provider :as provider]
             [spell.trace :as spell-trace])
   (:gen-class))
+
+(def ^:private default-model-spec "openai-tc:gpt-5.6-sol")
+(def ^:private default-reasoning-effort "medium")
+(def ^:private agents-md-max-bytes (* 32 1024))
+(def ^:private max-utf8-code-point-bytes 4)
+
+(defn- truncate-utf8
+  "Return a valid UTF-8 prefix bounded by max-bytes."
+  [value max-bytes]
+  (let [builder (StringBuilder.)]
+    (loop [offset 0
+           used-bytes 0]
+      (if (>= offset (count value))
+        {:text (str builder) :truncated? false}
+        (let [code-point (.codePointAt ^String value offset)
+              piece (String. (Character/toChars code-point))
+              piece-bytes (alength (.getBytes piece java.nio.charset.StandardCharsets/UTF_8))]
+          (if (> (+ used-bytes piece-bytes) max-bytes)
+            {:text (str builder) :truncated? true}
+            (do
+              (.append builder piece)
+              (recur (+ offset (Character/charCount code-point))
+                     (+ used-bytes piece-bytes)))))))))
+
+(defn- read-agents-md-file [file]
+  (when (and (.exists ^java.io.File file) (.isFile ^java.io.File file))
+    (with-open [input (io/input-stream file)]
+      (let [bytes (.readNBytes input (+ agents-md-max-bytes max-utf8-code-point-bytes))
+            decoded (String. bytes java.nio.charset.StandardCharsets/UTF_8)
+            prefix (truncate-utf8 decoded agents-md-max-bytes)]
+        (merge {:path (.getCanonicalPath ^java.io.File file)
+                :truncated? (> (alength bytes) agents-md-max-bytes)}
+               prefix
+               (when (> (alength bytes) agents-md-max-bytes)
+                 {:truncated? true}))))))
+
+(defn- load-cwd-agents-md []
+  (read-agents-md-file (io/file "AGENTS.md")))
+
+(defn- prepend-agents-md [prompt {:keys [path text truncated?]}]
+  (str "Project instructions from " path
+       (when truncated? " (truncated to 32 KiB of UTF-8 text)")
+       ":\n\n<agents_md>\n"
+       text
+       "\n</agents_md>\n\nTask:\n"
+       prompt))
 
 (defn parse-model-spec
   "Parse 'provider:model' into {:provider str :model str}."
@@ -58,7 +105,7 @@
    ["-i" "--init PROGRAM" "Run a complete Spell program string directly instead of wrapping a natural-language prompt"]
    ["-I" "--init-file FILE" "Run a complete Spell program file directly instead of wrapping it as a natural-language prompt"]
    ["-a" "--agent-profile FILE" "Use agent profile from .agent.edn file"]
-   ["-m" "--model MODEL" "Model/provider spec: codex-tc:<model>, openai-tc:<model>, anthropic-pf:<model>, anthropic-tc:<model>, fireworks:<model>, fireworks-tc:<model>, ollama:<model>, user (default: codex-tc:gpt-5.3)"]
+   ["-m" "--model MODEL" "Model/provider spec: codex-tc:<model>, openai-tc:<model>, anthropic-pf:<model>, anthropic-tc:<model>, fireworks:<model>, fireworks-tc:<model>, ollama:<model>, user (default: openai-tc:gpt-5.6-sol)"]
    ["-d" "--depth DEPTH" "Max recursion depth (default: unlimited, 0 = unlimited)"
     :parse-fn #(Integer/parseInt %)
     :validate [#(>= % 0) "Must be non-negative"]]
@@ -68,10 +115,10 @@
    ["-M" "--max-tokens TOKENS" "Max tokens per LLM response (default: 16384)"
     :parse-fn #(Integer/parseInt %)
     :validate [pos? "Must be positive"]]
-   ["-K" "--thinking BUDGET" "Enable Anthropic adaptive thinking (budget_tokens, e.g. 10000)"
+   ["-K" "--thinking TOKENS" "Enable Anthropic thinking (token budget for extended thinking; adaptive for supported models)"
     :parse-fn #(Integer/parseInt %)
     :validate [pos? "Must be positive"]]
-   ["-R" "--reasoning-effort EFFORT" "OpenAI reasoning effort (none, low, medium, high, xhigh, max)"
+   ["-R" "--reasoning-effort EFFORT" "Reasoning effort for OpenAI and adaptive Anthropic models (none, low, medium, high, xhigh, max; default: medium for the default model)"
     :validate [#(contains? #{"none" "low" "medium" "high" "xhigh" "max"} %)
                "Must be none, low, medium, high, xhigh, or max"]]
    [nil "--verbosity LEVEL" "OpenAI verbosity (low, auto)"
@@ -81,7 +128,11 @@
     :parse-fn #(Integer/parseInt %)
     :validate [pos? "Must be positive"]]
    [nil "--responses-api" "Force OpenAI Responses API instead of Chat Completions"]
+   [nil "--dogfood" "Enable Spell developer dogfooding feedback for this run"]
+   [nil "--agents-md" "Include cwd AGENTS.md (up to 32 KiB) in the task prompt"]
    ["-T" "--trace" "Record execution trace to a temp dir under java.io.tmpdir/spell-traces/"]
+   [nil "--trace-dir DIR" "Record execution trace to DIR"
+    :validate [#(not (str/blank? %)) "Must be non-blank"]]
    ["-l" "--log FILE" "Log verbose output to FILE (implies -v)"]
    ["-v" "--verbose" "Show raw LLM response"]
    ["-S" "--setup CMD" "Shell command to run before spell execution"]
@@ -111,6 +162,7 @@
           "  spell -m codex-tc:gpt-5.3 'Return 42'"
           "  spell -m openai-tc:gpt-5.6-sol 'Return 42'"
           "  spell -m anthropic-tc:claude-opus-4-8 'Return 42'"
+          "  spell -m fable 'Use Claude Fable 5.1'"
           "  spell -m fireworks:glm-5p2 'Return 42'"
           "  spell -m fireworks-tc:kimi-k2p7-code 'Return 42'"
           "  spell examples/hello-world.spl"
@@ -128,7 +180,7 @@
 (defn error-msg [errors]
   (str "Error:\n" (str/join \newline errors)))
 
-(defn validate-args [args]
+(defn- validate-base-args [args]
   (let [{:keys [options arguments errors summary]} (parse-opts args cli-options)]
     (cond
       (:help options)
@@ -185,6 +237,25 @@
       :else
       {:exit-message (usage summary) :ok? false})))
 
+(defn validate-args [args]
+  (let [result (validate-base-args args)]
+    (cond
+      (not (get-in result [:options :agents-md]))
+      result
+
+      (:init result)
+      {:exit-message "--agents-md requires a natural-language prompt; it cannot be combined with --init or --init-file"
+       :ok? false}
+
+      (:prompt result)
+      (if-let [agents-md (load-cwd-agents-md)]
+        (update result :prompt prepend-agents-md agents-md)
+        {:exit-message (str "AGENTS.md not found in current directory: "
+                            (System/getProperty "user.dir"))
+         :ok? false})
+
+      :else result)))
+
 (defn- make-provider [{:keys [test model max-tokens responses-api]}]
   (cond
     test
@@ -194,9 +265,8 @@
     (provider/user-provider)
 
     :else
-    (let [{:keys [provider model]} (if model
-                                     (model-spec/resolve-model-spec model)
-                                     {:provider "codex-tc" :model "gpt-5.3-codex"})
+    (let [{:keys [provider model]} (model-spec/resolve-model-spec
+                                     (or model default-model-spec))
           resolved-model model
           base-opts (cond-> {:costs provider/default-costs}
                       resolved-model (assoc :model resolved-model)
@@ -228,7 +298,7 @@
 
 (defn run-input
   [{:keys [prompt init]}
-   {:keys [depth verbose log budget trace agent-profile model thinking reasoning-effort verbosity
+   {:keys [depth verbose log budget trace trace-dir dogfood agent-profile model thinking reasoning-effort verbosity test
            suffix-grammar grammar-max-chars]
     :as opts}
    usage-atom]
@@ -239,6 +309,9 @@
         resolved-model (some-> model model-spec/resolve-model-spec :model)
         opus? (and resolved-model (str/includes? resolved-model "opus"))
         thinking (or thinking (when opus? 16384))
+        effective-reasoning-effort (or reasoning-effort
+                                       (when (and (nil? model) (not test))
+                                         default-reasoning-effort))
         prov (make-provider opts)
         prefill? (and (provider/supports-prefill prov) (not thinking))
         resolved-agent-profile (or agent-profile "config/agent-profiles/cli.agent.edn")
@@ -254,16 +327,19 @@
                                  :depth max-depth
                                  :prefill? prefill?
                                  :thinking thinking
-                                 :reasoning-effort reasoning-effort
+                                 :reasoning-effort effective-reasoning-effort
                                  :verbosity verbosity
                                  :suffix-grammar? suffix-grammar
                                  :grammar-max-chars grammar-max-chars
                                  :usage-tracker usage-atom}
                           prompt (assoc :prompt prompt)
                           init (assoc :init init)
-                          trace (assoc :trace-dir (spell-trace/default-trace-dir))
+                          dogfood (assoc :agent-namespace-overrides
+                                         {'feedback 'stdlib/feedback})
+                          (or trace trace-dir)
+                          (assoc :trace-dir (or trace-dir (spell-trace/default-trace-dir)))
                           (and (some? (. System console)) (not= model "user"))
-                          (assoc :user-reader (io/reader System/in))))
+                          (assoc :interactive-user? true)))
       (finally
         (when log-writer
           (.close ^java.io.Writer log-writer))))))
@@ -335,7 +411,12 @@
       (.exitValue proc))))
 
 (defn -main [& args]
-  (let [{:keys [prompt init options exit-message ok?]} (validate-args args)]
+  (if (= "mcp" (first args))
+    (let [{:keys [status out err]} (mcp-cli/execute (rest args))]
+      (when-not (str/blank? out) (println (str/trim-newline out)))
+      (when err (binding [*out* *err*] (println "Error:" err)))
+      (System/exit status))
+    (let [{:keys [prompt init options exit-message ok?]} (validate-args args)]
     (if exit-message
       (do
         (println exit-message)
@@ -377,4 +458,4 @@
               (System/exit 1))
             (do
               (println result)
-              (System/exit 0))))))))
+              (System/exit 0)))))))))

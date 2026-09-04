@@ -29,7 +29,7 @@ class SpellBenchmarkClient:
 
     def __init__(self, project_root: Path | str | None = None, clj_cmd: list[str] | None = None):
         self.project_root = Path(project_root or Path(__file__).resolve().parent)
-        self.clj_cmd = clj_cmd or ["clj", "-M", "-m", "spell.benchmark-api"]
+        self.clj_cmd = clj_cmd or ["clojure", "-M", "-m", "spell.benchmark-api"]
 
     @staticmethod
     def _default_trace_dir() -> str:

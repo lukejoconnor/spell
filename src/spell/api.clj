@@ -43,13 +43,15 @@
 
 (defn- execute-run
   [{:keys [prompt init model-profile agent-profile model reasoning-effort budget depth trace-dir
-           usage-tracker user-reader log-writer]
+           usage-tracker user-reader interactive-user? log-writer agent-namespace-overrides]
     :as opts}]
   (validate-required-run-opts! opts)
   (let [profile (provider/resolve-model-profile model-profile)
         resolved-provider (:provider profile)
         agent-spec (cond-> (agent/load-agent-spec agent-profile)
                      true (assoc :provider resolved-provider)
+                     (seq agent-namespace-overrides)
+                     (assoc :namespace-overrides agent-namespace-overrides)
                      (or model (:default-model profile)) (assoc :model (or model (:default-model profile)))
                      (or reasoning-effort (:default-reasoning-effort profile))
                      (assoc :reasoning-effort (or reasoning-effort (:default-reasoning-effort profile)))
@@ -76,6 +78,7 @@
                      (or force? (seq (:nodes @trace-atom)))
                      (compare-and-set! trace-written? false true))
             (trace/write-trace! @trace-atom trace-dir)))
+        user-session (atom nil)
         shutdown-hook (when trace-atom
                         (Thread.
                           ^Runnable
@@ -83,15 +86,17 @@
                             (try
                               (write-trace-once! false)
                               (catch Exception _)))))]
+    (user/reset-state!)
     (reset! runtime/registry {})
     (globals/reset-globals!)
     (globals/set-val :roles {:main {}})
-    (when user-reader
-      (user/register-user-agent!
-        (if (instance? java.io.BufferedReader user-reader)
-          user-reader
-          (java.io.BufferedReader. user-reader))))
     (try
+      (cond
+        interactive-user? (reset! user-session (user/register-interactive-user-agent!))
+        user-reader (user/register-user-agent!
+                      (if (instance? java.io.BufferedReader user-reader)
+                        user-reader
+                        (java.io.BufferedReader. user-reader))))
       (when shutdown-hook
         (.addShutdownHook (Runtime/getRuntime) shutdown-hook))
       (binding [eval/*verbose* effective-verbose
@@ -113,15 +118,23 @@
           (cond-> result
             trace-dir (assoc :trace-dir trace-dir))))
       (finally
-        (when shutdown-hook
-          (try
-            (.removeShutdownHook (Runtime/getRuntime) shutdown-hook)
-            (catch IllegalStateException _)))
-        (when log-writer
-          (.flush ^java.io.Writer log-writer))))))
+        (try
+          (when-let [^java.io.Closeable session @user-session]
+            (.close session))
+          (finally
+            (try
+              (user/reset-state!)
+              (finally
+                (when shutdown-hook
+                  (try
+                    (.removeShutdownHook (Runtime/getRuntime) shutdown-hook)
+                    (catch IllegalStateException _)))
+                (when log-writer
+                  (.flush ^java.io.Writer log-writer))
+                (agent/close-compiled-agent! agent-fn)))))))))
 
 (defn run
-  "Run a Spell agent with the v0.2.0 public API.
+  "Run a Spell agent with the v0.3.0 public API.
 
    Required:
      :model-profile — model profile path, inline profile map, or provider instance

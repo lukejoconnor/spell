@@ -1,7 +1,11 @@
-{:paths ["src"]
+{:paths ["src" "resources"]
  :deps {org.clojure/data.json {:mvn/version "2.5.0"}
         org.clojure/tools.cli {:mvn/version "1.1.230"}
-        org.jsoup/jsoup {:mvn/version "1.18.1"}}
+        org.jsoup/jsoup {:mvn/version "1.18.1"}
+        org.jline/jline {:mvn/version "3.30.6"}
+        com.networknt/json-schema-validator {:mvn/version "2.0.4"}
+        org.slf4j/slf4j-nop {:mvn/version "2.0.17"}
+        org.yaml/snakeyaml {:mvn/version "2.3"}}
  :aliases {:dev {:extra-paths ["dev"]}
            :test {:extra-paths ["test"]
                   :extra-deps {io.github.cognitect-labs/test-runner
@@ -16,6 +20,7 @@
                                    "-n" "spell.parse-test"
                                    "-n" "spell.grammar-test"
                                    "-n" "spell.stdlib-test"
+                                   "-n" "spell.skills-test"
                                    "-n" "spell.eval-test"
                                    "-n" "spell.llm-test"
                                    "-n" "spell.agent-test"
@@ -23,7 +28,12 @@
                                    "-n" "spell.api-test"
                                    "-n" "spell.trace-test"
                                    "-n" "spell.macros-test"
-                                   "-n" "spell.provider-test"]}
+                                   "-n" "spell.provider-test"
+                                   "-n" "spell.mcp-protocol-test"
+                                   "-n" "spell.mcp-client-test"
+                                   "-n" "spell.mcp-regression-test"
+                                   "-n" "spell.mcp-review-fix-test"
+                                   "-n" "spell.mcp-stdio-limits-test"]}
            ;; Slow tests — concurrency, I/O, filesystem watchers (~12s)
            :test-slow {:extra-paths ["test"]
                        :extra-deps {io.github.cognitect-labs/test-runner
@@ -34,6 +44,17 @@
                                    "-n" "spell.runtime-test"
                                    "-n" "spell.globals-test"
                                    "-n" "spell.user-test"]}
+           ;; Optional official-SDK oracle. Requires uv; Python is not a Spell runtime dependency.
+           :test-mcp-interop {:extra-paths ["test-interop"]
+                              :extra-deps {io.github.cognitect-labs/test-runner
+                                           {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+                              :main-opts ["-m" "cognitect.test-runner"
+                                          "-d" "test-interop"
+                                          "-n" "spell.mcp-interop-test"]}
+            ;; Internal helper launched under an OS pseudo-terminal by user_test.
+            :test-jline-pty-fixture
+            {:extra-paths ["test"]
+             :main-opts ["-m" "spell.jline-pty-fixture"]}
            :run {:main-opts ["-m" "spell.cli"]}
            :uberjar {:replace-deps {com.github.seancorfield/depstar {:mvn/version "2.1.303"}}
                      :exec-fn hf.depstar/uberjar

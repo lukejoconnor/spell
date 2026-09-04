@@ -35,7 +35,7 @@ Be objective. Every scientific conclusion or narrative you advance must be backe
 For Spell traces, run `spell.trace-tool --summary` first to get an overview of tracked forms, namespace usage, rethink stats, errors, and investigation flags:
 
 ```bash
-clj -M -m spell.trace-tool --trace-dir <TASK_DIR> --summary
+clojure -M -m spell.trace-tool --trace-dir <TASK_DIR> --summary
 ```
 
 Read and internalize the summary output before proceeding. The investigation flags highlight traces that likely merit deeper review, but they do not replace reading the actual trace files.
@@ -46,16 +46,16 @@ For Spell traces, use the summary and function counting tools to build a **compl
 
 ```bash
 # Count specific function calls (zsh: quote ! symbols)
-clj -M -m spell.trace-tool --trace-dir <TASK_DIR> --fn think --fn '!print' --fn defn
+clojure -M -m spell.trace-tool --trace-dir <TASK_DIR> --fn think --fn '!print' --fn defn
 
 # Rethink report: each rethink + preceding expression
-clj -M -m spell.trace-tool --trace-dir <TASK_DIR> --rethinks
+clojure -M -m spell.trace-tool --trace-dir <TASK_DIR> --rethinks
 
 # Context trajectory: per-node character count with pruning markers
-clj -M -m spell.trace-tool --trace-dir <TASK_DIR> --context-trajectory
+clojure -M -m spell.trace-tool --trace-dir <TASK_DIR> --context-trajectory
 
 # Aggregate call counts across all nodes for whole-trace stats
-clj -M -m spell.trace-tool --trace-dir <TASK_DIR> --count-all-nodes --fn think --fn rethink --fn '!print' --fn defn --fn '!call-now' --fn '!extend'
+clojure -M -m spell.trace-tool --trace-dir <TASK_DIR> --count-all-nodes --fn think --fn rethink --fn '!print' --fn defn --fn '!call-now' --fn '!extend'
 ```
 
 For every Spell trace, you MUST report on ALL of these feature categories (stating "not used" when absent is just as important as describing usage):
@@ -132,23 +132,23 @@ Be rigorous: a Spell win where Spell used interesting features is only compellin
 
 ```bash
 # Summary (start here)
-clj -M -m spell.trace-tool --trace-dir <DIR> --summary
+clojure -M -m spell.trace-tool --trace-dir <DIR> --summary
 
 # Skeletonize latest extension node
-clj -M -m spell.trace-tool --trace-dir <DIR>
+clojure -M -m spell.trace-tool --trace-dir <DIR>
 
 # Count specific function calls (zsh: quote ! symbols)
-clj -M -m spell.trace-tool --trace-dir <DIR> --fn think --fn '!print'
+clojure -M -m spell.trace-tool --trace-dir <DIR> --fn think --fn '!print'
 
 # Aggregate call counts across all nodes
-clj -M -m spell.trace-tool --trace-dir <DIR> --count-all-nodes --fn think
+clojure -M -m spell.trace-tool --trace-dir <DIR> --count-all-nodes --fn think
 
 # Rethink report: each rethink + preceding expression
-clj -M -m spell.trace-tool --trace-dir <DIR> --rethinks
+clojure -M -m spell.trace-tool --trace-dir <DIR> --rethinks
 
 # Batch summary across many traces (human-readable or TSV)
-clj -M -m spell.trace-tool --trace-root <ROOT> --summary
-clj -M -m spell.trace-tool --trace-root <ROOT> --summary --tsv
+clojure -M -m spell.trace-tool --trace-root <ROOT> --summary
+clojure -M -m spell.trace-tool --trace-root <ROOT> --summary --tsv
 ```
 
 Notes:

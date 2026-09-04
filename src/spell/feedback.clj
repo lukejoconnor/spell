@@ -2,7 +2,9 @@
   "Structured, append-only dogfooding feedback for Spell agents."
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [spell.runtime :as runtime]
+            [spell.trace :as trace]))
 
 (def categories
   "Supported feedback categories."
@@ -53,10 +55,15 @@
    (validate! category message metadata)
    (let [path (feedback-path)
          file (io/file path)
-         entry {:timestamp (str (java.time.Instant/now))
-                :category category
-                :message message
-                :metadata metadata}
+         entry (cond-> {:timestamp (str (java.time.Instant/now))
+                        :category category
+                        :message message
+                        :metadata metadata}
+                 runtime/*current-handle*
+                 (assoc :agent-handle runtime/*current-handle*)
+
+                 (some? trace/*trace-node-id*)
+                 (assoc :trace-node-id trace/*trace-node-id*))
          serialized (serialize-entry! entry)]
      (locking write-lock
        (when-let [parent (.getParentFile file)]
@@ -74,7 +81,7 @@
      (assoc entry :path path))))
 
 (def feedback-namespace
-  {:short-docs "Structured logging for Spell bugs, friction, ideas, and documentation gaps."
-   :docs {:guide "FEEDBACK — Structured dogfooding feedback for Spell.\n\n  (feedback/log category message)\n  (feedback/log category message metadata)\n\nCategories: :bug, :friction, :idea, :docs.\nEntries are appended as one EDN map per line to .spell/feedback.edn.\nSet SPELL_FEEDBACK_PATH to override the destination. Each entry automatically\nincludes an ISO-8601 :timestamp; include useful context such as :task, :agent,\nor :severity in the optional metadata map.\n\nUse feedback only for concrete observations encountered during the main task;\ndo not interrupt the task to search for possible issues.\n\nAll feedback/ calls are effect functions — quote them in the trailing expression.\n\nExample:\n  '(feedback/log :friction\n     \"Needed !describe before the expected option was discoverable\"\n     {:task \"configure agent\" :severity :low})"
+  {:short-docs "Spell developer dogfooding. Its availability means you are helping improve Spell itself. Log concrete Spell bugs, surprising behavior, confusing interfaces, and missing or unclear prompting encountered during the task; run !describe feedback before first use."
+   :docs {:guide "FEEDBACK — Structured developer dogfooding feedback for Spell.\n\n  (feedback/log category message)\n  (feedback/log category message metadata)\n\nThis namespace is gated. If it is available, the current run is dogfooding Spell\nand you should record concrete problems with Spell itself that arise while doing\nthe user's task. Do not search for issues, and do not report problems in the\nuser's own domain as Spell feedback.\n\nCategories: :bug, :friction, :idea, :docs.\nEntries are appended as one EDN map per line to .spell/feedback.edn.\nSet SPELL_FEEDBACK_PATH to override the destination. Each entry automatically\nincludes an ISO-8601 :timestamp, the current :agent-handle, and, when tracing is\nenabled, :trace-node-id. Include enough context to make the observation actionable,\nsuch as what you expected, what happened, and whether an ergonomic change or\nclearer documentation or prompting might help.\n\nAll feedback/ calls are effect functions — quote them in the trailing expression.\n\nExample:\n  '(feedback/log :friction\n     \"The function behaved differently from its description\"\n     {:task \"configure agent\"\n      :expected \"the configured namespace to be available\"\n      :observed \"the function returned an unknown-namespace error\"\n      :suggestion \"clarify the prompt or make namespace loading more ergonomic\"})"
           :log "Append a structured entry to the feedback log.\n\n(feedback/log category message)\n(feedback/log category message metadata)\n\ncategory: one of :bug, :friction, :idea, :docs\nmessage: non-blank string\nmetadata: optional map\n\nReturns the entry with :timestamp and :path."}
    :log log})

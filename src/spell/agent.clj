@@ -28,6 +28,7 @@
             [spell.globals :as globals]
             [spell.feedback :as feedback]
             [spell.llm :as llm]
+            [spell.mcp.namespace :as mcp]
             [spell.provider :as provider]
             [spell.stdlib :as stdlib]
             [spell.io :as io]
@@ -50,10 +51,34 @@
    'feedback feedback/feedback-namespace
    'agents runtime/agents-namespace
    'builtins stdlib/builtins-namespace
-   'reminders stdlib/reminders-namespace
    'strings stdlib/strings
    'math stdlib/math
    'patterns stdlib/patterns})
+
+(defn close-compiled-agent!
+  "Release resources owned by a compiled agent, including MCP stdio processes."
+  [compiled-agent]
+  (when-let [close! (:spell/close! (meta compiled-agent))]
+    (close!))
+  nil)
+
+(defn- attach-close [compiled-agent close-fns]
+  (let [close-fns (vec (remove nil? close-fns))]
+    (if (seq close-fns)
+      (with-meta compiled-agent
+        (assoc (meta compiled-agent) :spell/close!
+               (fn [] (doseq [close! close-fns] (close!)))))
+      compiled-agent)))
+
+(defn- owned-close-fns [values]
+  (keep (comp :spell/close! meta) values))
+
+(defn- namespace-close-fns [namespaces]
+  (owned-close-fns (vals (or namespaces {}))))
+
+(defn- close-owned-values! [values]
+  (doseq [close! (owned-close-fns values)]
+    (close!)))
 
 (defn- resolve-stdlib-path
   "Resolve a stdlib/X or stdlib/X/Y path.
@@ -182,12 +207,20 @@
 
     ;; Vector - merge resolved namespace maps
     (vector? value)
-    (let [resolved (mapv #(resolve-namespace-value % base-dir clj-cache compile-agent-fn) value)]
-      (when-not (every? map? resolved)
-        (throw (ex-info "Vector namespace values must resolve to namespace maps"
-                        {:value value
-                         :resolved-types (mapv type resolved)})))
-      (apply merge-namespace-maps resolved))
+    (let [resolved-ref (atom [])]
+      (try
+        (doseq [item value]
+          (swap! resolved-ref conj
+                 (resolve-namespace-value item base-dir clj-cache compile-agent-fn)))
+        (let [resolved @resolved-ref]
+          (when-not (every? map? resolved)
+            (throw (ex-info "Vector namespace values must resolve to namespace maps"
+                            {:value value
+                             :resolved-types (mapv type resolved)})))
+          (apply merge-namespace-maps resolved))
+        (catch Throwable e
+          (close-owned-values! @resolved-ref)
+          (throw e))))
 
     ;; Symbol - check pattern
     (symbol? value)
@@ -222,11 +255,30 @@
 (defn- resolve-namespaces
   "Resolve all namespace entries in the agent profile definition."
   [namespaces base-dir compile-agent-fn]
-  (let [clj-cache (atom {})]
-    (into {}
-          (map (fn [[k v]]
-                 [(symbol k) (resolve-namespace-value v base-dir clj-cache compile-agent-fn)])
-               namespaces))))
+  (let [normalized-entries
+        (reduce (fn [{:keys [seen entries] :as state} [key value]]
+                  (let [normalized-key (symbol key)]
+                    (when (contains? seen normalized-key)
+                      (throw (ex-info
+                              (str "Duplicate agent namespace after normalization: " normalized-key)
+                              {:type :duplicate-agent-namespace
+                               :namespace normalized-key})))
+                    (assoc state
+                           :seen (conj seen normalized-key)
+                           :entries (conj entries [normalized-key value]))))
+                {:seen #{} :entries []}
+                namespaces)
+        clj-cache (atom {})
+        resolved-ref (atom {})]
+    (try
+      (doseq [[k v] (:entries normalized-entries)]
+        (swap! resolved-ref assoc
+               k
+               (resolve-namespace-value v base-dir clj-cache compile-agent-fn)))
+      @resolved-ref
+      (catch Throwable e
+        (close-owned-values! (vals @resolved-ref))
+        (throw e)))))
 
 ;; =============================================================================
 ;; System prompt resolution
@@ -310,6 +362,10 @@
         merged (if (or (:namespaces parent) (:namespaces child))
                  (assoc merged :namespaces
                         (merge (:namespaces parent) (:namespaces child)))
+                 merged)
+        merged (if (or (:mcp-servers parent) (:mcp-servers child))
+                 (assoc merged :mcp-servers
+                        (merge (:mcp-servers parent) (:mcp-servers child)))
                  merged)]
     merged))
 
@@ -317,7 +373,17 @@
   "Resolve :base inheritance chain, returning fully merged agent profile def.
    Removes :base from result."
   [agent-def base-dir]
-  (let [agent-def (normalize-agent-def agent-def)]
+  (let [agent-def (normalize-agent-def agent-def)
+        agent-def (if (:mcp-servers agent-def)
+                    (update agent-def :mcp-servers
+                            (fn [servers]
+                              (into {}
+                                    (map (fn [[alias entry]]
+                                           [alias (if (map? entry)
+                                                    (assoc entry :spell.mcp/base-dir base-dir)
+                                                    entry)]))
+                                    servers)))
+                    agent-def)]
     (if-let [base-path (:base agent-def)]
       (let [base-path-str (str base-path)
             base-file (java.io.File. (if (str/starts-with? base-path-str "/")
@@ -420,7 +486,8 @@
   "Build a compiled spawn-agent function from a resolved agent profile spec.
    Used for workers/ entries, which inherit parent model/provider and share a
    common workers namespace for circular references."
-  [spec compile-runtime-agent-fn compile-agent-fn model parent-provider extra-namespaces base-dir]
+  [spec compile-runtime-agent-fn compile-agent-fn model parent-provider
+   extra-namespaces namespace-overrides base-dir]
   (let [spec-base-dir (or (:base-dir spec) base-dir)
         spec-has-provider? (contains? spec :provider)
         spec-model (or (:model spec)
@@ -429,44 +496,82 @@
                         (provider/resolve-provider (:provider spec) spec-base-dir)
                         parent-provider)
         system (resolve-system-prompt (:system spec) spec-base-dir)
-        spec-namespaces (when (:namespaces spec)
-                          (resolve-namespaces (:namespaces spec) spec-base-dir compile-agent-fn))
-        all-namespaces (merge extra-namespaces spec-namespaces)]
-    (compile-runtime-agent-from-resolved-spec spec compile-runtime-agent-fn
-                                              {:model spec-model
-                                               :provider spec-provider
-                                               :system system
-                                               :namespaces all-namespaces})))
+        spec-namespaces-ref (atom nil)
+        mcp-bundle-ref (atom nil)]
+    (try
+      (let [spec-namespaces (when (:namespaces spec)
+                              (resolve-namespaces (:namespaces spec) spec-base-dir compile-agent-fn))
+            _ (reset! spec-namespaces-ref spec-namespaces)
+            mcp-bundle (when (seq (:mcp-servers spec))
+                         (mcp/compile-servers (:mcp-servers spec) spec-base-dir))
+            _ (reset! mcp-bundle-ref mcp-bundle)
+            mcp-namespaces (:namespaces mcp-bundle)
+            occupied (set (concat (keys spec-namespaces)
+                                  (keys extra-namespaces)
+                                  (keys namespace-overrides)
+                                  (conj (set (keys llm/core-namespaces)) 'skills)))
+            collisions (set/intersection occupied (set (keys mcp-namespaces)))
+            _ (when (seq collisions)
+                (throw (ex-info (str "MCP server aliases collide with configured namespaces: "
+                                     (sort collisions))
+                                {:type :mcp-namespace-collision :namespaces (sort collisions)})))
+            all-namespaces (merge extra-namespaces spec-namespaces
+                                  mcp-namespaces namespace-overrides)
+            compiled (compile-runtime-agent-from-resolved-spec spec compile-runtime-agent-fn
+                                                               {:model spec-model
+                                                                :provider spec-provider
+                                                                :system system
+                                                                :namespaces all-namespaces})]
+        (attach-close compiled (cons (:close! mcp-bundle)
+                                     (namespace-close-fns spec-namespaces))))
+      (catch Throwable e
+        (when-let [close! (:close! @mcp-bundle-ref)] (close!))
+        (close-owned-values! (vals (or @spec-namespaces-ref {})))
+        (throw e)))))
 
 (defn resolve-workers
   "Resolve :workers map into an effect namespace of compiled spawn-agent functions.
    Uses atom-based lazy init for circular references (A can refer to B, B can refer to A).
    Returns namespace map with :docs and compiled agent functions, or nil if no workers."
-  [workers-map compile-runtime-agent-fn compile-agent-fn model parent-provider base-dir]
-  (when (seq workers-map)
-    ;; Phase 1: create atoms and proxy namespace
-    (let [agent-atoms (into {} (map (fn [[k _]] [k (atom nil)]) workers-map))
-          docs (into {} (map (fn [[k v]]
-                               (let [spec (resolve-worker-spec v base-dir)
-                                     doc (or (:doc spec) (str "Sub-agent: " (name k)))]
-                                 [(keyword k) doc]))
-                             workers-map))
-          workers-ns (merge {:docs docs}
-                         (into {} (map (fn [[k _]]
-                                         [(keyword k)
-                                          (with-meta
-                                            (fn
-                                              ([prompt] (@(get agent-atoms k) prompt (keyword (gensym (str (name k) "-")))))
-                                              ([prompt handle] (@(get agent-atoms k) prompt handle)))
-                                            {:spell/compiled-agent true})])
-                                       workers-map)))]
-      ;; Phase 2: resolve each spec and fill atoms
-      (doseq [[k v] workers-map]
-        (let [spec (resolve-worker-spec v base-dir)
-              agent-fn (build-compiled-agent-from-spec spec compile-runtime-agent-fn compile-agent-fn
-                                                       model parent-provider {'workers workers-ns} base-dir)]
-          (reset! (get agent-atoms k) agent-fn)))
-      workers-ns)))
+  ([workers-map compile-runtime-agent-fn compile-agent-fn model parent-provider base-dir]
+   (resolve-workers workers-map compile-runtime-agent-fn compile-agent-fn
+                    model parent-provider base-dir {}))
+  ([workers-map compile-runtime-agent-fn compile-agent-fn model parent-provider base-dir inherited-namespaces]
+   (when (seq workers-map)
+     ;; Phase 1: create atoms and proxy namespace
+     (let [agent-atoms (into {} (map (fn [[k _]] [k (atom nil)]) workers-map))
+           docs (into {} (map (fn [[k v]]
+                                (let [spec (resolve-worker-spec v base-dir)
+                                      doc (or (:doc spec) (str "Sub-agent: " (name k)))]
+                                  [(keyword k) doc]))
+                              workers-map))
+           workers-ns (merge {:docs docs}
+                          (into {} (map (fn [[k _]]
+                                          [(keyword k)
+                                           (with-meta
+                                             (fn
+                                               ([prompt] (@(get agent-atoms k) prompt (keyword (gensym (str (name k) "-")))))
+                                               ([prompt handle] (@(get agent-atoms k) prompt handle)))
+                                             {:spell/compiled-agent true
+                                              :spell/close!
+                                              (fn []
+                                                (when-let [compiled @(get agent-atoms k)]
+                                                  (close-compiled-agent! compiled)))})])
+                                        workers-map)))]
+       ;; Phase 2: resolve each spec and fill atoms
+       (try
+         (doseq [[k v] workers-map]
+           (let [spec (resolve-worker-spec v base-dir)
+                 agent-fn (build-compiled-agent-from-spec spec compile-runtime-agent-fn compile-agent-fn
+                                                          model parent-provider {'workers workers-ns}
+                                                          inherited-namespaces base-dir)]
+             (reset! (get agent-atoms k) agent-fn)))
+         workers-ns
+         (catch Throwable e
+           (doseq [[_ compiled] agent-atoms]
+             (when-let [compiled @compiled]
+               (close-compiled-agent! compiled)))
+           (throw e)))))))
 
 ;; =============================================================================
 ;; Main loader
@@ -493,7 +598,7 @@
 (defn- available-namespace-names
   [namespaces]
   (into future-only-namespaces
-        (concat (keys llm/core-namespaces)
+        (concat (conj (set (keys llm/core-namespaces)) 'skills)
                 (keys (or namespaces {})))))
 
 (defn- validate-pattern-dependencies!
@@ -518,24 +623,62 @@
 (defn compile-agent-spec
   "Compile a plain data agent profile spec into a runnable spawn-agent function."
   [agent-spec]
-  (let [{:keys [base-dir system model budget recover namespaces format max-retries retries
+  (let [{:keys [base-dir system model budget recover namespaces namespace-overrides
+                mcp-servers format max-retries retries
                 prefill? thinking reasoning-effort verbosity suffix-grammar? grammar-max-chars
                 api provider]} agent-spec
         resolved-system (resolve-system-prompt system base-dir)
         resolved-provider (when provider
                             (provider/resolve-provider provider base-dir))
         compile-agent-fn compile-agent-spec
-        resolved-namespaces (when namespaces
-                              (resolve-namespaces namespaces base-dir compile-agent-fn))
-        _ (validate-pattern-dependencies! resolved-namespaces)
-        raw-workers (get agent-spec :workers ::not-set)
-        workers (normalize-workers-config raw-workers base-dir)
-        workers-ns (when (seq workers)
-                  (resolve-workers workers llm/compile-agent compile-agent-fn model resolved-provider base-dir))
-        all-namespaces (cond-> (or resolved-namespaces {})
-                         workers-ns (assoc 'workers workers-ns))]
-    (compile-runtime-agent-from-resolved-spec agent-spec llm/compile-agent
-                                              {:model model
-                                               :provider resolved-provider
-                                               :system resolved-system
-                                               :namespaces all-namespaces})))
+        resolved-namespaces-ref (atom nil)
+        resolved-overrides-ref (atom nil)
+        mcp-bundle-ref (atom nil)
+        workers-ns-ref (atom nil)]
+    (try
+      (let [resolved-namespaces (when namespaces
+                                  (resolve-namespaces namespaces base-dir compile-agent-fn))
+            _ (reset! resolved-namespaces-ref resolved-namespaces)
+            resolved-overrides (when namespace-overrides
+                                 (resolve-namespaces namespace-overrides base-dir compile-agent-fn))
+            _ (reset! resolved-overrides-ref resolved-overrides)
+            profile-namespaces (merge resolved-namespaces resolved-overrides)
+            mcp-bundle (when (seq mcp-servers)
+                         (mcp/compile-servers mcp-servers
+                                              (or base-dir (System/getProperty "user.dir"))))
+            _ (reset! mcp-bundle-ref mcp-bundle)
+            mcp-namespaces (:namespaces mcp-bundle)
+            collisions (set/intersection (set (concat (keys profile-namespaces)
+                                                      (conj (set (keys llm/core-namespaces)) 'skills)))
+                                         (set (keys mcp-namespaces)))
+            _ (when (seq collisions)
+                (throw (ex-info (str "MCP server aliases collide with configured namespaces: "
+                                     (sort collisions))
+                                {:type :mcp-namespace-collision :namespaces (sort collisions)})))
+            runtime-namespaces (merge profile-namespaces mcp-namespaces)
+            _ (validate-pattern-dependencies! runtime-namespaces)
+            raw-workers (get agent-spec :workers ::not-set)
+            workers (normalize-workers-config raw-workers base-dir)
+            workers-ns (when (seq workers)
+                         (resolve-workers workers llm/compile-agent compile-agent-fn
+                                          model resolved-provider base-dir resolved-overrides))
+            _ (reset! workers-ns-ref workers-ns)
+            all-namespaces (cond-> runtime-namespaces
+                             workers-ns (assoc 'workers workers-ns))
+            worker-close-fns (keep (comp :spell/close! meta val) workers-ns)
+            compiled (compile-runtime-agent-from-resolved-spec agent-spec llm/compile-agent
+                                                               {:model model
+                                                                :provider resolved-provider
+                                                               :system resolved-system
+                                                               :namespaces all-namespaces})]
+        (attach-close compiled (concat [(:close! mcp-bundle)]
+                                       worker-close-fns
+                                       (namespace-close-fns resolved-namespaces)
+                                       (namespace-close-fns resolved-overrides))))
+      (catch Throwable e
+        (when-let [close! (:close! @mcp-bundle-ref)] (close!))
+        (doseq [close! (keep (comp :spell/close! meta val) @workers-ns-ref)]
+          (close!))
+        (close-owned-values! (vals (or @resolved-overrides-ref {})))
+        (close-owned-values! (vals (or @resolved-namespaces-ref {})))
+        (throw e)))))

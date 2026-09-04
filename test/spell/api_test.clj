@@ -3,8 +3,11 @@
             [spell.api :as api]
             [spell.runtime :as runtime]
             [spell.globals :as globals]
-            [spell.provider :as provider])
-  (:import [java.io StringReader StringWriter]))
+            [spell.mcp.namespace :as mcp]
+            [spell.provider :as provider]
+            [spell.user :as user])
+  (:import [java.io Reader StringReader StringWriter]
+           [java.util.concurrent CountDownLatch TimeUnit]))
 
 (use-fixtures :each
   (fn [f]
@@ -67,6 +70,46 @@
                            :agent-profile test-agent})]
       (is (contains? result :error))
       (is (some? (:usage-tracker result))))))
+
+(deftest run-closes-namespace-embedded-agent-test
+  (testing "api/run closes MCP resources owned by an agent profile in :namespaces"
+    (let [root (.toFile (java.nio.file.Files/createTempDirectory
+                         "spell-api-namespace-close-"
+                         (make-array java.nio.file.attribute.FileAttribute 0)))
+          parent-file (java.io.File. root "parent.agent.edn")
+          child-file (java.io.File. root "child.agent.edn")
+          opened (atom 0)
+          closed (atom 0)]
+      (try
+        (spit child-file (pr-str {:provider {:type :test :response "unused"}
+                                  :mcp-servers {'child-mcp {}}}))
+        (spit parent-file (pr-str {:namespaces {'child 'child.agent.edn}}))
+        (let [result (with-redefs [mcp/compile-servers
+                                   (fn [_ _]
+                                     (swap! opened inc)
+                                     {:namespaces {}
+                                      :close! #(swap! closed inc)})]
+                       (api/run {:init "(do 42)"
+                                 :model-profile (provider/test-provider {:response "unused"})
+                                 :agent-profile (.getPath parent-file)}))]
+          (is (= 42 (:result result)))
+          (is (= 1 @opened))
+          (is (= 1 @closed)))
+        (finally
+          (doseq [file (reverse (file-seq root))]
+            (.delete file)))))))
+
+(deftest run-internal-agent-namespace-override-test
+  (testing "internal callers can overlay the dogfood namespace onto the selected profile"
+    (let [seen-opts (atom nil)
+          p (observing-provider seen-opts "(def answer 42))")
+          result (api/run-internal
+                  {:prompt "Return 42"
+                   :model-profile p
+                   :agent-profile test-agent
+                   :agent-namespace-overrides {'feedback 'stdlib/feedback}})]
+      (is (= 42 (:result result)))
+      (is (re-find #"Spell developer dogfooding" (:system @seen-opts))))))
 
 ;; =============================================================================
 ;; Validation tests
@@ -233,3 +276,41 @@
                            :user-reader (StringReader. "")})]
       (is (= 42 (:result result)))
       (is (contains? (globals/get-val :roles) :user))))
+
+
+(deftest user-reader-lifecycle-test
+  (testing "a cooperative blocking user-reader is interrupted without being closed"
+    (let [closed? (atom false)
+          interrupted (CountDownLatch. 1)
+          read-entered (CountDownLatch. 1)
+          never-release (CountDownLatch. 1)
+          reader (proxy [Reader] []
+                   (read [_ _ _]
+                     (.countDown read-entered)
+                     (try
+                       (.await never-release)
+                       -1
+                       (catch InterruptedException _
+                         (.countDown interrupted)
+                         -1)))
+                   (close [] (reset! closed? true)))
+          run-future (future
+                       (api/run {:init "(do 42)"
+                                 :model-profile (provider/test-provider {:response "unused"})
+                                 :agent-profile test-agent
+                                 :user-reader reader}))]
+      (is (.await read-entered 3 TimeUnit/SECONDS))
+      (let [first-result (deref run-future 3000 :timeout)]
+        (is (= 42 (:result first-result)))
+        (is (false? @closed?) "the caller retains ownership of :user-reader")
+        (is (.await interrupted 3 TimeUnit/SECONDS)
+            "run cleanup interrupts a cooperative blocking read")
+        (is (empty? @@#'user/reader-tasks))
+        (is (.isEmpty ^java.util.concurrent.LinkedBlockingQueue @#'user/stdin-queue))
+        (is (false? @@#'user/input-closed?))
+        (let [second-result (api/run {:init "(do 43)"
+                                      :model-profile (provider/test-provider {:response "unused"})
+                                      :agent-profile test-agent})]
+          (is (= 43 (:result second-result)))
+          (is (false? (runtime/handle? :user))
+              "the next run does not inherit the previous :user handle or input state"))))))

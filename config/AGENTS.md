@@ -6,6 +6,7 @@ This directory contains runtime configuration used by Spell execution.
 
 - `agent-profiles/`: `.agent.edn` agent profile definitions.
 - `model-profiles/`: declarative model profile specs (`.edn`).
+- `mcp-servers/`: reusable stateless MCP connection profiles (`.mcp.edn`).
 - `prompts/`: system prompt text variants.
 - `spl-lib/`: reusable Spell library files.
 - `web.edn`: optional defaults for web search and fetch behavior.
@@ -44,6 +45,9 @@ Key semantics:
 - `:base` supports file-based inheritance; paths are resolved relative to the current agent file.
 - `:system-prompt {:file ...}` and `:default-model-profile` paths are resolved relative to the current agent file.
 - `:namespaces` values support `stdlib/X`, `stdlib/X/Y`, `file.clj/var`, `file.agent.edn`, `{:file f}`, and `{:file f :items {...}}`.
+- `:mcp-servers` maps server aliases to inline connection profiles or `{:server "../mcp-servers/name.mcp.edn" ...}` plus explicit capability permissions.
+
+MCP profiles store environment-variable references rather than secret values. Spell supports exactly MCP `2026-07-28`; do not add legacy lifecycle or session settings. See `docs/api.md#mcp-server-profiles` for the profile shape and permissions.
 
 Rules:
 

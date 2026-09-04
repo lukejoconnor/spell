@@ -105,4 +105,4 @@ For Clojure API validation, use explicit profiles:
 
 For debugging, add `-v`, `--log FILE`, or `-T`. Run `bin/spell -h` for the authoritative option list in the current checkout.
 
-Run `clj -M:test-fast` after changing loader behavior, profile semantics, or public examples.
+Run `clojure -M:test-fast` after changing loader behavior, profile semantics, or public examples.

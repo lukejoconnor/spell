@@ -9,7 +9,7 @@ Use this skill when working inside the Spell implementation. Prefer the checked-
 
 ## Current Release State
 
-`v0.2.0` is unreleased. The active public-release branch is `v0.2.0-dev` unless the user says otherwise. Public API and configuration details live in `docs/api.md`.
+`v0.3.0` is unreleased. Public API and configuration details live in `docs/api.md`.
 
 ## GitHub Issues and Pull Requests
 
@@ -53,7 +53,7 @@ Language and support:
 
 Namespaces:
 
-- `src/spell/stdlib.clj`: core `strings`, `math`, builtins, reminders, and namespace metadata.
+- `src/spell/stdlib.clj`: core `strings`, `math`, builtins, and namespace metadata.
 - `src/spell/io.clj`: filesystem and shell helpers.
 - `src/spell/web.clj`: search and fetch helpers.
 - `src/spell/globals.clj`: shared global store.
@@ -100,8 +100,8 @@ Examples:
 Use focused tests first, then broader checks:
 
 ```bash
-clj -M:test-fast
-clj -M:test-slow
+clojure -M:test-fast
+clojure -M:test-slow
 ```
 
 The fast suite covers parser, evaluator, provider, agent, web, API, trace, macro, and prompt-facing behavior. The slow suite covers concurrency, I/O, runtime, globals, and user-provider behavior.
@@ -109,7 +109,7 @@ The fast suite covers parser, evaluator, provider, agent, web, API, trace, macro
 For trace debugging:
 
 ```bash
-clj -M -m spell.trace-tool --trace-dir DIR --summary
+clojure -M -m spell.trace-tool --trace-dir DIR --summary
 ```
 
 Use `bin/spell -h` as the authoritative CLI option reference for the current checkout.
