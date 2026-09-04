@@ -5,9 +5,10 @@
            [java.net URI]
            [java.net.http HttpClient HttpClient$Redirect HttpClient$Version
                           HttpRequest HttpRequest$BodyPublishers
-                          HttpResponse HttpResponse$BodyHandlers]
+                          HttpResponse HttpResponse$BodyHandler HttpResponse$BodySubscriber]
            [java.time Duration]
-           [java.util.concurrent ExecutionException TimeUnit TimeoutException]))
+           [java.util.concurrent CompletableFuture ExecutionException Flow$Subscription
+            TimeUnit TimeoutException]))
 
 (def default-connect-timeout-sec 20)
 (def default-request-timeout-sec 120)
@@ -114,28 +115,96 @@
     (when (seq data-lines)
       (str/join "\n" data-lines))))
 
+(defn read-sse-line!
+  "Read a UTF-8 SSE line within the remaining event byte budget. The shared
+   skip-lf? volatile recognizes CRLF without delaying dispatch after a CR."
+  [^InputStream input skip-lf? remaining-bytes max-event-bytes]
+  (let [output (ByteArrayOutputStream.)]
+    (loop [consumed 0]
+      (let [value (.read input)]
+        (if (= -1 value)
+          (when (pos? (.size output))
+            {:line (.toString output "UTF-8") :bytes consumed})
+          (let [consumed (inc consumed)]
+            (when (> consumed remaining-bytes)
+              (throw (ex-info "MCP SSE event exceeded configured size limit"
+                              {:type :response-too-large :max-bytes max-event-bytes})))
+            (if (and @skip-lf? (= 10 value))
+              (do (vreset! skip-lf? false) (recur consumed))
+              (do
+                (vreset! skip-lf? (= 13 value))
+                (if (or (= 10 value) (= 13 value))
+                  {:line (.toString output "UTF-8") :bytes consumed}
+                  (do (.write output value) (recur consumed)))))))))))
+
+(defn- bounded-body-handler
+  "Complete only after the bounded body is read, so the request deadline covers
+   the full exchange. Explicit cancellation also stops subscriptions on Java 11."
+  [max-bytes]
+  (let [result (CompletableFuture.)
+        subscription (atom nil)
+        cancelled? (atom false)
+        cancel! (fn []
+                  (reset! cancelled? true)
+                  (when-let [incoming @subscription]
+                    (.cancel ^Flow$Subscription incoming))
+                  (.cancel result true))]
+    {:cancel! cancel!
+     :handler
+     (reify HttpResponse$BodyHandler
+       (apply [_ _]
+         (let [output (ByteArrayOutputStream.)]
+           (reify HttpResponse$BodySubscriber
+             (getBody [_] result)
+             (onSubscribe [_ incoming]
+               (reset! subscription incoming)
+               (if @cancelled?
+                 (.cancel ^Flow$Subscription incoming)
+                 (.request ^Flow$Subscription incoming Long/MAX_VALUE)))
+             (onNext [_ buffers]
+               (try
+                 (doseq [^java.nio.ByteBuffer buffer buffers
+                         :while (not (.isDone result))]
+                   (let [size (.remaining buffer)]
+                     (when (> (+ (.size output) size) max-bytes)
+                       (throw (ex-info "HTTP response exceeded configured size limit"
+                                       {:type :response-too-large :max-bytes max-bytes})))
+                     (let [bytes (byte-array size)]
+                       (.get buffer bytes)
+                       (.write output bytes 0 size))))
+                 (catch Exception e
+                   (.cancel ^Flow$Subscription @subscription)
+                   (.completeExceptionally result e))))
+             (onError [_ error] (.completeExceptionally result error))
+             (onComplete [_] (.complete result (.toString output "UTF-8")))))))}))
+
 (defn response-map
-  [response max-response-bytes]
+  [response]
   {:status (.statusCode ^HttpResponse response)
    :content-type (content-type response)
    :headers (into {}
                   (map (fn [[k values]] [(str/lower-case k) (vec values)]))
                   (.map (.headers ^HttpResponse response)))
-   :body (read-bounded (.body ^HttpResponse response) max-response-bytes)})
+   :body (.body ^HttpResponse response)})
 
 (defn post-json
   [{:keys [client url headers body timeout-sec max-response-bytes]
     :or {timeout-sec default-request-timeout-sec
          max-response-bytes default-max-response-bytes}}]
   (let [uri (validate-http-uri url)
+        {:keys [handler cancel!]} (bounded-body-handler max-response-bytes)
         builder (doto (HttpRequest/newBuilder uri)
                   (.timeout (Duration/ofSeconds (long timeout-sec)))
                   (.header "Content-Type" "application/json")
                   (.POST (HttpRequest$BodyPublishers/ofString body)))]
     (doseq [[name value] headers]
       (.header builder (str name) (str value)))
-    (-> (send-request (or client (make-client))
-                      (.build builder)
-                      (HttpResponse$BodyHandlers/ofInputStream)
-                      timeout-sec)
-        (response-map max-response-bytes))))
+    (try
+      (-> (send-request (or client (make-client))
+                        (.build builder)
+                        handler
+                        timeout-sec)
+          response-map)
+      (catch Throwable e
+        (cancel!)
+        (throw e)))))

@@ -6,11 +6,133 @@
             [spell.mcp.http :as mcp-http]
             [spell.mcp.protocol :as protocol]
             [spell.mcp.stdio :as stdio])
-  (:import [java.io BufferedWriter ByteArrayInputStream StringWriter]
-           [java.net URI]
-           [java.net.http HttpClient$Version HttpHeaders HttpResponse]
+  (:import [com.sun.net.httpserver HttpHandler HttpServer]
+           [java.io BufferedWriter ByteArrayInputStream StringWriter]
+           [java.net InetSocketAddress URI]
+           [java.net.http HttpClient$Version HttpHeaders HttpResponse HttpTimeoutException]
            [java.util Optional]
+           [java.util.concurrent Flow$Subscription]
            [java.util.function BiPredicate]))
+
+(deftest bounded-http-body-cancellation-reaches-subscription-test
+  (doseq [cancel-before-subscribe? [false true]]
+    (let [{:keys [handler cancel!]} (#'spell.http/bounded-body-handler 20)
+          subscriber (.apply handler nil)
+          cancelled? (atom false)
+          incoming (reify Flow$Subscription
+                     (request [_ _])
+                     (cancel [_] (reset! cancelled? true)))]
+      (when cancel-before-subscribe? (cancel!))
+      (.onSubscribe subscriber incoming)
+      (when-not cancel-before-subscribe? (cancel!))
+      (is @cancelled?)
+      (is (.isCancelled (.toCompletableFuture (.getBody subscriber)))))))
+
+(deftest http-timeout-covers-stalled-response-body-test
+  (let [server (HttpServer/create (InetSocketAddress. "127.0.0.1" 0) 0)
+        release-server (promise)
+        request (atom nil)]
+    (.createContext server "/"
+                    (reify HttpHandler
+                      (handle [_ exchange]
+                        (try
+                          (slurp (.getRequestBody exchange))
+                          (.sendResponseHeaders exchange 200 0)
+                          (.write (.getResponseBody exchange) (.getBytes "{" "UTF-8"))
+                          (.flush (.getResponseBody exchange))
+                          @release-server
+                          (finally (.close exchange))))))
+    (.start server)
+    (try
+      (reset! request
+              (future
+                (try
+                  (http/post-json {:url (str "http://127.0.0.1:" (.getPort (.getAddress server)))
+                                   :body "{}" :timeout-sec 1})
+                  (catch Exception e e))))
+      (is (instance? HttpTimeoutException (deref @request 3000 ::still-blocked)))
+      (finally
+        (deliver release-server true)
+        (.stop server 0)
+        (when @request (future-cancel @request))))))
+
+(deftest bounded-http-body-subscriber-enforces-limit-and-decodes-utf8-test
+  (doseq [[body limit expected] [["héllo" 20 "héllo"] ["oversized" 3 :response-too-large]]]
+    (let [server (HttpServer/create (InetSocketAddress. "127.0.0.1" 0) 0)]
+      (.createContext server "/"
+                      (reify HttpHandler
+                        (handle [_ exchange]
+                          (slurp (.getRequestBody exchange))
+                          (let [bytes (.getBytes body "UTF-8")]
+                            (.sendResponseHeaders exchange 200 (alength bytes))
+                            (with-open [output (.getResponseBody exchange)]
+                              (.write output bytes))))))
+      (.start server)
+      (try
+        (is (= expected
+               (try
+                 (:body (http/post-json
+                         {:url (str "http://127.0.0.1:" (.getPort (.getAddress server)))
+                          :body "{}" :max-response-bytes limit}))
+                 (catch clojure.lang.ExceptionInfo e (:type (ex-data e))))))
+        (finally (.stop server 0))))))
+
+(deftest request-construction-errors-redact-configured-credentials-test
+  (let [secret "dummy-secret-token\n"
+        error (try
+                (mcp-http/send-request! {:url "http://127.0.0.1:1"
+                                         :headers {"X-Secret" secret}}
+                                        (protocol/request "server/discover" {}) nil)
+                (catch Exception e e))]
+    (is (= :mcp-http-error (:type (ex-data error))))
+    (is (not (.contains (.getMessage error) "dummy-secret-token")))
+    (is (.contains (.getMessage error) "[REDACTED]"))
+    (is (nil? (.getCause error)))))
+
+(defn- subscription-response [body]
+  (reify HttpResponse
+    (statusCode [_] 200)
+    (request [_] nil)
+    (previousResponse [_] (Optional/empty))
+    (headers [_] (HttpHeaders/of {"Content-Type" ["text/event-stream"]}
+                                (reify BiPredicate (test [_ _ _] true))))
+    (body [_] body)
+    (sslSession [_] (Optional/empty))
+    (uri [_] (URI/create "http://example.com/mcp"))
+    (version [_] HttpClient$Version/HTTP_1_1)))
+
+(deftest subscription-bounds-all-event-bytes-before-retaining-them-test
+  (doseq [payload [(str "data: " (apply str (repeat 1000 "x")))
+                   (str ":" (apply str (repeat 1000 "x")))
+                   (apply str (repeat 100 "data:\n"))
+                   (str ":" (apply str (repeat 100 "é")))]]
+    (let [closed? (atom false)
+          body (proxy [ByteArrayInputStream] [(.getBytes payload "UTF-8")]
+                 (close [] (reset! closed? true) (proxy-super close)))
+          error (with-redefs [http/send-request (fn [& _] (subscription-response body))]
+                  (try
+                    (mcp-http/listen! {:url "http://example.com/mcp" :max-response-bytes 128}
+                                      (protocol/request "subscriptions/listen" {}) (fn [_]))
+                    (catch Exception e e)))]
+      (is (= :response-too-large (:type (ex-data error))))
+      (is @closed?)))
+  (let [body (ByteArrayInputStream. (.getBytes (apply str (repeat 1000 "x")) "UTF-8"))]
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (http/read-sse-line! body (volatile! false) 128 128)))
+    (is (= 871 (.available body)) "reject after reading only the first excess byte")))
+
+(deftest subscription-line-endings-and-multiline-events-test
+  (doseq [newline ["\n" "\r" "\r\n"]]
+    (let [payload (str/join newline
+                            [": heartbeat" "" "data: {\"jsonrpc\":\"2.0\",\"id\":\"request\","
+                             " " "data: \"result\":{\"resultType\":\"complete\",\"text\":\"é\"}}"
+                             "" ""])
+          body (ByteArrayInputStream. (.getBytes payload "UTF-8"))
+          result (with-redefs [http/send-request (fn [& _] (subscription-response body))]
+                   (mcp-http/listen! {:url "http://example.com/mcp" :max-response-bytes 256}
+                                     (protocol/request "subscriptions/listen" {} {:id "request"})
+                                     (fn [_])))]
+      (is (= {"resultType" "complete" "text" "é"} result)))))
 
 (deftest http-client-is-created-once-and-shared-by-calls-and-listen-test
   (let [shared-client (http/make-client)

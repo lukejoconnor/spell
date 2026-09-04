@@ -4,7 +4,7 @@
             [spell.http :as http]
             [spell.mcp.protocol :as protocol]
             [spell.mcp.redaction :as redaction])
-  (:import [java.io BufferedReader InputStreamReader]
+  (:import [java.io BufferedInputStream]
            [java.net.http HttpRequest HttpRequest$BodyPublishers HttpResponse$BodyHandlers]
            [java.nio.charset StandardCharsets]
            [java.security MessageDigest]
@@ -110,18 +110,20 @@
         auth-headers (resolve-auth-headers config)
         secrets (redaction/secret-values (vals auth-headers))
         headers (merge auth-headers
-                       (protocol/http-headers message tool))
-        response (http/post-json {:client (:client config)
-                                  :url (:url config)
-                                  :headers headers
-                                  :body (protocol/json-encode message)
-                                  :timeout-sec (or (:timeout-sec config)
-                                                   http/default-request-timeout-sec)
-                                  :max-response-bytes (or (:max-response-bytes config)
-                                                          http/default-max-response-bytes)})]
+                       (protocol/http-headers message tool))]
     (try
-      (redaction/redact (parse-http-result response request-id) secrets)
-      (catch clojure.lang.ExceptionInfo e
+      (let [response (http/post-json {:client (:client config)
+                                      :url (:url config)
+                                      :headers headers
+                                      :body (protocol/json-encode message)
+                                      :timeout-sec (or (:timeout-sec config)
+                                                       http/default-request-timeout-sec)
+                                      :max-response-bytes (or (:max-response-bytes config)
+                                                              http/default-max-response-bytes)})]
+        (redaction/redact (parse-http-result response request-id) secrets))
+      (catch Exception e
+        (when (instance? InterruptedException e)
+          (.interrupt (Thread/currentThread)))
         (throw (sanitized-exception e secrets {:type :mcp-http-error}))))))
 
 (defn- require-sse! [content-type ^java.io.InputStream body]
@@ -143,7 +145,7 @@
      (try
        (let [request-id (get message "id")
              timeout-sec (or (:timeout-sec config) (* 24 60 60))
-             max-event-chars (or (:max-response-bytes config) http/default-max-response-bytes)
+             max-event-bytes (or (:max-response-bytes config) http/default-max-response-bytes)
              headers (merge auth-headers (protocol/http-headers message nil))
              uri (http/validate-http-uri (:url config))
              builder (doto (HttpRequest/newBuilder uri)
@@ -189,41 +191,40 @@
              (try
                (on-open body)
                (try
-                 (with-open [reader (BufferedReader.
-                                     (InputStreamReader. body StandardCharsets/UTF_8))]
-                   (loop [data-lines []
-                          event-chars 0
-                          final-result nil]
-                     (let [line (.readLine reader)]
-                       (cond
-                         (nil? line)
-                         (or final-result
-                             (throw (ex-info "MCP subscription ended without a final response"
-                                             {:type :missing-sse-response})))
+                 (with-open [reader (BufferedInputStream. body)]
+                   (let [skip-lf? (volatile! false)]
+                     (loop [data-lines []
+                            event-bytes 0
+                            final-result nil]
+                       (let [next-line (http/read-sse-line! reader skip-lf?
+                                                            (- max-event-bytes event-bytes)
+                                                            max-event-bytes)
+                             line (:line next-line)
+                             next-bytes (+ event-bytes (or (:bytes next-line) 0))]
+                         (cond
+                           (nil? line)
+                           (or final-result
+                               (throw (ex-info "MCP subscription ended without a final response"
+                                               {:type :missing-sse-response})))
 
-                         (str/blank? line)
-                         (if (seq data-lines)
-                           (let [data (str/join "\n" data-lines)
-                                 decoded (protocol/json-decode data)]
-                             (if (contains? decoded "id")
-                               (recur [] 0 (redaction/redact
-                                            (protocol/parse-response data request-id) secrets))
-                               (do (on-notification (redaction/redact decoded secrets))
-                                   (recur [] 0 final-result))))
-                           (recur [] 0 final-result))
+                           (= "" line)
+                           (if (seq data-lines)
+                             (let [data (str/join "\n" data-lines)
+                                   decoded (protocol/json-decode data)]
+                               (if (contains? decoded "id")
+                                 (recur [] 0 (redaction/redact
+                                              (protocol/parse-response data request-id) secrets))
+                                 (do (on-notification (redaction/redact decoded secrets))
+                                     (recur [] 0 final-result))))
+                             (recur [] 0 final-result))
 
-                         (str/starts-with? line "data:")
-                         (let [value (subs line 5)
-                               value (if (str/starts-with? value " ") (subs value 1) value)
-                               next-chars (+ event-chars (count value))]
-                           (when (> next-chars max-event-chars)
-                             (throw (ex-info "MCP SSE event exceeded configured size limit"
-                                             {:type :response-too-large
-                                              :max-bytes max-event-chars})))
-                           (recur (conj data-lines value) next-chars final-result))
+                           (str/starts-with? line "data:")
+                           (let [value (subs line 5)
+                                 value (if (str/starts-with? value " ") (subs value 1) value)]
+                             (recur (conj data-lines value) next-bytes final-result))
 
-                         :else
-                         (recur data-lines event-chars final-result)))))
+                           :else
+                           (recur data-lines next-bytes final-result))))))
                  (finally
                    (on-close body)))
                (catch Throwable e
