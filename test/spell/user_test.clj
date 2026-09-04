@@ -708,9 +708,10 @@
 
 (deftest interactive-session-close-restores-real-pty-test
   (testing "closing the production interactive session restores terminal state"
-    (let [{:keys [result]}
-          (run-pty-fixture! "cleanup" [])]
-      (is (true? (:restored? result)))
+    (doseq [mode ["cleanup" "cleanup-startup-race"]
+            :let [{:keys [result]} (run-pty-fixture! mode [])]]
+      (is (true? (:restored? result)) (pr-str result))
+      (is (true? (:reader-stopped? result)) (pr-str result))
       (is (true? (:session-cleared? result)))
       (is (true? (:idempotent? result)))))))
 

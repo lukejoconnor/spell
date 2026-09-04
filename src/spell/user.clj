@@ -13,10 +13,10 @@
             [spell.parse :as parse]
             [spell.stdlib :as stdlib])
   (:import [java.io BufferedReader Closeable InputStreamReader]
-           [java.util.concurrent CancellationException LinkedBlockingQueue]
+           [java.util.concurrent LinkedBlockingQueue]
            [org.jline.keymap KeyMap]
            [org.jline.reader EndOfFileException LineReader LineReaderBuilder Reference UserInterruptException Widget]
-           [org.jline.terminal Terminal TerminalBuilder]))
+           [org.jline.terminal Attributes Terminal TerminalBuilder]))
 
 ;; =============================================================================
 ;; State
@@ -178,38 +178,46 @@
     (.bind keymap (Reference. LineReader/BEGIN_PASTE) "\033[200~")))
 
 (defn- start-jline-reader!
-  "Read logical JLine submissions into stdin-queue until Ctrl-D or close."
+  "Read logical JLine submissions until Ctrl-D or close. Lifecycle completion
+   records actual worker exit, including terminal restoration, after cancellation."
   ([^LineReader reader]
    (start-jline-reader! reader (atom false)))
   ([^LineReader reader stopping?]
-   (let [generation @reader-generation]
+   (start-jline-reader! reader stopping? {}))
+  ([^LineReader reader stopping? {:keys [state finished on-stop]
+                                :or {state (atom :pending) finished (promise)
+                                     on-stop (fn [])}}]
+   (let [generation @reader-generation
+         active? #(and (not @stopping?) (= generation @reader-generation))]
      (future
-       (loop []
-         (let [active? #(and (not @stopping?)
-                             (= generation @reader-generation))
-               action
-             (try
-               (let [submission (.readLine reader "> ")]
-                 (when (active?)
-                   (queue-interactive-submission! submission))
-                 :continue)
-               (catch UserInterruptException _
-                 (when (active?)
-                   (queue-interactive-submission! ::cancel))
-                 :continue)
-               (catch EndOfFileException _
-                 (when (active?)
-                   (queue-interactive-submission! ::eof))
-                 :stop)
-               (catch Throwable e
-                 (when (active?)
-                   (when-not (instance? java.io.IOError e)
-                     (binding [*out* *err*]
-                       (println "Interactive input stopped:" (.getMessage e))))
-                   (queue-interactive-submission! ::eof))
-                 :stop))]
-           (when (and (= action :continue) (active?))
-             (recur))))))))
+       (when (compare-and-set! state :pending :running)
+         (try
+           (loop []
+             (when (active?)
+               (let [action
+                     (try
+                       (let [submission (.readLine reader "> ")]
+                         (when (active?) (queue-interactive-submission! submission))
+                         :continue)
+                       (catch UserInterruptException _
+                         (when (active?) (queue-interactive-submission! ::cancel))
+                         :continue)
+                       (catch EndOfFileException _
+                         (when (active?) (queue-interactive-submission! ::eof))
+                         :stop)
+                       (catch Throwable e
+                         (when (active?)
+                           (when-not (instance? java.io.IOError e)
+                             (binding [*out* *err*]
+                               (println "Interactive input stopped:" (.getMessage e))))
+                           (queue-interactive-submission! ::eof))
+                         :stop))]
+                 (when (= action :continue) (recur)))))
+           (finally
+             (try (on-stop)
+                  (finally
+                    (reset! state :stopped)
+                    (deliver finished true))))))))))
 
 ;; =============================================================================
 ;; Queue helpers
@@ -676,20 +684,15 @@
         (swap! reader-tasks conj task)
         task))))
 
-(defn- stop-reader-task! [task]
-  (try
-    (when (= ::reader-timeout (deref task 1000 ::reader-timeout))
-      (future-cancel task))
-    (catch CancellationException _)
-    (finally
-      (swap! reader-tasks disj task))))
-
 (defn register-user-agent!
   "Register :user with a BufferedReader for tests and non-TTY callers."
   ([]
    (register-user-agent! (BufferedReader. (InputStreamReader. System/in))))
   ([^BufferedReader reader]
    (register-user-agent-core! #(start-stdin-reader! reader))))
+
+(defn- open-terminal! []
+  (-> (TerminalBuilder/builder) (.system true) (.build)))
 
 (defn register-interactive-user-agent!
   "Register :user with JLine for CLI TTY input. Returns a Closeable session."
@@ -698,33 +701,56 @@
     (or (:closeable @interactive-session)
         (throw (ex-info "The :user agent is already registered without a JLine session"
                         {:type :user-agent-already-registered})))
-    (let [^Terminal terminal (-> (TerminalBuilder/builder) (.system true) (.build))
-        original-attributes (str (.getAttributes terminal))
+    (let [^Terminal terminal (open-terminal!)
+        saved-attributes (Attributes. (.getAttributes terminal))
+        original-attributes (str saved-attributes)
         ^LineReader reader (-> (LineReaderBuilder/builder) (.terminal terminal) (.build))
         lock (Object.)
         session-id (Object.)
         reader-task (atom nil)
         stopping? (atom false)
+        reader-state (atom :pending)
+        reader-finished (promise)
         session (reify Closeable
                   (close [_]
                     (when (compare-and-set! stopping? false true)
                       (when (identical? session-id (:id @interactive-session))
                         (reset! interactive-session nil))
+                      ;; Prevent a queued worker from starting after terminal close.
+                      (when (compare-and-set! reader-state :pending :stopped)
+                        (deliver reader-finished true))
+                      ;; Interrupt while raw mode still provides timed reads. Closing
+                      ;; first restores canonical mode and can strand native stdin reads.
                       (try
-                        (.close terminal)
+                        (when-let [task @reader-task] (future-cancel task))
+                        (when (= ::timeout (deref reader-finished 2000 ::timeout))
+                          (throw (ex-info "Interactive reader did not stop"
+                                          {:type :user-reader-stop-timeout})))
                         (finally
-                          (when-let [task @reader-task]
-                            (stop-reader-task! task)))))))]
+                          (try (.close terminal)
+                               (finally
+                                 (.setAttributes terminal saved-attributes)
+                                 (when-let [task @reader-task]
+                                   (swap! reader-tasks disj task)))))))))]
     (try
       (install-newline-bindings! reader)
       (reset! interactive-session {:id session-id
                                    :reader reader
                                    :terminal terminal
                                    :original-attributes original-attributes
+                                   :reader-finished reader-finished
                                    :lock lock
                                    :closeable session})
       (register-user-agent-core!
-        #(let [task (start-jline-reader! reader stopping?)]
+        #(let [task (start-jline-reader! reader stopping?
+                                             {:state reader-state
+                                              :finished reader-finished
+                                              :on-stop (fn []
+                                                         (let [interrupted? (Thread/interrupted)]
+                                                           (try (.setAttributes terminal saved-attributes)
+                                                                (finally
+                                                                  (when interrupted?
+                                                                    (.interrupt (Thread/currentThread)))))))})]
            (reset! reader-task task)
            task))
       session

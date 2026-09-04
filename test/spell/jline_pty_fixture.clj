@@ -3,10 +3,11 @@
   (:require [clojure.string :as str]
             [spell.runtime :as runtime]
             [spell.user :as user])
-  (:import [java.nio.charset StandardCharsets]
+  (:import [java.lang.reflect InvocationHandler InvocationTargetException Proxy]
+           [java.nio.charset StandardCharsets]
            [java.util Base64]
            [org.jline.reader LineReader LineReaderBuilder]
-           [org.jline.terminal Terminal TerminalBuilder]))
+           [org.jline.terminal Attributes Terminal TerminalBuilder]))
 
 (defn- encode-result [value]
   (.encodeToString (Base64/getEncoder)
@@ -24,14 +25,22 @@
         (>= (System/currentTimeMillis) deadline) false
         :else (do (Thread/sleep 10) (recur))))))
 
+(defn- restored-attributes? [before after]
+  ;; macOS sets PENDIN while cooked input is pending reprocessing. It is a
+  ;; transient kernel status bit, independent of the restored terminal settings.
+  (= (str/replace before " pendin" "") (str/replace after " pendin" "")))
+
 (defn- open-reader! []
   (let [^Terminal terminal (-> (TerminalBuilder/builder) (.system true) (.build))
-        original-attributes (str (.getAttributes terminal))
+        saved-attributes (Attributes. (.getAttributes terminal))
+        original-attributes (str saved-attributes)
+        reader-finished (promise)
         ^LineReader reader (-> (LineReaderBuilder/builder) (.terminal terminal) (.build))
         stopping? (atom false)]
     (#'user/install-newline-bindings! reader)
     (reset! @#'user/interactive-session {:reader reader :lock (Object.)})
-    (let [reader-task (#'user/start-jline-reader! reader stopping?)]
+    (let [reader-task (#'user/start-jline-reader! reader stopping?
+                                                   {:finished reader-finished})]
       (when-not (wait-until #(.isReading reader) 5000)
         (throw (ex-info "JLine reader did not become ready" {})))
       (println "SPELL_READY")
@@ -39,16 +48,23 @@
       {:terminal terminal
        :reader reader
        :reader-task reader-task
+       :reader-finished reader-finished
+       :saved-attributes saved-attributes
        :stopping? stopping?
        :original-attributes original-attributes})))
 
 (defn- close-reader!
-  [{:keys [^Terminal terminal reader-task stopping? original-attributes]}]
+  [{:keys [^Terminal terminal reader-task reader-finished stopping?
+           saved-attributes original-attributes]}]
   (reset! stopping? true)
-  (.close terminal)
-  (when (= ::reader-timeout (deref reader-task 2000 ::reader-timeout))
-    (future-cancel reader-task))
-  (= original-attributes (str (.getAttributes terminal))))
+  (try
+    (future-cancel reader-task)
+    (when (= ::reader-timeout (deref reader-finished 2000 ::reader-timeout))
+      (throw (ex-info "Fixture reader did not stop" {})))
+    (finally
+      (try (.close terminal)
+           (finally (.setAttributes terminal saved-attributes)))))
+  (restored-attributes? original-attributes (str (.getAttributes terminal))))
 
 (defn- run-reader-mode! [mode]
   (reset! runtime/registry {})
@@ -92,17 +108,46 @@
         (try (.close terminal) (catch Exception _))
         (shutdown-agents)))))
 
-(defn- run-cleanup-mode! []
+(defn- run-cleanup-mode! [startup-race?]
   (reset! runtime/registry {})
   (user/reset-state!)
-  (let [session (user/register-interactive-user-agent!)
+  (let [open-terminal @#'user/open-terminal!
+        raw-entered (promise)
+        terminal-closed (promise)
+        terminal-factory
+        (fn []
+          (let [terminal (open-terminal)]
+            (Proxy/newProxyInstance
+              (.getClassLoader Terminal) (into-array Class [Terminal])
+              (reify InvocationHandler
+                (invoke [_ _ method args]
+                  (let [method-name (.getName method)]
+                    (when (= "enterRawMode" method-name)
+                      (deliver raw-entered true)
+                      @terminal-closed)
+                    (try
+                      (let [result (.invoke method terminal args)]
+                        (when (= "close" method-name)
+                          (deliver terminal-closed true))
+                        result)
+                      (catch InvocationTargetException e (throw (.getCause e))))))))))
+        session (if startup-race?
+                  (with-redefs-fn {#'user/open-terminal! terminal-factory}
+                    #(user/register-interactive-user-agent!))
+                  (user/register-interactive-user-agent!))
         same-session (user/register-interactive-user-agent!)
-        {:keys [^Terminal terminal ^LineReader reader original-attributes]}
+        {:keys [^Terminal terminal ^LineReader reader original-attributes reader-finished]}
         @@#'user/interactive-session]
-    (when-not (wait-until #(.isReading reader) 5000)
-      (throw (ex-info "Production JLine reader did not become ready" {})))
+    (if startup-race?
+      (when (= ::timeout (deref raw-entered 5000 ::timeout))
+        (throw (ex-info "Reader did not enter delayed raw-mode setup" {})))
+      (when-not (wait-until #(.isReading reader) 5000)
+        (throw (ex-info "Production JLine reader did not become ready" {}))))
     (.close ^java.io.Closeable session)
-    (emit-result! {:restored? (= original-attributes (str (.getAttributes terminal)))
+    (emit-result! {:restored? (restored-attributes? original-attributes (str (.getAttributes terminal)))
+                   :reader-stopped? (realized? reader-finished)
+                   :original-attributes original-attributes
+                   :closed-attributes (str (.getAttributes terminal))
                    :session-cleared? (nil? @@#'user/interactive-session)
                    :idempotent? (identical? session same-session)})
     (shutdown-agents)))
@@ -139,7 +184,8 @@
 
 (defn -main [& [mode]]
   (case mode
-    "cleanup" (run-cleanup-mode!)
+    "cleanup" (run-cleanup-mode! false)
+    "cleanup-startup-race" (run-cleanup-mode! true)
     "full-flow" (run-full-flow-mode!)
     (run-reader-mode! mode))
   (System/exit 0))
