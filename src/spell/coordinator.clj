@@ -165,12 +165,20 @@
       (enqueue state source {:message {:from :coordinator :body :wait-obligation-changed}})
       state)))
 
+(defn- require-source-lifecycle [state source expected]
+  (when (and expected (not (identical? expected (:completed (require-agent state source)))))
+    (throw (ex-info "Computation belongs to a completed agent lifecycle"
+                    {:type :stale-computation-lifecycle :handle source}))))
+
 (defn request!
   "Create an obligation and deliver every request atomically. Source stays awake."
   ([source targets supplied? value] (request! source targets supplied? value nil))
   ([source targets supplied? value result-promise]
+   (request! source targets supplied? value result-promise nil))
+  ([source targets supplied? value result-promise expected-lifecycle]
   (transact!
     (fn [state]
+      (require-source-lifecycle state source expected-lifecycle)
       (let [[state id] (add-edge state source targets)]
         [(reduce (fn [s target]
                    (enqueue s target
