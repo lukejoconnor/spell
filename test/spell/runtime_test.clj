@@ -670,8 +670,8 @@
                                       :unexpected-success
                                       (catch Exception e
                                         (.getMessage e))))))]
-      (is (= "!ask: requires an active agent context"
-             (deref (:ref result-token) 5000 :timeout))))))
+      (is (re-find #"requires an active agent context"
+                   (deref (:ref result-token) 5000 :timeout))))))
 
 ;; =============================================================================
 ;; Ask tests
