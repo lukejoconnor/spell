@@ -125,17 +125,26 @@
   ([descriptors limit]
    (let [limit (effective-limit limit)
          render (fn [refs]
-                  (bounded-output limit
-                    #(doseq [[i descriptor] (map-indexed vector descriptors)]
-                       (when (pos? i) (print " "))
-                       (print-descriptor! descriptor (get refs i)))))]
-     (or (when-let [inline (render {})]
-           ;; Host objects may print as #object rather than reader data. Such
-           ;; values can still travel intact through a stored reference.
-           (try
-             (when (= (count descriptors) (count (parse/read-all inline))) inline)
-             (catch Exception _ nil)
-             (catch StackOverflowError _ nil)))
+                  (when-let [text
+                             (bounded-output limit
+                               #(doseq [[i descriptor] (map-indexed vector descriptors)]
+                                  (when (pos? i) (print " "))
+                                  (print-descriptor! descriptor (get refs i))))]
+                    ;; Only inspect the bounded candidate. Objects and unusual
+                    ;; symbols can print unreadably or as different reader data.
+                    (try
+                      (let [forms (parse/read-all text)]
+                        (when (and (= (count descriptors) (count forms))
+                                   (every? true?
+                                     (map-indexed
+                                       (fn [i descriptor]
+                                         (= (descriptor-form descriptor (get refs i))
+                                            (nth forms i)))
+                                       descriptors)))
+                          text))
+                      (catch Exception _ nil)
+                      (catch StackOverflowError _ nil))))]
+     (or (render {})
          (let [entries (into {} (keep-indexed
                                 (fn [i descriptor]
                                   (when-not (contains? descriptor :form)

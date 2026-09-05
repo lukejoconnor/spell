@@ -397,16 +397,25 @@
 
 (defn- extract-messages
   "Extract ALL messages from a raw completion string.
-   Walks the parsed AST to find all (def msg-N {:from h ...}) forms.
+   Reads message bindings, resolving quoted data and run-owned references.
    Returns a vector of {:name sym :msg map}."
   [raw]
   (try
     (let [form (first (parse/read-all (parse/balance-parens raw)))
-          msgs (->> (tree-seq seq? seq form)
+          msgs (->> (tree-seq #(and (seq? %) (not= 'quote (first %))) seq form)
                     (keep (fn [f]
                             (when (and (seq? f) (= 'def (first f)) (>= (count f) 3))
                               (let [sym (second f)
-                                    val (nth f 2)]
+                                    value-form (nth f 2)
+                                    val (cond
+                                          (and (seq? value-form) (= 2 (count value-form))
+                                               (= 'quote (first value-form)))
+                                          (second value-form)
+                                          (and (seq? value-form) (= 2 (count value-form))
+                                               (= 'stored (first value-form))
+                                               (string? (second value-form)))
+                                          (eval/stored (second value-form))
+                                          :else value-form)]
                                 (when (and (map? val) (contains? val :from))
                                   {:name sym :msg val})))))
                     vec)]
