@@ -593,37 +593,19 @@
 ;; Completion promise tests
 ;; =============================================================================
 
-(deftest completion-promise-basic-test
-  (testing "completion-promise captures current completion as await token"
-    (let [handle :completion-promise-child
-          child-raw "(quine completion (eval (do )))"
-          eval-fn (fn [_] :child-finished)]
-      (runtime/start-box handle eval-fn child-raw)
-      (Thread/sleep 100)
-      (let [token (runtime/completion-promise handle)]
-        (is (= true (:spell/future token)))
-        (runtime/send-msg-fn (eval/compose-macros []) handle)
-        (is (= :child-finished (deref (:ref token) 5000 :timeout)))))))
+(deftest tracked-request-token-test
+  (runtime/register! :source)
+  (runtime/start-box :target (fn [_] :finished) "(quine completion (eval (do)))")
+  (binding [runtime/*current-handle* :source]
+    (let [token (runtime/request-token :target :question)]
+      (is (:spell/future token))
+      (is (= :finished (deref (:ref token) 3000 :timeout)))
+      (is (empty? (:mailbox (coordinator/agent :source)))))))
 
-(deftest completion-promise-missing-handle-test
-  (testing "completion-promise throws for unregistered handles"
-    (is (thrown-with-msg? Exception #"[Hh]andle not registered"
-          (runtime/completion-promise :missing-handle)))))
-
-(deftest completion-promise-capture-before-send-test
-  (testing "capturing completion promise before send avoids fast-completion race"
-    (let [handle :completion-promise-race-child
-          child-raw "(quine completion (eval (do )))"
-          eval-fn (fn [_] :race-result)]
-      (runtime/start-box handle eval-fn child-raw)
-      (Thread/sleep 100)
-      (let [result (deref
-                     (future
-                       (let [token (runtime/completion-promise handle)]
-                         (runtime/send-msg-fn (eval/compose-macros []) handle)
-                         (deref (:ref token) 5000 :timeout)))
-                     5000 :timeout)]
-        (is (= :race-result result))))))
+(deftest tracked-request-invalid-target-test
+  (runtime/register! :source)
+  (binding [runtime/*current-handle* :source]
+    (is (thrown-with-msg? Exception #"Handle not registered" (runtime/request-token :missing)))))
 
 (deftest blocking-await-basic-test
   (testing "blocking-await resolves a Spell future"
@@ -637,13 +619,14 @@
     (let [handle :send-await-child
           child-raw "(quine completion (eval (do )))"
           eval-fn (fn [_] :send-await-done)]
+      (runtime/register! :send-await-parent)
       (runtime/start-box handle eval-fn child-raw)
       (Thread/sleep 100)
       (is (= :send-await-done
              (binding [runtime/*current-handle* :send-await-parent]
                (runtime/send-await handle {:kind :wake}))))))
-  (testing "send-await surfaces completion-promise errors"
-    (is (thrown-with-msg? Exception #"[Hh]andle not registered"
+  (testing "send-await surfaces request-context errors"
+    (is (thrown-with-msg? Exception #"requires a source agent"
           (runtime/send-await :missing {:kind :wake})))))
 
 (deftest ask-await-builtin-wakeup-test

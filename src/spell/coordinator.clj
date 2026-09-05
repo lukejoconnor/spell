@@ -9,7 +9,7 @@
    (when-not (and (map? options) (every? #{:max-edges} (keys options))
                   (integer? (:max-edges options 10000)) (pos? (:max-edges options 10000)))
      (throw (ex-info "Coordinator options require positive integer :max-edges" {:options (merge {:max-edges 10000} options)})))
-   (atom {:agents {} :edges {} :next-edge-id 1 :next-seq 1
+   (atom {:agents {} :edges {} :external-waits {} :next-edge-id 1 :next-seq 1
           :notifications {} :next-notification-id 1 :closed? false :options (merge {:max-edges 10000} options)})))
 
 (def ^:dynamic *coordinator* nil)
@@ -157,9 +157,18 @@
     [(-> state (update :next-edge-id inc) (update :next-seq inc)
          (assoc-in [:edges id] edge)) id]))
 
+(defn- wake-if-invalid-wait [state source]
+  (let [status (get-in state [:agents source :status])]
+    (if (and (#{:asleep :external-wait} status)
+             (not (sleep-allowed? state source))
+             (or (= :asleep status) (seq (incoming state source))))
+      (enqueue state source {:message {:from :coordinator :body :wait-obligation-changed}})
+      state)))
+
 (defn request!
   "Create an obligation and deliver every request atomically. Source stays awake."
-  [source targets supplied? value]
+  ([source targets supplied? value] (request! source targets supplied? value nil))
+  ([source targets supplied? value result-promise]
   (transact!
     (fn [state]
       (let [[state id] (add-edge state source targets)]
@@ -168,7 +177,7 @@
                             {:message (cond-> {:from source :expects-response true :edge-id id}
                                         supplied? (assoc :body value))
                              :request-edge id}))
-                 state targets) id]))))
+                 (cond-> state result-promise (assoc-in [:edges id :result-promise] result-promise)) targets) id])))))
 
 (defn spawn-request!
   "Register a complete child batch and claim its initial lifecycles before any
@@ -198,9 +207,13 @@
       (let [edge (assoc-in edge [:slots target] (assoc slot :status :filled :value value))
             complete? (every? #(= :filled (:status %)) (vals (:slots edge)))
             state (if complete?
-                    (cond-> (update state :edges dissoc id)
-                      (not (and suppress-singleton? (= 1 (count (:targets edge)))))
-                      (enqueue (:source edge) {:message (report edge)}))
+                    (let [s (update state :edges dissoc id)]
+                      (if-let [p (:result-promise edge)]
+                        (-> s (notify p (:body (report edge)))
+                            (wake-if-invalid-wait (:source edge)))
+                        (cond-> s
+                          (not (and suppress-singleton? (= 1 (count (:targets edge)))))
+                          (enqueue (:source edge) {:message (report edge)}))))
                     (assoc-in state [:edges id] edge))]
         [state {:filled? true :completed? complete? :edge edge}])
       [state {:filled? false :completed? false}])))
@@ -243,7 +256,13 @@
                               (first (fill s (:id edge) handle value false)) s))
                           state (incoming state handle))
                   cancelled (outgoing state handle)
+                  state (reduce (fn [s edge]
+                                  (if-let [p (:result-promise edge)]
+                                    (notify s p {:spell/cancelled true :edge-id (:id edge)}) s))
+                                state cancelled)
                   state (-> state
+                            (update :external-waits
+                                    #(into {} (remove (fn [[_ wait]] (= handle (:source wait))) %)))
                             (update :edges #(apply dissoc % (map :id cancelled)))
                             (assoc-in [:agents handle :status] :finished)
                             (assoc-in [:agents handle :completed] next-completion)
@@ -259,9 +278,35 @@
         (when-not (= handle (:source edge))
           (throw (ex-info "No outgoing edge owned by caller" {:handle handle :edge-id id})))
         [(cond-> (update state :edges dissoc id)
-           (= :asleep (get-in state [:agents handle :status]))
+           (:result-promise edge) (notify (:result-promise edge) {:spell/cancelled true :edge-id id})
+           (#{:asleep :external-wait} (get-in state [:agents handle :status]))
            (enqueue handle {:message {:edge-id id :from (:targets edge) :cancelled true}}))
          (assoc edge :status :cancelled)]))))
+
+(defn begin-external-wait!
+  "Register an interruptible computation wait. Existing incoming agent obligations
+   still require a newer real outgoing edge; this wait cannot manufacture one."
+  [source]
+  (let [token (Object.)]
+    (transact!
+      (fn [state]
+        (require-open state)
+        (let [a (require-agent state source)]
+          (when (and (empty? (:mailbox a)) (seq (incoming state source))
+                     (not (sleep-allowed? state source)))
+            (throw (ex-info "Cannot await computation while newer incoming obligations require attention"
+                            {:type :sleep-refused :handle source})))
+          [(cond-> (assoc-in state [:external-waits token]
+                            {:source source :generation (:generation a)})
+             (empty? (:mailbox a)) (assoc-in [:agents source :status] :external-wait)) token])))))
+
+(defn complete-external-wait! [token value]
+  (transact!
+    (fn [state]
+      (if-let [{:keys [source]} (get-in state [:external-waits token])]
+        [(enqueue (update state :external-waits dissoc token) source
+                  {:message {:from :future :body value}}) true]
+        [state false]))))
 
 (defn dormant! [handle]
   (transact! (fn [state]
@@ -298,4 +343,8 @@
         [(reduce (fn [s [_ {:keys [signal completed]}]]
                    (-> s (notify signal :closed)
                        (notify completed {:spell/run-closed true})))
-                 (assoc state :closed? true :edges {}) (:agents state)) nil]))))
+                 (reduce (fn [s [_ edge]]
+                           (if-let [p (:result-promise edge)]
+                             (notify s p {:spell/run-closed true}) s))
+                         (assoc state :closed? true :edges {} :external-waits {}) (:edges state))
+                 (:agents state)) nil]))))

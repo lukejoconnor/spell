@@ -756,9 +756,10 @@
    ;; future* — run a thunk in a new thread, return a future handle
    'future* (fn [thunk]
               (let [current-raw-var (resolve 'spell.runtime/*current-raw*)
+                    computation-var (resolve 'spell.runtime/*computation-future?*)
                     f (bound-fn []
                         (if current-raw-var
-                          (with-bindings* {current-raw-var nil}
+                          (with-bindings* (cond-> {current-raw-var nil} computation-var (assoc computation-var true))
                             #(binding [*spell-env* (merge *spell-env* *future-env*)]
                                (invoke-fn thunk [])))
                           (binding [*spell-env* (merge *spell-env* *future-env*)]

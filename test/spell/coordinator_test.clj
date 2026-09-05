@@ -1,7 +1,10 @@
 (ns spell.coordinator-test
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [spell.coordinator :as c]
-            [spell.runtime :as runtime]))
+            [spell.runtime :as runtime]
+            [spell.eval :as eval]
+            [spell.stdlib :as stdlib]
+            [spell.test-helpers :as th]))
 
 (use-fixtures :each
   (fn [f] (binding [c/*coordinator* (c/new-coordinator)]
@@ -181,3 +184,47 @@
         (is (.contains ^String result ":spell/child-failure true"))
         (is (.contains ^String result "startup failed"))
         (is (.contains ^String result ":from :ok, :body nil"))))))
+
+(deftest future-cycle-wakes-instead-of-deadlocking
+  (agents! :a :b)
+  (let [raw "(quine completion (eval (do)))"
+        a-waiting (promise)
+        a (future
+            (runtime/box :a raw
+              (fn [_]
+                (binding [runtime/*current-eval-fn* identity]
+                  (let [work (future (runtime/send-await :b :from-a))]
+                    (deliver a-waiting true)
+                    (stdlib/ask-await-builtin {:spell/future true :ref work}))))))]
+    @a-waiting
+    ;; Wait deterministically until A's request exists, then let B receive it.
+    (loop [n 0]
+      (when (and (empty? (:mailbox (c/agent :b))) (< n 200))
+        (Thread/sleep 5) (recur (inc n))))
+    (is (seq (c/drain! :b)))
+    (c/request! :b [:a] true :need-help)
+    (is (.contains ^String (deref a 3000 "TIMEOUT") "need-help"))
+    (is (= :awake (:status (c/agent :a))))))
+
+(deftest external-wait-cannot-outrank-real-incoming-obligation
+  (agents! :a :b)
+  (c/request! :b [:a] false nil)
+  (c/drain! :a)
+  (is (= :sleep-refused
+         (try (c/begin-external-wait! :a) (catch Exception e (:type (ex-data e)))))))
+
+(deftest late-external-result-cannot-wake-next-lifecycle
+  (agents! :a)
+  (let [completion (:completed (c/agent :a)) token (c/begin-external-wait! :a)]
+    (c/finish! :a completion :done)
+    (is (false? (c/complete-external-wait! token :late)))
+    (is (empty? (:mailbox (c/agent :a))))))
+
+(deftest direct-nested-agent-and-computation-agent-calls-rejected
+  (let [agent (th/make-test-agent "42)")]
+    (binding [runtime/*current-handle* :parent]
+      (is (= :synchronous-agent-call
+             (try (agent "(do " :nested) (catch Exception e (:type (ex-data e)))))))
+    (binding [runtime/*computation-future?* true]
+      (is (= :agent-in-computation-future
+             (try (agent "(do " :nested) (catch Exception e (:type (ex-data e)))))))))

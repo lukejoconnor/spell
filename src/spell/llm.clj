@@ -514,6 +514,12 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
                  :recover-fn recover-fn}
         _ (deliver final-config config')
         start-root (fn start-root [prompt handle]
+                     (when runtime/*computation-future?*
+                       (throw (ex-info "Agent lifecycles cannot run inside computation futures; use agents/spawn and blocking/request"
+                                       {:type :agent-in-computation-future})))
+                     (when runtime/*current-handle*
+                       (throw (ex-info "Nested agents must use agents/spawn or agents/!spawn-ask"
+                                       {:type :synchronous-agent-call :caller runtime/*current-handle* :handle handle})))
                      (let [direct-init? (instance? DirectInit prompt)
                            prompt (if direct-init? (:program prompt) prompt)
                            prompt' (cond
@@ -536,6 +542,9 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
                          (runtime/register! handle))
                        (runtime/run-root-box handle init-program awake-fn inbox-fn)))
         same-handle-llm (fn same-handle-llm [prompt]
+                          (when runtime/*computation-future?*
+                            (throw (ex-info "Self-calls cannot run inside computation futures"
+                                            {:type :agent-in-computation-future})))
                           (when-not runtime/*current-handle*
                             (throw (ex-info "!llm-self requires an active agent handle"
                                             {:prompt prompt})))
