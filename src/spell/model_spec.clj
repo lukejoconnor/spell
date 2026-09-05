@@ -36,6 +36,8 @@
    "kimi27"   "fireworks-tc:kimi-k2p7-code"
    "kimi27code" "fireworks-tc:kimi-k2p7-code"
    "kimi26"   "fireworks-tc:kimi-k2p6"
+   "kimi3"    "fireworks-tc:kimi-k3"
+   "kimik3"   "fireworks-tc:kimi-k3"
    "qwen"     "fireworks-tc:qwen3p7-plus"
    "qwen37p"  "fireworks-tc:qwen3p7-plus"
    "qwen36p"  "fireworks-tc:qwen3p6-plus"})

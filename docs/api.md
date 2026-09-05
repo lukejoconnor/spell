@@ -191,6 +191,8 @@ Model profile files live under `config/model-profiles/` and use EDN maps.
 
 GPT-6 Astra has a 1,050,000-token context window and a maximum output of 128,000 tokens. Spell retains its configured per-response output limits. [Its standard pricing](https://developers.openai.com/api/docs/models/gpt-6-astra) is recorded in `data/pricing.edn` at $10/M uncached input tokens, $1/M cached input tokens, $12.50/M cache-write tokens, and $50/M output tokens, so normal usage and dollar-budget enforcement use the shared cost architecture. OpenAI prices requests with more than 272K input tokens at 2x input/cache rates and 1.5x output for the full request; Spell does not currently select a pricing tier from per-request context length, so reported cost and budget enforcement use the standard tier above that threshold.
 
+Kimi K3 is available through Fireworks with `bin/spell -m fireworks-tc:kimi-k3 -R high "task"`. The aliases `kimi3` and `kimik3` select the same provider model, `accounts/fireworks/models/kimi-k3`. Spell sends high effort through the [Fireworks Anthropic-compatible Messages API](https://docs.fireworks.ai/tools-sdks/anthropic-compatibility#reasoning-effort-mapping). Its [published serverless prices](https://fireworks.ai/models/fireworks/kimi-k3) are $3/M input tokens, $0.30/M cached input tokens, and $15/M output tokens; the shared pricing table uses ordinary input pricing for cache writes.
+
 Low-level provider constructor functions may accept direct `:api-key` values for programmatic use. Public model profile files use `:api-key-env` instead, so secrets do not land in the repository.
 
 ## Agent Profiles

@@ -56,6 +56,10 @@
            (model-spec/resolve-model-spec "glm51")))
     (is (= {:provider "fireworks-tc" :model "kimi-k2p6"}
            (model-spec/resolve-model-spec "kimi26")))
+    (is (= {:provider "fireworks-tc" :model "kimi-k3"}
+           (model-spec/resolve-model-spec "kimi3")))
+    (is (= {:provider "fireworks-tc" :model "kimi-k3"}
+           (model-spec/resolve-model-spec "kimik3")))
     (is (= {:provider "fireworks-tc" :model "qwen3p6-plus"}
            (model-spec/resolve-model-spec "qwen36p"))))
 

@@ -358,6 +358,19 @@
                                      {:input_tokens 1000000
                                       :output_tokens 500000})))))))
 
+(deftest kimi-k3-cost-accounting-test
+  (testing "Kimi K3 usage is priced from the shared pricing table"
+    (let [usage-atom (atom {:by-model {}})]
+      (binding [provider/*usage* usage-atom
+                provider/*budget* nil]
+        (provider/track-usage! "accounts/fireworks/models/kimi-k3"
+                               {:input_tokens 1000000
+                                :cache_read_input_tokens 1000000
+                                :output_tokens 100000}))
+      ;; 1M uncached input at $3 + 1M cached input at $0.30 + 100K output at $15
+      (is (< (Math/abs (- 4.8 (double (get-in @usage-atom [:by-model "accounts/fireworks/models/kimi-k3" :cost])))) 1e-9))
+      (is (< (Math/abs (- 4.8 (double (provider/current-cost usage-atom)))) 1e-9)))))
+
 (deftest current-cost-prices-latest-models-test
   (testing "shared pricing covers input, cached input, and output for the latest configured model families"
     (doseq [[model expected-input expected-cache-read expected-cache-write expected-output]
@@ -370,6 +383,7 @@
              ["claude-fable-5" 10.0 1.0 12.5 50.0]
              ["accounts/fireworks/models/glm-5p2" 1.4 0.14 1.4 4.4]
              ["accounts/fireworks/models/kimi-k2p7-code" 0.95 0.19 0.95 4.0]
+             ["accounts/fireworks/models/kimi-k3" 3.0 0.3 3.0 15.0]
              ["accounts/fireworks/models/qwen3p7-plus" 0.4 0.08 0.4 1.6]]]
       (let [cost (#'provider/lookup-cost model provider/default-costs)]
         (is (= expected-input (:input cost)) model)
@@ -965,6 +979,10 @@
       (is (false? (provider/supports-prefill p)))
       (is (instance? spell.provider.FireworksProvider (provider/plain-text-provider p)))))
 
+  (testing "fireworks-tc-provider accepts explicit Kimi K3 model"
+    (let [p (provider/fireworks-tc-provider {:api-key "fw-test" :model "kimi-k3"})]
+      (is (= "accounts/fireworks/models/kimi-k3" (:model p)))))
+
   (testing "fireworks-tc-provider accepts custom request-timeout-sec"
     (let [p (provider/fireworks-tc-provider {:api-key "fw-test" :request-timeout-sec 120})]
       (is (= 120 (:request-timeout-sec p)))))
@@ -1009,6 +1027,20 @@
                 true
                 nil
                 "high")]
+      (is (= {:type "auto"} (:tool_choice body)))
+      (is (= {:type "enabled" :budget_tokens 1024} (:thinking body)))
+      (is (= {:effort "high"} (:output_config body)))))
+
+  (testing "fireworks-tc request maps Kimi K3 high reasoning effort"
+    (let [body (#'provider/fireworks-tc-request-body
+                "accounts/fireworks/models/kimi-k3"
+                "prompt"
+                nil
+                4096
+                true
+                nil
+                "high")]
+      (is (= "accounts/fireworks/models/kimi-k3" (:model body)))
       (is (= {:type "auto"} (:tool_choice body)))
       (is (= {:type "enabled" :budget_tokens 1024} (:thinking body)))
       (is (= {:effort "high"} (:output_config body)))))

@@ -102,6 +102,8 @@
                              ["qwen" "qwen3p7-plus"]
                              ["glm51" "glm-5p1"]
                              ["kimi26" "kimi-k2p6"]
+                             ["kimi3" "kimi-k3"]
+                             ["kimik3" "kimi-k3"]
                              ["qwen36p" "qwen3p6-plus"]]]
       (let [captured (atom nil)]
         (with-redefs [provider/fireworks-tc-provider
