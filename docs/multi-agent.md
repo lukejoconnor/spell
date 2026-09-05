@@ -59,7 +59,10 @@ model generation and before evaluation.
 | `(agents/current-handle)`, `(agents/parent-handle)` | Identify the caller and its parent. |
 
 Prompt-only spawn operations use the current compiled agent. Explicit agent
-arguments use a configured compiled worker. Waiting operations are ordinarily
+arguments use a configured compiled worker. Start worker lifecycles through
+spawn operations; calling a compiled worker directly from an active agent or
+its future is rejected. Nested `!llm-self` calls remain available.
+Waiting operations are ordinarily
 the final expression of a turn because waking continues through the agent's
 completion rather than returning like a host-language promise await.
 
@@ -104,6 +107,22 @@ usefully retain their own progress assumptions.
 The ordering condition is conservative. Refusal explains the caller's pending
 obligations; it does not silently introduce another kind of wait. Reply to a
 newer request or otherwise change the obligations before trying again.
+
+## Requests from futures
+
+Future orchestration can use `(blocking/request target value)` to register an
+immediate request and obtain its result token. `(blocking/await token)` collects
+that result, and `(blocking/send-await target value)` combines both operations.
+The one-argument request form is a bodyless poke. Request slots and payload
+delivery commit together, so a target cannot finish between capturing a token
+and receiving its assignment.
+
+These tokens represent coordinator edges owned by the enclosing agent. A
+surrounding `!ask-await` must obey the same incoming/outgoing ordering rule when
+its computation depends on agents. New incoming requests wake the enclosing
+agent so it can answer. Ordinary computation futures and external I/O have
+separate progress assumptions. `blocking/completion-promise` is replaced by the
+atomic request operation.
 
 ## Capacity
 
