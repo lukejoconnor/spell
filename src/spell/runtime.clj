@@ -540,7 +540,8 @@ targets continue running. Returning a child result fills its claimed slots.
 
 Requests arrive as msg-N maps with :from, :expects-response true, :edge-id and
 optional :body. Pass that exact message to (agents/reply msg-N result).
-Duplicate/cancelled replies are no-ops. A single-target completion report has
+agents/reply on duplicate/cancelled requests is a no-op. !reply-ask refuses a stale request
+without coordinator changes. A single-target completion report has
 :from/:body/:edge-id; multi-target :body is [{:from target :body result} ...].
 Successful nil is a result. Terminal failures carry :spell/child-failure true.
 
@@ -568,7 +569,7 @@ exists only when the run configured user input. Never invent a handle."}
     :!sleep "(agents/!sleep): same primitive as !wait; resume retained collections after an unrelated wakeup."
     :send "(agents/send target value): send a plain message and awaken target. Does not fill result slots."
     :reply "(agents/reply message value): answer your slot of an actionable request exactly once. Stale/duplicate/cancelled requests are no-ops. A singleton completion report replies by plain send; aggregate reports require choosing a target."
-    :!reply-ask "(agents/!reply-ask message value): atomically answer and create a reverse request, then wait. Requires a singleton sender."
+    :!reply-ask "(agents/!reply-ask message value): atomically answer and create a reverse request, then wait. Requires a singleton sender; a stale actionable request is refused without coordinator changes."
     :cancel "(agents/cancel edge-id): detach your pending collection and return its cancelled summary. Does not stop targets or descendants."
     :status "(agents/status), (agents/status handle): inspect lifecycle status/generation; zero-arity includes your edge summaries."
     :graph "(agents/graph): inspect agent nodes and pending result edges."

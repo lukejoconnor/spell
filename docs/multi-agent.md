@@ -71,7 +71,9 @@ completion rather than returning like a host-language promise await.
 An actionable request contains `:from`, `:expects-response true`, and `:edge-id`,
 and optionally `:body`. Pass that message map to `agents/reply`. Each target slot
 fills at most once. Replies to stale, cancelled, or already answered requests
-are no-ops. An actionable request without its edge ID is invalid.
+are no-ops. An actionable request without its edge ID is invalid. `!reply-ask` requires a
+live actionable request when reversing an existing request; a stale one is
+refused without changing the coordinator. `agents/reply` to that stale request remains a no-op.
 
 A single-target completion report contains `:from`, `:body`, and `:edge-id`.
 For multiple targets, `:body` is a vector of `{:from target :body result}` maps
@@ -89,7 +91,8 @@ Ordinary messages may wake a waiting agent while its results are still pending.
 After handling such a message, call `!sleep` or `!wait` to retain the collections.
 Returning ends that lifecycle and cancels its unfinished outgoing edges, with a
 trace warning. Cancellation abandons collection; it does not interrupt children
-or their descendants. A persistent agent can be awakened for a later lifecycle.
+or their descendants. A handle whose initialization or runner submission fails
+is retired after its waiting callers receive terminal failure results. A persistent agent can be awakened for a later lifecycle.
 
 ## Non-deadlock guarantee
 
