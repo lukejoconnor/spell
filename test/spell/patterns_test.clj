@@ -6,7 +6,6 @@
             [spell.io :as sio]
             [spell.runtime :as runtime]
             [spell.coordinator :as coordinator]
-            [spell.coordinator :as coordinator]
             [spell.stdlib :as stdlib]))
 
 (use-fixtures :each th/with-test-run)

@@ -228,3 +228,19 @@
     (binding [runtime/*computation-future?* true]
       (is (= :agent-in-computation-future
              (try (agent "(do " :nested) (catch Exception e (:type (ex-data e)))))))))
+
+(deftest late-computation-cannot-create-request-in-next-lifecycle
+  (agents! :a :b)
+  (let [release (promise)
+        completion (:completed (c/agent :a))
+        token (binding [runtime/*current-handle* :a]
+                ((get eval/core-builtins 'future*)
+                 (fn [] @release
+                   (try (runtime/request-token :b :late)
+                        (catch Exception e (:type (ex-data e)))))))]
+    (c/finish! :a completion :done)
+    (c/send! :a {:message {:body :new-lifecycle}})
+    (deliver release true)
+    (is (= :stale-computation-lifecycle (deref (:ref token) 2000 :timeout)))
+    (is (empty? (:edges (c/snapshot))))
+    (is (empty? (:mailbox (c/agent :b))))))

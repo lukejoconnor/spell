@@ -3,6 +3,7 @@
   (:require [clojure.string :as str]
             [spell.runtime :as runtime]
             [spell.coordinator :as coordinator]
+            [spell.globals :as globals]
             [spell.user :as user])
   (:import [java.lang.reflect InvocationHandler InvocationTargetException Proxy]
            [java.nio.charset StandardCharsets]
@@ -181,7 +182,8 @@
           (shutdown-agents))))))
 
 (defn -main [& [mode]]
-  (binding [coordinator/*coordinator* (coordinator/new-coordinator)]
+  (binding [coordinator/*coordinator* (coordinator/new-coordinator)
+            globals/*store* (globals/new-store)]
     (user/call-with-session
       #(try
          (case mode

@@ -757,9 +757,13 @@
    'future* (fn [thunk]
               (let [current-raw-var (resolve 'spell.runtime/*current-raw*)
                     computation-var (resolve 'spell.runtime/*computation-future?*)
+                    owner-var (resolve 'spell.runtime/*computation-owner*)
+                    owner (when-let [capture (resolve 'spell.runtime/computation-owner)] (capture))
                     f (bound-fn []
                         (if current-raw-var
-                          (with-bindings* (cond-> {current-raw-var nil} computation-var (assoc computation-var true))
+                          (with-bindings* (cond-> {current-raw-var nil}
+                                            computation-var (assoc computation-var true)
+                                            owner-var (assoc owner-var owner))
                             #(binding [*spell-env* (merge *spell-env* *future-env*)]
                                (invoke-fn thunk [])))
                           (binding [*spell-env* (merge *spell-env* *future-env*)]

@@ -11,6 +11,11 @@
 
 (def ^:dynamic *current-handle* nil)
 (def ^:dynamic *computation-future?* false)
+(def ^:dynamic *computation-owner* nil)
+(defn computation-owner []
+  (if *computation-future?* *computation-owner*
+    (when *current-handle*
+      {:handle *current-handle* :completion (:completed (coordinator/agent *current-handle*))})))
 (def ^:dynamic *current-raw* nil)
 (def ^:dynamic *current-eval-fn* nil)
 (def ^:dynamic *default-spawn-agent* nil)
@@ -318,7 +323,8 @@
    (when-not *current-handle*
      (throw (ex-info "blocking/request requires a source agent" {})))
    (let [result (promise)
-         id (coordinator/request! *current-handle* [handle] supplied? msg result)]
+         id (coordinator/request! *current-handle* [handle] supplied? msg result
+                                  (when *computation-future?* (:completion *computation-owner*)))]
      (assoc (completion-token result) :edge-id id))))
 
 (defn blocking-await
