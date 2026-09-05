@@ -2,6 +2,7 @@
   (:require [clojure.test :refer [deftest is use-fixtures]]
             [spell.coordinator :as coordinator]
             [spell.runtime :as runtime]
+            [spell.stdlib :as stdlib]
             [spell.api :as api]
             [spell.provider :as provider]
             [spell.test-helpers :as th]))
@@ -240,3 +241,37 @@
         (is (= 2 (count messages)))
         (is (= [:answer :other-answer] (mapv :body (:body (first messages)))))
         (is (true? (:expects-response (second messages))))))))
+
+(deftest public-waits-share-bounded-refusal-diagnostics
+  (register-all :parent :worker :requester)
+  (let [out (coordinator/request! :parent [:worker] false nil (promise))
+        in (coordinator/request! :requester [:parent] true :question)]
+    ;; The request itself wakes the parent; no duplicate obligation notice.
+    (is (= 1 (count (coordinator/drain! :parent))))
+    (binding [runtime/*current-handle* :parent runtime/*current-raw* (atom {})]
+      (doseq [wait-fn [(:!wait runtime/agents-namespace)
+                      (:!sleep runtime/agents-namespace)
+                      #(stdlib/ask-await-builtin {:spell/future true :ref (promise)})]]
+        (let [before (coordinator/snapshot)
+              data (try (wait-fn) nil
+                        (catch clojure.lang.ExceptionInfo e (ex-data e)))]
+          (is (= :sleep-refused (:type data)))
+          (is (= [out] (mapv :id (:out-edges data))))
+          (is (= [in] (mapv :id (:in-edges data))))
+          (is (every? #(= #{:id :source :targets :created-seq} (set (keys %)))
+                      (concat (:out-edges data) (:in-edges data))))
+          (is (= before (coordinator/snapshot))))))))
+
+(deftest public-request-arities-preserve-bodyless-and-nil-requests
+  (register-all :parent :target)
+  (binding [runtime/*current-handle* :parent runtime/*current-raw* (atom {})]
+    (doseq [request [(:ask runtime/agents-namespace) (:request runtime/blocking-namespace)]]
+      (request :target)
+      (is (not (contains? (:message (first (coordinator/drain! :target))) :body)))
+      (request :target nil)
+      (let [message (:message (first (coordinator/drain! :target)))]
+        (is (contains? message :body))
+        (is (nil? (:body message))))
+      (let [before (coordinator/snapshot)]
+        (is (thrown? clojure.lang.ArityException (request :target nil false)))
+        (is (= before (coordinator/snapshot)))))))

@@ -328,31 +328,33 @@
   (reply-target "!reply-ask" msg)
   (coordinator/reply-request! *current-handle* msg value)
   (sleep!))
+(defn- request-edge [targets value supplied?]
+  (assert-agent-context! "ask")
+  (coordinator/request! *current-handle*
+                        (if (sequential? targets) (vec targets) [targets])
+                        supplied? value))
+
 (defn ask
   "Immediately register and deliver a request, returning its edge ID."
-  ([targets] (ask targets nil false))
-  ([targets value] (ask targets value true))
-  ([targets value supplied?]
-   (assert-agent-context! "ask")
-   (coordinator/request! *current-handle*
-                         (if (sequential? targets) (vec targets) [targets])
-                         supplied? value)))
+  ([targets] (request-edge targets nil false))
+  ([targets value] (request-edge targets value true)))
 
 (defn ask-builtin
   "Convenience wrapper: request now, then wait on current coordination state."
   ([targets] (ask targets) (wait!))
   ([targets value] (ask targets value) (wait!)))
+(defn- request-result-token [handle msg supplied?]
+  (when-not *current-handle*
+    (throw (ex-info "blocking/request requires a source agent" {})))
+  (let [result (promise)
+        id (coordinator/request! *current-handle* [handle] supplied? msg result
+                                 (when *computation-future?* (:completion *computation-owner*)))]
+    (assoc (completion-token result) :edge-id id :request-result true)))
+
 (defn request-token
   "Create a tracked agent request and return a token for its one result."
-  ([handle] (request-token handle nil false))
-  ([handle msg] (request-token handle msg true))
-  ([handle msg supplied?]
-   (when-not *current-handle*
-     (throw (ex-info "blocking/request requires a source agent" {})))
-   (let [result (promise)
-         id (coordinator/request! *current-handle* [handle] supplied? msg result
-                                  (when *computation-future?* (:completion *computation-owner*)))]
-     (assoc (completion-token result) :edge-id id :request-result true))))
+  ([handle] (request-result-token handle nil false))
+  ([handle msg] (request-result-token handle msg true)))
 
 (defn- assert-computation-wait! [caller]
   ;; Function values can escape a future's namespace into an agent program.
