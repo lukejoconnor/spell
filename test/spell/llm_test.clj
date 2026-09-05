@@ -2099,6 +2099,112 @@
     (is (not (provider/retryable? (ex-info "bad request" {:status 400}))))
     (is (not (provider/retryable? (ex-info "generic" {}))))))
 
+(deftest retryable-status-types-test
+  (testing "textual response statuses are not HTTP status codes"
+    (doseq [status ["incomplete" "unknown" "429" "500"]]
+      (let [ex (ex-info "Response status" {:status status})
+            calls (atom 0)
+            caught (try (provider/call-with-retries
+                          (fn [_] (swap! calls inc) (throw ex)) [0 0])
+                        (catch Exception e e))]
+        (is (false? (provider/retryable? ex)) (str status))
+        (is (identical? ex caught) "Non-retryable errors are preserved")
+        (is (= 1 @calls)))))
+  (testing "existing numeric status policy is unchanged"
+    (doseq [status [429 500 503 599 600]]
+      (is (true? (provider/retryable? (ex-info "HTTP failure" {:status status})))))
+    (doseq [status [200 400 499]]
+      (is (false? (provider/retryable? (ex-info "HTTP failure" {:status status})))))))
+
+(defn- incomplete-openai-response [output]
+  (json/write-str {:status "incomplete"
+                   :incomplete_details {:reason "max_output_tokens"}
+                   :output output
+                   :usage {:input_tokens 100 :output_tokens 8192
+                           :input_tokens_details {:cached_tokens 20}
+                           :output_tokens_details {:reasoning_tokens 8188}}}))
+
+(deftest incomplete-responses-parser-error-retries-test
+  (doseq [output [[] [{:type "custom_tool_call" :name "spell_suffix" :input "(def x"}]]
+          succeeds? [true false]]
+    (let [body (incomplete-openai-response output)
+          calls (atom 0) previous (atom []) errors (atom [])
+          outcome (try
+                    (provider/call-with-retries
+                      (fn [last-error]
+                        (swap! previous conj last-error)
+                        (swap! calls inc)
+                        (if (and succeeds? (> @calls 1))
+                          (#'provider/parse-openai-responses-response
+                            (json/write-str {:status "completed"
+                                             :output [{:type "custom_tool_call" :name "spell_suffix"
+                                                       :input "42"}]}) true)
+                          (try (#'provider/parse-openai-responses-response body true)
+                               (catch Exception e (swap! errors conj e) (throw e)))))
+                      [0 0])
+                    (catch Exception e e))]
+      (is (= (if succeeds? 2 3) @calls))
+      (is (= (if succeeds? 1 3) (count @errors)))
+      (is (every? #(= :missing-tool-call (:type (ex-data %))) @errors))
+      (is (every? #(= "incomplete" (:status (ex-data %))) @errors))
+      (is (every? #(= "max_output_tokens" (get-in (ex-data %) [:incomplete_details :reason])) @errors))
+      (is (nil? (first @previous)))
+      (is (every? true? (map identical? @errors (rest @previous)))
+          "Each retry receives the actual preceding parser exception")
+      (if succeeds?
+        (is (= "42" (:text outcome)))
+        (is (identical? (last @errors) outcome) "Exhaustion preserves the last parser error")))))
+
+(deftest incomplete-openai-usage-is-recorded-before-retry-test
+  (doseq [succeeds? [true false]]
+    (let [usage (atom {}) requests (atom []) before-retry (atom []) errors (atom [])
+          incomplete (incomplete-openai-response [])
+          complete (json/write-str {:status "completed"
+                                    :output [{:type "custom_tool_call" :name "spell_suffix" :input "42"}]
+                                    :usage {:input_tokens 50 :output_tokens 4
+                                            :input_tokens_details {:cached_tokens 5}
+                                            :output_tokens_details {:reasoning_tokens 1}}})
+          client (proxy [java.net.http.HttpClient] []
+                   (send [request _]
+                     (swap! requests conj request)
+                     (let [body (if (and succeeds? (> (count @requests) 1)) complete incomplete)]
+                       (reify java.net.http.HttpResponse
+                         (statusCode [_] 200)
+                         (body [_] body)
+                         (request [_] request)
+                         (previousResponse [_] (java.util.Optional/empty))
+                         (headers [_] nil)
+                         (sslSession [_] (java.util.Optional/empty))
+                         (uri [_] (.uri request))
+                         (version [_] java.net.http.HttpClient$Version/HTTP_1_1)))))
+          p (provider/map->OpenAIProvider
+              {:api-key "offline-test" :base-url "https://example.invalid/v1" :model "gpt-5.4"
+               :max-tokens 8192 :http-client client :use-responses-api true :force-tool-call true})
+          outcome (binding [provider/*usage* usage provider/*budget* nil]
+                    (try (provider/call-with-retries
+                           (fn [last-error]
+                             (when last-error (swap! before-retry conj @usage))
+                             (try (provider/call-llm p "unchanged prompt" {:system "unchanged system"})
+                                  (catch Exception e (swap! errors conj e) (throw e))))
+                           [0 0])
+                         (catch Exception e e)))
+          stats (get-in @usage [:by-model "gpt-5.4"])]
+      (is (= (if succeeds? 2 3) (count @requests)))
+      (is (= (if succeeds? [1] [1 2])
+             (mapv #(get-in % [:by-model "gpt-5.4" :calls]) @before-retry)))
+      (is (= (if succeeds? [1] [1 2]) (mapv #(count (:records %)) @before-retry))
+          "Incomplete usage is already recorded before retry enters the provider")
+      (is (= (count @requests) (:calls stats) (count (:records @usage)))
+          "Every incomplete or successful response is counted exactly once")
+      (is (= (if succeeds? 125 240) (:uncached_input_tokens stats)))
+      (is (= (if succeeds? 25 60) (:cached_input_tokens stats)))
+      (is (= (if succeeds? 7 12) (:visible_output_tokens stats)))
+      (is (= (if succeeds? 8189 24564) (:reasoning_output_tokens stats)))
+      (is (every? #(= :missing-tool-call (:type (ex-data %))) @errors))
+      (if succeeds?
+        (is (= "42" outcome))
+        (is (identical? (last @errors) outcome))))))
+
 (deftest call-with-retries-passes-last-error
   (testing "f receives nil on first call and the exception on retry"
     (let [received-errs (atom [])

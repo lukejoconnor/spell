@@ -2207,7 +2207,7 @@
   (let [data (ex-data ex)
         status (:status data)]
     (or (= status 429)
-        (and status (>= status 500))
+        (and (number? status) (>= status 500))
         (= (:type data) :missing-tool-call)
         (= (:type data) :sse-idle-timeout)
         (instance? java.net.ConnectException ex)
