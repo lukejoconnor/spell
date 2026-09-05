@@ -1,19 +1,14 @@
 (ns spell.globals-test
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [spell.runtime :as runtime]
+            [spell.coordinator :as coordinator]
             [spell.globals :as globals]
             [spell.core :as spell]
             [spell.provider :as provider]
             [spell.test-helpers :as th]))
 
-;; Reset globals and runtime registry between tests
-(use-fixtures :each
-  (fn [f]
-    (globals/reset-globals!)
-    (reset! runtime/registry {})
-    (f)
-    (globals/reset-globals!)
-    (reset! runtime/registry {})))
+;; Each test receives its own coordinator and shared values.
+(use-fixtures :each th/with-test-run)
 
 ;; =============================================================================
 ;; Unit tests

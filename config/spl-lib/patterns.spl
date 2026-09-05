@@ -567,8 +567,7 @@
                                                                     task-branch
                                                                     worktree-path
                                                                     branch])
-                                              token (blocking/completion-promise worker-handle)
-                                              _ (agents/send worker-handle
+                                              token (blocking/request worker-handle
                                                              {:kind :task
                                                               :goal goal
                                                               :shared-context shared-context

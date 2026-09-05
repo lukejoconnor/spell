@@ -1,5 +1,5 @@
 (ns spell.trace-test
-  (:require [clojure.test :refer [deftest testing is]]
+  (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [spell.trace :as trace]
@@ -7,6 +7,8 @@
             [spell.eval :as eval]
             [spell.provider :as provider]
             [spell.test-helpers :as th]))
+
+(use-fixtures :each th/with-test-run)
 
 ;; =============================================================================
 ;; Unit tests

@@ -272,8 +272,7 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
                                           (if (some? program') (pr-str program') raw))
                        indent (apply str (repeat eval/*llm-depth* "  "))
                        _ (when-let [handle runtime/*current-handle*]
-                           (when-let [last-raw (:last-raw (get @runtime/registry handle))]
-                             (reset! last-raw continuation-raw)))
+                           (runtime/record-last-raw! handle continuation-raw))
                        result (binding [eval/*llm-depth*      (inc eval/*llm-depth*)
                                         eval/*raw-text*       continuation-raw
                                         eval/*builtins*       variant-builtins
@@ -342,7 +341,7 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
           (reset! response-atom response)
           (eval/vlog (str indent "Response: " response))
           (deliver completion (str prompt-str response)))
-        (catch Exception e
+        (catch Throwable e
           (deliver completion e))))
     (try
       (let [result (binding [trace/*trace-node-id* node-id]
@@ -356,7 +355,7 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
                     :value result}
                    @trace-data-atom)))
         result)
-      (catch Exception e
+      (catch Throwable e
         (when node-id
           (trace/complete-node! node-id
             (merge {:response (or @response-atom "")
@@ -515,6 +514,12 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
                  :recover-fn recover-fn}
         _ (deliver final-config config')
         start-root (fn start-root [prompt handle]
+                     (when runtime/*computation-future?*
+                       (throw (ex-info "Agent lifecycles cannot run inside computation futures; use agents/spawn and blocking/request"
+                                       {:type :agent-in-computation-future})))
+                     (when runtime/*current-handle*
+                       (throw (ex-info "Nested agents must use agents/spawn or agents/!spawn-ask"
+                                       {:type :synchronous-agent-call :caller runtime/*current-handle* :handle handle})))
                      (let [direct-init? (instance? DirectInit prompt)
                            prompt (if direct-init? (:program prompt) prompt)
                            prompt' (cond
@@ -537,6 +542,9 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
                          (runtime/register! handle))
                        (runtime/run-root-box handle init-program awake-fn inbox-fn)))
         same-handle-llm (fn same-handle-llm [prompt]
+                          (when runtime/*computation-future?*
+                            (throw (ex-info "Self-calls cannot run inside computation futures"
+                                            {:type :agent-in-computation-future})))
                           (when-not runtime/*current-handle*
                             (throw (ex-info "!llm-self requires an active agent handle"
                                             {:prompt prompt})))
