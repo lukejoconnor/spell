@@ -530,7 +530,8 @@
   (blocking/await-all [f1 f2 ...])     — await multiple Spell futures (future-only)
   (blocking/pmap f coll)               — parallel map with blocking join (future-only)
   (blocking/plet [a expr1 b expr2] body) — macro; parallel let with blocking/await
-  (blocking/request handle) — send a tracked poke and return its result token (future-only)
+  (blocking/request handle) — send a bodyless tracked poke and return its result token
+  (blocking/request handle msg) — send a tracked request body (including explicit nil), return its token
   (blocking/send-await handle msg)     — send a tracked request, await its result (future-only)
 
 Use from inside (future ...) orchestration code."
@@ -540,7 +541,7 @@ Use from inside (future ...) orchestration code."
     :await-all "(blocking/await-all [f1 f2 ...]) — future-only await-many helper."
     :pmap "(blocking/pmap f coll) — future-only parallel map with blocking join."
     :plet "(blocking/plet [bindings] body...) — macro; parallel let using blocking/await."
-    :request "(blocking/request handle) — future-only tracked request token. Lifecycle failures resolve to tagged :spell/child-failure data; nil is a successful nil result."
+    :request "(blocking/request handle), (blocking/request handle msg) — future-only tracked request token. One argument sends a bodyless poke; two arguments send the supplied body, including explicit nil. Lifecycle failures resolve to tagged :spell/child-failure data; nil is a successful nil result."
     :send-await "(blocking/send-await handle msg) — future-only request->await helper. Lifecycle failures resolve to tagged :spell/child-failure data."}
    :await blocking-await
    :await-all blocking-await-all
