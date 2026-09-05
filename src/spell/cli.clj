@@ -10,7 +10,7 @@
             [spell.trace :as spell-trace])
   (:gen-class))
 
-(def ^:private default-model-spec "openai-tc:gpt-5.6-sol")
+(def ^:private default-model-spec "openai-tc:gpt-6-astra")
 (def ^:private default-reasoning-effort "medium")
 (def ^:private agents-md-max-bytes (* 32 1024))
 (def ^:private max-utf8-code-point-bytes 4)
@@ -105,7 +105,7 @@
    ["-i" "--init PROGRAM" "Run a complete Spell program string directly instead of wrapping a natural-language prompt"]
    ["-I" "--init-file FILE" "Run a complete Spell program file directly instead of wrapping it as a natural-language prompt"]
    ["-a" "--agent-profile FILE" "Use agent profile from .agent.edn file"]
-   ["-m" "--model MODEL" "Model/provider spec: codex-tc:<model>, openai-tc:<model>, anthropic-pf:<model>, anthropic-tc:<model>, fireworks:<model>, fireworks-tc:<model>, ollama:<model>, user (default: openai-tc:gpt-5.6-sol)"]
+   ["-m" "--model MODEL" "Model/provider spec: codex-tc:<model>, openai-tc:<model>, anthropic-pf:<model>, anthropic-tc:<model>, fireworks:<model>, fireworks-tc:<model>, ollama:<model>, user (default: openai-tc:gpt-6-astra)"]
    ["-d" "--depth DEPTH" "Max recursion depth (default: unlimited, 0 = unlimited)"
     :parse-fn #(Integer/parseInt %)
     :validate [#(>= % 0) "Must be non-negative"]]
@@ -160,7 +160,7 @@
           "  spell 'Return 42'"
           "  spell -t 'Test prompt'"
           "  spell -m codex-tc:gpt-5.3 'Return 42'"
-          "  spell -m openai-tc:gpt-5.6-sol 'Return 42'"
+          "  spell -m openai-tc:gpt-6-astra 'Return 42'"
           "  spell -m anthropic-tc:claude-opus-4-8 'Return 42'"
           "  spell -m fireworks:glm-5p2 'Return 42'"
           "  spell -m fireworks-tc:kimi-k2p7-code 'Return 42'"
@@ -308,8 +308,10 @@
         resolved-model (some-> model model-spec/resolve-model-spec :model)
         opus? (and resolved-model (str/includes? resolved-model "opus"))
         thinking (or thinking (when opus? 16384))
+        astra? (= "gpt-6-astra" resolved-model)
         effective-reasoning-effort (or reasoning-effort
-                                       (when (and (nil? model) (not test))
+                                       (when (and (not test)
+                                                  (or (nil? model) astra?))
                                          default-reasoning-effort))
         prov (make-provider opts)
         prefill? (and (provider/supports-prefill prov) (not thinking))

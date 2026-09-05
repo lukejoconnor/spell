@@ -128,7 +128,7 @@ Model profile files live under `config/model-profiles/` and use EDN maps.
 ```clojure
 {:provider :openai
  :api-key-env "OPENAI_API_KEY"
- :default-model "gpt-5.6-sol"
+ :default-model "gpt-6-astra"
  :default-reasoning-effort "medium"
  :use-responses-api true
  :force-tool-call true
@@ -165,7 +165,9 @@ Model profile files live under `config/model-profiles/` and use EDN maps.
 | `:response` | `:test` | Single fixed test response. |
 | `:prefill?` | `:test` | Whether the test provider reports prefill support. |
 
-`:default-reasoning-effort` maps to each provider's native mechanism, including Anthropic thinking budgets. Prefill behavior is derived from provider capability and the selected agent prompt profile.
+`:default-reasoning-effort` maps to each provider's native mechanism, including Anthropic thinking budgets. GPT-6 Astra supports `low`, `medium`, `high`, `xhigh`, and `max`; the checked-in OpenAI and Codex profiles default to `medium`, and `spell.api/run :reasoning-effort` may override them. Prefill behavior is derived from provider capability and the selected agent prompt profile.
+
+GPT-6 Astra has a 1,050,000-token context window and a maximum output of 128,000 tokens. Spell retains its configured per-response output limits. [Its standard pricing](https://developers.openai.com/api/docs/models/gpt-6-astra) is recorded in `data/pricing.edn` at $10/M uncached input tokens, $1/M cached input tokens, $12.50/M cache-write tokens, and $50/M output tokens, so normal usage and dollar-budget enforcement use the shared cost architecture. OpenAI prices requests with more than 272K input tokens at 2x input/cache rates and 1.5x output for the full request; Spell does not currently select a pricing tier from per-request context length, so reported cost and budget enforcement use the standard tier above that threshold.
 
 Low-level provider constructor functions may accept direct `:api-key` values for programmatic use. Public model profile files use `:api-key-env` instead, so secrets do not land in the repository.
 

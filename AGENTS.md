@@ -52,7 +52,7 @@ brew install clojure/tools/clojure
 
 Provider setup:
 
-- OpenAI API, the CLI default: set `OPENAI_API_KEY`.
+- OpenAI API, the GPT-6 Astra CLI default: set `OPENAI_API_KEY`.
 - Codex tool-call provider: install the OpenAI Codex CLI and run `codex` once so `~/.codex/auth.json` exists. This path is experimental and must be selected explicitly.
 - Anthropic API: set `ANTHROPIC_API_KEY`.
 - OpenAI API: set `OPENAI_API_KEY`.

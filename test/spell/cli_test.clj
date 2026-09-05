@@ -148,7 +148,7 @@
         (is (= expected (:result result)))))))
 
 (deftest make-provider-resolves-shared-model-aliases-test
-  (testing "the CLI default uses GPT-5.6 Sol through OpenAI tool-call transport"
+  (testing "the CLI default uses GPT-6 Astra through OpenAI tool-call transport"
     (let [captured (atom nil)]
       (with-redefs [provider/openai-provider
                     (fn [opts]
@@ -156,7 +156,7 @@
                       {:provider :openai-tc :opts opts})]
         (is (= :openai-tc
                (:provider ((var cli/make-provider) {}))))
-        (is (= "gpt-5.6-sol" (:model @captured)))
+        (is (= "gpt-6-astra" (:model @captured)))
         (is (:use-responses-api @captured))
         (is (:force-tool-call @captured)))))
 
@@ -168,7 +168,7 @@
                       {:provider :openai-tc :opts opts})]
         (is (= :openai-tc
                (:provider ((var cli/make-provider) {:model "gpt"}))))
-        (is (= "gpt-5.6-sol" (:model @captured)))
+        (is (= "gpt-6-astra" (:model @captured)))
         (is (:use-responses-api @captured))
         (is (:force-tool-call @captured)))))
 
@@ -216,17 +216,23 @@
       (run! {:reasoning-effort "high"})
       (is (= "high" (:reasoning-effort @seen))))
 
-    (testing "an explicit model keeps its provider-specific reasoning default"
+    (testing "explicit Astra specs and aliases retain medium reasoning"
+      (doseq [model ["gpt" "astra" "gpt6" "gpt6astra"
+                     "openai-tc:gpt-6-astra" "codex-tc:gpt-6-astra"]]
+        (run! {:model model})
+        (is (= "medium" (:reasoning-effort @seen)) model)))
+
+    (testing "an explicit older model keeps its provider-specific reasoning default"
       (run! {:model "gpt55"})
       (is (nil? (:reasoning-effort @seen))))))
 
 (deftest help-text-uses-public-provider-specs-and-curated-examples
   (let [{:keys [exit-message ok?]} (cli/validate-args ["--help"])]
     (is ok?)
-    (is (str/includes? exit-message "default: openai-tc:gpt-5.6-sol"))
+    (is (str/includes? exit-message "default: openai-tc:gpt-6-astra"))
     (is (str/includes? exit-message "default: medium for the default model"))
     (is (str/includes? exit-message "codex-tc:<model>"))
-    (is (str/includes? exit-message "openai-tc:gpt-5.6-sol"))
+    (is (str/includes? exit-message "openai-tc:gpt-6-astra"))
     (is (str/includes? exit-message "anthropic-tc:claude-opus-4-8"))
     (is (str/includes? exit-message "fireworks-tc:kimi-k2p7-code"))
     (is (str/includes? exit-message "--dogfood"))
