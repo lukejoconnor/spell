@@ -4,6 +4,8 @@
 
 - Added immediate `agents/ask` and `agents/spawn-ask` with edge IDs, composable `!wait`/`!sleep`, durable all-target collections, and atomic admission through `:coordinator {:max-edges 10000}`. Waiting wrappers retain strict edge ordering; actionable replies require their request edge ID. Replaced the future-only `completion-promise` helper with atomic `blocking/request` tokens and made `send-await` dependencies coordinator-owned.
 
+- Tool results, incoming agent messages, and MCP results now share the configurable `:context-max-chars` budget per contribution. Complete oversized values remain available through run-local stored references; successful payloads have no automatic depth/item truncation. Multi-binding operations retain small results where budget permits, and callback registrations inherit run context. Negative local display limits use the run cap.
+
 - Changed the CLI and OpenAI model-profile default to GPT-5.6 Sol with medium reasoning, while retaining explicit provider and reasoning overrides.
 - Removed the CLI launcher's unnecessary dependency on `rlwrap` by invoking `clojure` directly.
 - Added a new-spec-only MCP `2026-07-28` client with generated permissioned namespaces, Streamable HTTP and stdio transports, tools, resources, prompts, completion, subscriptions, and an explorer-style `spell mcp` CLI.
