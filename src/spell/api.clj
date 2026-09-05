@@ -14,7 +14,7 @@
 
 (def ^:private public-run-keys
   #{:prompt :init :model-profile :agent-profile :model :reasoning-effort
-    :budget :depth :context-max-chars :trace-dir :usage-tracker :user-reader :log-writer})
+    :budget :depth :context-max-chars :trace-dir :usage-tracker :user-reader :log-writer :coordinator})
 
 (def ^:private removed-run-keys
   #{:provider :agent :lm-profile :trace :usage :user? :verbose :thinking :prefill? :format :retries
@@ -139,7 +139,7 @@
                                {:max-chars (if (nil? (:context-max-chars opts))
                                              context/default-max-chars
                                              (:context-max-chars opts))})
-            coordinator/*coordinator* (coordinator/new-coordinator)
+            coordinator/*coordinator* (coordinator/new-coordinator (get opts :coordinator {}))
             globals/*store* (globals/new-store)]
     (user/call-with-session
       (fn []

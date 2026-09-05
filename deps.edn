@@ -43,6 +43,7 @@
                                    "-n" "spell.core-test"
                                    "-n" "spell.io-test"
                                    "-n" "spell.runtime-test"
+                                   "-n" "spell.composable-waits-test"
                                    "-n" "spell.globals-test"
                                    "-n" "spell.user-test"]}
            ;; Optional official-SDK oracle. Requires uv; Python is not a Spell runtime dependency.

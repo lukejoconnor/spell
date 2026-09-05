@@ -475,7 +475,7 @@
               (binding [runtime/*current-handle* parent-h
                         runtime/*current-raw* "(quine completion (eval (do )))"
                         runtime/*current-eval-fn* identity]
-                (runtime/spawn-ask child-agent "test")))]
+                (runtime/spawn-ask-and-wait child-agent "test")))]
         ;; spawn-ask blocks until child sends; child runs in a future
         (let [result (deref parent-result 5000 :timeout)]
           (is (string? result))
@@ -525,7 +525,7 @@
                       runtime/*current-eval-fn* (fn [raw]
                                                   (swap! parent-wake-count inc)
                                                   raw)]
-              (runtime/spawn-ask [[child-a-agent "prompt-a" :sa-multi-child-a]
+              (runtime/spawn-ask-and-wait [[child-a-agent "prompt-a" :sa-multi-child-a]
                                   [child-b-agent "prompt-b" :sa-multi-child-b]])))]
       (is (= true (deref child-a-started 5000 :timeout)))
       (is (= true (deref child-b-started 5000 :timeout)))
@@ -557,7 +557,7 @@
                         runtime/*current-raw* parent-raw
                         runtime/*current-eval-fn* identity
                         runtime/*default-spawn-agent* default-agent]
-                (runtime/spawn-ask ["alpha" "beta" "gamma"])))]
+                (runtime/spawn-ask-and-wait ["alpha" "beta" "gamma"])))]
         (let [result (deref parent-future 5000 :timeout)]
           (is (string? result))
           (is (.contains ^String result "result:alpha"))
@@ -673,8 +673,8 @@
                                       :unexpected-success
                                       (catch Exception e
                                         (.getMessage e))))))]
-      (is (= "!ask: requires an active agent context"
-             (deref (:ref result-token) 5000 :timeout))))))
+      (is (re-find #"requires an active agent context"
+                   (deref (:ref result-token) 5000 :timeout))))))
 
 ;; =============================================================================
 ;; Ask tests
@@ -953,7 +953,7 @@
                 runtime/*current-raw* "(quine completion (eval (do )))"
                 runtime/*current-eval-fn* identity]
         (is (thrown-with-msg? Exception #"leaf-llm"
-              (runtime/spawn-ask leaf-fn "test prompt" :leaf-child-2)))))))
+              (runtime/spawn-ask-and-wait leaf-fn "test prompt" :leaf-child-2)))))))
 
 (deftest spawn-future-exception-delivers-completed-test
   (testing "startup failure resolves completion and removes its unserviceable handle"
@@ -1020,7 +1020,7 @@
                           runtime/*current-eval-fn* (fn [raw]
                                                       (reset! parent-woke raw)
                                                       raw)]
-                  (runtime/spawn-ask child-agent "extend once, then send done")))]
+                  (runtime/spawn-ask-and-wait child-agent "extend once, then send done")))]
           ;; Wait for child to reach extension (turn 2 blocks on gate)
           (is (= true (deref child-extended 5000 :timeout))
               "child should have reached extension")

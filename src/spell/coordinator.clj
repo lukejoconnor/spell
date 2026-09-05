@@ -124,6 +124,12 @@
         in (:created-seq (last (incoming state handle)))]
     (boolean (and out (or (nil? in) (> out in))))))
 
+(defn- sleep-refusal-data [state handle]
+  (let [summarize #(mapv (fn [edge] (select-keys edge [:id :source :targets :created-seq])) %)]
+    {:type :sleep-refused :handle handle
+     :out-edges (summarize (outgoing state handle))
+     :in-edges (summarize (incoming state handle))}))
+
 (defn wait! [handle]
   (transact!
     (fn [state]
@@ -137,11 +143,7 @@
           [(assoc-in state [:agents handle :status] :asleep)
            {:status :waiting :signal signal}]
           :else (throw (ex-info "Cannot sleep without an outgoing edge newer than every pending incoming edge"
-                                {:type :sleep-refused :handle handle
-                                 :out-edges (mapv #(select-keys % [:id :source :targets :created-seq])
-                                                  (outgoing state handle))
-                                 :in-edges (mapv #(select-keys % [:id :source :targets :created-seq])
-                                                 (incoming state handle))})))))))
+                                (sleep-refusal-data state handle))))))))
 
 (defn- add-edge [state source targets]
   (require-open state)
@@ -325,7 +327,7 @@
           (when (and (empty? (:mailbox a)) (seq (incoming state source))
                      (not (sleep-allowed? state source)))
             (throw (ex-info "Cannot await computation while newer incoming obligations require attention"
-                            {:type :sleep-refused :handle source})))
+                            (sleep-refusal-data state source))))
           [(cond-> (assoc-in state [:external-waits token]
                             {:source source :generation (:generation a)})
              (empty? (:mailbox a)) (assoc-in [:agents source :status] :external-wait)) token])))))

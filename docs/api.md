@@ -38,6 +38,7 @@ These options are scoped to one invocation of `run`.
 | `:reasoning-effort` | model profile `:default-reasoning-effort` | Reasoning-effort override for this run. |
 | `:budget` | agent profile `:default-budget` or runtime default | Maximum spend in dollars for the run. `nil` means the configured default. `0` means unlimited. |
 | `:depth` | unlimited | Maximum recursive LLM depth for this run. |
+| `:coordinator` | `{:max-edges 10000}` | Per-run coordination capacity. `:max-edges` must be a positive integer and counts pending hyperedges, regardless of target count. Admission rejects atomically before sending requests or launching children. |
 | `:context-max-chars` | 10000 | Maximum characters inserted by one tool-result or message contribution, including binding syntax. Integer of at least 128; `nil` uses the default. |
 | `:trace-dir` | none | When non-nil, record a Spell execution trace in this directory. |
 | `:usage-tracker` | fresh atom | Existing usage atom to accumulate token and cost accounting into. |
@@ -254,6 +255,12 @@ The `:available-agents` option accepts:
 
 Inline mini specs can use agent profile options such as `:agent-description`, `:system-prompt`, `:default-model-profile`, `:format`, and `:namespaces`.
 
+Start configured workers through `agents/spawn` or `agents/spawn-ask`, for example
+`(agents/spawn-ask workers/explore "Inspect the relevant files.")`. Directly calling
+a compiled worker from an active agent or its computation future is rejected,
+because it would create an untracked lifecycle wait. Nested `!llm-self` remains
+the supported same-agent model call.
+
 Sub-agent resolution happens when the parent agent is compiled. Each `:available-agents` entry is resolved to an agent profile spec and compiled into a runnable function exposed in the `workers/` namespace. If the sub-agent profile spec has its own `:default-model-profile`, that profile is used. Otherwise the sub-agent inherits the parent agent's resolved model profile. Model differences should usually be represented by choosing a different `:default-model-profile`; otherwise the sub-agent uses the inherited profile's `:default-model`.
 
 ## Agent Skills
@@ -382,3 +389,14 @@ These profile defaults can be overridden for one run:
 | Model | model profile `:default-model` | `run :model` |
 | Reasoning effort | model profile `:default-reasoning-effort` | `run :reasoning-effort` |
 | Budget | agent profile `:default-budget` | `run :budget` |
+
+## Multi-Agent Coordination
+
+The optional `agents/` namespace exposes immediate `ask` and `spawn-ask` operations
+that return collection IDs, waiting wrappers `!ask` and `!spawn-ask`, and the shared
+`!wait`/`!sleep` primitive. It also exposes `cancel`, `status`, `graph`, `out-edges`,
+and `in-edges` for retained collections. See [multi-agent coordination](multi-agent.md)
+for signatures, lifecycle results, cancellation, and the non-deadlock guarantee.
+Future orchestration uses `blocking/request` for an atomic request/result token
+and `blocking/send-await` to request and collect directly; both create tracked
+agent dependencies.

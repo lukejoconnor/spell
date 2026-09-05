@@ -651,12 +651,14 @@ For parallel LLM work, use agents/spawn instead (separate handles)."
 (!ask-await fut)
 
 fut: Spell future returned by (future ...)
-Returns: the next wakeup message from the waiter thread
-
-This installs a background waiter future that dereferences fut, sends the
-result back to the current handle as a normal message, then blocks the current
-turn until that message arrives. Use this when you need to wait on a future
-without entering future-only blocking/ APIs from a normal agent turn.
+Registers a future-completion message and suspends interruptibly. Already
+queued or unrelated messages can resume the agent before fut finishes; the
+completion message remains pending while this lifecycle is active. Resumption
+does not mean the future completed. Process messages and continue, or call
+!ask-await again to wait further (each call registers another notification).
+Agent dependencies inside fut must use blocking/request, and suspension obeys
+the coordinator incoming/outgoing ordering rule. Use this from agent turns;
+blocking/await is available only to computation futures.
 
 Example:
   '(!ask-await some-future)
