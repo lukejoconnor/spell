@@ -190,8 +190,11 @@
     transport))
 
 (defn add-listener! [transport listener]
-  (swap! (:listeners transport) conj listener)
-  #(swap! (:listeners transport) disj listener))
+  ;; Dispatch occurs on the transport's raw reader thread. Capture each
+  ;; registration's run context and agent identity, not the transport creator's.
+  (let [listener (bound-fn* listener)]
+    (swap! (:listeners transport) conj listener)
+    #(swap! (:listeners transport) disj listener)))
 
 (defn stderr-tail [transport] @(:stderr-lines transport))
 

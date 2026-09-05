@@ -3,6 +3,10 @@
             [clojure.java.io :as io]
             [clojure.test :refer [deftest is testing]]
             [spell.agent :as agent]
+            [spell.context :as context]
+            [spell.eval :as eval]
+            [spell.parse :as parse]
+            [spell.runtime :as runtime]
             [spell.mcp.client :as client]
             [spell.mcp.cli :as mcp-cli]
             [spell.mcp.namespace :as mcp-ns]
@@ -218,3 +222,22 @@
             (is (not (contains? methods "prompts/list"))))
           (finally
             ((:close! bundle))))))))
+
+(deftest stdio-listeners-convey-the-registering-run
+  (with-open [c (client/open-client :demo {:transport {:stdio {:command (stdio-command)}}})]
+    (binding [context/*context* (context/new-context {:max-chars 128})
+              runtime/*current-handle* :registered-listener]
+      (let [observed (atom nil)
+            payload (apply str (repeat 10000 "x"))]
+        (client/listen! c {"toolsListChanged" true}
+                        (fn [notification]
+                          (reset! observed
+                                  {:sender runtime/*current-handle*
+                                   :context context/*context*
+                                   :rendered (context/serialize-value
+                                               {:notification notification :payload payload})})))
+        (is (identical? context/*context* (:context @observed)))
+        (is (= :registered-listener (:sender @observed)))
+        (let [result (eval/spell-eval (parse/read-first (:rendered @observed)) {})]
+          (is (eval/ok? result))
+          (is (= payload (get-in result [:ok :payload]))))))))

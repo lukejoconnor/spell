@@ -8,6 +8,8 @@
             [spell.user :as user]
             [spell.parse :as parse]
             [spell.api :as api]
+            [spell.agent :as agent]
+            [spell.io :as io]
             [spell.provider :as provider]))
 
 (use-fixtures :each
@@ -190,3 +192,42 @@
           text (context/serialize-contribution descriptors)]
       (is (<= (count text) 256))
       (is (= 1 (count @(:values context/*context*)))))))
+
+(deftest nested-metadata-remains-intact
+  (let [lines (with-meta ["line"] {:spell/first-line 40})]
+    (doseq [value [{:body lines} [lines] (with-meta [:x] {:source "path"})]]
+      (is (identical? value (recover (context/serialize-value value)))))))
+
+(deftest smaller-fitting-siblings-get-visible-space-first
+  (binding [context/*context* (context/new-context {:max-chars 300})]
+    (let [large (apply str (repeat 250 "x"))
+          small (apply str (repeat 100 "s"))
+          forms (context/contribution-forms [{:name 'large :value large} {:name 'small :value small}])]
+      (is (= (list 'def 'small small) (second forms)))
+      (is (= 'stored (first (nth (first forms) 2)))))))
+
+(deftest invalid-context-config-does-not-compile-an-agent
+  (let [compiled? (atom false)]
+    (with-redefs [agent/compile-agent-spec (fn [_] (reset! compiled? true))]
+      (is (thrown? Exception
+            (api/run {:model-profile (provider/test-provider {:response "unused"})
+                      :agent-profile "config/agent-profiles/base-msg.agent.edn"
+                      :context-max-chars 64 :init "42"})))
+      (is (false? @compiled?)))))
+
+(deftest stored-lines-support-persisted-slices
+  (binding [context/*context* (context/new-context {:max-chars 128})]
+    (let [lines (io/read-lines "src/spell/api.clj" 40 75)
+          _ (is (= 35 (count lines)) "read-lines uses an exclusive end")
+          reopened (eval/spell-eval
+                     (macros/spell-macroexpand-1 '(!peek lines source))
+                     {'completion '(quine completion (eval (do)))
+                      'source lines '!llm-self identity})
+          forms (rest (second (last (:ok reopened))))
+          evaluated (eval/spell-eval
+                      (list 'do (first forms) '(persist focus (subvec lines 0 10))) {})]
+      (is (= 'stored (first (nth (first forms) 2))))
+      (is (eval/ok? evaluated))
+      (is (= (subvec lines 0 10) (get (:env evaluated) 'focus)))
+      (is (= 40 (:spell/first-line (meta (get (:env evaluated) 'focus)))))
+      (is (thrown? IndexOutOfBoundsException (subvec lines 0 36))))))

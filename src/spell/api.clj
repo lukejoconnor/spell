@@ -47,7 +47,10 @@
            usage-tracker user-reader interactive-user? log-writer agent-namespace-overrides]
     :as opts}]
   (validate-required-run-opts! opts)
-  (let [profile (provider/resolve-model-profile model-profile)
+  (let [run-context (context/new-context {:max-chars (if (nil? (:context-max-chars opts))
+                                                       context/default-max-chars
+                                                       (:context-max-chars opts))})
+        profile (provider/resolve-model-profile model-profile)
         resolved-provider (:provider profile)
         agent-spec (cond-> (agent/load-agent-spec agent-profile)
                      true (assoc :provider resolved-provider)
@@ -68,9 +71,6 @@
                            (nil? budget) (or (:budget agent-spec) provider/*budget*)
                            (zero? budget) nil
                            :else budget)
-        run-context (context/new-context {:max-chars (if (nil? (:context-max-chars opts))
-                                                       context/default-max-chars
-                                                       (:context-max-chars opts))})
         effective-verbose (some? log-writer)
         trace-atom (when trace-dir (trace/new-trace))
         trace-written? (atom false)

@@ -105,14 +105,18 @@
     (pr form)))
 
 (defn- reader-stable? [value]
-  ;; Called only after the complete candidate fit the bound. Examine that
-  ;; bounded value for sorted collections, whose comparators readers discard.
-  (loop [pending (list value)]
+  ;; This is only examined after a candidate fit the bound. Preserve state the
+  ;; reader cannot reconstruct: comparators and metadata outside the explicit
+  ;; first-line wrapper used for a root numbered vector.
+  (loop [pending (list [value true])]
     (if-let [items (seq pending)]
-      (let [v (first items)]
+      (let [[v root?] (first items)
+            metadata (if (and root? (vector? v))
+                       (dissoc (meta v) :spell/first-line)
+                       (meta v))]
         (cond
-          (instance? clojure.lang.Sorted v) false
-          (coll? v) (recur (concat (seq v) (rest items)))
+          (or (instance? clojure.lang.Sorted v) (seq metadata)) false
+          (coll? v) (recur (concat (map #(vector % false) (seq v)) (rest items)))
           :else (recur (rest items))))
       true)))
 
@@ -176,13 +180,18 @@
      (when (or (some #(nil? (:text %)) candidates) (> minimum-size limit))
        (throw (ex-info "Context contribution cannot fit its bindings and stored references; use fewer bindings or a larger limit"
                        {:type :context-capacity :max-chars limit})))
-     (let [[chosen _]
-           (reduce (fn [[chosen remaining] {:keys [stored? inline text] :as candidate}]
-                     (let [extra (when inline (- (count inline) (count text)))
-                           restore? (and stored? inline (<= extra remaining))]
-                       [(conj chosen (if restore? (assoc candidate :text inline :stored? false) candidate))
-                        (if restore? (- remaining extra) remaining)]))
-                   [[] (- limit minimum-size)] candidates)
+     (let [restorable (->> candidates
+                           (keep-indexed (fn [i {:keys [stored? inline text]}]
+                                           (when (and stored? inline)
+                                             [i (- (count inline) (count text))])))
+                           (sort-by second))
+           [chosen _]
+           (reduce (fn [[chosen remaining] [i extra]]
+                     (if (<= extra remaining)
+                       [(update chosen i #(assoc % :text (:inline %) :stored? false))
+                        (- remaining extra)]
+                       [chosen remaining]))
+                   [candidates (- limit minimum-size)] restorable)
            retained (keep #(when (:stored? %) [(:id %) (:value %)]) chosen)]
        (when (seq retained)
          (swap! (:values (current-context)) into retained))
