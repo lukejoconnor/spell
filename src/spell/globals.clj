@@ -10,43 +10,45 @@
   {:roles {}
    :tasks []})
 
-(def ^:private store
+(def ^:dynamic *store*
   "Global shared state atom. Keys are keywords, values are arbitrary."
   (atom default-state))
+
+(defn new-store [] (atom default-state))
 
 (defn get-val
   "Get value for key. Returns nil if key doesn't exist."
   [key]
-  (get @store key))
+  (get @*store* key))
 
 (defn set-val
   "Set value for key. Returns value."
   [key value]
-  (swap! store assoc key value)
+  (swap! *store* assoc key value)
   value)
 
 (defn update-val
   "Atomic read-modify-write for key. Applies f to current value.
    Handles both Spell fns and Clojure fns. Returns the new value of key."
   [key f]
-  (get (swap! store update key #(eval/invoke-fn f [%])) key))
+  (get (swap! *store* update key #(eval/invoke-fn f [%])) key))
 
 (defn pop-val
   "Atomically remove and return first element from a sequential value at key.
    Returns nil if empty or key doesn't exist."
   [key]
-  (let [[old _] (swap-vals! store update key rest)]
+  (let [[old _] (swap-vals! *store* update key rest)]
     (first (get old key))))
 
 (defn list-keys
   "List all global keys."
   []
-  (vec (keys @store)))
+  (vec (keys @*store*)))
 
 (defn get-all
   "Return entire globals map."
   []
-  @store)
+  @*store*)
 
 (defn wait-until
   "Block until pred returns truthy for the globals map.
@@ -55,24 +57,24 @@
    Handles both Spell fns and Clojure fns."
   [pred]
   (let [watch-key (keyword (gensym "wait-"))]
-    (if (eval/invoke-fn pred [@store])
+    (if (eval/invoke-fn pred [@*store*])
       true
       (let [done (promise)]
-        (add-watch store watch-key
+        (add-watch *store* watch-key
           (fn [_ _ _ new-state]
             (when (eval/invoke-fn pred [new-state])
-              (remove-watch store watch-key)
+              (remove-watch *store* watch-key)
               (deliver done true))))
         ;; Double-check after adding watch (closes race window)
-        (if (eval/invoke-fn pred [@store])
-          (do (remove-watch store watch-key)
+        (if (eval/invoke-fn pred [@*store*])
+          (do (remove-watch *store* watch-key)
               true)
           (do @done true))))))
 
 (defn reset-globals!
   "Reset globals to initial state. For CLI/test use."
   []
-  (clojure.core/reset! store default-state))
+  (clojure.core/reset! *store* default-state))
 
 ;; ---------------------------------------------------------------------------
 ;; Namespace map (for compiled-agent integration)

@@ -3,6 +3,7 @@
   (:require [clojure.set :as set]
             [spell.agent :as agent]
             [spell.runtime :as runtime]
+            [spell.coordinator :as coordinator]
             [spell.eval :as eval]
             [spell.globals :as globals]
             [spell.llm :as llm]
@@ -41,7 +42,7 @@
   (when-not model-profile
     (throw (ex-info "Must specify :model-profile" {}))))
 
-(defn- execute-run
+(defn- execute-run*
   [{:keys [prompt init model-profile agent-profile model reasoning-effort budget depth trace-dir
            usage-tracker user-reader interactive-user? log-writer agent-namespace-overrides]
     :as opts}]
@@ -87,7 +88,6 @@
                               (write-trace-once! false)
                               (catch Exception _)))))]
     (user/reset-state!)
-    (reset! runtime/registry {})
     (globals/reset-globals!)
     (globals/set-val :roles {:main {}})
     (try
@@ -132,6 +132,14 @@
                 (when log-writer
                   (.flush ^java.io.Writer log-writer))
                 (agent/close-compiled-agent! agent-fn)))))))))
+
+(defn- execute-run [opts]
+  (binding [coordinator/*coordinator* (coordinator/new-coordinator)
+            globals/*store* (globals/new-store)]
+    (user/call-with-session
+      (fn []
+        (try (execute-run* opts)
+             (finally (coordinator/close!)))))))
 
 (defn run
   "Run a Spell agent with the v0.3.0 public API.
