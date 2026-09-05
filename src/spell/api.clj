@@ -68,7 +68,9 @@
                            (nil? budget) (or (:budget agent-spec) provider/*budget*)
                            (zero? budget) nil
                            :else budget)
-        run-context (context/new-context {:max-chars (get opts :context-max-chars context/default-max-chars)})
+        run-context (context/new-context {:max-chars (if (nil? (:context-max-chars opts))
+                                                       context/default-max-chars
+                                                       (:context-max-chars opts))})
         effective-verbose (some? log-writer)
         trace-atom (when trace-dir (trace/new-trace))
         trace-written? (atom false)

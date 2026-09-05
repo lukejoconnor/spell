@@ -1,17 +1,18 @@
 (ns spell.context
   "Run-owned storage and bounded, lossless insertion of values into model context."
-  (:require [spell.parse :as parse])
+  (:require [spell.parse :as parse]
+            [clojure.string :as str])
   (:import [java.io Writer]
            [java.util UUID]))
 
 (def default-max-chars 10000)
-(def min-max-chars 64)
+(def min-max-chars 128)
 
 (defn new-context
   ([] (new-context {}))
   ([{:keys [max-chars] :or {max-chars default-max-chars}}]
    (when-not (and (integer? max-chars) (<= min-max-chars max-chars))
-     (throw (ex-info "Context character limit must be an integer of at least 64"
+     (throw (ex-info "Context character limit must be an integer of at least 128"
                      {:type :invalid-context-limit :max-chars max-chars})))
    {:max-chars max-chars :values (atom {})}))
 
@@ -43,7 +44,7 @@
       (throw (ex-info "Context limit must be an integer" {:limit limit}))
       (neg? limit) cap
       (< limit min-max-chars)
-      (throw (ex-info "Context character limit must be at least 64" {:limit limit}))
+      (throw (ex-info "Context character limit must be at least 128" {:limit limit}))
       :else (min cap limit))))
 
 (defn- bounded-output
@@ -103,6 +104,18 @@
       (print "])"))
     (pr form)))
 
+(defn- reader-stable? [value]
+  ;; Called only after the complete candidate fit the bound. Examine that
+  ;; bounded value for sorted collections, whose comparators readers discard.
+  (loop [pending (list value)]
+    (if-let [items (seq pending)]
+      (let [v (first items)]
+        (cond
+          (instance? clojure.lang.Sorted v) false
+          (coll? v) (recur (concat (seq v) (rest items)))
+          :else (recur (rest items))))
+      true)))
+
 (defn- descriptor-form [{:keys [name value] :as descriptor} stored-form]
   (if (contains? descriptor :form)
     (:form descriptor)
@@ -116,48 +129,64 @@
           (print-form! (nth form 2)) (print ")"))
       (print-form! form))))
 
+(defn- render-descriptors [descriptors refs limit]
+  (try
+    (when-let [text
+               (bounded-output limit
+                 #(doseq [[i descriptor] (map-indexed vector descriptors)]
+                    (when (pos? i) (print " "))
+                    (print-descriptor! descriptor (get refs i))))]
+      ;; Only inspect a candidate that rendered completely within the bound.
+      ;; Printed host objects and unusual symbols may not be faithful reader data.
+      (let [forms (parse/read-all text)]
+        (when (and (= (count descriptors) (count forms))
+                   (every? true?
+                     (map-indexed
+                       (fn [i descriptor]
+                         (and (= (descriptor-form descriptor (get refs i)) (nth forms i))
+                              (or (contains? refs i) (reader-stable? (:value descriptor)))))
+                       descriptors)))
+          text)))
+    (catch Exception _ nil)
+    (catch StackOverflowError _ nil)))
+
 (defn serialize-contribution
   "Render descriptors under one budget, including separators and binding syntax.
    A descriptor is {:value v}, {:name symbol :value v}, or {:form source-form}.
    Oversized contributions use complete original values through stored references.
-   Fixed source forms must themselves fit; failure never silently drops a value."
+   Fixed source forms must themselves fit; failure never silently drops a value.
+   API runs bind *context* automatically. Low-level callers must bind new-context
+   when values may require storage; use future/bound-fn to convey that binding."
   ([descriptors] (serialize-contribution descriptors nil))
   ([descriptors limit]
    (let [limit (effective-limit limit)
-         render (fn [refs]
-                  (when-let [text
-                             (bounded-output limit
-                               #(doseq [[i descriptor] (map-indexed vector descriptors)]
-                                  (when (pos? i) (print " "))
-                                  (print-descriptor! descriptor (get refs i))))]
-                    ;; Only inspect the bounded candidate. Objects and unusual
-                    ;; symbols can print unreadably or as different reader data.
-                    (try
-                      (let [forms (parse/read-all text)]
-                        (when (and (= (count descriptors) (count forms))
-                                   (every? true?
-                                     (map-indexed
-                                       (fn [i descriptor]
-                                         (= (descriptor-form descriptor (get refs i))
-                                            (nth forms i)))
-                                       descriptors)))
-                          text))
-                      (catch Exception _ nil)
-                      (catch StackOverflowError _ nil))))]
-     (or (render {})
-         (let [entries (into {} (keep-indexed
-                                (fn [i descriptor]
-                                  (when-not (contains? descriptor :form)
-                                    [i [(str (UUID/randomUUID)) (:value descriptor)]]))
-                                descriptors))
-               refs (into {} (map (fn [[i [id _]]] [i (list 'stored id)]) entries))
-               rendered (render refs)]
-           (when-not rendered
-             (throw (ex-info "Context contribution cannot fit its bindings and stored references; use fewer bindings or a larger limit"
-                             {:type :context-capacity :max-chars limit})))
-           (when (seq entries)
-             (swap! (:values (current-context)) into (map val entries)))
-           rendered)))))
+         candidates
+         (mapv (fn [descriptor]
+                 (let [inline (render-descriptors [descriptor] {} limit)
+                       id (when-not (contains? descriptor :form) (str (UUID/randomUUID)))
+                       ref (when id (render-descriptors [descriptor] {0 (list 'stored id)} limit))
+                       store? (and ref (or (nil? inline) (< (count ref) (count inline))))]
+                   {:inline inline :id id :value (:value descriptor)
+                    :stored? store? :text (if store? ref inline)}))
+               descriptors)
+         minimum-size (+ (max 0 (dec (count candidates)))
+                         (reduce + (map #(count (:text %)) candidates)))]
+     ;; Start with the shortest faithful representation of each value.
+     ;; Unlike an all-reference baseline, this also fits many small values.
+     (when (or (some #(nil? (:text %)) candidates) (> minimum-size limit))
+       (throw (ex-info "Context contribution cannot fit its bindings and stored references; use fewer bindings or a larger limit"
+                       {:type :context-capacity :max-chars limit})))
+     (let [[chosen _]
+           (reduce (fn [[chosen remaining] {:keys [stored? inline text] :as candidate}]
+                     (let [extra (when inline (- (count inline) (count text)))
+                           restore? (and stored? inline (<= extra remaining))]
+                       [(conj chosen (if restore? (assoc candidate :text inline :stored? false) candidate))
+                        (if restore? (- remaining extra) remaining)]))
+                   [[] (- limit minimum-size)] candidates)
+           retained (keep #(when (:stored? %) [(:id %) (:value %)]) chosen)]
+       (when (seq retained)
+         (swap! (:values (current-context)) into retained))
+       (str/join " " (map :text chosen))))))
 
 (defn serialize-value
   ([value] (serialize-value value nil))

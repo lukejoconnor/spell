@@ -41,9 +41,9 @@
   (testing "printing stops realizing a lazy value once the contribution is full"
     (let [seen (atom 0)
           value (map (fn [n] (swap! seen inc) n) (range 1000000))
-          text (context/serialize-value value 64)]
+          text (context/serialize-value value 128)]
       (is (str/starts-with? text "(stored "))
-      (is (< @seen 100))
+      (is (< @seen 160))
       (is (identical? value (recover text)))))
   (testing "deep successful data has no eight-level restriction"
     (let [value (nth (iterate vector :leaf) 200)
@@ -54,13 +54,13 @@
       (is (identical? value (recover (context/serialize-value value)))))))
 
 (deftest bounds-and-references
-  (doseq [bad [nil 0 63 -1 100.5 "100"]]
+  (doseq [bad [nil 0 127 -1 100.5 "100"]]
     (is (thrown? Exception (context/new-context {:max-chars bad}))))
-  (binding [context/*context* (context/new-context {:max-chars 64})]
+  (binding [context/*context* (context/new-context {:max-chars 128})]
     (doseq [limit [nil -1 100000]]
-      (let [value (apply str (repeat 100 "x"))
+      (let [value (apply str (repeat 200 "x"))
             text (context/serialize-value value limit)]
-        (is (<= (count text) 64))
+        (is (<= (count text) 128))
         (is (= value (recover text)))))
     (is (thrown? Exception (context/serialize-value :ok 10)))
     (is (thrown? Exception
@@ -112,12 +112,12 @@
 (deftest api-context-limit-and-isolation
   (let [opts {:model-profile (provider/test-provider {:response "unused"})
               :agent-profile "config/agent-profiles/base-msg.agent.edn"
-              :context-max-chars 64}
+              :context-max-chars 128}
         first-run (api/run (assoc opts :init "(serialize (apply str (repeat 1000 \"x\")))"))
         text (:result first-run)
         second-run (api/run (assoc opts :init (str "(try " text " (catch e (:message e)))")))]
     (is (str/starts-with? text "(stored "))
-    (is (<= (count text) 64))
+    (is (<= (count text) 128))
     (is (str/includes? (:result second-run) "No stored value"))))
 
 (deftest message-contribution-roundtrip
@@ -144,3 +144,49 @@
           text (str "(quine completion (eval (do "
                     (context/serialize-contribution [{:name 'msg-1 :value payload}]) ")))" )]
       (is (= [{:name 'msg-1 :msg payload}] (#'user/extract-messages text))))))
+
+(deftest small-siblings-remain-visible
+  (binding [context/*context* (context/new-context {:max-chars 200})]
+    (let [large (apply str (repeat 1000 "x"))
+          forms (context/contribution-forms [{:name 'large :value large}
+                                             {:name 'small :value "visible"}
+                                             {:name 'n :value 42}])]
+      (is (= '(def small "visible") (second forms)))
+      (is (= '(def n 42) (nth forms 2)))
+      (is (= 1 (count @(:values context/*context*)))))))
+
+(deftest printer-failures-preserve-values
+  (let [value (proxy [Object] [] (toString [] (throw (ex-info "broken printer" {}))))]
+    (is (identical? value (recover (context/serialize-value value)))))
+  (let [value (map (fn [_] (throw (ex-info "deferred failure" {}))) [1])]
+    (is (identical? value (recover (context/serialize-value value))))))
+
+(deftest sorted-values-retain-ordering
+  (doseq [value [(sorted-map-by > 1 :a 2 :b) (sorted-set-by > 1 2)
+                 {:nested [(sorted-map-by > 1 :a 2 :b)]}]]
+    (is (identical? value (recover (context/serialize-value value))))))
+
+(deftest macro-limits-and-default-option
+  (binding [context/*context* (context/new-context {:max-chars context/min-max-chars})]
+    (doseq [program ['(!peek result x) '(!call-now result x -1)]]
+      (let [value (apply str (repeat 1000 "x"))
+            result (eval/spell-eval (macros/spell-macroexpand-1 program)
+                                   {'completion '(quine completion (eval (do)))
+                                    'x value '!llm-self identity})
+            forms (rest (second (last (:ok result))))]
+        (is (eval/ok? result))
+        (is (<= (count (str/join " " (map pr-str forms))) context/min-max-chars))
+        (is (= value (:ok (eval/spell-eval (first forms) {})))))))
+  (let [result (api/run {:model-profile (provider/test-provider {:response "unused"})
+                         :agent-profile "config/agent-profiles/base-msg.agent.edn"
+                         :context-max-chars nil
+                         :init "(serialize 42)"})]
+    (is (= "42" (:result result)))))
+
+(deftest many-small-bindings-fit-alongside-one-large-value
+  (binding [context/*context* (context/new-context {:max-chars 256})]
+    (let [descriptors (conj (mapv (fn [i] {:name (symbol (str "n" i)) :value i}) (range 10))
+                            {:name 'large :value (apply str (repeat 1000 "x"))})
+          text (context/serialize-contribution descriptors)]
+      (is (<= (count text) 256))
+      (is (= 1 (count @(:values context/*context*)))))))
