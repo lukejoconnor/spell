@@ -117,7 +117,10 @@ filled. Users can submit further commands or messages while a request is
 pending. Ordinary text replies to a live request from the selected recipient,
 or sends a plain message if none is pending; `:reviewer text` selects a recipient,
 and `(:reviewer :tester) text` sends to both. A leading `//` sends literal text
-beginning with `/`. Invalid commands report an error and leave requests intact.
+beginning with `/`. Invalid commands or message recipients report an error and leave requests intact.
+When an agent uses `!reply-ask`, the terminal labels the completed original
+request and presents the new reverse request; it retains both request identities
+without inferring correspondence from delivery order.
 
 Intermediate submissions retain the user's lifecycle while obligations remain.
 A clarification remains answerable after commands such as `/requests`; replying

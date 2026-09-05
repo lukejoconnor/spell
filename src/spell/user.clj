@@ -526,6 +526,8 @@
   (print-lines!
     (keep (fn [{:keys [from body expects-response] :as message}]
             (cond
+              (and expects-response (:reply-to-edge-id message))
+              (str "[agent " from " requests a response, edge " (:edge-id message) "]")
               (contains? message :body) (str "[agent " from "] " (if (nil? body) "nil" body))
               expects-response (str "[agent " from " is waiting for input]")))
           messages)))
@@ -693,7 +695,13 @@
         all-msgs    (mapv :msg all-entries)
         new-entries (remove #(@seen-msg-names (:name %)) all-entries)
         new-msgs    (mapv :msg new-entries)
-        result-msgs (vec (filter user-result-report? new-msgs))
+        result-msgs (into (vec (filter user-result-report? new-msgs))
+                          (keep (fn [msg]
+                                  (when (and (:expects-response msg)
+                                             (contains? (user-edge-id-set) (:reply-to-edge-id msg)))
+                                    {:from (:from msg) :edge-id (:reply-to-edge-id msg)
+                                     :body (:body msg)})))
+                          new-msgs)
         agent-msgs  (vec (remove #(or (= :stdin-watch (:from %)) (user-result-report? %)) new-msgs))
         all-requests (vec (filter #(and (map? %) (:expects-response %)) all-msgs))
         expects-reply? (or (some :expects-response agent-msgs)
@@ -741,14 +749,22 @@
                     (ensure-current-generation! generation)
                     (let [final-target
                           (reduce (fn [default-target {:keys [recipients msg]}]
-                                    (let [targets (or recipients [(resolve-recipient nil default-target)])]
-                                      (doseq [target targets]
-                                        (if-let [request (last (filter #(and (= target (:from %))
-                                                                             (runtime/actionable-request-live? %))
-                                                                       all-requests))]
-                                          (runtime/reply request msg)
-                                          (runtime/send target msg)))
-                                      (or (last targets) default-target)))
+                                    (reduce
+                                      (fn [last-target target]
+                                        (try
+                                          (if-let [request (last (filter #(and (= target (:from %))
+                                                                               (runtime/actionable-request-live? %))
+                                                                         all-requests))]
+                                            (runtime/reply request msg)
+                                            (runtime/send target msg))
+                                          target
+                                          (catch Exception e
+                                            (when (= :coordinator-closed (:type (ex-data e)))
+                                              (throw e))
+                                            (command-line! (str "[message failed for " target "] " (.getMessage e)))
+                                            last-target)))
+                                      default-target
+                                      (or recipients [(resolve-recipient nil default-target)])))
                                   @last-sender segments)]
                       (reset! last-sender final-target)
                       (swap! seen-msg-names into (map :name new-entries))))

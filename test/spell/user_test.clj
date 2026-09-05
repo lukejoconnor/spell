@@ -809,9 +809,11 @@
   (boolean (some #(str/includes? % text) @lines)))
 
 (defn- submit-command! [lines command expected]
-  (#'user/queue-interactive-submission! command)
-  (is (wait-until #(command-output? lines expected) 3000)
-      (str command " produces " expected "; observed " @lines)))
+  (let [matches #(count (filter (fn [line] (str/includes? line expected)) @lines))
+        before (matches)]
+    (#'user/queue-interactive-submission! command)
+    (is (wait-until #(> (matches) before) 3000)
+        (str command " produces a new " expected "; observed " @lines))))
 
 (deftest user-request-retention-and-all-target-results-test
   (runtime/register! :a)
@@ -954,3 +956,55 @@
       (is (command-output? lines "waiting on"))
       (is (empty? (:edges (coordinator/snapshot))))
       (is (wait-until #(not @user/input-waiting?) 3000)))))
+
+(deftest invalid-routed-text-preserves-user-collection-and-default-test
+  (runtime/register! :main)
+  (runtime/register! :a)
+  (with-command-terminal
+    (fn [lines]
+      (submit-command! lines "/ask :a compute" "request 1 sent")
+      (submit-command! lines ":missing hello" "message failed for :missing")
+      (is (get-in (coordinator/snapshot) [:edges 1]))
+      (#'user/queue-interactive-submission! "still addressed to main")
+      (is (wait-until #(seq (:mailbox (coordinator/agent :main))) 3000))
+      (is (= "still addressed to main" (-> (coordinator/drain! :main) first :message :body)))
+      (is (get-in (coordinator/snapshot) [:edges 1]))
+      (submit-command! lines "/cancel 1" "request 1 cancelled"))))
+
+(deftest user-reply-ask-correlates-overlapping-requests-exactly-test
+  (runtime/register! :a)
+  (with-command-terminal
+    (fn [lines]
+      (submit-command! lines "/ask :a first" "request 1 sent")
+      (submit-command! lines "/ask :a second" "request 2 sent")
+      (let [[first-request second-request] (map :message (coordinator/drain! :a))
+            ;; Reverse in the opposite order: sender/order heuristics would
+            ;; attribute false/nil to the wrong user request.
+            second-reverse (coordinator/reply-request! :a second-request false)]
+        (is (wait-until #(command-output? lines "request 2 result from :a] false") 3000))
+        (let [first-reverse (coordinator/reply-request! :a first-request nil)]
+          (#'user/queue-interactive-submission! "/requests")
+          (is (wait-until #(command-output? lines "request 1 result from :a] nil") 3000))
+          (is (= :pending (get-in (coordinator/snapshot) [:edges second-reverse :slots :user :status])))
+          (is (= :pending (get-in (coordinator/snapshot) [:edges first-reverse :slots :user :status])))
+          (submit-command! lines "/requests" "no pending requests")
+          (is (empty? @user/user-edge-ids))
+          (#'user/queue-interactive-submission! ":a answer most recent")
+          (is (wait-until #(nil? (get-in (coordinator/snapshot) [:edges first-reverse])) 3000))
+          (is (get-in (coordinator/snapshot) [:edges second-reverse]))
+          (#'user/queue-interactive-submission! ":a answer earlier")
+          (is (wait-until #(empty? (:edges (coordinator/snapshot))) 3000))
+          (is (wait-until #(= :finished (:status (coordinator/agent :user))) 3000))
+          (is (empty? @user/user-edge-ids))
+          (is (= 1 (count (filter #(str/includes? % "request 2 result") @lines)))))))))
+
+(deftest reverse-request-correlation-does-not-change-agent-envelopes-test
+  (runtime/register! :a)
+  (runtime/register! :b)
+  (let [original (coordinator/request! :a [:b] true "work")
+        request (:message (first (coordinator/drain! :b)))
+        reverse (coordinator/reply-request! :b request false)]
+    (is (= [{:message {:from :b :expects-response true :edge-id reverse :body false}
+             :request-edge reverse}]
+           (coordinator/drain! :a)))
+    (is (nil? (get-in (coordinator/snapshot) [:edges original])))))
