@@ -24,6 +24,17 @@
   [program]
   (->DirectInit program))
 
+(defn self-call-receive?
+  "Validate a self-call's options before generation and return its receipt choice."
+  [options]
+  (when-not (and (map? options)
+                 (every? #{:receive?} (keys options))
+                 (or (not (contains? options :receive?))
+                     (boolean? (:receive? options))))
+    (throw (ex-info "!llm-self options must be a map with only an optional boolean :receive?"
+                    {:option :receive?})))
+  (get options :receive? false))
+
 ;; ---------------------------------------------------------------------------
 ;; Core namespaces — always available, never need to be configured
 ;; ---------------------------------------------------------------------------
@@ -144,30 +155,32 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
       location-form (assoc :in (list 'quote location-form))
       (:trace source) (assoc :trace (:trace source)))))
 
-(defn- build-inert-recovery-quine [program error-map]
+(defn- build-inert-recovery-quine [program error-map receive?]
   (let [recovery-context (list 'do
                            (list 'def '_recovery_prompt inert-recovery-prompt)
                            (list 'def '_error error-map))
         recovery-arg (list 'eval
                        (list 'do
-                         (list 'quote (list '!llm-self (list 'reopen 'completion)))))]
+                         (list 'quote (list '!llm-self (list 'reopen 'completion)
+                                            {:receive? receive?}))))]
     (apply list (concat (seq program) [recovery-context '(prune 2) recovery-arg]))))
 
-(defn- build-same-tail-recovery-quine [program error-map]
+(defn- build-same-tail-recovery-quine [program error-map receive?]
   (eval/reopen program
                (list 'def '_error error-map)
-               (list 'quote (list '!llm-self (list 'reopen 'completion)))))
+               (list 'quote (list '!llm-self (list 'reopen 'completion)
+                                  {:receive? receive?}))))
 
 (defn- try-quine-recovery
   "Recover a canonical failing quoted tail in place; otherwise use an inert branch."
-  [program result variant-builtins eval-builtin gated-ns-hints]
+  [program result variant-builtins eval-builtin gated-ns-hints receive?]
   (if-not (and (seq? program)
                (= 'quine (first program))
                (= 'completion (second program)))
     (let [indent (apply str (repeat eval/*llm-depth* "  "))
           wrapped (list 'quine 'completion program)]
       (eval/vlog (str indent "Wrapping in quine completion for recovery"))
-      (try-quine-recovery wrapped result variant-builtins eval-builtin gated-ns-hints))
+      (try-quine-recovery wrapped result variant-builtins eval-builtin gated-ns-hints receive?))
     (let [same-tail? (boolean (trailing-expression-error? program result))
           error-map (recovery-error-map same-tail? result)
           indent (apply str (repeat eval/*llm-depth* "  "))
@@ -175,8 +188,8 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
           _ (eval/vlog (str indent "Recovery attempt: "
                             (inc *recovery-depth*) "/" max-recovery-attempts))
           recovery-quine (if same-tail?
-                           (build-same-tail-recovery-quine program error-map)
-                           (build-inert-recovery-quine program error-map))
+                           (build-same-tail-recovery-quine program error-map receive?)
+                           (build-inert-recovery-quine program error-map receive?))
           _ (eval/vlog (str indent "Recovery quine: " (pr-str recovery-quine)))
           retry (binding [eval/*llm-depth* (inc eval/*llm-depth*)
                           eval/*raw-text* nil
@@ -191,7 +204,7 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
 (defn- try-reader-recovery
   "Recover from a reader error using inert raw-program and recovery-context
    quine arguments. The prune marker removes both on the following turn."
-  [raw parse-error inbox-macros variant-builtins eval-builtin gated-ns-hints]
+  [raw parse-error inbox-macros variant-builtins eval-builtin gated-ns-hints receive?]
   (let [error-msg (or (.getMessage parse-error) "Unknown reader error")
         indent (apply str (repeat eval/*llm-depth* "  "))
         _ (throw-if-recovery-exhausted! :reader error-msg)
@@ -205,7 +218,8 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
         recovery-quine (list 'quine 'completion raw recovery-context '(prune 2)
                          (list 'eval
                            (list 'do
-                             (list 'quote (list '!llm-self (list 'reopen 'completion))))))
+                             (list 'quote (list '!llm-self (list 'reopen 'completion)
+                                                {:receive? receive?})))))
         recovery-program (inbox/apply-inbox-macros recovery-quine inbox-macros
                                                    {:env {'eval eval-builtin}})
         result (binding [eval/*llm-depth* (inc eval/*llm-depth*)
@@ -225,7 +239,8 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
    Closes over eval-builtin from config. Calls balance-parens because
    completions may arrive with mismatched trailing parens.
    trace-data-atom, when non-nil, receives {:program} for tracing."
-  [{:keys [variant-builtins eval-builtin recover-fn allow-multiple-top-level? gated-ns-hints]} trace-data-atom]
+  [{:keys [variant-builtins eval-builtin recover-fn allow-multiple-top-level? gated-ns-hints receive?]
+    :or {receive? true}} trace-data-atom]
   (let [f
         (fn
           ([raw]
@@ -233,6 +248,7 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
                             :eval-builtin eval-builtin
                             :recover-fn recover-fn
                             :allow-multiple-top-level? allow-multiple-top-level?
+                            :receive? receive?
                             :gated-ns-hints gated-ns-hints}
                            trace-data-atom)
             raw
@@ -253,7 +269,7 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
                (if parse-err
                  (if recover-fn
                    (try-reader-recovery raw parse-err inbox-macros variant-builtins
-                                        eval-builtin eval/*gated-ns-hints*)
+                                        eval-builtin eval/*gated-ns-hints* receive?)
                    (throw parse-err))
                  (let [continuation-raw (if allow-multiple-top-level?
                                           (if (seq inbox-macros)
@@ -293,9 +309,9 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
                                (if (eval/ok? retry)
                                  retry
                                  (try-quine-recovery program' result variant-builtins
-                                                     eval-builtin eval/*gated-ns-hints*)))
+                                                     eval-builtin eval/*gated-ns-hints* receive?)))
                              (try-quine-recovery program' result variant-builtins
-                                                 eval-builtin eval/*gated-ns-hints*)))
+                                                 eval-builtin eval/*gated-ns-hints* receive?)))
                          result)]
                    (when trace-data-atom
                      (reset! trace-data-atom {:program program'
@@ -480,9 +496,11 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
         final-config (promise)
         current-agent-ref (atom nil)
         self-ref (atom nil)
-        self-fn (fn !llm-self [prompt]
-                  (@self-ref prompt))
+        self-fn (fn !llm-self
+                  ([prompt] (@self-ref prompt {}))
+                  ([prompt options] (@self-ref prompt options)))
         effect-builtins (merge {'!llm-self self-fn
+                                'receive runtime/receive
                                 '!ask-await stdlib/ask-await-builtin
                                 'leaf-llm (make-leaf-llm (cond-> {}
                                                            provider (assoc :provider provider)
@@ -541,14 +559,15 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
                        (when-not (runtime/handle? handle)
                          (runtime/register! handle))
                        (runtime/run-root-box handle init-program awake-fn inbox-fn)))
-        same-handle-llm (fn same-handle-llm [prompt]
+        same-handle-llm (fn same-handle-llm [prompt options]
                           (when runtime/*computation-future?*
                             (throw (ex-info "Self-calls cannot run inside computation futures"
                                             {:type :agent-in-computation-future})))
                           (when-not runtime/*current-handle*
                             (throw (ex-info "!llm-self requires an active agent handle"
                                             {:prompt prompt})))
-                          (let [prompt' (cond
+                          (let [receive? (self-call-receive? options)
+                                prompt' (cond
                                           (and (seq? prompt) (= 'quine (first prompt)))
                                           (eval/serialize-quine-prefix prompt)
                                           (or (seq? prompt) (list? prompt))
@@ -557,9 +576,14 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
                                           prompt)
                                 prompt-str (wrap-nl prompt')
                                 trace-data (atom nil)
-                                inbox-fn (make-inbox-fn config' trace-data)
-                                awake-fn (runtime/make-awake-fn runtime/*current-handle* inbox-fn)]
-                            (-llm config' runtime/*current-handle* awake-fn nil prompt-str trace-data)))
+                                wake-eval-fn (make-inbox-fn config' trace-data)
+                                inbox-fn (if receive?
+                                           wake-eval-fn
+                                           (let [f (make-inbox-fn (assoc config' :receive? false) trace-data)]
+                                             (with-meta f (assoc (meta f) :spell/wake-eval-fn wake-eval-fn))))
+                                awake-fn (runtime/make-awake-fn runtime/*current-handle* inbox-fn receive?)]
+                            (binding [runtime/*checkpoint?* receive?]
+                              (-llm config' runtime/*current-handle* awake-fn nil prompt-str trace-data))))
         compiled-agent (with-meta start-root {:spell/compiled-agent true
                                               :spell/agent-spec {:model model}})]
     (reset! self-ref same-handle-llm)

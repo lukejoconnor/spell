@@ -2064,7 +2064,9 @@
           expanded (macros/spell-macroexpand-1 '(!call-now snippet lines))
           result (spell-eval expanded {'completion completion
                                        'lines lines
-                                       '!llm-self identity})
+                                       '!llm-self (fn [prefix options]
+                                                     (is (= {:receive? true} options))
+                                                     prefix)})
           prefix (eval/serialize-quine-prefix (:ok result))]
       (is (eval/ok? result))
       (is (.contains ^String prefix "(first-line 40 ["))
@@ -2077,7 +2079,9 @@
           expanded (macros/spell-macroexpand-1 '(!call-now snippet lines))
           result (spell-eval expanded {'completion completion
                                        'lines lines
-                                       '!llm-self identity})
+                                       '!llm-self (fn [prefix options]
+                                                     (is (= {:receive? true} options))
+                                                     prefix)})
           prefix-1 (eval/serialize-quine-prefix (:ok result))
           reparsed (first (spell.parse/read-all (spell.parse/balance-parens prefix-1)))
           prefix-2 (eval/serialize-quine-prefix reparsed)]
@@ -2556,7 +2560,9 @@
   (testing "print contributes evaluated data without turning lists into calls"
     (let [completion '(quine completion (eval (do)))
           expanded (macros/spell-macroexpand-1 '(!print (+ 1 2) (list 4 5)))
-          result (spell-eval expanded {'completion completion '!llm-self identity})]
+          result (spell-eval expanded {'completion completion '!llm-self (fn [prefix options]
+                                                     (is (= {:receive? true} options))
+                                                     prefix)})]
       (is (eval/ok? result))
       (is (= [3 '(quote (4 5))] (vec (drop 1 (second (last (:ok result))))))))))
 
@@ -2565,7 +2571,9 @@
     (doseq [[program marker] [['(!peek code [1 2]) '(prune 2)]
                               ['(!peek a 1 b 2) '(prune 3)]]]
       (let [result (spell-eval (macros/spell-macroexpand-1 program)
-                              {'completion '(quine completion (eval (do))) '!llm-self identity})]
+                              {'completion '(quine completion (eval (do))) '!llm-self (fn [prefix options]
+                                                     (is (= {:receive? true} options))
+                                                     prefix)})]
         (is (eval/ok? result))
         (is (= marker (last (second (last (:ok result)))))))))
 
@@ -2918,7 +2926,9 @@
       (is (clojure.string/includes? suffix-str "=compact="))
       (is (clojure.string/includes? suffix-str "fresh env"))
       (is (clojure.string/includes? suffix-str "Do not use '(persist name)"))
-      (is (clojure.string/includes? suffix-str "'(!llm-self (wrap-cat ")))))
+      (is (= {:receive? true} (nth expanded 2)))
+      (is (clojure.string/includes? suffix-str
+            "'((fn [next-context] (!llm-self next-context {:receive? true})) (wrap-cat ")))))
 
 ;; =============================================================================
 ;; User-defined macros (defmacro)

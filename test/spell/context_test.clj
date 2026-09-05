@@ -94,7 +94,9 @@
       (let [value (apply str (repeat 100 "a"))
             result (eval/spell-eval (macros/spell-macroexpand-1 program)
                                     {'completion '(quine completion (eval (do)))
-                                     'x value 'y value '!llm-self identity})
+                                     'x value 'y value '!llm-self (fn [prefix options]
+                                                     (is (= {:receive? true} options))
+                                                     prefix)})
             forms (rest (second (last (:ok result))))
             text (str/join " " (map pr-str forms))]
         (is (eval/ok? result))
@@ -176,7 +178,9 @@
       (let [value (apply str (repeat 1000 "x"))
             result (eval/spell-eval (macros/spell-macroexpand-1 program)
                                    {'completion '(quine completion (eval (do)))
-                                    'x value '!llm-self identity})
+                                    'x value '!llm-self (fn [prefix options]
+                                                     (is (= {:receive? true} options))
+                                                     prefix)})
             forms (rest (second (last (:ok result))))]
         (is (eval/ok? result))
         (is (<= (count (str/join " " (map pr-str forms))) context/min-max-chars))
@@ -224,7 +228,9 @@
           reopened (eval/spell-eval
                      (macros/spell-macroexpand-1 '(!peek lines source))
                      {'completion '(quine completion (eval (do)))
-                      'source lines '!llm-self identity})
+                      'source lines '!llm-self (fn [prefix options]
+                                                     (is (= {:receive? true} options))
+                                                     prefix)})
           forms (rest (second (last (:ok reopened))))
           evaluated (eval/spell-eval
                       (list 'do (first forms) '(persist focus (subvec lines 0 10))) {})]

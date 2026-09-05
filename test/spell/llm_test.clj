@@ -19,9 +19,7 @@
 
 (use-fixtures :each th/with-test-run)
 
-(defn- append-forms-macro
-  [& forms]
-  (#'runtime/append-forms-macro forms))
+(def ^:private append-forms-macro th/append-forms-macro)
 
 (deftest llm-basic-test
   (testing "llm evaluates response and extracts return"

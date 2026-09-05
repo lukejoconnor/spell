@@ -1,6 +1,6 @@
 (ns spell.runtime
-  "Stackful agent execution interacting with a run-local coordinator. Inbox
-   receipt remains after generation, before evaluating the returned program."
+  "Stackful agent execution interacting with a run-local coordinator. Opted-in
+   inbox receipt happens after generation, before evaluating the returned program."
   (:refer-clojure :exclude [send])
   (:require [clojure.string :as str]
             [spell.coordinator :as coordinator]
@@ -17,6 +17,9 @@
     (when *current-handle*
       {:handle *current-handle* :completion (:completed (coordinator/agent *current-handle*))})))
 (def ^:dynamic *current-raw* nil)
+(def ^:dynamic *checkpoint?*
+  "Whether this evaluation owns the resumable context. Set at every call boundary."
+  true)
 (def ^:dynamic *current-eval-fn* nil)
 (def ^:dynamic *default-spawn-agent* nil)
 (defn- inbox-aware-eval-fn? [f] (true? (:spell/inbox-aware (meta f))))
@@ -25,8 +28,9 @@
 (def register! coordinator/register!)
 (defn handle? [handle] (boolean (coordinator/agent handle)))
 (defn record-last-raw! [handle raw]
-  (when-let [execution (:execution (coordinator/agent handle))]
-    (swap! execution assoc :last-raw raw))
+  (when *checkpoint?*
+    (when-let [execution (:execution (coordinator/agent handle))]
+      (swap! execution assoc :last-raw raw)))
   nil)
 
 (defn- default-spawn-agent
@@ -161,43 +165,90 @@
   []
   (eval/compose-macros []))
 
-(defn- append-forms-macro
-  [forms]
-  {:spell/macro true
-   :expander {:spell/fn true
-              :params ['q]
-              :body [(list* 'reopen 'q forms)]}})
-
 (defn- create-msg
   "Create a Spell macro that reopens a parsed completion, appends (def name value),
    and appends an !extend continuation so the recipient continues thinking.
    Injects a think annotation so the agent knows the message preempted its
    trailing expression (if active) or awakened it (if sleeping).
-   Internal plumbing for signaling (waiting-for, spawn-result)."
+  Internal plumbing for signaling (waiting-for, spawn-result)."
   [name value]
-  (append-forms-macro
-    (eval/context-forms
-      [{:form (list 'think (str "[preempted or awakened by " name "]"))}
-       {:name name :value value}
-       {:form (list 'quote (list '!extend))}])))
+  {:spell/macro true
+   :expander
+   {:spell/fn true
+    :params ['q]
+    ;; Resolve the quine name at expansion, including the real continuation
+    ;; in the same contribution budget as the message and its annotation.
+    :body [(list 'let
+             ['forms (list 'context-forms
+                       [{:form (list 'quote (list 'think (str "[preempted or awakened by " name "]")))}
+                        {:name (list 'quote name) :value (list 'quote value)}
+                        {:form '(list 'quote (list '!extend (second q)))}])]
+             '(reopen q
+                (reopen-eval (nth forms 0))
+                (reopen-eval (nth forms 1))
+                (reopen-eval (nth forms 2))))]}})
 
 
 (defn- envelope-macro [{:keys [message macro]}]
   (or macro (create-msg (symbol (gensym "msg-")) message)))
 
-(defn make-awake-fn [handle eval-fn]
+(defn- drain-inbox-macros!
+  "Atomically take exactly one mailbox batch for handle (coordinator/drain! removes the
+   batch, rotates its signal, and claims pending request slots in one transition) and
+   convert each envelope to an inbox macro, preserving mailbox order."
+  [handle]
+  (mapv envelope-macro (coordinator/drain! handle)))
+
+(defn receive
+  "Explicit nonblocking receipt. Validates that program is a canonical completed quine,
+   (quine name ... (eval (do ...))), before touching coordinator state, then drains
+   exactly one mailbox batch for the active agent and applies the resulting inbox macros
+   to program. Returns the transformed program as data; returns program unchanged when
+   the inbox is empty. Makes no model call and never evaluates program. Unavailable
+   inside computation futures. Establishes the transformed program as resumable context.
+   An empty drain still rotates the wake signal. A failing macro expansion has already
+   consumed the batch; ex-data :macros retains that batch for diagnosis."
+  [program]
+   (when *computation-future?*
+     (throw (ex-info "receive is unavailable inside a computation future"
+                     {:handle *current-handle*})))
+   (let [handle *current-handle*]
+     (when (nil? handle)
+       (throw (ex-info "receive requires an active agent context" {})))
+     ;; Canonical shape validation: throws before any mailbox/signal/claim mutation.
+     (try (eval/serialize-quine-prefix program)
+          (catch clojure.lang.ExceptionInfo e
+            (throw (ex-info (str "receive expects a canonical completed quine: " (ex-message e))
+                            (assoc (ex-data e) :handle handle) e))))
+     (when-not (symbol? (second program))
+       (throw (ex-info "receive requires a quine with a symbol name" {:program program})))
+     (let [macros (drain-inbox-macros! handle)
+           transformed (if (seq macros)
+                         (inbox/apply-inbox-macros program macros
+                                                  {:env (select-keys eval/*spell-env* ['eval])
+                                                   :error-prefix "receive"
+                                                   :error-data {:handle handle :macros macros}})
+                         program)]
+       (binding [*checkpoint?* true]
+         (record-last-raw! handle (pr-str transformed)))
+       transformed)))
+
+(defn make-awake-fn
+  ([handle eval-fn] (make-awake-fn handle eval-fn true))
+  ([handle eval-fn receive?]
   (fn [raw]
-    (let [before-awake (:spell/before-awake (meta eval-fn))
+    (binding [*checkpoint?* receive?]
+     (let [before-awake (:spell/before-awake (meta eval-fn))
           after-awake (:spell/after-awake (meta eval-fn))]
       (when before-awake (before-awake))
       (try
-        (let [macros (mapv envelope-macro (coordinator/drain! handle))
+        (let [macros (if receive? (drain-inbox-macros! handle) [])
               transformed (if (and (seq macros) (not (inbox-aware-eval-fn? eval-fn)))
                             (inbox/materialize-inbox-raw raw macros {:builtins eval/core-builtins}) raw)]
           (record-last-raw! handle transformed)
-          (binding [*current-eval-fn* eval-fn]
+          (binding [*current-eval-fn* (or (:spell/wake-eval-fn (meta eval-fn)) eval-fn)]
             (if (inbox-aware-eval-fn? eval-fn) (eval-fn raw macros) (eval-fn transformed))))
-        (finally (when after-awake (after-awake)))))))
+        (finally (when after-awake (after-awake)))))))))
 
 (defn- await-message! [handle]
   ;; The signal is a notification adapter. Mailbox and run closure are authoritative.
@@ -259,7 +310,8 @@
   ([handle completion-source inside-fn eval-fn]
    (run-root-box handle completion-source inside-fn eval-fn (:completed (coordinator/agent handle))))
   ([handle completion-source inside-fn eval-fn completion]
-  (let [entered? (atom false)]
+  (binding [*checkpoint?* true]
+   (let [entered? (atom false)]
     (try
       (let [resolved (resolve-completion-source completion-source)
             value (box handle resolved (fn [raw] (reset! entered? true) (inside-fn raw)) completion)]
@@ -270,7 +322,7 @@
           (if (instance? Error e)
             (coordinator/retire! handle completion failure)
             (when (finish-agent! handle completion failure) (start-orphan! handle eval-fn))))
-        (throw e))))))
+        (throw e)))))))
 
 (defn -send! [handle macro] (coordinator/send! handle {:macro macro}))
 (defn send-msg-fn [macro handle] (-send! handle macro) nil)
@@ -311,7 +363,10 @@
      :edges (into {} (map (fn [[id edge]] [id (edge-summary edge)]) (:edges s)))}))
 (defn sleep-allowed? [handle] (coordinator/sleep-allowed? (coordinator/snapshot) handle))
 (defn block-for-message []
-  (box *current-handle* *current-raw* (make-asleep-fn *current-handle* *current-eval-fn*)))
+  (let [saved (some-> (coordinator/agent *current-handle*) :execution deref :last-raw)]
+    (binding [*checkpoint?* true]
+      (box *current-handle* (or saved *current-raw*)
+           (make-asleep-fn *current-handle* *current-eval-fn*)))))
 (defn- assert-agent-context! [caller]
   (when-not (and *current-handle* *current-raw*)
     (throw (ex-info (str caller ": requires an active agent context") {}))))
@@ -422,7 +477,9 @@
   ([handle eval-fn initial] (start-box handle eval-fn initial nil))
   ([handle eval-fn initial parent]
    (register! handle parent :finished)
-   (record-last-raw! handle initial)
+   ;; A newly registered agent owns its context even when its caller is a raw helper.
+   (binding [*checkpoint?* true]
+     (record-last-raw! handle initial))
    (start-orphan! handle eval-fn)
    handle))
 (defn- validate-spawn-agent! [agent handle]

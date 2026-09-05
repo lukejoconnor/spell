@@ -35,6 +35,7 @@
             [spell.runtime :as runtime]
             [spell.coordinator :as coordinator]
             [spell.globals :as globals]
+            [spell.test-helpers :as th]
             [spell.user :as user])
   (:import [java.io BufferedReader]
            [java.util.concurrent LinkedBlockingQueue CountDownLatch TimeUnit
@@ -52,8 +53,7 @@
 ;; Helpers
 ;; =============================================================================
 
-(defn- append-forms-macro [& forms]
-  (#'runtime/append-forms-macro forms))
+(def ^:private append-forms-macro th/append-forms-macro)
 
 (defn- apply-inbox-macros
   [raw inbox-macros]
@@ -446,8 +446,8 @@
           "think annotation should be present")
       (is (.contains ^String preempted ":from :intruder")
           "incoming message def should be present")
-      (is (or (.contains ^String preempted "'(!extend)")
-              (.contains ^String preempted "(quote (!extend))"))
+      (is (or (.contains ^String preempted "'(!extend completion)")
+              (.contains ^String preempted "(quote (!extend completion))"))
           "new extension should be the trailing expression")
 
       ;; Parse and verify the trailing send is NOT the last expression
@@ -458,7 +458,7 @@
             body-exprs (rest do-form)
             last-body-expr (last body-exprs)]
         ;; The last expression should be the new extension, not the send
-        (is (= (list 'quote '(!extend))
+        (is (= (list 'quote '(!extend completion))
                last-body-expr)
             "last expression in do block should be the new !extend continuation")
         ;; The original send should be in the body but not last

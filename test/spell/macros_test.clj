@@ -103,9 +103,9 @@
 
 (deftest simple-macro-expansion-test
   (testing "!extend defaults to completion and accepts an explicit continuation"
-    (is (= '(!llm-self (edit-reopen completion))
+    (is (= '(!llm-self (edit-reopen completion) {:receive? true})
            (expand1 '(!extend))))
-    (is (= '(!llm-self (edit-reopen saved))
+    (is (= '(!llm-self (edit-reopen saved) {:receive? true})
            (expand1 '(!extend saved)))))
 
   (testing "!compact defaults to completion and reuses the shared suffix"
@@ -115,7 +115,8 @@
       (is (= (list '!llm-self
                    (list 'str
                          (list 'serialize-prefix (list 'edit-reopen 'saved))
-                         suffix))
+                         suffix)
+                   {:receive? true})
              (expand1 '(!compact saved))))))
 
   (testing "first-line wraps vector literals with metadata and rejects non-vectors"
