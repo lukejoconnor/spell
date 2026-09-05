@@ -326,3 +326,28 @@
     (is (.contains ^String result "java.lang.AssertionError"))
     (is (empty? (:external-waits (c/snapshot))))
     (is (= :awake (:status (c/agent :a))))))
+
+(deftest retired-orphan-cannot-acquire-a-replacement-handle
+  (let [parked (promise) release (promise) attempted (promise)
+        evaluations (atom 0)
+        await-message @#'runtime/await-message!
+        acquire c/acquire!]
+    (with-redefs-fn
+      {#'runtime/await-message! (fn [h] (deliver parked true) @release (await-message h))
+       #'c/acquire! (fn [h runner completion]
+                     (try (acquire h runner completion)
+                          (catch Exception e
+                            (deliver attempted (:type (ex-data e)))
+                            (throw e))))}
+      (fn []
+        (runtime/start-box :reused (fn [_] (swap! evaluations inc))
+                           "(quine completion (eval (do)))")
+        (is (= true (deref parked 2000 :timeout)))
+        (c/retire! :reused (:completed (c/agent :reused)) :removed)
+        (c/register! :reused)
+        (c/send! :reused {:message {:from :fresh :body :new-work}})
+        (let [replacement (c/agent :reused)]
+          (deliver release true)
+          (is (= :stale-agent-lifecycle (deref attempted 2000 :timeout)))
+          (is (zero? @evaluations))
+          (is (= replacement (c/agent :reused))))))))
