@@ -657,7 +657,7 @@
 (defn- continue-user-suffix [restart live-requests]
   (cond
     (some runtime/actionable-request-live? live-requests)
-    "'(!llm-self (reopen completion)) "
+    "'(!llm-self (reopen completion) {:receive? true}) "
     (seq (runtime/out-edges)) "'(!user-wait) "
     :else restart))
 
@@ -793,9 +793,9 @@
   "Box-based execution for the user agent.
    Structurally similar to -llm but simpler (no trace, no retry, no verbose).
    Uses make-awake-fn to construct the inside-fn from the eval-fn."
-  [eval-fn handle parent-handle prompt-str generation]
+  [eval-fn handle parent-handle prompt-str generation receive?]
   (let [completion (promise)
-        awake-fn (runtime/make-awake-fn handle eval-fn)]
+        awake-fn (runtime/make-awake-fn handle eval-fn receive?)]
     (future
       (try
         (when-not (= generation @reader-generation)
@@ -804,7 +804,8 @@
           (deliver completion (str prompt-str response)))
         (catch Exception e
           (deliver completion e))))
-    (runtime/box handle completion awake-fn)))
+    (binding [runtime/*checkpoint?* receive?]
+      (runtime/box handle completion awake-fn))))
 
 ;; =============================================================================
 ;; Registration
@@ -817,15 +818,19 @@
                                 {'describe-fn stdlib/describe}
                                 llm/core-namespaces)
         ;; user-self-fn reads eval-fn dynamically via *current-eval-fn*
-        user-self-fn (fn [prompt]
-                       (let [prompt-str (if (and (seq? prompt) (= 'quine (first prompt)))
+        user-self-fn (fn user-self-fn
+                      ([prompt] (user-self-fn prompt {}))
+                      ([prompt options]
+                       (let [receive? (llm/self-call-receive? options)
+                             prompt-str (if (and (seq? prompt) (= 'quine (first prompt)))
                                           (eval/serialize-quine-prefix prompt)
                                           (str prompt))]
                          (user-self runtime/*current-eval-fn*
                                     runtime/*current-handle* runtime/*current-handle* prompt-str
-                                    generation)))
+                                    generation receive?))))
         ;; Effect builtins: !llm-self (user-self) + agents namespace
         effect-builtins {'!llm-self user-self-fn
+                         'receive runtime/receive
                          '!user-wait #(user-wait! generation)
                          'agents runtime/agents-namespace}
         eval-builtin (llm/make-eval variant-builtins

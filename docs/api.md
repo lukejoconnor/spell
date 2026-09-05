@@ -46,6 +46,14 @@ These options are scoped to one invocation of `run`.
 | `:log-writer` | none | Writer for raw LLM debugging output. Pass `*out*` or another writer for logging. |
 
 
+## Self-calls and Receipt
+
+`(!llm-self prefix)` generates and evaluates a completion without implicitly receiving messages. `(!llm-self prefix {:receive? true})` accepts one mailbox batch after generation and before evaluation, so messages arriving during generation can replace the generated trailing action. The only option is boolean `:receive?`, defaulting to `false`; invalid options fail before a model call. Each nested self-call makes its own choice. Recovery preserves the originating call's receipt policy.
+
+`!extend`, `!call-now`, `!print`, `!peek`, and both stages of `!compact` explicitly enable receipt. `(receive completion)` is an effect builtin that accepts one batch into a canonical completed quine and returns the transformed program as data. It neither evaluates the program nor calls a model. Invalid input is rejected before consumption; an empty mailbox returns the input unchanged. It is available even when the `agents` namespace is omitted, and requires an active agent outside computation futures.
+
+Startup, receiving continuations, and explicit receipt establish the context used for later resumption. A raw helper's context is temporary, even if it is a quine. Returning from it preserves any newer context established by a receiving descendant. Explicit waits and dormant wakeups resume the latest such context and receive normally. Receipt atomically claims incoming requests; wait admission continues to consider every pending incoming obligation, including unread requests.
+
 ## Context Contributions
 
 `!call-now`, `!peek`, `!print`, and incoming agent messages use the same lossless rendering policy. Fitting results are inserted directly, including small siblings of oversized results. Oversized results remain complete in storage owned by this run and appear as `(stored "id")`; the resulting binding still holds the original value. Read a slice or select fields, then use `!peek` or `!print` to display that smaller value. Lists and symbols are quoted as data. Numbered source vectors retain their starting-line metadata, with line comments restored when rendered in a model prefix. Values with other metadata, including nested source vectors, use storage to preserve that metadata.

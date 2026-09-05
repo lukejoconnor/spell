@@ -16,6 +16,9 @@ This repo includes Spell-specific skills under `.agents/skills/`. Use them as th
 
 ## Terminology
 
+- Receipt: atomically accept a mailbox batch and transform a completed program with its messages.
+- Resumable context: the latest startup, receiving continuation, or explicitly received completion used by waits and dormant wakeups; raw helper calls keep their context temporary.
+
 - Coordinator: per-run owner of agent identities, mailboxes, lifecycle results, and outstanding collections.
 - Edge: one result collection with a source and one slot per target; it completes when every slot is filled.
 - Context contribution: values and generated binding syntax inserted by one tool-result or communication operation, sharing one run-configured character budget.

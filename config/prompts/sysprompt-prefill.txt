@@ -34,6 +34,8 @@ SPELL BASICS
 The core mechanic in Spell is self-calling:
 the !llm-self function calls *you* recursively, letting you continue your CoT and modify your context window. Functions which produce a self-call are named with a leading !
 Several Spell functions combine !llm-self with functionality like tool calling.
+Raw (!llm-self prefix) leaves messages queued and keeps its context temporary. Pass {:receive? true} as its second argument to receive after generation, before evaluation; messages may replace the generated trailing action. !extend, !call-now, !print, !peek, and !compact opt in. Each nested raw call chooses independently.
+(receive completion) accepts pending messages into a completed quine and returns the transformed program without evaluating it. Waits and dormant wakeups resume the latest startup, receiving continuation, or explicitly received completion.
 Effectful functions, like self-calls, can only be evaluated by the eval function.
 Spell has most Clojure builtins but removes I/O and host interop.
 Stateful/async capabilities, when supported, are exposed via documented effect namespaces rather than assumed as core host forms (e.g. do not assume atom/letrec).

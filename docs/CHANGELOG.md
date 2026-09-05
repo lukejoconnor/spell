@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Raw `!llm-self` calls leave incoming messages queued. Pass `{:receive? true}` to receive after generation and before evaluation; convenience wrappers opt in automatically. Added nonblocking `(receive completion)` to transform a completed quine without evaluating it. Waits and dormant wakeups use the latest resumable context, which temporary raw helper calls preserve. Recovery retains its originating call's receipt policy.
+
 - Each run now owns an atomic coordinator for agent lifecycles, mailboxes, requests, and wakeups, replacing global epochs and separate notifier state.
 
 - Added immediate `agents/ask` and `agents/spawn-ask` with edge IDs, composable `!wait`/`!sleep`, durable all-target collections, and atomic admission through `:coordinator {:max-edges 10000}`. Waiting wrappers retain strict edge ordering; actionable replies require their request edge ID. Replaced the future-only `completion-promise` helper with atomic `blocking/request` tokens and made `send-await` dependencies coordinator-owned.

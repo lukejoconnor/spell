@@ -209,7 +209,7 @@ Bind the result, inspect it on the next turn, then decide what to do next."}
 Categories (use (!describe builtins :category) for full listing):
   special-forms — quote, def, persist, do, if, let, fn, quine, loop, recur, for, try
   macros        — when, defn, cond, if-let/if-some, when-let/when-some, case, ->, ->>, !call-now, ...
-  effect        — eval, !llm-self, !ask-await, leaf-llm, describe-fn, llm (trailing expression only)
+  effect        — eval, !llm-self, receive, !ask-await, leaf-llm, describe-fn, llm (trailing expression only)
   math          — +, -, *, /, inc, dec, mod, abs, integer?, numerator, denominator, rand, ...
   comparison    — <, >, =, not, nil?, empty?, identity, ...
   types         — string?, number?, vector?, map?, fn?, keyword?, integer?, ratio?, rational?, ...
@@ -289,7 +289,8 @@ Common mistakes:
     "Per-agent effect builtins (available in trailing expression via double evaluation):
 
   eval — transparent evaluator; inverse of quote. Merges effect builtins with pure builtins
-  !llm-self — call yourself recursively with a new prompt; child inherits your handle
+  !llm-self — call yourself recursively; raw calls leave messages queued, {:receive? true} opts in
+  receive — accept pending messages into a completed quine and return the transformed program
   !ask-await — wait for a future via message wakeup (safe in the caller turn)
   leaf-llm — plain text-in/text-out LLM call; no Spell parsing or evaluation, returns string
   describe-fn — retrieve documentation from a namespace: (describe-fn ns) or (describe-fn ns :key)
@@ -619,7 +620,7 @@ Lower-level than serialize-prefix. Use reopen / wrap-cat for quine forms."
 
 (eval expr)
 
-Merges effect builtins (!llm-self, !ask-await, leaf-llm, agents/, io/, globals/)
+Merges effect builtins (!llm-self, receive, !ask-await, leaf-llm, agents/, io/, globals/)
 with pure builtins, then evaluates expr. This is what makes effect functions
 available in the trailing expression of the completion wrapper.
 
@@ -633,17 +634,44 @@ The double evaluation pattern:
 (same logical agent, serial execution).
 
 (!llm-self prompt)
+(!llm-self prompt {:receive? true})
 
 prompt: string or quine form. If a bare string, automatically wrapped in
 the completion wrapper. If given a quine form (from reopen, wrap-cat, or
 edit-reopen), that quine is serialized as the child's open prefix.
 
-The child writes Spell code that is parsed and evaluated. Use for:
+The child writes Spell code that is parsed and evaluated. Raw calls leave
+messages queued and keep their context temporary. {:receive? true} accepts one
+batch after generation and before evaluation; that batch may replace the
+generated trailing action. Each nested call chooses independently. Recovery
+preserves that call's receipt choice. !extend, !call-now, !print, !peek, and
+!compact opt in automatically. Options accept only a boolean :receive? key.
+
+Startup, receiving continuations, and explicit receive establish resumable
+context for waits and dormant wakeups. Raw helper calls preserve that context,
+including newer context established by a receiving descendant.
+
+Use self-calls for:
 - Extending context (!extend, !compact)
 - Delegating computation to a child
 - Multi-step tool use chains
 
 For parallel LLM work, use agents/spawn instead (separate handles)."
+
+    :receive
+    "Accept one pending mailbox batch into a canonical completed quine.
+
+(receive completion)
+
+Returns the transformed program as data without evaluating it or calling a
+model. Empty receipt returns the supplied program. Input is validated before
+messages are consumed. Receipt claims incoming requests for the current
+lifecycle and records the transformed quine as resumable context. Use the
+returned program when constructing subsequent execution/context.
+
+This is an effect builtin, available even without agents/. It requires an
+active agent and cannot run inside a computation future. !wait/!sleep and
+!ask-await still receive when they resume, respecting unread obligations."
 
     :!ask-await
     "Wait for a Spell future via message wakeup from a normal agent turn.

@@ -217,7 +217,7 @@
         result (future
                  (th/run-agent-init
                    agent
-                   "(eval (do '(do (def edge (agents/ask :worker :question)) (def nested (!llm-self \"(quine completion (eval (do \")) (agents/!wait) :continued)))"))]
+                   "(eval (do '(do (def edge (agents/ask :worker :question)) (def nested (!llm-self \"(quine completion (eval (do \" {:receive? true})) (agents/!wait) :continued)))"))]
     (is (= :continued (deref result 5000 :timeout)))
     (is (= 2 (count @calls)))
     (is (empty? (:edges (coordinator/snapshot))))))

@@ -210,7 +210,8 @@
     (list 'let (conj bindings forms render)
           (list '!llm-self
                 (list* 'reopen (list 'edit-reopen 'completion)
-                       (map-indexed (fn [i _] (reopen-eval-form (list 'nth forms i))) descriptors))))))
+                       (map-indexed (fn [i _] (reopen-eval-form (list 'nth forms i))) descriptors))
+                {:receive? true}))))
 
 (defn- call-now-expander
   [macro-name args extra-form-exprs]
@@ -469,11 +470,11 @@
 ;; extend: (!extend completion) — apply edit markers and continue via !llm-self
 (defspellmacro '!extend
   (fn
-    ([] (list '!llm-self (list 'edit-reopen 'completion)))
-    ([comp-sym] (list '!llm-self (list 'edit-reopen comp-sym)))))
+    ([] (list '!llm-self (list 'edit-reopen 'completion) {:receive? true}))
+    ([comp-sym] (list '!llm-self (list 'edit-reopen comp-sym) {:receive? true}))))
 
 ;; compact: (!compact completion) — apply edit markers, append compaction instructions, continue via !llm-self
-;; Prefix ends with '(!llm-self (wrap-cat — LLM writes quoted forms, balance-parens closes everything.
+;; The generated follow-up opts in after wrap-cat has collected its arguments.
 (def ^:private compact-suffix
   (str "(think \"=compact= Compact your context into the wrap-cat below. "
        "Each argument is a QUOTED form: '(def x 1) '(think \\\"label\\\" ...) etc. "
@@ -484,7 +485,7 @@
        "For large values, keep a smaller literal summary instead of referring to the old binding. "
        "Preserve =compact:N= markers. Drop routine thinks; keep decisions/key defs. "
        "Just write the forms — closing parens and continuation are automatic.\" nil) "
-       "'(!llm-self (wrap-cat "))
+       "'((fn [next-context] (!llm-self next-context {:receive? true})) (wrap-cat "))
 
 (defspellmacro '!compact
   (fn
@@ -493,4 +494,5 @@
      (list '!llm-self
        (list 'str
              (list 'serialize-prefix (list 'edit-reopen comp-sym))
-             compact-suffix)))))
+             compact-suffix)
+       {:receive? true}))))

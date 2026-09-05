@@ -29,7 +29,7 @@ check-result: Verifies an answer using leaf-llm. Returns {:ok answer} or {:wrong
 
 clean-prompt: Cleans up a raw prompt (voice-to-text, quick notes) via leaf-llm, then runs it.
   '(patterns/clean-prompt \"waht is the captal of franc... like the big city\")
-  leaf-llm infers intent and rewrites; !llm-self executes the cleaned prompt.
+  leaf-llm infers intent and rewrites; !llm-self executes the cleaned prompt with receipt enabled.
   Accepts a string or quine form (serializes non-strings automatically).
 
 ralph: Retry orchestrator that runs blocking completion waits inside a future, so
@@ -81,7 +81,7 @@ Example - verify then correct:
 "}
    :detail
    {:check-result "(patterns/check-result prompt answer) - verify answer with leaf-llm, returns {:ok answer} or {:wrong msg}"
-    :clean-prompt "(patterns/clean-prompt raw-prompt) - clean up raw prompt via leaf-llm and execute it"
+    :clean-prompt "(patterns/clean-prompt raw-prompt) - clean up raw prompt via leaf-llm, then execute with receipt enabled"
     :ralph "(patterns/ralph opts) - future-based retry orchestrator.
 opts:
   string                   - task text

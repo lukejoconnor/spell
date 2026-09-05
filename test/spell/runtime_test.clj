@@ -23,8 +23,7 @@
 (defn- identity-msg-macro []
   (#'runtime/identity-msg-macro))
 
-(defn- append-forms-macro [& forms]
-  (#'runtime/append-forms-macro forms))
+(def ^:private append-forms-macro th/append-forms-macro)
 
 (defn- inbox-aware
   [f]
