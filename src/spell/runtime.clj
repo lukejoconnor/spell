@@ -555,8 +555,8 @@ Use from inside (future ...) orchestration code."
    :docs
    {:child-prompts "For ordinary child tasks, pass a string literal or a def-bound string to spawn/spawn-ask. A quine binding holds source; wrap-cat builds a program prefix. Use those when deliberately constructing a program, rather than naming task text."
     :waiting "For message handling, put !wait/!sleep/!ask/!spawn-ask/!reply-ask or !ask-await last in the quoted trailing expression. Read received msg-N bindings in the resumed turn. A wait returns the whole resumed computation's value, so capturing it as a message or adding parentheses, ((agents/!wait)), misuses that value. Synchronous !llm-self result capture remains available."
-    :receipts "Incoming messages can supersede your proposed quoted action while its source and preceding local definitions remain. Capture immediate operations with fresh names, e.g. '(!call-now question-edge (agents/ask :reviewer question)). A proposed sent flag is not execution evidence. After errors or uncertain captures, inspect out-edges/status before retrying. See the receipt examples in (!describe agents)."
-    :returning "Returning fills all still-unanswered claimed request slots with the same value and abandons unfinished outgoing collections; targets keep running. Explicitly reply to any request whose answer differs from your final return value. After a refused wait, inspect obligations, answer requests as needed, and return when done or wait only for remaining work."
+    :receipts "On waking, establish which required actions executed before continuing dependent work. An incoming request can supersede your own proposed request while its source and local definitions remain. When dispatch must precede another step, capture immediate ask with a fresh name, e.g. '(!call-now question-edge (agents/ask :reviewer question)), then wait separately. Check actual captures, received reports, and out-edges/status before dependent replies or waits. A proposed sent flag is not execution evidence. Resolve uncertain execution before retrying; complete an interrupted prerequisite first. See (!describe agents) for examples."
+    :returning "Returning fills all still-unanswered claimed request slots with the same value and abandons unfinished outgoing collections; targets keep running. Explicitly reply to any request whose answer differs from your final return value. Before waiting, establish that work remains to collect and inspect uncertain obligations. A refused wait is an error: recover by inspecting current state and revising the program. Return when done."
     :futures "Create a communication future once in a quoted trailing expression and retain it with !call-now for later joins. Inside it, blocking/request creates a token and blocking/await collects it; !ask-await resumes the enclosing agent with messages. (!describe agents) shows the complete pattern."
     :guide "AGENTS — Communication controlled by your program.
 
@@ -595,6 +595,9 @@ calculations with !call-now if their values must survive a later continuation;
 a def inside an old quoted action is not a persistent result binding.
 
 !ask, !spawn-ask and !reply-ask perform their interaction and then wait.
+When later steps depend on confirmed dispatch, capture the immediate ask with
+!call-now, then wait in a later turn. The convenience !ask returns the resumed
+computation's value, so it does not retain an edge ID for this purpose.
 !sleep uses the same waiting primitive as !wait. For message handling, place a
 wait last in the quoted trailing expression. It resumes a whole computation:
 its eventual return value is that computation's result, not the next envelope.
@@ -624,10 +627,15 @@ To suspend after consuming current messages, these communication waits require
 an outgoing edge newer than every unanswered incoming edge. An external-computation wait through !ask-await uses this rule
 when it has incoming obligations; with none, it may wait for external work
 without an outgoing edge.
-A refusal lists :in-edges and :out-edges with IDs under :id; actual request
-messages use :edge-id. Inspect out-edges/in-edges/status, answer as needed,
-then return if the task is complete or wait for remaining work. Filled
-slots can still appear in in-edges while another target keeps the edge pending.
+Pending-edge summaries identify requests under :id; received request messages
+use :edge-id. Inspect out-edges/in-edges/status before waiting when obligations
+are uncertain, and answer requests as needed. Return if the task is
+complete; wait for remaining work only when the ordering permits it. A refused
+wait is a recoverable error, with no suspension. Spell try/catch can handle it;
+the normal evaluation-recovery path can revise the program. Inspect current
+status during recovery rather than repeating the refused wait. With recovery
+disabled and no handler, the lifecycle fails. Filled slots can still appear
+in in-edges while another target keeps the edge pending.
 
 Receipt and execution evidence
 
@@ -637,6 +645,14 @@ preceding ordinary local definitions can still evaluate. A bare (def sent true)
 therefore says nothing about whether the following send or reply executed.
 The annotation [preempted or awakened by msg-N] is also used after a real wait
 awakens; the annotation or old source alone does not identify what executed.
+
+On waking, establish whether each prerequisite actually ran before continuing
+operations that depend on it. Receiving a peer request does not establish that
+your own request was dispatched. Complete a required interrupted request before
+a dependent reply or wait. When execution is uncertain, inspect first:
+  '(!call-now current-obligations (agents/status))
+Use actual result captures, received completion reports, and pending edge records.
+An empty outgoing set alone does not exclude a completed or cancelled request.
 
 Capture immediate operations with a fresh name for each operation:
   '(!call-now clarification-edge (agents/ask :reviewer question))
@@ -655,7 +671,7 @@ Requests collected in computation futures
 Create and capture the future in the quoted trailing expression so later turns
 reuse the same computation. These are successive turns:
   '(!call-now worker-handle (agents/spawn \"Answer incoming arithmetic requests with integers.\" :worker))
-  '(!call-now task-future (future (blocking/await (blocking/request worker-handle \"Sum squares 1 through 10.\"))))
+  '(!call-now task-future (future (blocking/await (blocking/request worker-handle \"Multiply 23 by 41.\"))))
   '(!ask-await task-future)
 future takes one expression; wrap multiple body forms in do. blocking/request
 creates a tracked result token; blocking/await collects it inside the future.
