@@ -2,6 +2,8 @@
 
 ## v0.3.0 - Unreleased
 
+- Added immediate `agents/ask` and `agents/spawn-ask` with edge IDs, composable `!wait`/`!sleep`, durable all-target collections, and atomic admission through `:coordinator {:max-edges 10000}`. Waiting wrappers retain strict edge ordering; actionable replies require their request edge ID.
+
 - Changed the CLI and OpenAI model-profile default to GPT-5.6 Sol with medium reasoning, while retaining explicit provider and reasoning overrides.
 - Removed the CLI launcher's unnecessary dependency on `rlwrap` by invoking `clojure` directly.
 - Added a new-spec-only MCP `2026-07-28` client with generated permissioned namespaces, Streamable HTTP and stdio transports, tools, resources, prompts, completion, subscriptions, and an explorer-style `spell mcp` CLI.

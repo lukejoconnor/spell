@@ -38,6 +38,7 @@ These options are scoped to one invocation of `run`.
 | `:reasoning-effort` | model profile `:default-reasoning-effort` | Reasoning-effort override for this run. |
 | `:budget` | agent profile `:default-budget` or runtime default | Maximum spend in dollars for the run. `nil` means the configured default. `0` means unlimited. |
 | `:depth` | unlimited | Maximum recursive LLM depth for this run. |
+| `:coordinator` | `{:max-edges 10000}` | Per-run coordination capacity. `:max-edges` must be a positive integer and counts pending hyperedges, regardless of target count. Admission rejects atomically before sending requests or launching children. |
 | `:trace-dir` | none | When non-nil, record a Spell execution trace in this directory. |
 | `:usage-tracker` | fresh atom | Existing usage atom to accumulate token and cost accounting into. |
 | `:user-reader` | none | When non-nil, register the interactive `:user` handle and read from this reader. The caller retains ownership of the reader. Spell requests cancellation of its reader task and clears input state when the run ends, so use a finite reader or one whose blocking read responds to thread interruption. An arbitrary reader that ignores interruption must be unblocked by its owner before reuse. |
@@ -361,3 +362,11 @@ These profile defaults can be overridden for one run:
 | Model | model profile `:default-model` | `run :model` |
 | Reasoning effort | model profile `:default-reasoning-effort` | `run :reasoning-effort` |
 | Budget | agent profile `:default-budget` | `run :budget` |
+
+## Multi-Agent Coordination
+
+The optional `agents/` namespace exposes immediate `ask` and `spawn-ask` operations
+that return collection IDs, waiting wrappers `!ask` and `!spawn-ask`, and the shared
+`!wait`/`!sleep` primitive. It also exposes `cancel`, `status`, `graph`, `out-edges`,
+and `in-edges` for retained collections. See [multi-agent coordination](multi-agent.md)
+for signatures, lifecycle results, cancellation, and the non-deadlock guarantee.
