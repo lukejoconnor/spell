@@ -44,6 +44,7 @@
 ;; ---------------------------------------------------------------------------
 ;; Passes raw input (voice-to-text, quick notes, typos) through leaf-llm to
 ;; infer intent and produce a clear prompt, then executes it via !llm-self.
+;; The cleaned continuation receives messages and becomes the resumable context.
 ;;
 ;; (quine prompt "waht is the captal of franc... like the big city")
 ;; '(patterns/clean-prompt prompt)
@@ -58,7 +59,7 @@
                                "The input may be wrapped in code syntax — ignore that and focus on the natural language content. "
                                "Output ONLY the rewritten prompt.\n\n"
                                text))]
-    (!llm-self cleaned)))
+    (!llm-self cleaned {:receive? true})))
 
 ;; ---------------------------------------------------------------------------
 ;; ralph - retry orchestration in a future (caller stays responsive)

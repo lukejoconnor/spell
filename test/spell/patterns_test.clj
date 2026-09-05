@@ -17,6 +17,32 @@
 (def sh-test (:sh-test sio/io-namespace))
 (def stub-ask-await (fn [fut] (deref (:ref fut) 5000 :timeout)))
 
+(deftest clean-prompt-receives-during-cleaned-continuation
+  (let [calls (atom []) stale (atom 0)
+        agent (th/make-test-agent
+                {:response-fn
+                 (fn [prompt]
+                   (case (count (swap! calls conj prompt))
+                     1 "The cleaned assignment"
+                     2 (do
+                         (coordinator/send! :main
+                           {:message {:from :observer :body :clean-prompt-message}})
+                         "'(audit/stale)))")
+                     3 "':clean-received)))"
+                     (throw (ex-info "Unexpected clean-prompt call" {:prompt prompt}))))}
+                :prefill? false :recover false
+                :namespaces {'patterns stdlib/patterns
+                             'audit {:stale #(swap! stale inc)
+                                     :finish (fn [value] (coordinator/close!) value)}})
+        result (th/run-agent-init agent
+                 "(quine completion (eval (do '(audit/finish (patterns/clean-prompt \"messy original\")))))")]
+    (is (= :clean-received result))
+    (is (zero? @stale) "Receipt preempts the cleaned child's generated action")
+    (is (= 3 (count @calls)))
+    (is (str/includes? (last @calls) "The cleaned assignment"))
+    (is (not (str/includes? (last @calls) "messy original")))
+    (is (= 1 (count (re-seq #":clean-prompt-message" (last @calls)))))))
+
 (defn- run-fix-loop [opts env]
   (binding [eval/*builtins* (assoc eval/*builtins* '!ask-await stub-ask-await)
             eval/*spell-env* (merge {'strings stdlib/strings
