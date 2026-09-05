@@ -1,16 +1,14 @@
 (ns spell.patterns-test
-  (:require [clojure.string :as str]
+  (:require [spell.test-helpers :as th]
+            [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [spell.eval :as eval]
             [spell.io :as sio]
             [spell.runtime :as runtime]
+            [spell.coordinator :as coordinator]
             [spell.stdlib :as stdlib]))
 
-(use-fixtures :each
-  (fn [f]
-    (reset! runtime/registry {})
-    (f)
-    (reset! runtime/registry {})))
+(use-fixtures :each th/with-test-run)
 
 (def fix-loop (:fix-loop stdlib/patterns))
 (def ralph (:ralph stdlib/patterns))

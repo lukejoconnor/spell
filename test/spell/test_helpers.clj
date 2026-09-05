@@ -1,8 +1,17 @@
 (ns spell.test-helpers
   "Shared test utilities for Spell tests."
   (:require [spell.core :as spell]
+            [spell.coordinator :as coordinator]
+            [spell.globals :as globals]
             [spell.llm :as llm]
             [spell.provider :as provider]))
+
+(defn with-test-run
+  "Give each test an isolated communication environment, including its futures."
+  [f]
+  (binding [coordinator/*coordinator* (coordinator/new-coordinator)
+            globals/*store* (globals/new-store)]
+    (try (f) (finally (coordinator/close!)))))
 
 (defn make-test-agent
   "Create a compiled test agent with test provider.
