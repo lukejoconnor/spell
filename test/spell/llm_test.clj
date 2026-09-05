@@ -363,6 +363,7 @@
     (doseq [[model expected-input expected-cache-read expected-cache-write expected-output]
             [["gpt-5.5" 5.0 0.5 5.0 30.0]
              ["gpt-5.6-sol" 5.0 0.5 5.0 30.0]
+             ["gpt-6-astra" 10.0 1.0 12.5 50.0]
              ["claude-sonnet-5" 3.0 0.3 3.75 15.0]
              ["claude-opus-4-8" 5.0 0.5 6.25 25.0]
              ["claude-fable-5-1" 10.0 0.25 12.5 50.0]
@@ -698,14 +699,15 @@
     (let [provider (provider/openai-provider {:api-key "sk-test"})]
       (is (instance? spell.provider.OpenAIProvider provider))
       (is (some? (:base-url provider)))
-      (is (some? (:model provider)))))
+      (is (= "gpt-6-astra" (:model provider)))))
 
   (testing "custom base-url and model"
     (let [provider (provider/openai-provider {:api-key "sk-test"
                                           :base-url "https://custom.api.com/v1"
                                           :model "gpt-4o-mini"})]
       (is (= "https://custom.api.com/v1" (:base-url provider)))
-      (is (= "gpt-4o-mini" (:model provider)))))
+      (is (= "gpt-4o-mini" (:model provider)))
+      (is (nil? (:max-tokens provider)))))
 
   (testing "strips trailing slash from base-url"
     (let [provider (provider/openai-provider {:api-key "sk-test"
@@ -1329,6 +1331,12 @@
       (is (thrown-with-msg? Exception #"missing spell_suffix tool_use"
             (#'provider/parse-anthropic-tc-stream sse))))))
 
+(deftest astra-uses-openai-responses-api-test
+  (testing "Astra routes to Responses even when a generic OpenAI provider does not force it"
+    (is (true? (#'provider/responses-model? "gpt-6-astra"))))
+  (testing "explicit older models retain their existing routing"
+    (is (false? (boolean (#'provider/responses-model? "gpt-5.6-sol"))))))
+
 (deftest codex-msg-provider-constructor-test
   (testing "constructs with explicit token override"
     (let [p (provider/codex-msg-provider {:api-key "chatgpt-token"
@@ -1337,7 +1345,7 @@
       (is (= "chatgpt-token" (:api-key p)))
       (is (= "acc_123" (:account-id p)))
       (is (some? (:base-url p)))
-      (is (some? (:model p)))))
+      (is (= "gpt-6-astra" (:model p)))))
 
   (testing "loads token and account id from auth file"
     (let [tmp (java.io.File/createTempFile "codex-msg-auth-" ".json")]
@@ -1363,7 +1371,7 @@
       (is (= "chatgpt-token" (:api-key p)))
       (is (= "acc_123" (:account-id p)))
       (is (some? (:base-url p)))
-      (is (some? (:model p)))))
+      (is (= "gpt-6-astra" (:model p)))))
 
   (testing "loads token and account id from auth file"
     (let [tmp (java.io.File/createTempFile "codex-tc-auth-" ".json")]
@@ -1420,7 +1428,18 @@
                                                  nil
                                                  nil
                                                  nil)]
-      (is (nil? (:prompt_cache_key body))))))
+      (is (nil? (:prompt_cache_key body)))))
+
+  (testing "Astra preserves every supported reasoning override"
+    (doseq [effort ["low" "medium" "high" "xhigh" "max"]]
+      (let [body (#'provider/codex-tc-request-body "gpt-6-astra"
+                                                   "prompt"
+                                                   "system"
+                                                   nil
+                                                   effort
+                                                   nil
+                                                   nil)]
+        (is (= {:effort effort} (:reasoning body)))))))
 
 (deftest codex-msg-stream-parse-test
   (testing "parses response.completed with assistant message output"
@@ -1461,6 +1480,68 @@
                    "\n\n")]
       (is (thrown-with-msg? Exception #"ChatGPT Codex Responses API error"
             (#'provider/parse-codex-msg-stream sse))))))
+
+(deftest codex-stream-finished-items-test
+  (let [sse (fn [events]
+              (apply str (map #(str "data: " (json/write-str %) "\n\n") events)))
+        tool-item {:type "custom_tool_call" :status "completed"
+                   :name "spell_suffix" :input "42\n"}
+        message-item (fn [text]
+                       {:type "message" :status "completed" :role "assistant"
+                        :content [{:type "output_text" :text text}]})
+        done (fn [index item]
+               {:type "response.output_item.done" :output_index index :item item})
+        completed (fn [response]
+                    {:type "response.completed"
+                     :response (merge {:status "completed"
+                                       :usage {:input_tokens 9 :output_tokens 3}}
+                                      response)})]
+    (doseq [[label parse-stream item expected]
+            [["tool" #'provider/parse-codex-tc-stream tool-item "42\n"]
+             ["message" #'provider/parse-codex-msg-stream (message-item "42\n") "42\n"]]]
+      (testing (str label " recovers finished output when terminal output is empty or absent")
+        (doseq [terminal [{} {:output []}]]
+          (let [result (parse-stream (sse [(done 0 item) (completed terminal)]))]
+            (is (= expected (:text result)))
+            (is (= 9 (get-in result [:usage :input_tokens])))
+            (is (= 3 (get-in result [:usage :output_tokens]))))))
+      (testing (str label " keeps populated terminal output authoritative")
+        (let [other-item (if (= label "tool")
+                           (assoc tool-item :input "terminal")
+                           (message-item "terminal"))]
+          (is (= "terminal"
+                 (:text (parse-stream
+                          (sse [(done 0 item) (completed {:output [other-item]})])))))))
+      (testing (str label " never accepts finished items after failed or incomplete events")
+        (doseq [event [{:type "response.failed" :response {}}
+                       {:type "response.incomplete"
+                        :response {:status "incomplete"
+                                   :incomplete_details {:reason "max_output_tokens"}}}
+                       {:type "error" :message "stream error"}]]
+          (is (thrown-with-msg? Exception #"ChatGPT Codex Responses API error"
+                (parse-stream (sse [(done 0 item) event]))))
+          (is (thrown-with-msg? Exception #"ChatGPT Codex Responses API error"
+                (parse-stream (sse [(done 0 item) event (completed {:output []})]))))))
+      (testing (str label " rejects explicitly unsuccessful completed status")
+        (is (thrown-with-msg? Exception #"ChatGPT Codex Responses API error"
+              (parse-stream (sse [(done 0 item) (completed {:status "incomplete"})])))))
+      (testing (str label " requires a terminal completion even after finished output")
+        (is (thrown-with-msg? Exception #"missing response.completed"
+              (parse-stream (str (sse [(done 0 item)]) "data: [DONE]\n\n"))))))
+    (testing "finished items are ordered by output index and repeated indexes replace once"
+      (let [stream (sse [(done 1 (message-item "B"))
+                         (done 0 (message-item "old"))
+                         (done 0 (message-item "A"))
+                         (completed {:output []})])]
+        (is (= "AB" (:text (#'provider/parse-codex-msg-stream stream))))))
+    (testing "tool mode never accepts partial items or input deltas"
+      (doseq [events [[]
+                      [{:type "response.output_item.added" :output_index 0 :item tool-item}]
+                      [{:type "response.custom_tool_call_input.delta"
+                        :output_index 0 :delta "42\n"}]]]
+        (is (thrown-with-msg? Exception #"missing custom_tool_call"
+              (#'provider/parse-codex-tc-stream
+                (sse (conj events (completed {:output []}))))))))))
 
 (deftest codex-tc-stream-parse-test
   (testing "parses custom_tool_call output"

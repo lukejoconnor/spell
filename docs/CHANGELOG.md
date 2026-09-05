@@ -10,7 +10,8 @@
 
 ## v0.3.0
 
-- Changed the CLI and OpenAI model-profile default to GPT-5.6 Sol with medium reasoning, while retaining explicit provider and reasoning overrides.
+- Changed the CLI, OpenAI, and Codex model-profile defaults to GPT-6 Astra with medium reasoning, added Astra aliases, routing, 1,050,000-token context and 128,000-token maximum-output capability documentation/profile limits, and shared pricing, and retained explicit older model and reasoning overrides. Standard-tier cost tracking is integrated; the provider's higher pricing above 272K input tokens is documented but not dynamically tiered.
+- Fixed Codex streaming responses that deliver completed tool or message items before an empty final output list, while still rejecting failed or incomplete responses.
 - Removed the CLI launcher's unnecessary dependency on `rlwrap` by invoking `clojure` directly.
 - Added a new-spec-only MCP `2026-07-28` client with generated permissioned namespaces, Streamable HTTP and stdio transports, tools, resources, prompts, completion, subscriptions, and an explorer-style `spell mcp` CLI.
 - Added a runnable MCP Everything-style example backed by the official Python SDK, including retained GPT-5.6 Sol real-model validation.

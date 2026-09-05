@@ -37,10 +37,15 @@
            (model-spec/resolve-model-spec "fable51")))
     (is (= {:provider "anthropic-tc" :model "claude-fable-5"}
            (model-spec/resolve-model-spec "fable5")))
-    (is (= {:provider "openai-tc" :model "gpt-5.6-sol"}
+    (is (= {:provider "openai-tc" :model "gpt-6-astra"}
            (model-spec/resolve-model-spec "gpt")))
+    (doseq [alias ["astra" "gpt6" "gpt6astra"]]
+      (is (= {:provider "openai-tc" :model "gpt-6-astra"}
+             (model-spec/resolve-model-spec alias))))
     (is (= {:provider "openai-tc" :model "gpt-5.5"}
            (model-spec/resolve-model-spec "gpt55")))
+    (is (= {:provider "openai-tc" :model "gpt-5.6-sol"}
+           (model-spec/resolve-model-spec "gpt56sol")))
     (is (= {:provider "fireworks-tc" :model "glm-5p2"}
            (model-spec/resolve-model-spec "glm")))
     (is (= {:provider "fireworks-tc" :model "kimi-k2p7-code"}

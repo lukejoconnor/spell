@@ -965,7 +965,7 @@
 (defn- responses-model?
   "Does this model require the OpenAI Responses API instead of Chat Completions?"
   [model]
-  (some #(str/includes? model %) ["codex"]))
+  (some #(str/includes? model %) ["codex" "gpt-6-astra"]))
 
 (defn- parse-openai-responses-usage
   "Normalize OpenAI Responses-style usage, splitting cached tokens out of input."
@@ -1152,7 +1152,7 @@
    Options:
    - :api-key              - API key (default: OPENAI_API_KEY env var)
    - :base-url             - API base URL (default: https://api.openai.com/v1)
-   - :model                - Model name (default: gpt-4o)
+   - :model                - Model name (default: gpt-6-astra)
    - :max-tokens           - Max tokens per response (default: 16384)
    - :use-responses-api    - Force Responses API instead of Chat Completions (default: false)
    - :force-tool-call      - Require spell_suffix custom tool output via Responses API
@@ -1175,7 +1175,7 @@
   ([] (openai-provider {}))
   ([{:keys [api-key base-url model max-tokens use-responses-api force-tool-call
             prompt-cache-key request-timeout-sec costs]
-     :or {model "gpt-4o"
+     :or {model "gpt-6-astra"
           base-url "https://api.openai.com/v1"
           request-timeout-sec 600}}]
    (let [key (or api-key (System/getenv "OPENAI_API_KEY"))
@@ -1305,33 +1305,56 @@
                     (.build))]
     request))
 
-(defn- parse-codex-msg-stream
-  "Parse ChatGPT Codex Responses SSE stream, returning {:text :usage}."
+(defn- parse-codex-completed-stream
+  "Read a successful Codex response, recovering output from finished stream items."
   [response-body]
   (let [failed (atom nil)
-        completed (atom nil)]
+        completed (atom nil)
+        output-items (atom (sorted-map))]
     (doseq [line (str/split-lines response-body)]
       (when (str/starts-with? line "data: ")
-        (let [data (subs line 6)]
-          (when (and (not (str/blank? data))
-                     (not= data "[DONE]"))
-            (try
-              (let [parsed (json/read-str data :key-fn keyword)]
-                (case (:type parsed)
-                  "response.failed"
-                  (reset! failed (or (get-in parsed [:response :error]) (:error parsed)))
+        (let [data (subs line 6)
+              parsed (when (and (not (str/blank? data))
+                                (not= data "[DONE]"))
+                       (try
+                         (json/read-str data :key-fn keyword)
+                         (catch Exception _ nil)))]
+          (case (:type parsed)
+            ("response.failed" "response.incomplete" "error")
+            (reset! failed parsed)
 
-                  "response.completed"
-                  (reset! completed (:response parsed))
+            "response.output_item.done"
+            (when (and (integer? (:output_index parsed))
+                       (map? (:item parsed)))
+              (swap! output-items assoc (:output_index parsed) (:item parsed)))
 
-                  nil))
-              (catch Exception _ nil))))))
+            "response.completed"
+            (reset! completed (:response parsed))
+
+            nil))))
     (when @failed
-      (throw (ex-info "ChatGPT Codex Responses API error" {:error @failed})))
+      (throw (ex-info "ChatGPT Codex Responses API error"
+                      {:event-type (:type @failed)
+                       :error (or (get-in @failed [:response :error]) (:error @failed))
+                       :incomplete_details (get-in @failed [:response :incomplete_details])})))
     (when-not @completed
       (throw (ex-info "ChatGPT Codex Responses stream missing response.completed"
                       {:body (subs response-body 0 (min 1000 (count response-body)))})))
-    (parse-openai-responses-response (json/write-str @completed))))
+    (when (or (:error @completed)
+              (and (:status @completed) (not= "completed" (:status @completed))))
+      (throw (ex-info "ChatGPT Codex Responses API error"
+                      {:status (:status @completed)
+                       :error (:error @completed)
+                       :incomplete_details (:incomplete_details @completed)})))
+    (if (seq (:output @completed))
+      @completed
+      (assoc @completed :output (vec (vals @output-items))))))
+
+(defn- parse-codex-msg-stream
+  "Parse ChatGPT Codex Responses SSE stream, returning {:text :usage}."
+  [response-body]
+  (parse-openai-responses-response
+    (json/write-str (parse-codex-completed-stream response-body))))
 
 (defn- parse-codex-tc-response
   "Parse a completed ChatGPT Codex response.
@@ -1357,30 +1380,7 @@
   "Parse ChatGPT Codex Responses SSE stream for tool-call mode.
    Throws if no custom_tool_call is present (protocol violation)."
   [response-body]
-  (let [failed (atom nil)
-        completed (atom nil)]
-    (doseq [line (str/split-lines response-body)]
-      (when (str/starts-with? line "data: ")
-        (let [data (subs line 6)]
-          (when (and (not (str/blank? data))
-                     (not= data "[DONE]"))
-            (try
-              (let [parsed (json/read-str data :key-fn keyword)]
-                (case (:type parsed)
-                  "response.failed"
-                  (reset! failed (or (get-in parsed [:response :error]) (:error parsed)))
-
-                  "response.completed"
-                  (reset! completed (:response parsed))
-
-                  nil))
-              (catch Exception _ nil))))))
-    (when @failed
-      (throw (ex-info "ChatGPT Codex Responses API error" {:error @failed})))
-    (when-not @completed
-      (throw (ex-info "ChatGPT Codex Responses stream missing response.completed"
-                      {:body (subs response-body 0 (min 1000 (count response-body)))})))
-    (parse-codex-tc-response @completed)))
+  (parse-codex-tc-response (parse-codex-completed-stream response-body)))
 
 (defrecord CodexMsgProvider [api-key account-id base-url model max-tokens http-client costs]
   LLMProvider
@@ -1436,14 +1436,14 @@
    - :account-id  - ChatGPT account id header override (default: read from :auth-file)
    - :auth-file   - path to Codex auth.json (default: ~/.codex/auth.json)
    - :base-url    - API base URL (default: https://chatgpt.com/backend-api/codex)
-   - :model       - Model name (default: gpt-5.3-codex)
+   - :model       - Model name (default: gpt-6-astra)
    - :max-tokens  - Max output tokens
    - :costs       - Cost table {model-prefix [input-per-M output-per-M]}"
   ([] (codex-msg-provider {}))
   ([{:keys [api-key account-id auth-file base-url model max-tokens costs]
      :or {auth-file "~/.codex/auth.json"
           base-url "https://chatgpt.com/backend-api/codex"
-          model "gpt-5.3-codex"}}]
+          model "gpt-6-astra"}}]
    (let [{file-token :token file-account-id :account-id}
          (when (str/blank? api-key)
            (load-chatgpt-auth auth-file))
@@ -1463,14 +1463,14 @@
    - :account-id  - ChatGPT account id header override (default: read from :auth-file)
    - :auth-file   - path to Codex auth.json (default: ~/.codex/auth.json)
    - :base-url    - API base URL (default: https://chatgpt.com/backend-api/codex)
-   - :model       - Model name (default: gpt-5.3-codex)
+   - :model       - Model name (default: gpt-6-astra)
    - :max-tokens  - Max output tokens
    - :costs       - Cost table {model-prefix [input-per-M output-per-M]}"
   ([] (codex-tc-provider {}))
   ([{:keys [api-key account-id auth-file base-url model max-tokens costs]
      :or {auth-file "~/.codex/auth.json"
           base-url "https://chatgpt.com/backend-api/codex"
-          model "gpt-5.3-codex"}}]
+          model "gpt-6-astra"}}]
    (let [{file-token :token file-account-id :account-id}
          (when (str/blank? api-key)
            (load-chatgpt-auth auth-file))

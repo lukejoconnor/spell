@@ -111,9 +111,11 @@ host tools, or dependencies hidden by polling globals/files require their own
 external progress or must use tracked requests. An opaque computation awaited
 through `!ask-await` cannot justify sleeping past a newer incoming edge.
 
-The ordering condition is conservative. Refusal explains the caller's pending
-obligations; it does not silently introduce another kind of wait. Reply to a
-newer request or otherwise change the obligations before trying again.
+The ordering condition is conservative. A refusal raises a recoverable error
+without suspending the agent or changing its obligations. A Spell error handler
+or the normal evaluation-recovery path can inspect current obligations through
+`agents/status` and revise the program. Reply to a newer request or otherwise
+change the obligations before trying again. Fatal run controls remain terminal.
 
 ## Requests from futures
 
@@ -139,6 +141,106 @@ closing the run raises `:coordinator-closed`. A child failure remains tagged res
 data, and successful `nil` or cancellation-shaped maps retain their exact values.
 Future-only blocking helpers also check the actual calling thread, so passing a
 helper function back into an agent turn cannot create an uninterruptible wait.
+
+## Writing programs that communicate
+
+Give ordinary child assignments as strings. Use `def` to name task text:
+
+```clojure
+(def review-task (str "Review docs/api.md for " topic ". Return findings."))
+'(!call-now review-edge (agents/spawn-ask review-task)
+            examples-edge (agents/spawn-ask "Review the examples. Return findings."))
+```
+
+The next continuation retains the actual edge IDs as injected bindings. A
+`quine` binding holds source, and `wrap-cat` constructs a program prefix; use
+those when deliberately building a valid completion prefix. They do not name
+an ordinary instruction string.
+
+Use `!call-now` to retain local results needed after a continuation, too. A
+`def` inside an old quoted action is not a persistent binding. After dispatch
+and any local work, put `'(agents/!wait)` at the end of the turn. Read received
+`msg-N` bindings in the resumed continuation. A wait eventually returns the
+value of that whole resumed computation; capturing it as the next message or
+wrapping it in an extra function call misinterprets that value. Capturing a
+synchronous `!llm-self` result remains available.
+
+### Recognizing what executed
+
+A message arriving during generation can supersede the proposed quoted action
+before execution. The action's source remains visible, and preceding ordinary
+definitions can evaluate. A local `sent` flag therefore need not correspond to
+an executed send. The `[preempted or awakened by msg-N]` annotation is also used
+when an executed wait awakens, so the annotation alone does not classify the
+previous action.
+
+On waking, establish which prerequisite actions actually ran before continuing
+dependent work. Receiving a peer request does not establish that your own
+request was dispatched. Complete an interrupted prerequisite before a dependent
+reply or wait. If execution is uncertain, inspect the current state first:
+
+```clojure
+'(!call-now current-obligations (agents/status))
+```
+
+Use actual captures, received completion reports, and pending edge records. An
+empty outgoing set alone does not exclude a completed or cancelled request.
+When confirmed dispatch matters, capture an immediate `ask`, then wait in a
+later turn; the convenience `!ask` returns the resumed computation's value.
+
+Capture immediate interactions with fresh operation-specific names:
+
+```clojure
+'(!call-now clarification-edge (agents/ask :reviewer question))
+;; A newly injected clarification-edge binding contains the returned edge ID.
+```
+
+A newly injected result establishes that the call returned. For `reply`, the
+result is `nil` both after filling a live slot and after a stale no-op. Reusing
+a name can leave an older value visible after the new action was superseded.
+An effect may also execute before a later expression in a batched call fails,
+preventing its result binding from being rendered. When execution is uncertain,
+inspect pending edges and obligations before retrying.
+
+Explicitly reply to any request whose answer differs from your final return
+value. The lifecycle return supplies the same value to every remaining claimed
+slot.
+Before waiting, inspect uncertain obligations and establish that work remains
+to collect. A refused wait is a recoverable error and leaves the agent awake.
+Spell `try/catch` can handle it, and normal evaluation recovery can revise the
+program. Inspect `agents/status` during recovery, then respond, return, or wait
+according to the current obligations. Repeating the refused wait does not
+resolve them. With recovery disabled and no handler, the lifecycle fails.
+Normal return preserves the handle for later requests; startup failure retires
+an unusable handle.
+
+### Retaining a computation future
+
+These are successive turns, using an ordinary string assignment:
+
+```clojure
+'(!call-now worker-handle
+   (agents/spawn "Answer incoming arithmetic requests with integers." :worker))
+
+'(!call-now task-future
+   (future (blocking/await
+             (blocking/request worker-handle "Multiply 23 by 41."))))
+
+'(!ask-await task-future)
+```
+
+Create the future once in the quoted trailing expression and retain its value
+through `!call-now`. An unrelated message can interrupt the join; after handling
+it, join the same `task-future` again. A generated `stored` reference retains the
+actual future object. Creating a future in ordinary retained source can repeat
+its request on later turns, while a `def` inside a quoted `do` does not preserve
+the binding for a later rejoin.
+
+`future` accepts one expression; use `do` for multiple forms. `blocking/request`
+creates a token and `blocking/await` collects it inside the future. The enclosing
+`!ask-await` resumes with messages, including the eventual future result.
+`blocking/send-await` creates and collects a new request; an existing token is
+collected with `blocking/await`.
 
 ## Capacity
 

@@ -1357,8 +1357,10 @@
                         inner-result (get (ex-data ex) :result)
                         recovery-phase (get (ex-data ex) :spell/recovery-phase)]
                     (cond
-                      ;; Typed exceptions — re-throw, not recoverable
-                      ex-type (throw ex)
+                      ;; A refused wait leaves the agent awake and can be handled
+                      ;; by Spell try/catch or ordinary model recovery. Other typed
+                      ;; exceptions retain their terminal/control behavior.
+                      (and ex-type (not= :sleep-refused ex-type)) (throw ex)
                       ;; Spell throw — preserve thrown value for try/catch
                       thrown {:err (ex-message ex) :thrown thrown :env e :expr expr}
                       ;; Other errors — wrap as eval error with Spell name + ex-data.
