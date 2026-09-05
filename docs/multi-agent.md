@@ -104,8 +104,12 @@ finishing remove waiting obligations; completion reports awaken their source.
 For any finite closed set of unfinished waits, its newest edge has an unresolved
 target. That target cannot also sleep under a newer outgoing edge within the
 set. Thus communication waits cannot leave every participant in such a set
-asleep. Ordinary future computation, external I/O, and whether a model responds
-usefully retain their own progress assumptions.
+asleep under fair scheduling, provided external model, tool, and evaluator work
+eventually yields, finishes, or fails. This is freedom from coordinator-wait
+deadlock; arbitrary programs may still diverge. Ordinary future cycles, blocking
+host tools, or dependencies hidden by polling globals/files require their own
+external progress or must use tracked requests. An opaque computation awaited
+through `!ask-await` cannot justify sleeping past a newer incoming edge.
 
 The ordering condition is conservative. Refusal explains the caller's pending
 obligations; it does not silently introduce another kind of wait. Reply to a
