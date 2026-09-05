@@ -125,7 +125,10 @@ surrounding `!ask-await` must obey the same incoming/outgoing ordering rule when
 its computation depends on agents. New incoming requests wake the enclosing
 agent so it can answer. `!ask-await` can also resume for already queued or
 unrelated messages before its future finishes; the eventual result arrives
-through a later message. Ordinary computation futures and external I/O have
+through a later message while the lifecycle remains active. Resumption does
+not imply that the future is complete: the program can process messages and
+continue, or call `!ask-await` again on the same future to wait further. Each
+call registers its own completion notification. Ordinary computation futures and external I/O have
 separate progress assumptions. `blocking/completion-promise` is replaced by the
 atomic request operation. Awaiting a cancelled token raises `:request-cancelled`;
 closing the run raises `:coordinator-closed`. A child failure remains tagged result
