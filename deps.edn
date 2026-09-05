@@ -25,6 +25,7 @@
                                    "-n" "spell.context-test"
                                    "-n" "spell.llm-test"
                                    "-n" "spell.agent-test"
+                                   "-n" "spell.agents-prompt-test"
                                    "-n" "spell.web-test"
                                    "-n" "spell.api-test"
                                    "-n" "spell.trace-test"
