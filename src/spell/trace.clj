@@ -145,3 +145,9 @@
     ;; tree.txt
     (spit (io/file dir-file "tree.txt") (str (tree-str trace) "\n"))
     dir))
+
+(defn record-warning! [message data]
+  (when *trace*
+    (let [warning {:message message :data data :timestamp-ms (System/currentTimeMillis)}]
+      (swap! *trace* update :warnings (fnil conj []) warning)
+      warning)))

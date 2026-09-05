@@ -22,11 +22,11 @@
 ;; State
 ;; =============================================================================
 
-(def ^:private last-sender
+(def ^:dynamic last-sender
   "Last agent that sent a message to :user. Used as default recipient."
   (atom :main))
 
-(def ^:private stdin-queue
+(def ^:dynamic stdin-queue
   "Queue decoupling stdin reading from message processing.
    The reader thread puts InputEvents; tests may also put raw values directly.
    user-call-fn takes and unwraps them."
@@ -34,48 +34,56 @@
 
 (defrecord ^:private InputEvent [value wake-when-idle? waiter-token])
 
-(def ^:private input-lock
+(def ^:dynamic input-lock
   "Serializes waiter registration with enqueue-and-wake decisions."
   (Object.))
 
-(def ^:private input-waiting?
+(def ^:dynamic input-waiting?
   "True while user-call-fn owns the one active terminal input waiter."
   (atom false))
 
-(def ^:private input-waiter-token
+(def ^:dynamic input-waiter-token
   "Identity token for the invocation that owns input-waiting?."
   (atom nil))
 
-(def ^:private input-cycle-depth
+(def ^:dynamic input-cycle-depth
   "Number of active :user wake/eval cycles, including the pre-drain phase."
   (atom 0))
 
-(def ^:private input-closed?
+(def ^:dynamic input-closed?
   "Sticky EOF state. Once closed, later asks fail promptly instead of hanging."
   (atom false))
 
-(def ^:private signal-pending
+(def ^:dynamic signal-pending
   "Whether a stdin-signal is pending. Prevents duplicate signals from
    rapid Enter presses — only one signal is sent until processed."
   (atom false))
 
-(def ^:private seen-msg-names
+(def ^:dynamic seen-msg-names
   "Set of message def symbol names already displayed/processed.
    Prevents re-display when reopen rebuilds the AST including
    historical message defs from inert quine args."
   (atom #{}))
 
-(def ^:private interactive-session
+(def ^:dynamic interactive-session
   "Active JLine session, when the CLI is attached to a TTY."
   (atom nil))
 
-(def ^:private reader-tasks
+(def ^:dynamic reader-tasks
   "Reader futures owned by this module, cancelled during reset/session cleanup."
   (atom #{}))
 
-(def ^:private reader-generation
+(def ^:dynamic reader-generation
   "Invalidates late events from a reader that was cancelled during reset."
   (atom 0))
+
+(defn call-with-session [f]
+  (binding [last-sender (atom :main) stdin-queue (LinkedBlockingQueue.)
+            input-lock (Object.) input-waiting? (atom false) input-waiter-token (atom nil)
+            input-cycle-depth (atom 0) input-closed? (atom false) signal-pending (atom false)
+            seen-msg-names (atom #{}) interactive-session (atom nil)
+            reader-tasks (atom #{}) reader-generation (atom 0)]
+    (f)))
 
 (defn- wake-user! []
   (when (compare-and-set! signal-pending false true)
@@ -557,7 +565,10 @@
                             (let [targets (or recipients
                                               [(resolve-recipient nil default-target)])]
                               (doseq [target targets]
-                                (runtime/send target msg))
+                                (if-let [request (last (filter #(and (= target (:from %))
+                                                                        (runtime/actionable-request-live? %)) agent-msgs))]
+                                  (runtime/reply request msg)
+                                  (runtime/send target msg)))
                               (or (last targets) default-target)))
                           @last-sender
                           segments)]
