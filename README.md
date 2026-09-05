@@ -62,7 +62,7 @@ To run `spell` directly instead of `bin/spell`, put this checkout's `bin/` direc
 
 - [Hello world](examples/hello-world.md) makes one minimal model self-call and composes its result.
 - [Coin flip](examples/coin-flip.md) uses recursive self-calls with a programmatic stopping condition.
-- [Chat](examples/chat.md) demonstrates an interactive conversation through agent communication.
+- [Chat](examples/chat.md) demonstrates an interactive conversation through agent communication. The [user communication guide](docs/multi-agent.md#communicating-with-the-user) covers terminal requests (`/ask`), pending collections (`/requests`), and cancellation (`/cancel`).
 
 See the [examples guide](examples/README.md) for the complete runnable set, including sequential, game-loop, and MCP examples.
 

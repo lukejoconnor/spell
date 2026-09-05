@@ -94,6 +94,40 @@ trace warning. Cancellation abandons collection; it does not interrupt children
 or their descendants. A handle whose initialization or runner submission fails
 is retired after its waiting callers receive terminal failure results. A persistent agent can be awakened for a later lifecycle.
 
+## Communicating with the user
+
+When terminal input is configured, `:user` is a participant in the same
+coordinator. Agents can send ordinary messages or make requests to `:user`,
+including it among the targets of a multi-target collection. Human availability
+is an external progress assumption. The terminal endpoint makes no model calls.
+
+Users can initiate tracked requests with these terminal commands:
+
+| Input | Behavior |
+|---|---|
+| `/ask :reviewer Check this change` | Create a request and display its edge ID. |
+| `/ask (:reviewer :tester) Report findings` | Create one collection with a result slot for each target. |
+| `/ask :reviewer` | Create a bodyless request. |
+| `/requests` | Show pending requests, their IDs, and unanswered target slots. |
+| `/cancel 3` | Abandon request 3; its targets continue running. |
+
+Completion reports display their edge ID and result, including `nil`, `false`,
+and explicit failure data. A multi-target report arrives after every slot is
+filled. Users can submit further commands or messages while a request is
+pending. Ordinary text replies to a live request from the selected recipient,
+or sends a plain message if none is pending; `:reviewer text` selects a recipient,
+and `(:reviewer :tester) text` sends to both. A leading `//` sends literal text
+beginning with `/`. Invalid commands report an error and leave requests intact.
+
+Intermediate submissions retain the user's lifecycle while obligations remain.
+A clarification remains answerable after commands such as `/requests`; replying
+does not abandon the user's other collections. The terminal yields through the
+ordinary coordinator wait when no incoming reply is due, handing input ownership
+back to the reader so new submissions can awaken it. Once obligations are
+settled, the endpoint returns to its ordinary idle lifecycle. EOF, session reset,
+and API-run cleanup abandon pending user collections. The current interface has
+one human participant; multiple users are a possible extension.
+
 ## Non-deadlock guarantee
 
 Edges have strictly increasing creation order. An agent may sleep only if one
