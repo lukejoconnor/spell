@@ -214,7 +214,7 @@
 
                             :else
                             {:approved false :summary "unexpected handle"}))
-          completion-promise-fn (fn [handle] handle)
+          request-fn (fn [handle msg] (send-fn handle msg) handle)
           await-all-fn (fn [tokens]
                          (mapv #(get @worker-results %) tokens))]
       (try
@@ -225,7 +225,7 @@
                                  {'agents {:register register-fn
                                            :send send-fn}
                                   'blocking {:send-await send-await-fn
-                                             :completion-promise completion-promise-fn
+                                             :request request-fn
                                              :await-all await-all-fn}})
                 end-branch (str/trim (:out (sio/sh "git rev-parse --abbrev-ref HEAD")))]
             (is (= :completed (:status result)))
@@ -268,7 +268,7 @@
                              :commit-msg "unused"
                              :panic false
                              :resolved-conflict false}))
-          completion-promise-fn (fn [handle] handle)
+          request-fn (fn [handle msg] (send-fn handle msg) handle)
           await-all-fn (fn [tokens]
                          (mapv #(get @worker-results %) tokens))]
       (try
@@ -279,7 +279,7 @@
                                  {'agents {:register register-fn
                                            :send send-fn}
                                   'blocking {:send-await send-await-fn
-                                             :completion-promise completion-promise-fn
+                                             :request request-fn
                                              :await-all await-all-fn}})
                 end-branch (str/trim (:out (sio/sh "git rev-parse --abbrev-ref HEAD")))]
             (is (= :failed (:status result)))
@@ -321,7 +321,7 @@
                              (= "commit" (nth args 3 nil)))
                       {:exit 1 :out "" :err "hook rejected commit"}
                       (original-exec args)))
-          completion-promise-fn (fn [handle] handle)
+          request-fn (fn [handle msg] (send-fn handle msg) handle)
           await-all-fn (fn [tokens]
                          (mapv (fn [_] {:summary "wrote worker.txt"}) tokens))]
       (try
@@ -331,7 +331,7 @@
                                  {'agents {:register register-fn
                                            :send send-fn}
                                   'blocking {:send-await send-await-fn
-                                             :completion-promise completion-promise-fn
+                                             :request request-fn
                                              :await-all await-all-fn}
                                   'io (assoc sio/io-namespace
                                              :sh sio/sh
@@ -381,7 +381,7 @@
                              :summary "unexpected handle"
                              :panic true
                              :resolved-conflict false}))
-          completion-promise-fn (fn [handle] handle)
+          request-fn (fn [handle msg] (send-fn handle msg) handle)
           await-all-fn (fn [tokens]
                          (mapv (fn [_] {:summary "done"}) tokens))]
       (try
@@ -391,7 +391,7 @@
                                  {'agents {:register (fn [handle completion] handle)
                                            :send send-fn}
                                   'blocking {:send-await send-await-fn
-                                             :completion-promise completion-promise-fn
+                                             :request request-fn
                                              :await-all await-all-fn}})]
             (is (= :completed (:status result)))
             (is (= 2 @planner-calls))
@@ -422,7 +422,7 @@
                                :commit-msg "unused"
                                :panic true
                                :resolved-conflict false})))
-          completion-promise-fn (fn [handle] handle)
+          request-fn (fn [handle msg] (send-fn handle msg) handle)
           await-all-fn (fn [tokens]
                          (mapv (fn [_] {:summary "panic change"}) tokens))]
       (try
@@ -432,7 +432,7 @@
                                  {'agents {:register register-fn
                                            :send send-fn}
                                   'blocking {:send-await send-await-fn
-                                             :completion-promise completion-promise-fn
+                                             :request request-fn
                                              :await-all await-all-fn}})
                 verifier-prompt (some #(when (str/includes? (:completion %) "verifier agent in patterns/team")
                                          (:completion %))
@@ -462,7 +462,7 @@
                              :commit-msg malicious-msg
                              :panic false
                              :resolved-conflict false}))
-          completion-promise-fn (fn [handle] handle)
+          request-fn (fn [handle msg] (send-fn handle msg) handle)
           await-all-fn (fn [tokens]
                          (mapv (fn [_] {:summary "safe change"}) tokens))]
       (try
@@ -473,7 +473,7 @@
                                  {'agents {:register (fn [handle completion] handle)
                                            :send send-fn}
                                   'blocking {:send-await send-await-fn
-                                             :completion-promise completion-promise-fn
+                                             :request request-fn
                                              :await-all await-all-fn}})
                 last-msg (:out (sio/exec ["git" "-C" dir "log" "-1" "--pretty=%B"]))]
             (is (= :completed (:status result)))
