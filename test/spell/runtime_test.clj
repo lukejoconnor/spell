@@ -4,6 +4,7 @@
             [spell.inbox :as inbox]
             [spell.runtime :as runtime]
             [spell.coordinator :as coordinator]
+            [spell.context :as context]
             [spell.globals :as globals]
             [spell.core :as spell]
             [spell.eval :as eval]
@@ -14,7 +15,8 @@
 ;; Clean registry between tests
 (use-fixtures :each
   (fn [f]
-    (binding [coordinator/*coordinator* (coordinator/new-coordinator)
+    (binding [context/*context* (context/new-context)
+              coordinator/*coordinator* (coordinator/new-coordinator)
               globals/*store* (globals/new-store)]
       (try (f) (finally (coordinator/close!))))))
 

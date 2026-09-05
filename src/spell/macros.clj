@@ -198,73 +198,31 @@
                             (mapcat (fn [step] [g step]) (butlast steps))))
                [(last steps)])))))
 
-;; !call-now: (!call-now name expr) or (!call-now name expr limit)
-;;           (!call-now name1 expr1 name2 expr2 ...) — multi-binding
-;; Sugar for evaluate-then-extend. No effect guard exception — respects double evaluation.
-;; Optional limit controls inline threshold for serialize (default: call-now-inline-limit).
-;; Negative limit means always inline (no out-of-band storage).
-;; Multi-binding evaluates all exprs, then extends with all bindings in one turn.
-(defn- serialized-form
-  ([temp]
-   (list 'read-string (list 'serialize temp)))
-  ([temp limit]
-   (list 'read-string (list 'serialize temp limit))))
+;; !call-now and !peek evaluate each expression before one bounded insertion.
+;; Every injected binding shares the run's context contribution budget.
+(defn- reopen-eval-form [expr] (list 'reopen-eval expr))
 
-(defn- reopen-eval-form
-  [expr]
-  (list 'reopen-eval expr))
+(defn- bounded-reopen
+  [bindings descriptors extra-form-exprs limit]
+  (let [forms (gensym "context-forms__")
+        descriptors (into descriptors (map (fn [expr] {:form (second expr)}) extra-form-exprs))
+        render (cond-> (list 'context-forms descriptors) limit (concat [limit]))]
+    (list 'let (conj bindings forms render)
+          (list '!llm-self
+                (list* 'reopen (list 'edit-reopen 'completion)
+                       (map-indexed (fn [i _] (reopen-eval-form (list 'nth forms i))) descriptors))))))
 
 (defn- call-now-expander
-  "Shared expander for !call-now and !peek-now.
-   extra-form-exprs are appended to the reopened quine."
   [macro-name args extra-form-exprs]
-  (let [extra-form-exprs (or extra-form-exprs [])
-        def-form-expr (fn
-                        ([name-sym temp]
-                         (reopen-eval-form
-                          (list 'list (list 'quote 'def) (list 'quote name-sym)
-                                (serialized-form temp))))
-                        ([name-sym temp limit]
-                         (reopen-eval-form
-                          (list 'list (list 'quote 'def) (list 'quote name-sym)
-                                (serialized-form temp limit)))))]
-    (cond
-      ;; Single binding: (!call-now name expr)
-      (= (count args) 2)
-      (let [[name-sym val-expr] args
-            temp (gensym "call-now__")]
-        (list 'let [temp val-expr]
-              (list '!llm-self
-                    (list* 'reopen (list 'edit-reopen 'completion)
-                           (concat [(def-form-expr name-sym temp)]
-                                   extra-form-exprs)))))
-
-      ;; Single binding with limit: (!call-now name expr limit)
-      (= (count args) 3)
-      (let [[name-sym val-expr limit] args
-            temp (gensym "call-now__")]
-        (list 'let [temp val-expr]
-              (list '!llm-self
-                    (list* 'reopen (list 'edit-reopen 'completion)
-                           (concat [(def-form-expr name-sym temp limit)]
-                                   extra-form-exprs)))))
-
-      ;; Multi-binding: (!call-now name1 expr1 name2 expr2 ...)
-      (and (even? (count args)) (>= (count args) 4))
-      (let [pairs (partition 2 args)
-            temps (map (fn [[name-sym _]] (gensym (str "call-now-" name-sym "__"))) pairs)
-            let-bindings (vec (mapcat (fn [temp [_ val-expr]] [temp val-expr]) temps pairs))
-            def-forms (map (fn [temp [name-sym _]]
-                             (def-form-expr name-sym temp))
-                           temps pairs)]
-        (list 'let let-bindings
-              (list '!llm-self
-                    (list* 'reopen (list 'edit-reopen 'completion)
-                           (concat def-forms extra-form-exprs)))))
-
-      :else
+  (let [argc (count args)]
+    (when-not (or (= argc 2) (= argc 3) (and (even? argc) (>= argc 4)))
       (throw (ex-info (str macro-name ": expected 2 args (name expr), 3 args (name expr limit), or even >= 4 args (name1 expr1 name2 expr2 ...)")
-                      {:args-count (count args)})))))
+                      {:args-count argc})))
+    (let [pairs (if (= argc 3) [(take 2 args)] (partition 2 args))
+          temps (mapv (fn [_] (gensym "call-now__")) pairs)
+          bindings (vec (mapcat (fn [temp [_ expr]] [temp expr]) temps pairs))
+          descriptors (mapv (fn [temp [name-sym _]] {:name (list 'quote name-sym) :value temp}) temps pairs)]
+      (bounded-reopen bindings descriptors extra-form-exprs (when (= argc 3) (nth args 2))))))
 
 (defn- peek-extra-form-exprs
   [args]
@@ -337,12 +295,9 @@
 ;; literals in the continuation so the LLM can see them.
 (defn- print-expander
   [& val-exprs]
-  (let [temps (mapv (fn [_] (gensym "print__")) val-exprs)
-        bindings (vec (mapcat vector temps val-exprs))
-        forms (map (comp reopen-eval-form serialized-form) temps)]
-    (list 'let bindings
-          (list '!llm-self
-                (list* 'reopen (list 'edit-reopen 'completion) forms)))))
+  (let [temps (mapv (fn [_] (gensym "print__")) val-exprs)]
+    (bounded-reopen (vec (mapcat vector temps val-exprs))
+                    (mapv (fn [temp] {:value temp}) temps) [] nil)))
 
 (defspellmacro '!print print-expander)
 ;; Backward-compatible alias.

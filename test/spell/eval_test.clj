@@ -1,11 +1,15 @@
 (ns spell.eval-test
   (:require [clojure.string :as str]
-            [clojure.test :refer [deftest is testing]]
+            [clojure.test :refer [deftest is testing use-fixtures]]
+            [spell.context :as context]
             [spell.eval :as eval :refer [spell-eval run-spell]]
             [spell.macros :as macros]
             [spell.runtime :as runtime]
             [spell.stdlib :as stdlib]
             [spell.core :as core]))
+
+(use-fixtures :each
+  (fn [f] (binding [context/*context* (context/new-context)] (f))))
 
 ;; =============================================================================
 ;; Test helpers - include stdlib functions directly for testing
@@ -1975,12 +1979,12 @@
       (is (.startsWith ^String result "\""))
       (is (not (.contains ^String result "truncated")))))
 
-  (testing "serialize-for-continuation truncates large strings"
+  (testing "serialize-for-continuation preserves large strings"
     (let [big-string (apply str (repeat 15000 "x"))
           result (eval/serialize-for-continuation big-string)]
-      (is (.contains ^String result "truncated"))
-      (is (.contains ^String result "15000 chars total"))
-      (is (<= (count result) 10100)))) ;; roughly at the limit
+      (is (.startsWith ^String result "(stored "))
+      (is (= big-string (run-spell (first (spell.parse/read-all result)))))
+      (is (<= (count result) 10000)))) ;; roughly at the limit
 
   (testing "serialize-for-continuation stores large non-strings"
     (let [big-vec (vec (range 5000))
@@ -2548,53 +2552,22 @@
 ;; !print macro (#85)
 ;; =============================================================================
 
-(deftest print-macro-expansion
-  (testing "!print macro expands to let + !llm-self with reopen"
-    (let [expanded (macros/spell-macroexpand-1 '(!print (+ 1 2)))]
-      (is (= 'let (first expanded)))
-      (let [llm-call (nth expanded 2)
-            reopen-form (second llm-call)]
-        (is (= '!llm-self (first llm-call)))
-        (is (= 'reopen (first reopen-form)))
-        (is (= '(edit-reopen completion) (second reopen-form)))
-        (is (= 'reopen-eval (first (nth reopen-form 2))))
-        (is (= 'read-string (first (second (nth reopen-form 2)))))
-        (is (= 'serialize (first (second (second (nth reopen-form 2)))))))))
-
-  (testing "!print macro multi-arity"
-    (let [expanded (macros/spell-macroexpand-1 '(!print a b c))]
-      (is (= 'let (first expanded)))
-      ;; bindings should have 6 elements (3 pairs)
-      (is (= 6 (count (second expanded))))
-      (let [llm-call (nth expanded 2)]
-        (is (= '!llm-self (first llm-call))))))
-
-  (testing "print remains a backward-compatible alias"
-    (let [expanded (macros/spell-macroexpand-1 '(print a))]
-      (is (= 'let (first expanded))))))
+(deftest print-macro-evaluation
+  (testing "print contributes evaluated data without turning lists into calls"
+    (let [completion '(quine completion (eval (do)))
+          expanded (macros/spell-macroexpand-1 '(!print (+ 1 2) (list 4 5)))
+          result (spell-eval expanded {'completion completion '!llm-self identity})]
+      (is (eval/ok? result))
+      (is (= [3 '(quote (4 5))] (vec (drop 1 (second (last (:ok result))))))))))
 
 (deftest peek-macro-and-prune-test
-  (testing "!peek-now expands like !call-now with an injected prune marker"
-    (let [expanded (macros/spell-macroexpand-1 '(!peek-now code (io/read-lines "main.py")))
-          llm-call (nth expanded 2)
-          reopen-form (second llm-call)]
-      (is (= 'let (first expanded)))
-      (is (= '!llm-self (first llm-call)))
-      (is (= 'reopen (first reopen-form)))
-      (is (= '(edit-reopen completion) (second reopen-form)))
-      (is (= 'reopen-eval (first (nth reopen-form 2))))
-      (is (= 'list (first (second (nth reopen-form 2)))))
-      (is (= '(quote def) (second (second (nth reopen-form 2)))))
-      (is (= '(quote code) (nth (second (nth reopen-form 2)) 2)))
-      (is (= 'read-string (first (nth (second (nth reopen-form 2)) 3))))
-      (is (= '(reopen-eval (list (quote prune) 2))
-             (last reopen-form)))))
-
-  (testing "!peek-now multi-binding prunes the command and both result bindings"
-    (let [expanded (macros/spell-macroexpand-1 '(!peek-now a (io/read-file "a.txt") b (io/read-file "b.txt")))
-          llm-call (nth expanded 2)
-          reopen-form (second llm-call)]
-      (is (= '(reopen-eval (list (quote prune) 3)) (last reopen-form)))))
+  (testing "peek contributes its binding and correctly sized prune marker"
+    (doseq [[program marker] [['(!peek code [1 2]) '(prune 2)]
+                              ['(!peek a 1 b 2) '(prune 3)]]]
+      (let [result (spell-eval (macros/spell-macroexpand-1 program)
+                              {'completion '(quine completion (eval (do))) '!llm-self identity})]
+        (is (eval/ok? result))
+        (is (= marker (last (second (last (:ok result)))))))))
 
   (testing "peeked full binding is pruned on extension while persisted slice remains"
     (let [quine-form '(quine completion (eval (do

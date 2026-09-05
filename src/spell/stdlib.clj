@@ -585,9 +585,10 @@ Used internally by !call-now, !print, !describe, and !extend."
 (serialize value)
 (serialize value limit)
 
-If the serialized form exceeds the limit, large subvalues are stored
-out-of-band and replaced with (stored \"id\") references.
-Negative limit means always inline (never store out-of-band)."
+If the serialized form exceeds the run's character budget, the complete value
+is stored and represented by (stored \"id\"). Lists and symbols remain data.
+An explicit limit may lower the run budget; a negative limit uses the run budget.
+Display a slice or selected fields to inspect an oversized result."
 
     :stored
     "Retrieve a large value from the out-of-band store by its ID.
@@ -595,7 +596,8 @@ Negative limit means always inline (never store out-of-band)."
 (stored id)
 
 Values too large to inline during serialization are stored out-of-band
-and referenced as (stored \"id\"). This function retrieves them."
+and referenced as (stored \"id\"). This function retrieves the complete original
+value from the current run. References are shared by agents within that run."
 
     :deep-truncate
     "Recursively truncate string values within nested data structures to a character limit.
@@ -689,7 +691,9 @@ and extend the completion so the child LLM continues with the binding in scope.
 
 This is the primary tool-calling pattern. The expr is evaluated with effect
 functions available, the result is serialized as (def name result) in the
-continuation, and a child LLM turn begins.
+continuation, and a child LLM turn begins. A multi-binding call shares one
+context character budget, including binding syntax. Oversized values are shown
+as (stored \"id\"); name still holds the full value. Inspect a slice next.
 
 Example — tool call:
   '(!call-now files (io/sh \"ls\"))

@@ -38,11 +38,32 @@ These options are scoped to one invocation of `run`.
 | `:reasoning-effort` | model profile `:default-reasoning-effort` | Reasoning-effort override for this run. |
 | `:budget` | agent profile `:default-budget` or runtime default | Maximum spend in dollars for the run. `nil` means the configured default. `0` means unlimited. |
 | `:depth` | unlimited | Maximum recursive LLM depth for this run. |
+| `:context-max-chars` | 10000 | Maximum characters inserted by one tool-result or message contribution, including binding syntax. Integer of at least 128; `nil` uses the default. |
 | `:trace-dir` | none | When non-nil, record a Spell execution trace in this directory. |
 | `:usage-tracker` | fresh atom | Existing usage atom to accumulate token and cost accounting into. |
 | `:user-reader` | none | When non-nil, register the interactive `:user` handle and read from this reader. The caller retains ownership of the reader. Spell requests cancellation of its reader task and clears input state when the run ends, so use a finite reader or one whose blocking read responds to thread interruption. An arbitrary reader that ignores interruption must be unblocked by its owner before reuse. |
 | `:log-writer` | none | Writer for raw LLM debugging output. Pass `*out*` or another writer for logging. |
 
+
+## Context Contributions
+
+`!call-now`, `!peek`, `!print`, and incoming agent messages use the same lossless rendering policy. Fitting results are inserted directly, including small siblings of oversized results. Oversized results remain complete in storage owned by this run and appear as `(stored "id")`; the resulting binding still holds the original value. Read a slice or select fields, then use `!peek` or `!print` to display that smaller value. Lists and symbols are quoted as data. Numbered source vectors retain their starting-line metadata, with line comments restored when rendered in a model prefix. Values with other metadata, including nested source vectors, use storage to preserve that metadata.
+
+`:context-max-chars` counts UTF-16 characters, not tokens, and bounds the whole contribution: a multi-binding call shares one budget, as does one aggregate completion report. Rendering stops at the budget instead of traversing or printing the entire payload. Bindings and reference syntax must fit too; if they cannot, the operation raises an explicit capacity error. Use fewer bindings or a larger limit. Complete successful payloads have no item-count or depth cap. MCP tool, resource, prompt, completion, and discovery results use this same insertion policy; their transport byte limits remain separate.
+
+The optional limit argument to `!call-now`, `!peek`, and `serialize` may lower the run limit. A negative limit uses the run limit; it no longer forces unlimited inlining. Explicit `deep-truncate` remains available when the program chooses to shorten data. Program-written context and explicit `persist` are still controlled by the program. Stored references are private to this API invocation and cannot retrieve another run's values.
+
+Low-level embedding through `spell.eval` can allocate the same storage explicitly:
+
+```clojure
+(require '[spell.context :as context])
+(binding [context/*context* (context/new-context {:max-chars 10000})]
+  ;; Evaluate all related agents and stored-value accesses in this scope.
+  ;; Clojure future and bound-fn convey the binding; raw Thread does not.
+  ...)
+```
+
+Standalone serialization can render small values without storage. Oversized values require the bound context. Stored values remain retained for the lifetime of that run. Invalid API configuration raises an exception; execution failures use the return shape below.
 
 ## Return Shape
 

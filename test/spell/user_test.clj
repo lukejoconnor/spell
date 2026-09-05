@@ -4,6 +4,7 @@
             [clojure.test :refer [deftest testing is use-fixtures]]
             [spell.runtime :as runtime]
             [spell.coordinator :as coordinator]
+            [spell.context :as context]
             [spell.globals :as globals]
             [spell.user :as user])
   (:import [java.io BufferedReader PipedReader PipedWriter StringReader]
@@ -14,7 +15,8 @@
 ;; Clean registry and queue between tests
 (use-fixtures :each
   (fn [f]
-    (binding [coordinator/*coordinator* (coordinator/new-coordinator)
+    (binding [context/*context* (context/new-context)
+              coordinator/*coordinator* (coordinator/new-coordinator)
               globals/*store* (globals/new-store)]
       (user/call-with-session
         #(try (f) (finally (user/reset-state!) (coordinator/close!)))))))
