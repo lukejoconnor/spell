@@ -18,6 +18,7 @@ This repo includes Spell-specific skills under `.agents/skills/`. Use them as th
 
 - Coordinator: per-run owner of agent identities, mailboxes, lifecycle results, and outstanding collections.
 - Edge: one result collection with a source and one slot per target; it completes when every slot is filled.
+- Context contribution: values and generated binding syntax inserted by one tool-result or communication operation, sharing one run-configured character budget.
 
 - Edit marker: a source form, such as `prune`, `rethink`, or `persist`, that affects how `apply-edits` rewrites a completion for a later turn.
 - Edit time: the phase when `apply-edits` applies edit markers to a completion before it is used as a model prefix.
@@ -90,7 +91,8 @@ The `-t` flag uses the test provider and is useful for checking Java, Clojure, d
 | `src/spell/grammar.clj` | Parenthesis and delimiter grammar checks. |
 | `src/spell/format.clj` | Formatting helpers for Spell forms. |
 | `src/spell/macros.clj` | Macro registry and macro expansion. |
-| `src/spell/runtime.clj` | Agent boxes, registry, `spawn`, `ask`, `send`, notifier flow, and completion coordination. |
+| `src/spell/runtime.clj` | Agent execution and adapters for immediate requests, messages, explicit waits, and lifecycle completion. |
+| `src/spell/coordinator.clj` | Per-run atomic registry, mailbox, result-edge, readiness, and completion transitions. |
 | `src/spell/llm.clj` | LLM request construction, prompt prefix handling, suffix cleanup, and inbox pipeline. |
 | `src/spell/provider.clj` | Provider implementations for Anthropic, OpenAI, Codex CLI, Fireworks, Ollama, user, and test modes. |
 | `src/spell/agent.clj` | Agent definition loading, inheritance, namespace resolution, and provider default wiring. |
