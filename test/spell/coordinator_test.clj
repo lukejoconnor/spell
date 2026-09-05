@@ -244,3 +244,85 @@
     (is (= :stale-computation-lifecycle (deref (:ref token) 2000 :timeout)))
     (is (empty? (:edges (c/snapshot))))
     (is (empty? (:mailbox (c/agent :b))))))
+
+(deftest dormant-registration-cannot-overwrite-a-concurrent-wake
+  (let [observed (promise)
+        register runtime/register!]
+    (with-redefs [runtime/register! (fn [handle parent status]
+                                    (register handle parent status)
+                                    (c/send! handle {:message {:from :sender :body :wake}}))]
+      (runtime/start-box :dormant
+                         (fn [_] (deliver observed (:status (c/agent :dormant))))
+                         "(quine completion (eval (do)))"))
+    (is (= :awake (deref observed 2000 :timeout)))))
+
+(deftest escaped-blocking-functions-refuse-the-active-runner
+  (agents! :a :b)
+  (let [work-started (atom false)
+        token {:spell/future true :ref (promise)}
+        ns runtime/blocking-namespace]
+    (runtime/box :a "(quine completion (eval (do)))"
+      (fn [_]
+        (doseq [[f args] [[(:await ns) [token]]
+                          [(:await-all ns) [[token]]]
+                          [(:pmap ns) [(fn [_] (reset! work-started true)) [1]]]
+                          [(:send-await ns) [:b :request]]]]
+          (is (= :agent-blocking-call
+                 (try (apply f args) (catch Exception e (:type (ex-data e)))))))))
+    (is (false? @work-started))
+    (is (empty? (:edges (c/snapshot))))
+    (is (empty? (:mailbox (c/agent :b))))))
+
+(deftest pmap-workers-capture-computation-lifecycle
+  (agents! :a :b)
+  (let [entered (promise) release (promise)
+        completion (:completed (c/agent :a))
+        work (binding [runtime/*current-handle* :a]
+               (future
+                 (runtime/blocking-pmap
+                   (fn [_]
+                     (deliver entered true) @release
+                     (try (runtime/request-token :b :late)
+                          (catch Exception e (:type (ex-data e)))))
+                   [:item])))]
+    (is (= true (deref entered 2000 :timeout)))
+    (c/finish! :a completion :done)
+    (c/send! :a {:message {:body :next-lifecycle}})
+    (deliver release true)
+    (is (= [:stale-computation-lifecycle] (deref work 2000 :timeout)))
+    (is (empty? (:edges (c/snapshot))))
+    (is (empty? (:mailbox (c/agent :b))))))
+
+(deftest request-adapter-distinguishes-success-from-cancellation
+  (agents! :a :b)
+  (binding [runtime/*current-handle* :a]
+    (doseq [value [nil {:spell/cancelled true} {:spell/run-closed true}
+                   {:status :cancelled :edge-id 7}]]
+      (let [token (runtime/request-token :b :question)]
+        (c/fill! (:edge-id token) :b value)
+        (is (= value (runtime/blocking-await token)))))
+    (let [token (runtime/request-token :b :question)]
+      (c/cancel! :a (:edge-id token))
+      (is (= :request-cancelled
+             (try (runtime/blocking-await token) (catch Exception e (:type (ex-data e)))))))
+    (let [token (runtime/request-token :b :question)]
+      (c/close!)
+      (is (= :coordinator-closed
+             (try (runtime/blocking-await token) (catch Exception e (:type (ex-data e))))))))
+  (is (= {:spell/cancelled true}
+         (runtime/blocking-await {:spell/future true :ref (future {:spell/cancelled true})}))))
+
+(deftest external-wait-settles-a-direct-throwable
+  (agents! :a)
+  ;; A direct IDeref matters: Clojure futures wrap Error in ExecutionException.
+  (let [token {:spell/future true
+               :ref (reify clojure.lang.IDeref
+                      (deref [_] (throw (AssertionError. "compute failed"))))}
+        result (runtime/box :a "(quine completion (eval (do)))"
+                 (fn [_]
+                   (binding [runtime/*current-eval-fn* identity]
+                     (stdlib/ask-await-builtin token))))]
+    (is (.contains ^String result "compute failed"))
+    (is (.contains ^String result "java.lang.AssertionError"))
+    (is (empty? (:external-waits (c/snapshot))))
+    (is (= :awake (:status (c/agent :a))))))

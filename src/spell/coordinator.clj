@@ -67,8 +67,11 @@
 
 (defn register!
   ([handle] (register! handle nil))
-  ([handle parent]
-   (let [new-entry (entry parent)]
+  ([handle parent] (register! handle parent :awake))
+  ([handle parent status]
+   (when-not (#{:awake :finished} status)
+     (throw (ex-info "Initial agent status must be awake or finished" {:status status})))
+   (let [new-entry (assoc (entry parent) :status status)]
      (transact! #(vector (register-transition % handle new-entry) handle)))))
 
 (defn- wake [state handle]
@@ -219,7 +222,7 @@
             state (if complete?
                     (let [s (update state :edges dissoc id)]
                       (if-let [p (:result-promise edge)]
-                        (-> s (notify p (:body (report edge)))
+                        (-> s (notify p {:status :completed :value (:body (report edge))})
                             (wake-if-invalid-wait (:source edge)))
                         (cond-> s
                           (not (and suppress-singleton? (= 1 (count (:targets edge)))))
@@ -266,7 +269,7 @@
             cancelled (outgoing state handle)
             state (reduce (fn [s edge]
                             (if-let [p (:result-promise edge)]
-                              (notify s p {:spell/cancelled true :edge-id (:id edge)}) s))
+                              (notify s p {:status :cancelled :edge-id (:id edge)}) s))
                           state cancelled)
             state (-> state
                       (update :external-waits
@@ -305,7 +308,7 @@
         (when-not (= handle (:source edge))
           (throw (ex-info "No outgoing edge owned by caller" {:handle handle :edge-id id})))
         [(cond-> (update state :edges dissoc id)
-           (:result-promise edge) (notify (:result-promise edge) {:spell/cancelled true :edge-id id})
+           (:result-promise edge) (notify (:result-promise edge) {:status :cancelled :edge-id id})
            (#{:asleep :external-wait} (get-in state [:agents handle :status]))
            (enqueue handle {:message {:edge-id id :from (:targets edge) :cancelled true}}))
          (assoc edge :status :cancelled)]))))
@@ -334,12 +337,6 @@
         [(enqueue (update state :external-waits dissoc token) source
                   {:message {:from :future :body value}}) true]
         [state false]))))
-
-(defn dormant! [handle]
-  (transact! (fn [state]
-               (require-open state)
-               (require-agent state handle)
-               [(assoc-in state [:agents handle :status] :finished) nil])))
 
 (defn acquire! [handle runner]
   (transact!
@@ -372,6 +369,6 @@
                        (notify completed {:spell/run-closed true})))
                  (reduce (fn [s [_ edge]]
                            (if-let [p (:result-promise edge)]
-                             (notify s p {:spell/run-closed true}) s))
+                             (notify s p {:status :closed}) s))
                          (assoc state :closed? true :edges {} :external-waits {}) (:edges state))
                  (:agents state)) nil]))))
