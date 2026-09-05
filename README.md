@@ -37,7 +37,7 @@ The inner `do` block returns the value of its last expression, the trailing expr
 
 ## Quick start
 
-Clone the repo and ask your agent to perform setup; it should discover the repo-local `spell-setup` skill. The prerequisites are Java, Clojure, and an OpenAI API key for the default GPT-5.6 Sol model. Other providers can be selected explicitly.
+Clone the repo and ask your agent to perform setup; it should discover the repo-local `spell-setup` skill. The prerequisites are Java, Clojure, and an OpenAI API key for the default GPT-6 Astra model. Other providers can be selected explicitly.
 
 The most convenient way to run Spell is via the CLI:
 
