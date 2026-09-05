@@ -46,5 +46,6 @@
  "accounts/fireworks/models/kimi-k2p5" {"input" 0.60 "cache-read-input" 0.10 "cache-write-input" 0.75 "output" 3.00}
  "accounts/fireworks/models/kimi-k2p6" {"input" 0.95 "cache-read-input" 0.16 "cache-write-input" 1.1875 "output" 4.00}
  "accounts/fireworks/models/kimi-k2p7-code" {"input" 0.95 "cache-read-input" 0.19 "cache-write-input" 0.95 "output" 4.00}
+ "accounts/fireworks/models/kimi-k3" {"input" 3.00 "cache-read-input" 0.30 "cache-write-input" 3.00 "output" 15.00}
 
 }
