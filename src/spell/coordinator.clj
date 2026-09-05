@@ -258,10 +258,16 @@
       (let [edge (get-in state [:edges id])]
         (when-not (= handle (:source edge))
           (throw (ex-info "No outgoing edge owned by caller" {:handle handle :edge-id id})))
-        [(update state :edges dissoc id) (assoc edge :status :cancelled)]))))
+        [(cond-> (update state :edges dissoc id)
+           (= :asleep (get-in state [:agents handle :status]))
+           (enqueue handle {:message {:edge-id id :from (:targets edge) :cancelled true}}))
+         (assoc edge :status :cancelled)]))))
 
 (defn dormant! [handle]
-  (transact! #(vector (assoc-in % [:agents handle :status] :finished) nil)))
+  (transact! (fn [state]
+               (require-open state)
+               (require-agent state handle)
+               [(assoc-in state [:agents handle :status] :finished) nil])))
 
 (defn acquire! [handle runner]
   (transact!

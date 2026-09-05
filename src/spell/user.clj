@@ -24,58 +24,58 @@
 
 (def ^:dynamic last-sender
   "Last agent that sent a message to :user. Used as default recipient."
-  (atom :main))
+  nil)
 
 (def ^:dynamic stdin-queue
   "Queue decoupling stdin reading from message processing.
    The reader thread puts InputEvents; tests may also put raw values directly.
    user-call-fn takes and unwraps them."
-  (LinkedBlockingQueue.))
+  nil)
 
 (defrecord ^:private InputEvent [value wake-when-idle? waiter-token])
 
 (def ^:dynamic input-lock
   "Serializes waiter registration with enqueue-and-wake decisions."
-  (Object.))
+  nil)
 
 (def ^:dynamic input-waiting?
   "True while user-call-fn owns the one active terminal input waiter."
-  (atom false))
+  nil)
 
 (def ^:dynamic input-waiter-token
   "Identity token for the invocation that owns input-waiting?."
-  (atom nil))
+  nil)
 
 (def ^:dynamic input-cycle-depth
   "Number of active :user wake/eval cycles, including the pre-drain phase."
-  (atom 0))
+  nil)
 
 (def ^:dynamic input-closed?
   "Sticky EOF state. Once closed, later asks fail promptly instead of hanging."
-  (atom false))
+  nil)
 
 (def ^:dynamic signal-pending
   "Whether a stdin-signal is pending. Prevents duplicate signals from
    rapid Enter presses — only one signal is sent until processed."
-  (atom false))
+  nil)
 
 (def ^:dynamic seen-msg-names
   "Set of message def symbol names already displayed/processed.
    Prevents re-display when reopen rebuilds the AST including
    historical message defs from inert quine args."
-  (atom #{}))
+  nil)
 
 (def ^:dynamic interactive-session
   "Active JLine session, when the CLI is attached to a TTY."
-  (atom nil))
+  nil)
 
 (def ^:dynamic reader-tasks
   "Reader futures owned by this module, cancelled during reset/session cleanup."
-  (atom #{}))
+  nil)
 
 (def ^:dynamic reader-generation
   "Invalidates late events from a reader that was cancelled during reset."
-  (atom 0))
+  nil)
 
 (defn call-with-session [f]
   (binding [last-sender (atom :main) stdin-queue (LinkedBlockingQueue.)
