@@ -3,6 +3,7 @@
             [clojure.data.json :as json]
             [spell.cli :as cli]
             [spell.runtime :as runtime]
+            [spell.coordinator :as coordinator]
             [spell.core :as spell]
             [spell.llm :as llm]
             [spell.provider :as provider]
@@ -16,11 +17,7 @@
             [spell.stdlib :as stdlib]
             [spell.parse :as parse]))
 
-(use-fixtures :each
-  (fn [f]
-    (reset! runtime/registry {})
-    (f)
-    (reset! runtime/registry {})))
+(use-fixtures :each th/with-test-run)
 
 (defn- append-forms-macro
   [& forms]
@@ -120,10 +117,10 @@
     (is (= expected
            (runtime/run-root-box handle p (runtime/make-awake-fn handle inbox-fn) inbox-fn))
         "evaluation should see the reopenable completion, not the ignored suffix")
-    (is (= expected @(:last-raw (get @runtime/registry handle)))
+    (is (= expected (:last-raw @(:execution (coordinator/agent handle))))
         "stored raw should drop ignored suffixes so later wakeups can reopen it")
     (is (= (parse/read-first expected)
-           (parse/read-first @(:last-raw (get @runtime/registry handle))))
+           (parse/read-first (:last-raw @(:execution (coordinator/agent handle)))))
         "stored raw should remain parseable for later inbox macro application paths")))
 
 (deftest inbox-preserves-split-top-level-raw-for-reopen-test
@@ -145,7 +142,7 @@
     (runtime/-send! handle (append-forms-macro '(def injected :yes)))
     (deliver p raw)
     (runtime/box handle p (runtime/make-awake-fn handle inbox-fn))
-    (let [stored @(:last-raw (get @runtime/registry handle))
+    (let [stored (:last-raw @(:execution (coordinator/agent handle)))
           forms (vec (parse/read-all stored))
           reopened-form (last forms)
           body-exprs (rest (second (last reopened-form)))]

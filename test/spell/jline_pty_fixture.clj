@@ -2,6 +2,8 @@
   "Subprocess fixture for exercising JLine against a real OS pseudo-terminal."
   (:require [clojure.string :as str]
             [spell.runtime :as runtime]
+            [spell.coordinator :as coordinator]
+            [spell.globals :as globals]
             [spell.user :as user])
   (:import [java.lang.reflect InvocationHandler InvocationTargetException Proxy]
            [java.nio.charset StandardCharsets]
@@ -67,7 +69,6 @@
   (restored-attributes? original-attributes (str (.getAttributes terminal))))
 
 (defn- run-reader-mode! [mode]
-  (reset! runtime/registry {})
   (user/reset-state!)
   ;; The fixture consumes stdin-queue directly; registering :user lets the
   ;; production enqueue path send its debounced wake without another consumer.
@@ -109,7 +110,6 @@
         (shutdown-agents)))))
 
 (defn- run-cleanup-mode! [startup-race?]
-  (reset! runtime/registry {})
   (user/reset-state!)
   (let [open-terminal @#'user/open-terminal!
         raw-entered (promise)
@@ -153,7 +153,6 @@
     (shutdown-agents)))
 
 (defn- run-full-flow-mode! []
-  (reset! runtime/registry {})
   (user/reset-state!)
   (let [response-sent (promise)
         main-eval (fn [raw]
@@ -183,9 +182,14 @@
           (shutdown-agents))))))
 
 (defn -main [& [mode]]
-  (case mode
-    "cleanup" (run-cleanup-mode! false)
-    "cleanup-startup-race" (run-cleanup-mode! true)
-    "full-flow" (run-full-flow-mode!)
-    (run-reader-mode! mode))
+  (binding [coordinator/*coordinator* (coordinator/new-coordinator)
+            globals/*store* (globals/new-store)]
+    (user/call-with-session
+      #(try
+         (case mode
+           "cleanup" (run-cleanup-mode! false)
+           "cleanup-startup-race" (run-cleanup-mode! true)
+           "full-flow" (run-full-flow-mode!)
+           (run-reader-mode! mode))
+         (finally (coordinator/close!)))))
   (System/exit 0))

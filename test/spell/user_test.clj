@@ -3,6 +3,9 @@
             [clojure.string :as str]
             [clojure.test :refer [deftest testing is use-fixtures]]
             [spell.runtime :as runtime]
+            [spell.coordinator :as coordinator]
+            [spell.context :as context]
+            [spell.globals :as globals]
             [spell.user :as user])
   (:import [java.io BufferedReader PipedReader PipedWriter StringReader]
            [java.nio.charset StandardCharsets]
@@ -12,11 +15,11 @@
 ;; Clean registry and queue between tests
 (use-fixtures :each
   (fn [f]
-    (reset! runtime/registry {})
-    (user/reset-state!)
-    (f)
-    (reset! runtime/registry {})
-    (user/reset-state!)))
+    (binding [context/*context* (context/new-context)
+              coordinator/*coordinator* (coordinator/new-coordinator)
+              globals/*store* (globals/new-store)]
+      (user/call-with-session
+        #(try (f) (finally (user/reset-state!) (coordinator/close!)))))))
 
 (defn- mock-reader
   "Create a BufferedReader that reads from a string (one line per readLine)."
@@ -204,7 +207,7 @@
   (testing "registers :user handle with parent :main"
     (user/register-user-agent! (mock-reader "test"))
     (is (true? (runtime/handle? :user)))
-    (is (= :main (:parent-handle (get @runtime/registry :user)))))
+    (is (= :main (:parent-handle (coordinator/agent :user)))))
 
   (testing "idempotent — second call is no-op"
     (user/register-user-agent! (mock-reader "other"))
@@ -383,9 +386,9 @@
       (is (string? (deref result 3000 :timeout)))
       (is (false? @@#'user/signal-pending)
           "the active waiter consumes the reply without an idle wake")
-      (is (empty? (:inbox-macros @(:state (get @runtime/registry :user))))
+      (is (empty? (:mailbox (coordinator/agent :user)))
           "no :stdin-signal remains to cause a second prompt")
-      (is (= 1 (count (:inbox-macros @(:state (get @runtime/registry :asker)))))
+      (is (= 1 (count (:mailbox (coordinator/agent :asker))))
           "the asker receives exactly one reply"))))
 
 (deftest submission-between-inbox-drain-and-waiter-is-not-resignaled-test
@@ -424,7 +427,7 @@
               (deliver release-display true)
               (is (string? (deref result 3000 :timeout)))
               (is (false? @@#'user/signal-pending))
-              (is (empty? (:inbox-macros @(:state (get @runtime/registry :user))))
+              (is (empty? (:mailbox (coordinator/agent :user)))
                   "no delayed :stdin-signal remains after the reply"))))
         (finally
           (deliver release-display true)
@@ -533,11 +536,11 @@
             (is (nil? @@#'user/input-waiter-token)
                 "the old prompt has consumed its line before parsing pauses")
             (user/reset-state!)
-            (reset! runtime/registry {})
+            (do (coordinator/close!) (set! coordinator/*coordinator* (coordinator/new-coordinator)))
             (runtime/register! :main)
             (deliver release-parse true)
             (is (= :user-input-reset (deref result 3000 :timeout)))
-            (is (empty? (:inbox-macros @(:state (get @runtime/registry :main))))
+            (is (empty? (:mailbox (coordinator/agent :main)))
                 "the stale reply must not enter the fresh :main inbox")
             (is (empty? @@#'user/seen-msg-names)
                 "the stale generation must not repopulate reset module state")))))))
@@ -555,9 +558,9 @@
       (#'user/queue-interactive-submission! ::user/cancel)
       (is (= ")) (eval (do " (deref result 3000 :timeout)))
       (is (false? @@#'user/signal-pending))
-      (is (empty? (:inbox-macros @(:state (get @runtime/registry :user))))
+      (is (empty? (:mailbox (coordinator/agent :user)))
           "Ctrl-C must not leave a prompt-producing signal behind")
-      (is (empty? (:inbox-macros @(:state (get @runtime/registry :asker))))
+      (is (empty? (:mailbox (coordinator/agent :asker)))
           "cancellation sends no reply"))))
 
 (deftest idle-interactive-submission-wakes-user-test
@@ -565,7 +568,7 @@
     (runtime/register! :user)
     (#'user/queue-interactive-submission! "idle-message")
     (is (true? @@#'user/signal-pending))
-    (is (= 1 (count (:inbox-macros @(:state (get @runtime/registry :user)))))
+    (is (= 1 (count (:mailbox (coordinator/agent :user))))
         "the idle submission wakes :user exactly once")
     (is (= "idle-message" (#'user/take-line!)))))
 
@@ -597,7 +600,7 @@
       (#'user/queue-interactive-submission! ::user/eof)
       (is (= :user-input-eof (deref result 3000 :timeout)))
       (is (false? @@#'user/signal-pending))
-      (is (empty? (:inbox-macros @(:state (get @runtime/registry :user))))))))
+      (is (empty? (:mailbox (coordinator/agent :user)))))))
 
 (deftest ask-after-idle-eof-completes-test
   (testing "an ask issued after idle EOF completes instead of leaving the caller asleep"

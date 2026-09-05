@@ -2,6 +2,8 @@
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [clojure.string :as str]
             [spell.context :as context]
+            [spell.coordinator :as coordinator]
+            [spell.test-helpers :as th]
             [spell.eval :as eval]
             [spell.macros :as macros]
             [spell.runtime :as runtime]
@@ -231,3 +233,29 @@
       (is (= (subvec lines 0 10) (get (:env evaluated) 'focus)))
       (is (= 40 (:spell/first-line (meta (get (:env evaluated) 'focus)))))
       (is (thrown? IndexOutOfBoundsException (subvec lines 0 36))))))
+
+(deftest coordinator-messages-render-in-the-receiving-run
+  (th/with-test-run
+    (fn []
+      (binding [context/*context* (context/new-context {:max-chars 180})]
+        (runtime/register! :recipient)
+        (let [payload {:lines (with-meta (vec (repeat 1000 "line")) {:spell/first-line 40})}
+              _ @(future (binding [runtime/*current-handle* :sender]
+                           (runtime/send :recipient payload)))
+              queued (get-in (coordinator/agent :recipient) [:mailbox 0 :message :body])
+              receiver (with-meta
+                         (fn [_ inbox-macros]
+                           (let [reopened (eval/apply-spell-macro
+                                            (first inbox-macros)
+                                            ['(quine completion (eval (do)))] {})
+                                 forms (rest (second (last (:ok reopened))))
+                                 binding-form (second forms)
+                                 result (eval/spell-eval binding-form {})]
+                             (get (:env result) (second binding-form))))
+                         {:spell/inbox-aware true})]
+          (is (identical? payload queued))
+          (is (empty? @(:values context/*context*)) "enqueue keeps the raw payload")
+          (let [message @(future ((runtime/make-awake-fn :recipient receiver) "ignored"))]
+            (is (= :sender (:from message)))
+            (is (identical? payload (:body message)))
+            (is (= 40 (get-in (meta (get-in message [:body :lines])) [:spell/first-line])))))))))

@@ -4,6 +4,7 @@
             [clojure.test :refer [deftest is testing]]
             [spell.agent :as agent]
             [spell.context :as context]
+            [spell.coordinator :as coordinator]
             [spell.eval :as eval]
             [spell.parse :as parse]
             [spell.runtime :as runtime]
@@ -226,6 +227,7 @@
 (deftest stdio-listeners-convey-the-registering-run
   (with-open [c (client/open-client :demo {:transport {:stdio {:command (stdio-command)}}})]
     (binding [context/*context* (context/new-context {:max-chars 128})
+              coordinator/*coordinator* (coordinator/new-coordinator)
               runtime/*current-handle* :registered-listener]
       (let [observed (atom nil)
             payload (apply str (repeat 10000 "x"))]
@@ -234,9 +236,11 @@
                           (reset! observed
                                   {:sender runtime/*current-handle*
                                    :context context/*context*
+                                   :coordinator coordinator/*coordinator*
                                    :rendered (context/serialize-value
                                                {:notification notification :payload payload})})))
         (is (identical? context/*context* (:context @observed)))
+        (is (identical? coordinator/*coordinator* (:coordinator @observed)))
         (is (= :registered-listener (:sender @observed)))
         (let [result (eval/spell-eval (parse/read-first (:rendered @observed)) {})]
           (is (eval/ok? result))

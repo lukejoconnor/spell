@@ -3,6 +3,7 @@
   (:require [clojure.set :as set]
             [spell.agent :as agent]
             [spell.runtime :as runtime]
+            [spell.coordinator :as coordinator]
             [spell.eval :as eval]
             [spell.context :as context]
             [spell.globals :as globals]
@@ -42,15 +43,12 @@
   (when-not model-profile
     (throw (ex-info "Must specify :model-profile" {}))))
 
-(defn- execute-run
+(defn- execute-run*
   [{:keys [prompt init model-profile agent-profile model reasoning-effort budget depth trace-dir
            usage-tracker user-reader interactive-user? log-writer agent-namespace-overrides]
     :as opts}]
   (validate-required-run-opts! opts)
-  (let [run-context (context/new-context {:max-chars (if (nil? (:context-max-chars opts))
-                                                       context/default-max-chars
-                                                       (:context-max-chars opts))})
-        profile (provider/resolve-model-profile model-profile)
+  (let [profile (provider/resolve-model-profile model-profile)
         resolved-provider (:provider profile)
         agent-spec (cond-> (agent/load-agent-spec agent-profile)
                      true (assoc :provider resolved-provider)
@@ -90,53 +88,63 @@
                             (try
                               (write-trace-once! false)
                               (catch Exception _)))))]
-    (binding [context/*context* run-context]
-      (user/reset-state!)
-      (reset! runtime/registry {})
-      (globals/reset-globals!)
-      (globals/set-val :roles {:main {}})
-      (try
-        (cond
-          interactive-user? (reset! user-session (user/register-interactive-user-agent!))
-          user-reader (user/register-user-agent!
-                        (if (instance? java.io.BufferedReader user-reader)
-                          user-reader
-                          (java.io.BufferedReader. user-reader))))
-        (when shutdown-hook
-          (.addShutdownHook (Runtime/getRuntime) shutdown-hook))
-        (binding [eval/*verbose* effective-verbose
-                  eval/*log-writer* log-writer
-                  eval/*max-llm-depth* depth
-                  provider/*usage* usage-atom
-                  provider/*budget* effective-budget
-                  provider/*retries* (or (:retries opts) (:retries profile) (:retries agent-spec) provider/*retries*)
-                  trace/*trace* trace-atom]
-          (let [result (try
-                         {:result (agent-fn run-input :main)
-                          :usage-tracker usage-atom}
-                         (catch Exception e
-                           {:error (.getMessage e)
-                            :error-data (ex-data e)
-                            :usage-tracker usage-atom}))]
-            (when trace-atom
-              (write-trace-once! true))
-            (cond-> result
-              trace-dir (assoc :trace-dir trace-dir))))
-        (finally
-          (try
-            (when-let [^java.io.Closeable session @user-session]
-              (.close session))
-            (finally
-              (try
-                (user/reset-state!)
-                (finally
-                  (when shutdown-hook
-                    (try
-                      (.removeShutdownHook (Runtime/getRuntime) shutdown-hook)
-                      (catch IllegalStateException _)))
-                  (when log-writer
-                    (.flush ^java.io.Writer log-writer))
-                  (agent/close-compiled-agent! agent-fn))))))))))
+    (user/reset-state!)
+    (globals/reset-globals!)
+    (globals/set-val :roles {:main {}})
+    (try
+      (cond
+        interactive-user? (reset! user-session (user/register-interactive-user-agent!))
+        user-reader (user/register-user-agent!
+                      (if (instance? java.io.BufferedReader user-reader)
+                        user-reader
+                        (java.io.BufferedReader. user-reader))))
+      (when shutdown-hook
+        (.addShutdownHook (Runtime/getRuntime) shutdown-hook))
+      (binding [eval/*verbose* effective-verbose
+                eval/*log-writer* log-writer
+                eval/*max-llm-depth* depth
+                provider/*usage* usage-atom
+                provider/*budget* effective-budget
+                provider/*retries* (or (:retries opts) (:retries profile) (:retries agent-spec) provider/*retries*)
+                trace/*trace* trace-atom]
+        (let [result (try
+                       {:result (agent-fn run-input :main)
+                        :usage-tracker usage-atom}
+                       (catch Exception e
+                         {:error (.getMessage e)
+                          :error-data (ex-data e)
+                          :usage-tracker usage-atom}))]
+          (when trace-atom
+            (write-trace-once! true))
+          (cond-> result
+            trace-dir (assoc :trace-dir trace-dir))))
+      (finally
+        (try
+          (when-let [^java.io.Closeable session @user-session]
+            (.close session))
+          (finally
+            (try
+              (user/reset-state!)
+              (finally
+                (when shutdown-hook
+                  (try
+                    (.removeShutdownHook (Runtime/getRuntime) shutdown-hook)
+                    (catch IllegalStateException _)))
+                (when log-writer
+                  (.flush ^java.io.Writer log-writer))
+                (agent/close-compiled-agent! agent-fn)))))))))
+
+(defn- execute-run [opts]
+  (binding [context/*context* (context/new-context
+                               {:max-chars (if (nil? (:context-max-chars opts))
+                                             context/default-max-chars
+                                             (:context-max-chars opts))})
+            coordinator/*coordinator* (coordinator/new-coordinator)
+            globals/*store* (globals/new-store)]
+    (user/call-with-session
+      (fn []
+        (try (execute-run* opts)
+             (finally (coordinator/close!)))))))
 
 (defn run
   "Run a Spell agent with the v0.3.0 public API.

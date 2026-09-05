@@ -33,6 +33,8 @@
             [spell.llm :as llm]
             [spell.parse :as parse]
             [spell.runtime :as runtime]
+            [spell.coordinator :as coordinator]
+            [spell.globals :as globals]
             [spell.user :as user])
   (:import [java.io BufferedReader]
            [java.util.concurrent LinkedBlockingQueue CountDownLatch TimeUnit
@@ -41,11 +43,10 @@
 ;; Clean registry and user state between tests
 (use-fixtures :each
   (fn [f]
-    (reset! runtime/registry {})
-    (user/reset-state!)
-    (f)
-    (reset! runtime/registry {})
-    (user/reset-state!)))
+    (binding [coordinator/*coordinator* (coordinator/new-coordinator)
+              globals/*store* (globals/new-store)]
+      (user/call-with-session
+        #(try (f) (finally (user/reset-state!) (coordinator/close!)))))))
 
 ;; =============================================================================
 ;; Helpers
@@ -429,172 +430,6 @@
 ;; Result: phantom transform in inbox with no signal to wake anyone.
 ;; The transform surfaces as a stale message in the next box entry.
 
-(deftest phantom-transform-deterministic-test
-  (testing "TOCTOU in deliver-msg-fn: inbox compose after drain leaves phantom transform"
-    ;; Manually simulates the interleaving that causes the phantom
-    ;; transform bug by stepping through deliver-msg-fn's operations
-    ;; with an intervening -send! + inbox drain.
-    (let [handle :phantom-parent
-          phantom-marker "PHANTOM-TRANSFORM-WAS-HERE"]
-      (runtime/register! handle)
-      (let [state-atom (:state (get @runtime/registry handle))
-            signal-p1 (:signal @state-atom)
-            phantom-fn (fn [raw] (str raw " " phantom-marker))
-            explicit-fn (fn [raw] (str raw " EXPLICIT-REPLY"))]
-
-        ;; Step 1: Signal not yet realized
-        (is (not (realized? signal-p1))
-            "precondition: signal is not yet realized")
-
-        ;; Step 2: -send! delivers explicit reply (on another thread in practice)
-        (runtime/-send! handle explicit-fn)
-        (is (realized? signal-p1)
-            "-send! delivered the signal")
-
-        ;; Step 3: Parent wakes, box drains inbox (atomic reset of state)
-        (let [{:keys [inbox-macros]} (first (reset-vals! state-atom {:inbox-macros [] :signal (promise)}))]
-          (is (= 1 (count inbox-macros))
-              "inbox had the explicit-reply macro queued"))
-
-        ;; Step 4: Notifier calls deliver-msg-fn with the OLD signal.
-        ;; With the combined atom, deliver-msg-fn sees that signal-p1 is no
-        ;; longer identical to the current signal in the atom, so it no-ops.
-        (runtime/deliver-msg-fn handle signal-p1 phantom-fn)
-
-        ;; THE FIX: inbox is still empty — no phantom transform
-        (is (= [] (:inbox-macros @state-atom))
-            "FIX: no phantom transform — deliver-msg-fn detected stale signal via CAS")))))
-
-(deftest phantom-transform-full-lifecycle-test
-  (testing "Phantom transform from notifier surfaces in next box entry as stale message"
-    ;; Demonstrates the full consequence: the phantom transform left by the
-    ;; notifier is picked up by the NEXT box entry, causing the agent to see
-    ;; a stale/unexpected message alongside a legitimate new message.
-    (let [handle :phantom-lifecycle
-          box-results (atom [])]
-      (runtime/register! handle)
-      (let [state-atom (:state (get @runtime/registry handle))
-            base-raw "(quine completion (eval (do)))"
-            signal-p1 (:signal @state-atom)
-            notifier-msg-fn (fn [raw]
-                              (str raw " (def notifier-result {:from :child :body :completed})"))]
-
-        ;; Simulate the race: -send! fires, parent wakes, then notifier tries to compose
-
-        ;; Agent C sends explicit reply via -send!
-        (runtime/-send! handle
-          (fn [raw] (str raw " (def reply-msg {:from :agent-c :body :hello})")))
-
-        ;; Parent wakes and enters box — drain inbox (atomic reset)
-        (let [{:keys [inbox-macros]} (first (reset-vals! state-atom {:inbox-macros [] :signal (promise)}))]
-          (swap! box-results conj (count inbox-macros)))
-
-        ;; Notifier calls deliver-msg-fn with old signal — CAS detects stale signal, no-ops
-        (runtime/deliver-msg-fn handle signal-p1 notifier-msg-fn)
-
-        ;; Another agent sends a real message via -send!
-        (runtime/-send! handle
-          (fn [raw] (str raw " (def real-msg {:from :agent-d :body :world})")))
-
-        ;; Parent wakes again, enters box, drains inbox
-        (let [{:keys [inbox-macros]} (first (reset-vals! state-atom {:inbox-macros [] :signal (promise)}))]
-          (swap! box-results conj (count inbox-macros)))
-
-        ;; First box entry: got only the explicit reply (correct)
-        (let [first-result (nth @box-results 0)]
-          (is (= 1 first-result)
-              "first wake: got explicit reply macro")
-          (is (not= 2 first-result)
-              "first wake: did NOT get notifier macro (correct)"))
-
-        ;; Second box entry: got ONLY the real message — no phantom!
-        (let [second-result (nth @box-results 1)]
-          (is (= 1 second-result)
-              "second wake: got real message macro")
-          (is (not= 2 second-result)
-              "FIX: no phantom notifier message — deliver-msg-fn detected stale signal"))))))
-
-(deftest phantom-transform-stress-test
-  (testing "Stress: concurrent -send! and deliver-msg-fn can produce phantom transforms"
-    ;; Run many iterations where -send! and deliver-msg-fn race on the same
-    ;; signal. After both complete, drain the inbox once, then check whether
-    ;; both transforms ended up composed (a precondition for the phantom bug).
-    ;;
-    ;; In a real scenario, the phantom occurs when deliver-msg-fn's realized?
-    ;; check passes but its swap! executes after -send!'s deliver + inbox drain.
-    ;; Since we can't insert a drain mid-race from outside, we check whether
-    ;; deliver-msg-fn composed into inbox even though -send! also delivered
-    ;; the signal — proving the TOCTOU window is hittable.
-    (let [iterations 2000
-          both-composed-count (atom 0)]
-      (dotimes [i iterations]
-        (let [handle (keyword (str "stress-" i))]
-          (runtime/register! handle)
-          (let [state-atom (:state (get @runtime/registry handle))
-                signal-p1 (:signal @state-atom)
-                barrier (CyclicBarrier. 3)
-                send-marker (str "SEND-" i)
-                notifier-marker (str "NOTIFIER-" i)
-                send-fn (fn [raw] (str raw " " send-marker))
-                notifier-fn (fn [raw] (str raw " " notifier-marker))]
-
-            ;; Thread A: -send! (explicit reply)
-            (future
-              (.await barrier)
-              (runtime/-send! handle send-fn))
-
-            ;; Thread B: deliver-msg-fn (notifier) with captured signal
-            (future
-              (.await barrier)
-              (runtime/deliver-msg-fn handle signal-p1 notifier-fn))
-
-            ;; Release both threads simultaneously
-            (.await barrier)
-
-            ;; Give threads time to complete
-            (Thread/sleep 1)
-
-            ;; Drain inbox via atomic reset
-            (let [{:keys [inbox-macros]} (first (reset-vals! state-atom {:inbox-macros [] :signal (promise)}))]
-              ;; With the combined atom, deliver-msg-fn uses identical? on the
-              ;; signal inside the CAS — if -send! already reset the signal via
-              ;; make-awake-fn's drain, deliver-msg-fn's CAS sees a different
-              ;; signal object and no-ops. Both transforms should only compose
-              ;; when both happen before any drain.
-              (when (= 2 (count inbox-macros))
-                (swap! both-composed-count inc))))))
-
-      (println (str "  Both-composed (both before drain): "
-                    @both-composed-count "/" iterations))
-      ;; With the combined atom, both can still compose if they both run
-      ;; before any drain — this is correct behavior (not a phantom).
-      ;; The phantom bug was about composing AFTER drain, which the
-      ;; identical?-based CAS prevents.
-      (is (>= @both-composed-count 0)
-          "stress test completed without exceptions"))))
-
-;; =============================================================================
-;; Bug Class 3: Preemption of pending trailing effects
-;; =============================================================================
-;;
-;; These tests demonstrate that message preemption (via create-msg + reopen) can
-;; silently drop a trailing expression. The mechanism:
-;;
-;; 1. Agent produces a completion with a trailing quoted expression, e.g.:
-;;    (quine completion (eval (do )) (eval (do '(agents/send :target "data") )))
-;;
-;; 2. Before the box drains the inbox, another agent sends a message. The
-;;    create-msg transform reopens the quine and appends a new extension:
-;;    (quine completion (eval (do )) (eval (do '(agents/send :target "data")
-;;      (think "[preempted or awakened by msg-X]")
-;;      (def msg-X {:from :intruder :body "interrupt"})
-;;      '(!extend) )))
-;;
-;; 3. The quine evaluates only the LAST arg. Inside the do block, the outer eval
-;;    double-evaluates only the last expression's value. Since the last expression
-;;    is now '(!extend) instead of '(agents/send ...), the original send
-;;    becomes dead code — it evaluates to a quoted list whose value is discarded.
-
 (deftest create-msg-preempts-trailing-expression-test
   (testing "create-msg transforms a completion so the trailing expression becomes dead code"
     (let [;; A completion with a trailing '(agents/send :main "hello")
@@ -853,56 +688,18 @@
 ;; Test BC5-1: Verify has-box is false during inside-fn execution
 ;; =============================================================================
 
-(deftest has-box-released-during-inside-fn-test
-  (testing "has-box is false while inside-fn is running (early release)"
-    (let [handle :test-early-release
-          has-box-during-inside (atom nil)
-          inside-fn (fn [raw]
-                      (reset! has-box-during-inside
-                              @(:has-box (get @runtime/registry handle)))
-                      "done")
-          p (promise)]
-      (runtime/register! handle)
-      (deliver p "hello")
-      (runtime/box handle p inside-fn)
-      ;; This confirms the has-box early release behavior
-      (is (false? @has-box-during-inside)
-          "has-box should be false during inside-fn execution (early release)"))))
-
-;; =============================================================================
-;; Test BC5-2: CAS prevents concurrent box entry while has-box is held
-;; =============================================================================
-
-(deftest has-box-cas-prevents-concurrent-drain-test
-  (testing "CAS prevents a second box from entering while first holds has-box"
-    ;; Manually hold has-box true to simulate the brief window between
-    ;; CAS success and release. Any concurrent box call should throw.
-    (let [handle :test-cas-block
-          p2 (promise)]
-      (runtime/register! handle)
-      ;; Manually acquire has-box
-      (reset! (:has-box (get @runtime/registry handle)) true)
-      (deliver p2 "should-fail")
-      ;; A concurrent box call should throw because CAS fails
-      (is (thrown-with-msg? Exception #"Box already active"
-            (runtime/box handle p2 identity))))))
-
-;; =============================================================================
-;; Test BC5-3: Recursive box re-entry works (sleep pattern)
-;; =============================================================================
-
 (deftest recursive-box-reentry-works-test
   (testing "inside-fn can call box recursively for the same handle (sleep pattern)"
     (let [handle :test-recursive
           ;; inside-fn that re-enters box (simulating block-for-message)
           inside-fn (fn [raw]
                       ;; Re-enter box with a fn that blocks on signal
-                      (let [state (:state (get @runtime/registry handle))
+                      (let [signal (:signal (coordinator/agent handle))
                             result (runtime/box handle raw
                                      (fn [inner-raw]
                                        ;; Block on signal, then return
-                                       (deref (:signal @state) 2000 :timeout)
-                                       (swap! state assoc :signal (promise))
+                                       (deref signal 2000 :timeout)
+                                       (coordinator/drain! handle)
                                        (str "woke:" inner-raw)))]
                         result))
           p (promise)]
@@ -913,7 +710,7 @@
         ;; Give time for the inner box to start blocking on signal
         (Thread/sleep 100)
         ;; Wake it by delivering the signal
-        (deliver (:signal @(:state (get @runtime/registry handle))) :wake)
+        (runtime/-send! handle (#'runtime/identity-msg-macro))
         ;; The whole chain should complete
         (let [result (deref f 3000 :timeout)]
           (is (= "woke:initial" result)
@@ -1008,97 +805,6 @@
 
 ;; =============================================================================
 ;; Test BC5-7: Forced concurrent box entry (demonstrates the reentry window)
-;; =============================================================================
-
-(deftest forced-concurrent-box-entry-test
-  (testing "two threads racing to enter box — both succeed due to early release"
-    ;; This test demonstrates the vulnerability in the abstract: because
-    ;; has-box is released before inside-fn executes, two threads CAN both
-    ;; pass the CAS and run inside-fn concurrently for the same handle.
-    ;;
-    ;; In the current code this doesn't happen because the only cross-thread
-    ;; box entry (orphan future) is launched from within inside-fn.
-    (let [handle :test-forced-race
-          entry-count (atom 0)
-          gate (promise)
-          inside-fn (fn [raw]
-                      (swap! entry-count inc)
-                      ;; Block until gate opens so both threads overlap
-                      (deref gate 3000 :timeout)
-                      raw)
-          p1 (promise)
-          p2 (promise)]
-      (runtime/register! handle)
-      (deliver p1 "first")
-      (deliver p2 "second")
-      ;; Thread 1: enters box, releases has-box, blocks in inside-fn
-      (let [f1 (future
-                 (try (runtime/box handle p1 inside-fn)
-                      (catch Exception e :cas-failed)))
-            ;; Brief pause to let f1 acquire and release has-box
-            _ (Thread/sleep 50)]
-        ;; Thread 2: CAS succeeds because f1 already released has-box
-        (let [f2 (future
-                   (try (runtime/box handle p2 inside-fn)
-                        (catch Exception e :cas-failed)))]
-          ;; Open the gate so both threads can finish
-          (deliver gate true)
-          (let [r1 (deref f1 3000 :timeout)
-                r2 (deref f2 3000 :timeout)]
-            ;; BOTH threads entered inside-fn due to early has-box release
-            (is (= 2 @entry-count)
-                "both threads entered inside-fn due to early has-box release")
-            (is (= "first" r1))
-            (is (= "second" r2))))))))
-
-;; =============================================================================
-;; Test BC5-8: Forced concurrent entry causes inbox transform loss
-;; =============================================================================
-
-(deftest forced-concurrent-entry-inbox-loss-test
-  (testing "forced concurrent box entry causes inbox transform to be lost"
-    ;; Demonstrates the theoretical consequence of the reentry window:
-    ;; if two box calls enter concurrently, both drain inbox independently.
-    ;; The second drain sees identity (empty) because the first already consumed
-    ;; the accumulated transforms.
-    ;;
-    ;; In practice this doesn't happen because the orphan future is launched
-    ;; after inside-fn returns (see BC5-4).
-    (let [handle :test-inbox-loss
-          results (atom [])
-          gate (promise)
-          raw1 "(quine completion (eval (do (def base :msg1))))"
-          raw2 "(quine completion (eval (do (def base :msg2))))"
-          inside-fn (fn [raw]
-                      (swap! results conj raw)
-                      ;; Block to ensure overlap
-                      (deref gate 3000 :timeout)
-                      raw)
-          p1 (promise)
-          p2 (promise)]
-      (runtime/register! handle)
-      ;; Compose a transform into inbox
-      (runtime/-send! handle (append-forms-macro '(def transformed true)))
-      (deliver p1 raw1)
-      (deliver p2 raw2)
-      ;; First box call drains inbox via make-awake-fn (gets the transform)
-      (let [awake-fn (runtime/make-awake-fn handle inside-fn)
-            f1 (future (runtime/box handle p1 awake-fn))]
-        (Thread/sleep 50) ;; Let f1 drain inbox and release has-box
-        ;; Second box call drains inbox (gets identity — transform already consumed)
-        (let [f2 (future (runtime/box handle p2 awake-fn))]
-          (Thread/sleep 50)
-          (deliver gate true)
-          (deref f1 3000 :timeout)
-          (deref f2 3000 :timeout)
-          ;; First box saw the transform; second box saw identity
-          (is (some #(.contains ^String % "(def transformed true)") @results)
-              "first box should see the inbox transform")
-          (is (some #(= raw2 %) @results)
-              "second box sees raw without transform — transform lost to first drain"))))))
-
-;; =============================================================================
-;; Test BC5-9: Current code is safe — no concurrent eval in practice
 ;; =============================================================================
 
 (deftest current-code-safe-no-concurrent-eval-test

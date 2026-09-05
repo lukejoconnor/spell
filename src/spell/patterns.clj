@@ -34,13 +34,13 @@ clean-prompt: Cleans up a raw prompt (voice-to-text, quick notes) via leaf-llm, 
 
 ralph: Retry orchestrator that runs blocking completion waits inside a future, so
 the caller's agent trace stays responsive. Spawns a worker, sends task/retry
-messages, waits via blocking/send-await, and sends
+messages through coordinator-owned blocking/send-await request edges, and sends
 final {:pass result} or {:fail last-result} to the caller.
   '(!call-now started (patterns/ralph \"fix failing tests\"))
   ;; later receives msg with {:pass ...} or {:fail ...}
 
 team: Multi-task implementation orchestrator. A planner decomposes the goal,
-the scheduler executes dependency waves in parallel git worktrees, and a
+the scheduler uses blocking/request tokens for dependency waves in parallel git worktrees, and a
 verifier approves merges or resolves conflicts on the integration branch.
   '(!call-now result (patterns/team \"Implement feature X\"))
   Returns {:status :completed|:partial|:failed :tasks [...] :branch \"spell-team-...\"}

@@ -1,75 +1,33 @@
 (ns spell.runtime
-  "Agent runtime: box execution primitive, registry, message passing, spawn/ask.
-
-   Single-drain model: box waits for a completion source and calls an inside-fn.
-   Inbox drain + signal reset happen once per wake cycle in make-awake-fn
-   (phase 3 entry). ask sends a message and blocks for reply. !spawn-ask spawns
-   an agent and blocks for its message. send-msg-fn is low-level fire-and-forget.
-   Every wait wakes the target, preventing deadlocks."
+  "Stackful agent execution interacting with a run-local coordinator. Inbox
+   receipt remains after generation, before evaluating the returned program."
   (:refer-clojure :exclude [send])
   (:require [clojure.string :as str]
+            [spell.coordinator :as coordinator]
             [spell.eval :as eval]
             [spell.inbox :as inbox]
-            [spell.parse :as parse]))
+            [spell.parse :as parse]
+            [spell.trace :as trace]))
 
-;; =============================================================================
-;; Registry
-;; =============================================================================
+(def ^:dynamic *current-handle* nil)
+(def ^:dynamic *computation-future?* false)
+(def ^:dynamic *computation-owner* nil)
+(defn computation-owner []
+  (if *computation-future?* *computation-owner*
+    (when *current-handle*
+      {:handle *current-handle* :completion (:completed (coordinator/agent *current-handle*))})))
+(def ^:dynamic *current-raw* nil)
+(def ^:dynamic *current-eval-fn* nil)
+(def ^:dynamic *default-spawn-agent* nil)
+(defn- inbox-aware-eval-fn? [f] (true? (:spell/inbox-aware (meta f))))
+(declare box run-root-box block-for-message sleep! fill-slot! ask-builtin)
 
-(def registry
-  "Global registry: handle -> {:state (atom {:inbox-macros [], :signal (promise)}),
-                                :has-box (atom false),
-                                :completed (atom (promise)),
-                                :last-raw (atom nil),
-                                :parent-handle kw-or-nil}"
-  (atom {}))
-
-
-(defn register!
-  "Register a handle in the registry.
-   Optional parent-handle records the spawning agent."
-  ([handle] (register! handle nil))
-  ([handle parent-handle]
-   (when (contains? @registry handle)
-     (throw (ex-info "Handle already registered" {:handle handle})))
-   (swap! registry assoc handle
-          {:state             (atom {:inbox-macros [], :signal (promise)})
-           :has-box           (atom false)
-           :parent-handle     parent-handle
-           :completed         (atom (promise))
-           :last-raw          (atom nil)})))
-
-;; =============================================================================
-;; Dynamic vars
-;; =============================================================================
-
-(def ^:dynamic *current-handle*
-  "Handle for the currently executing agent (set inside box)."
+(def register! coordinator/register!)
+(defn handle? [handle] (boolean (coordinator/agent handle)))
+(defn record-last-raw! [handle raw]
+  (when-let [execution (:execution (coordinator/agent handle))]
+    (swap! execution assoc :last-raw raw))
   nil)
-
-(def ^:dynamic *current-raw*
-  "Raw completion string for the currently executing agent (set inside box)."
-  nil)
-
-(def ^:dynamic *current-eval-fn*
-  "Eval function for the currently executing agent (set by make-awake-fn).
-   Used by block-for-message and spawn to break circular dependencies."
-  nil)
-
-(def ^:dynamic *default-spawn-agent*
-  "Default compiled agent function used by prompt-only spawn/spawn-ask forms.
-   Bound by eval to the current agent."
-  nil)
-
-(defn- inbox-aware-eval-fn?
-  [eval-fn]
-  (true? (:spell/inbox-aware (meta eval-fn))))
-
-;; =============================================================================
-;; Forward declarations
-;; =============================================================================
-
-(declare box ask-builtin)
 
 (defn- default-spawn-agent
   "Resolve default agent for prompt-only spawn/spawn-ask forms."
@@ -86,12 +44,12 @@
 
 (defn- resolve-completion-source
   "Resolve completion source (promise/future/raw) to a raw value.
-   Throws if the resolved value is an exception."
+   Throws if the resolved value is a Throwable."
   [completion-source]
   (let [raw-or-ex (if (instance? clojure.lang.IDeref completion-source)
                     (deref completion-source)
                     completion-source)]
-    (when (instance? Exception raw-or-ex)
+    (when (instance? Throwable raw-or-ex)
       (throw raw-or-ex))
     raw-or-ex))
 
@@ -101,161 +59,103 @@
   {:spell/future true
    :ref completion-source})
 
-;; =============================================================================
-;; Inside-fn constructors
-;; =============================================================================
+(declare throwable->completion-exception)
 
-(defn make-awake-fn
-  "Create an inside-fn that drains inbox, resets signal, and calls eval-fn.
-   This is the single drain point per wake cycle (phase 3 entry).
-   Drain and signal reset happen atomically via a single reset-vals! on
-   the combined :state atom — no race window between the two operations."
-  [handle eval-fn]
-  (fn [raw]
-    (let [before-awake (:spell/before-awake (meta eval-fn))
-          after-awake (:spell/after-awake (meta eval-fn))]
-      (when before-awake (before-awake))
-      (try
-        (let [state (:state (get @registry handle))
-              [{:keys [inbox-macros]} _] (reset-vals! state {:inbox-macros [], :signal (promise)})
-              transformed-raw (if (and (seq inbox-macros) (not (inbox-aware-eval-fn? eval-fn)))
-                                (inbox/materialize-inbox-raw raw inbox-macros {:builtins eval/core-builtins})
-                                raw)]
-          (when-let [last-raw (:last-raw (get @registry handle))]
-            (reset! last-raw transformed-raw))
-          (binding [*current-eval-fn* eval-fn]
-            (if (inbox-aware-eval-fn? eval-fn)
-              (eval-fn raw inbox-macros)
-              (eval-fn transformed-raw))))
-        (finally
-          (when after-awake (after-awake)))))))
+(def ^:private completion-failure-max-depth 8)
+(def ^:private completion-failure-max-items 100)
 
-(defn- make-asleep-fn
-  "Create an inside-fn that blocks on signal, then re-enters box awake.
-   No drain or signal reset here — that happens in make-awake-fn (phase 3).
-   Uses the raw parameter (not *current-raw*) so that transforms applied
-   by the enclosing box before sleep are preserved on fast-reply paths."
-  [handle eval-fn]
-  (fn [raw]
-    (let [state (:state (get @registry handle))]
-      (deref (:signal @state))
-      (box handle raw (make-awake-fn handle eval-fn)))))
+(defn- reader-round-trippable?
+  [value]
+  (try
+    (= [value] (vec (parse/read-all (pr-str value))))
+    (catch Throwable _ false)))
 
-(defn- make-root-fn
-  "Wrap an inside-fn with root lifecycle: completed delivery + orphan creation.
-   After inside-fn returns (or throws), delivers completed and starts an
-   asleep orphan box for the next lifecycle round.
-   Reads :last-raw from registry (not *current-raw*) so the orphan captures
-   the innermost extension's raw — dynamic binding reverts on stack unwind,
-   but the atom retains the deepest box's value.
-   No signal reset needed — make-awake-fn resets signal at phase 3 entry,
-   and the orphan's asleep-fn will block on the signal created there."
-  [handle eval-fn inside-fn]
-  (fn [raw]
-    (try
-      (let [result (inside-fn raw)]
-        (deliver @(:completed (get @registry handle)) result)
-        (reset! (:completed (get @registry handle)) (promise))
-        (let [orphan-raw @(:last-raw (get @registry handle))]
-          (future (box handle orphan-raw
-                    (make-root-fn handle eval-fn (make-asleep-fn handle eval-fn)))))
-        result)
-      (catch Exception e
-        (deliver @(:completed (get @registry handle)) nil)
-        (reset! (:completed (get @registry handle)) (promise))
-        (let [orphan-raw @(:last-raw (get @registry handle))]
-          (future (box handle orphan-raw
-                    (make-root-fn handle eval-fn (make-asleep-fn handle eval-fn)))))
-        (throw e)))))
+(defn- diagnostic-value
+  "Convert host values to reader-safe plain data for completion messages."
+  ([value]
+   (diagnostic-value value 0))
+  ([value depth]
+   (cond
+     (or (nil? value)
+         (string? value)
+         (boolean? value)
+         (number? value)
+         (char? value))
+     value
 
-(defn run-root-box
-  "Public entry point for root lifecycle.
-   Separates failure domains:
-   - completion-source failures (before inside-fn ran) are handled here
-   - inside-fn failures are handled by make-root-fn."
-  [handle completion-source inside-fn eval-fn]
-  (let [root-fn (make-root-fn handle eval-fn inside-fn)
-        resolved (try
-                   (resolve-completion-source completion-source)
-                   (catch Exception e
-                     ;; completion-source exception (before inside-fn ran)
-                     (when-not (realized? @(:completed (get @registry handle)))
-                       (deliver @(:completed (get @registry handle)) nil)
-                       (reset! (:completed (get @registry handle)) (promise))
-                       (future (box handle ""
-                                 (make-root-fn handle eval-fn (make-asleep-fn handle eval-fn)))))
-                     (throw e)))]
-    (box handle resolved root-fn)))
+     (or (keyword? value) (symbol? value))
+     (if (reader-round-trippable? value)
+       value
+       {:class (.getName (class value))
+        :value (str value)})
 
-;; =============================================================================
-;; Box
-;; =============================================================================
+     (>= depth completion-failure-max-depth)
+     {:spell/truncated true
+      :class (.getName (class value))}
 
-(defn box
-  "Core execution primitive. Awaits completion, CAS has-box, and calls
-   inside-fn with the raw string. Inbox drain happens in make-awake-fn
-   (single-drain model: one drain per wake cycle, at the start of phase 3).
-   Takes handle, a completion source (promise, future, or raw string),
-   and an inside-fn that processes the raw string.
-   Updates :last-raw in registry so make-root-fn can read the innermost
-   raw for orphan box creation (dynamic binding reverts on unwind)."
-  [handle completion-source inside-fn]
-  (let [{:keys [has-box last-raw]} (get @registry handle)]
-    (when-not has-box
-      (throw (ex-info "Handle not registered" {:handle handle})))
-    (let [raw (parse/balance-parens (resolve-completion-source completion-source))]
-      (when-not (compare-and-set! has-box false true)
-        (throw (ex-info "Box already active for handle" {:handle handle})))
-      (reset! has-box false)
-      (reset! last-raw raw)
-      (binding [*current-handle* handle
-                *current-raw*    raw]
-        (inside-fn raw)))))
+     (instance? Throwable value)
+     (throwable->completion-exception value (inc depth))
 
-;; =============================================================================
-;; Send
-;; =============================================================================
+     (map? value)
+     (into {}
+           (map (fn [[k v]] [(diagnostic-value k (inc depth))
+                              (diagnostic-value v (inc depth))]))
+           (take completion-failure-max-items value))
 
-(defn -send!
-  "Low-level send: queue msg-macro into the inbox with FIFO ordering,
-   then deliver signal. Both operations happen atomically via swap-vals!
-   on the combined :state atom."
-  [handle msg-macro]
-  (let [state (:state (get @registry handle))]
-    (when-not state
-      (throw (ex-info "Handle not registered" {:handle handle})))
-    (let [[old _] (swap-vals! state
-                    (fn [{:keys [inbox-macros] :as s}]
-                      (assoc s :inbox-macros (conj inbox-macros msg-macro))))]
-      (deliver (:signal old) :wake))))
+     (vector? value)
+     (mapv #(diagnostic-value % (inc depth))
+           (take completion-failure-max-items value))
 
-(defn send-msg-fn
-  "Queue a Spell macro value to run against the target's parsed completion.
-   Most callers should prefer send/ask/reply over this low-level primitive.
-   Returns nil."
-  [msg-macro handle]
-  (-send! handle msg-macro)
-  nil)
+     (set? value)
+     (set (map #(diagnostic-value % (inc depth))
+               (take completion-failure-max-items value)))
 
-(defn deliver-msg-fn
-  "Like send-msg-fn but delivers to a specific signal promise.
-   No-op if the signal has been replaced OR already delivered (agent woke
-   from something else). Uses swap-vals! so staleness/realization check and
-   inbox composition happen in one atomic state transition."
-  [handle captured-signal msg-macro]
-  (let [state (:state (get @registry handle))
-        [old new] (swap-vals! state
-                    (fn [{:keys [inbox-macros signal] :as s}]
-                      (if (and (identical? signal captured-signal)
-                               (not (realized? signal)))
-                        (assoc s :inbox-macros (conj inbox-macros msg-macro))
-                        s)))]
-    (when-not (identical? old new)
-      (deliver captured-signal :wake))))
+     (list? value)
+     (apply list (map #(diagnostic-value % (inc depth))
+                      (take completion-failure-max-items value)))
 
-;; =============================================================================
-;; Create-msg helper
-;; =============================================================================
+     (sequential? value)
+     (mapv #(diagnostic-value % (inc depth))
+           (take completion-failure-max-items value))
+
+     :else
+     {:class (.getName (class value))
+      :value (try
+               (str value)
+               (catch Throwable _ "<unprintable>"))})))
+
+(defn- throwable->completion-exception
+  "Convert a host Throwable to Spell exception data safe for continuations."
+  ([^Throwable throwable]
+   (throwable->completion-exception throwable 0))
+  ([^Throwable throwable depth]
+   (cond-> {:spell/exception true
+            :class (.getName (class throwable))
+            :message (or (ex-message throwable) (str throwable))
+            :data (diagnostic-value (ex-data throwable) (inc depth))}
+     (and (< depth completion-failure-max-depth)
+          (some? (ex-cause throwable)))
+     (assoc :cause (throwable->completion-exception
+                     (ex-cause throwable) (inc depth))))))
+
+(defn- child-failure
+  "Build the explicit plain-data value delivered when a child lifecycle fails."
+  [handle phase throwable]
+  (try
+    {:spell/child-failure true
+     :handle handle
+     :phase phase
+     :exception (throwable->completion-exception throwable)}
+    (catch Throwable _
+      {:spell/child-failure true
+       :handle handle
+       :phase phase
+       :exception {:spell/exception true
+                   :class (.getName (class throwable))
+                   :message (try
+                              (or (ex-message throwable) (str throwable))
+                              (catch Throwable _ "Child lifecycle failed"))
+                   :data {:normalization-failed true}}})))
 
 (defn- identity-msg-macro
   []
@@ -281,262 +181,269 @@
        {:name name :value value}
        {:form (list 'quote (list '!extend))}])))
 
-(defn send
-  "Send a message to target with auto-tagged sender handle.
-   Injects (def <gensym> {:from sender :body val}) into recipient's completion.
-   The recipient sees the def binding with the message map."
-  [target value]
-  (let [name (symbol (gensym "msg-"))
-        from *current-handle*]
-    (send-msg-fn (create-msg name {:from from :body value}) target)))
 
-(defn- install-notifier
-  "Watch target's :completed promise. When delivered, call
-   (signal-fn handle result). signal-fn determines stale vs persistent."
-  [signal-fn target]
-  (let [completed-p @(:completed (get @registry target))
-        handle *current-handle*]
-    (future
-      (let [result @completed-p]
-        (signal-fn handle result)))))
+(defn- envelope-macro [{:keys [message macro]}]
+  (or macro (create-msg (symbol (gensym "msg-")) message)))
 
-(defn- install-completion-notifier
-  "Install stale notifier: sends target's completion result to self.
-   Captures current :signal at install time; no-ops if self wakes first."
-  [target]
-  (let [my-signal (:signal @(:state (get @registry *current-handle*)))]
-    (install-notifier
-      (fn [handle result]
-        (deliver-msg-fn handle my-signal
-          (create-msg (symbol (gensym "msg-")) {:from target :body result})))
-      target)))
+(defn make-awake-fn [handle eval-fn]
+  (fn [raw]
+    (let [before-awake (:spell/before-awake (meta eval-fn))
+          after-awake (:spell/after-awake (meta eval-fn))]
+      (when before-awake (before-awake))
+      (try
+        (let [macros (mapv envelope-macro (coordinator/drain! handle))
+              transformed (if (and (seq macros) (not (inbox-aware-eval-fn? eval-fn)))
+                            (inbox/materialize-inbox-raw raw macros {:builtins eval/core-builtins}) raw)]
+          (record-last-raw! handle transformed)
+          (binding [*current-eval-fn* eval-fn]
+            (if (inbox-aware-eval-fn? eval-fn) (eval-fn raw macros) (eval-fn transformed))))
+        (finally (when after-awake (after-awake)))))))
 
-(defn- install-persistent-notifier
-  "Install persistent notifier: sends target's completion result to self
-   regardless of whether self has already woken. Used by event-based
-   patterns where the notification should always arrive."
-  [target]
-  (install-notifier
-    (fn [handle result]
-      (send-msg-fn (create-msg (symbol (gensym "msg-")) {:from target :body result})
-                   handle))
+(defn- await-message! [handle]
+  ;; The signal is a notification adapter. Mailbox and run closure are authoritative.
+  (let [{:keys [mailbox signal]} (coordinator/agent handle)]
+    (when (empty? mailbox) @signal)
+    (when-not (coordinator/open?)
+      (throw (ex-info "Coordinator is closed" {:type :coordinator-closed})))))
+
+(defn- make-asleep-fn [handle eval-fn]
+  (fn [raw]
+    (await-message! handle)
+    (box handle raw (make-awake-fn handle eval-fn))))
+
+(defn box
+  ([handle completion-source inside-fn]
+   (box handle completion-source inside-fn (:completed (coordinator/agent handle))))
+  ([handle completion-source inside-fn completion]
+  (let [raw (parse/balance-parens (resolve-completion-source completion-source))
+        runner (Thread/currentThread)]
+    (coordinator/acquire! handle runner completion)
+    (try
+      (record-last-raw! handle raw)
+      (binding [*current-handle* handle *current-raw* raw]
+        (inside-fn raw))
+      (finally (coordinator/release! handle runner))))))
+
+(defn finish-agent!
+  ([handle result] (finish-agent! handle (:completed (coordinator/agent handle)) result))
+  ([handle completion result]
+   (let [outcome (coordinator/finish! handle completion result)]
+     (when (seq (:cancelled outcome))
+       (trace/record-warning!
+         (str "Agent " handle " finished with unfinished outgoing edges; result collection abandoned.")
+         {:handle handle :detached-edges (mapv #(select-keys % [:id :targets]) (:cancelled outcome))}))
+     outcome)))
+
+(defn- start-orphan! [handle eval-fn]
+  (when (coordinator/open?)
+    (let [a (coordinator/agent handle)
+          completion (:completed a)
+          raw (:last-raw @(:execution a))]
+      (try
+        (future
+          (try
+            ;; Wait outside the root box: the earlier lifecycle has unwound.
+            (await-message! handle)
+            (run-root-box handle (or raw "") (make-awake-fn handle eval-fn) eval-fn completion)
+            (catch Throwable e
+              (when-not (= :coordinator-closed (:type (ex-data e)))
+                (coordinator/retire! handle completion (child-failure handle :startup e))
+                (throw e)))))
+        (catch Throwable e
+          ;; Submission can fail after the preceding lifecycle rotated its
+          ;; completion. Retire the unstarted next lifecycle, not the old one.
+          (coordinator/retire! handle completion (child-failure handle :startup e))
+          (throw e))))))
+
+(defn run-root-box
+  ([handle completion-source inside-fn eval-fn]
+   (run-root-box handle completion-source inside-fn eval-fn (:completed (coordinator/agent handle))))
+  ([handle completion-source inside-fn eval-fn completion]
+  (let [entered? (atom false)]
+    (try
+      (let [resolved (resolve-completion-source completion-source)
+            value (box handle resolved (fn [raw] (reset! entered? true) (inside-fn raw)) completion)]
+        (when (finish-agent! handle completion value) (start-orphan! handle eval-fn))
+        value)
+      (catch Throwable e
+        (let [failure (child-failure handle (if @entered? :lifecycle :completion-source) e)]
+          (if (instance? Error e)
+            (coordinator/retire! handle completion failure)
+            (when (finish-agent! handle completion failure) (start-orphan! handle eval-fn))))
+        (throw e))))))
+
+(defn -send! [handle macro] (coordinator/send! handle {:macro macro}))
+(defn send-msg-fn [macro handle] (-send! handle macro) nil)
+(defn send [target value]
+  (coordinator/send! target {:message {:from *current-handle* :body value}}))
+(defn actionable-request-live? [msg]
+  (let [edge (get-in (coordinator/snapshot) [:edges (:edge-id msg)])]
+    (boolean (and (:expects-response msg) (= (:from msg) (:source edge))
+                  (= :pending (get-in edge [:slots *current-handle* :status]))))))
+(defn- reply-target [caller msg]
+  (let [target (:from msg)]
+    (when (or (nil? target) (sequential? target))
+      (throw (ex-info (str caller ": requires a singleton sender") {:message msg})))
     target))
+(def fill-slot! coordinator/fill!)
+(defn reply [msg value]
+  (if (:expects-response msg)
+    (do (when-not (:edge-id msg)
+          (throw (ex-info "Actionable request has no edge-id" {:message msg})))
+        (fill-slot! (:edge-id msg) *current-handle* value) nil)
+    (send (reply-target "reply" msg) value)))
+(defn cancel-edge [id] (coordinator/cancel! *current-handle* id))
+(defn- edge-summary [edge] (dissoc edge :result-promise))
+(defn out-edges [] (mapv edge-summary (coordinator/outgoing (coordinator/snapshot) *current-handle*)))
+(defn in-edges []
+  (->> (vals (:edges (coordinator/snapshot)))
+       (filter #(contains? (:slots %) *current-handle*))
+       (sort-by :created-seq) (mapv edge-summary)))
+(defn agent-status
+  ([] (assoc (agent-status *current-handle*) :out-edges (out-edges) :in-edges (in-edges)))
+  ([handle]
+   (if-let [a (coordinator/agent handle)]
+     (assoc (select-keys a [:status :generation]) :handle handle)
+     (throw (ex-info "Handle not registered" {:handle handle})))))
+(defn graph-snapshot []
+  (let [s (coordinator/snapshot)]
+    {:nodes (into {} (map (fn [[h a]] [h (select-keys a [:status :generation])]) (:agents s)))
+     :edges (into {} (map (fn [[id edge]] [id (edge-summary edge)]) (:edges s)))}))
+(defn sleep-allowed? [handle] (coordinator/sleep-allowed? (coordinator/snapshot) handle))
+(defn block-for-message []
+  (box *current-handle* *current-raw* (make-asleep-fn *current-handle* *current-eval-fn*)))
+(defn- assert-agent-context! [caller]
+  (when-not (and *current-handle* *current-raw*)
+    (throw (ex-info (str caller ": requires an active agent context") {}))))
+(defn sleep! []
+  (assert-agent-context! "!sleep")
+  (let [outcome (coordinator/wait! *current-handle*)]
+    (when-not (= :idle (:status outcome)) (block-for-message))))
+(defn reply-ask [msg value]
+  (assert-agent-context! "!reply-ask")
+  (reply-target "!reply-ask" msg)
+  (coordinator/reply-request! *current-handle* msg value)
+  (sleep!))
+(defn ask-builtin
+  ([targets] (ask-builtin targets nil false))
+  ([targets value] (ask-builtin targets value true))
+  ([targets value supplied?]
+   (assert-agent-context! "!ask")
+   (coordinator/request! *current-handle* (if (sequential? targets) (vec targets) [targets]) supplied? value)
+   (sleep!)))
+(defn request-token
+  "Create a tracked agent request and return a token for its one result."
+  ([handle] (request-token handle nil false))
+  ([handle msg] (request-token handle msg true))
+  ([handle msg supplied?]
+   (when-not *current-handle*
+     (throw (ex-info "blocking/request requires a source agent" {})))
+   (let [result (promise)
+         id (coordinator/request! *current-handle* [handle] supplied? msg result
+                                  (when *computation-future?* (:completion *computation-owner*)))]
+     (assoc (completion-token result) :edge-id id :request-result true))))
 
-(defn reply
-  "Reply to a message (fire-and-forget).
-   Extracts sender from the message map and sends value back."
-  [msg value]
-  (send (:from msg) value))
+(defn- assert-computation-wait! [caller]
+  ;; Function values can escape a future's namespace into an agent program.
+  ;; Test the live runner rather than trusting namespace visibility or bindings
+  ;; inherited by a host future, whose thread does not own that runner.
+  (when (and *current-handle*
+             (identical? (Thread/currentThread) (:runner (coordinator/agent *current-handle*))))
+    (throw (ex-info (str caller " cannot block an agent runner; use !ask-await")
+                    {:type :agent-blocking-call :handle *current-handle*}))))
 
-;; =============================================================================
-;; Block-for-message (internal)
-;; =============================================================================
-
-(defn block-for-message
-  "Re-enter box with asleep inside-fn. Must be called from within an agent
-   context (inside box). Uses *current-eval-fn* to construct the asleep fn."
-  []
-  (box *current-handle* *current-raw*
-    (make-asleep-fn *current-handle* *current-eval-fn*)))
-
-(defn- assert-agent-context!
-  "Throw if not inside an agent context (box execution)."
-  [caller]
-  (when-not *current-handle*
-    (throw (ex-info (str caller ": not inside an agent context. "
-                         "This function requires an active agent box (spawn or runtime lifecycle).")
-                    {})))
-  (when-not *current-raw*
-    (throw (ex-info (str caller ": no raw completion available") {}))))
-
-(defn completion-promise
-  "Return await token for handle's current completion promise.
-   Used by the future-gated blocking/ namespace."
-  [handle]
-  (let [entry (get @registry handle)]
-    (when-not entry
-      (throw (ex-info "completion-promise: handle not registered" {:handle handle})))
-    (completion-token @(:completed entry))))
+(defn future-value
+  "Resolve a computation or request token. Request outcomes wrap successful
+   values so cancellation cannot be confused with a caller's ordinary map."
+  [fut]
+  (when-not (eval/spell-future? fut)
+    (throw (ex-info "Await requires a future" {:value fut})))
+  (let [result (deref (:ref fut))]
+    (if (:request-result fut)
+      (case (:status result)
+        :completed (:value result)
+        :cancelled (throw (ex-info "Agent request was cancelled"
+                                   {:type :request-cancelled :edge-id (:edge-id result)}))
+        :closed (throw (ex-info "Coordinator is closed" {:type :coordinator-closed})))
+      result)))
 
 (defn blocking-await
   "Await helper for Spell futures (exposed via future-gated blocking/ namespace)."
   [fut]
-  (if (eval/spell-future? fut)
-    (deref (:ref fut))
-    (throw (ex-info "blocking/await requires a future" {:value fut}))))
+  (assert-computation-wait! "blocking/await")
+  (when-not (eval/spell-future? fut)
+    (throw (ex-info "blocking/await requires a future" {:value fut})))
+  (future-value fut))
 
 (defn blocking-await-all
   "Await a collection of Spell futures (exposed via future-gated blocking/ namespace)."
   [futures]
+  (assert-computation-wait! "blocking/await-all")
   (when-not (sequential? futures)
     (throw (ex-info "blocking/await-all: argument must be a collection" {:got futures})))
   (mapv (fn [f]
           (when-not (eval/spell-future? f)
             (throw (ex-info "blocking/await-all: all elements must be futures" {:got f})))
-          (deref (:ref f)))
+          (future-value f))
         futures))
 
 (defn blocking-pmap
   "Parallel map over Spell futures (exposed via future-gated blocking/ namespace)."
   [f coll]
-  (let [futures (mapv (fn [item]
+  (assert-computation-wait! "blocking/pmap")
+  (let [owner (computation-owner)
+        futures (mapv (fn [item]
                         (completion-token
                           (clojure.core/future
-                            ((bound-fn [] (eval/invoke-fn f [item])))))
-                        )
+                            (binding [*computation-future?* true *computation-owner* owner
+                                      *current-raw* nil]
+                              (eval/invoke-fn f [item])))))
                       coll)]
     (blocking-await-all futures)))
 
-(defn send-await
-  "Capture completion token, send message, await completion (via blocking/ namespace)."
-  [handle msg]
-  (let [token (completion-promise handle)]
-    (send handle msg)
-    (blocking-await token)))
 
-(defn reply-ask
-  "Reply to a message and block for response.
-   Extracts sender from the message map, sends value, then blocks."
-  [msg value]
-  (ask-builtin (:from msg) value))
-
-;; =============================================================================
-;; Ask
-;; =============================================================================
-
-(defn- wait-for-target-completions
-  "Install a single stale notifier that waits for all target completions
-   and delivers one combined message to self."
-  [targets]
-  ;; Install a single notifier that waits for all targets to complete
-  (let [handle *current-handle*
-        my-signal (:signal @(:state (get @registry handle)))
-        completed-promises (mapv #(-> @registry (get %) :completed deref) targets)]
-    (future
-      (let [results (mapv (fn [target cp] {:from target :body @cp})
-                          targets completed-promises)]
-        (deliver-msg-fn handle my-signal
-          (create-msg (symbol (gensym "msg-")) {:from targets :body results}))))))
-
-(defn- ask-multi
-  "Multi-target ask: poke all targets, wake when all have completed.
-   Installs a single notifier that derefs each target's :completed promise
-   in series, then delivers a combined result message."
-  [targets]
-  ;; Send poke messages to all targets
-  (doseq [target targets]
-    (let [name (symbol (gensym "msg-"))
-          ask-msg {:from *current-handle* :expects-response true}]
-      (send-msg-fn (create-msg name ask-msg) target)))
-  (wait-for-target-completions targets)
-  (block-for-message))
-
-(defn ask-builtin
-  "Request-reply communication primitive.
-   (ask target msg) — send msg to target and wait for reply. The message
-     includes the sender's handle so the target knows who to reply to.
-   (ask target) — poke target (wake it) and wait for a message. Use when
-     woken by the wrong agent and you need to go back to sleep for a specific one.
-   (ask [targets]) — multi-target ask. Poke all targets, wake when all complete.
-   Every form of ask wakes the target, preventing deadlocks."
-  ([target]
-   (if (sequential? target)
-     (do
-       (assert-agent-context! "ask")
-       (when (empty? target)
-         (throw (ex-info "ask: empty target list" {})))
-       (ask-multi target))
-     (ask-builtin target nil)))
-  ([target msg]
-   (assert-agent-context! "ask")
-   (let [name (symbol (gensym "msg-"))
-         ask-msg (cond-> {:from *current-handle* :expects-response true}
-                   msg (assoc :body msg))]
-     (send-msg-fn (create-msg name ask-msg) target))
-   (install-completion-notifier target)
-   (block-for-message)))
-
-
-;; =============================================================================
-;; Handle queries
-;; =============================================================================
-
-(defn handle?
-  "Returns true if h is a registered handle."
-  [h]
-  (contains? @registry h))
-
-;; =============================================================================
-;; Start box helper
-;; =============================================================================
-
+(defn send-await [handle msg]
+  (assert-computation-wait! "blocking/send-await")
+  (blocking-await (request-token handle msg)))
 (defn start-box
-  "Register handle and start a root box that sleeps until first message.
-   Returns handle. Used by register-agent for dormant agents.
-   No initial evaluation — agent wakes on first message."
-  ([handle eval-fn initial-completion]
-   (start-box handle eval-fn initial-completion nil))
-  ([handle eval-fn initial-completion parent-handle]
-   (register! handle parent-handle)
-   (future (run-root-box handle initial-completion
-             (make-asleep-fn handle eval-fn) eval-fn))
+  ([handle eval-fn initial] (start-box handle eval-fn initial nil))
+  ([handle eval-fn initial parent]
+   (register! handle parent :finished)
+   (record-last-raw! handle initial)
+   (start-orphan! handle eval-fn)
    handle))
-
-;; =============================================================================
-;; Spawn
-;; =============================================================================
-
-(defn- spawn*
-  "Internal spawn primitive that returns handle."
-  [agent prompt handle-name]
-  (when (:spell/leaf (meta agent))
-    (throw (ex-info "leaf-llm cannot be used with agents/spawn (no agent lifecycle) — use !llm-self instead"
-                    {:handle handle-name})))
+(defn- validate-spawn-agent! [agent handle]
   (when-not (compiled-agent? agent)
-    (throw (ex-info "agents/spawn requires a compiled agent"
-                    {:value agent
-                     :handle handle-name})))
-  (let [handle (or handle-name (keyword (gensym "spawn-")))
-        parent *current-handle*]
-    ;; Register synchronously — handle is live before future starts
-    (register! handle parent)
-    (let [initial-completed @(:completed (get @registry handle))]
+    (throw (ex-info "agents/spawn requires a compiled agent (leaf-llm has no lifecycle)" {:handle handle})))
+  agent)
+(defn- launch-spawn! [{:keys [agent prompt handle completion]}]
+  (let [completion (or completion (:completed (coordinator/agent handle)))]
+    (try
       (future
-        ((bound-fn []
-           (try
-             (let [result (agent prompt handle)]
-               ;; Defensive fallback: run-root-box should have delivered :completed.
-               (when (identical? @(:completed (get @registry handle)) initial-completed)
-                 (when-not (realized? initial-completed)
-                   (deliver initial-completed result)))
-               result)
-             (catch Exception e
-               (when (identical? @(:completed (get @registry handle)) initial-completed)
-                 (when-not (realized? initial-completed)
-                   (deliver initial-completed nil)))
-               (throw e))))))
-      {:handle handle})))
-
+        (try
+          (let [value (binding [*computation-future?* false *current-handle* nil]
+                        (agent prompt handle))]
+            ;; A normal compiled agent already finished and rotated completion.
+            ;; A direct return has no persistent runner, so retire that handle.
+            (coordinator/retire! handle completion value)
+            value)
+          (catch Throwable e
+            (coordinator/retire! handle completion (child-failure handle :startup e))
+            (throw e))))
+      handle
+      (catch Throwable e
+        (coordinator/retire! handle completion (child-failure handle :startup e))
+        (throw e)))))
 (defn spawn
-  "Start an agent in a background future. Returns its handle immediately.
-   The handle is addressable. The child must explicitly send
-   its result if needed; use ask-based patterns to collect spawn results.
-   1-arity and prompt-first forms default the compiled agent to the current agent.
-   agent must be a compiled spawn-agent function; leaf-llm is not compatible.
-   Stores parent handle in registry so the child can find its spawner.
-   Registers synchronously so the handle is live before spawn returns.
-   Optional handle-name (keyword) sets a fixed handle instead of auto-generating."
-  ([prompt]
-   (spawn (default-spawn-agent "spawn") prompt nil))
-  ([a b]
-   (if (compiled-agent? a)
-     (spawn a b nil)
-     (spawn (default-spawn-agent "spawn") a b)))
-  ([agent prompt handle-name]
-   (:handle (spawn* agent prompt handle-name))))
-
-(defn- spawn-from-multi-spec
-  "Spawn child from a multi-spawn-ask entry.
+  ([prompt] (spawn (default-spawn-agent "spawn") prompt nil))
+  ([a b] (if (compiled-agent? a) (spawn a b nil) (spawn (default-spawn-agent "spawn") a b)))
+  ([agent prompt handle]
+   (let [handle (or handle (keyword (gensym "spawn-")))]
+     (validate-spawn-agent! agent handle)
+     (register! handle *current-handle*)
+     (launch-spawn! {:agent agent :prompt prompt :handle handle}))))
+(defn- normalize-spawn-from-multi-spec
+  "Validate and normalize a multi-spawn-ask entry without registering it.
    Supports explicit entries:
      [agent prompt]
      [agent prompt handle-name]
@@ -548,62 +455,60 @@
     (case (count spec)
       2 (let [[a b] spec]
           (if (compiled-agent? a)
-            (spawn a b)
-            (spawn (default-spawn-agent "spawn-ask") a b)))
+            {:agent (validate-spawn-agent! a nil) :prompt b :handle-name nil}
+            (let [agent (default-spawn-agent "spawn-ask")]
+              {:agent (validate-spawn-agent! agent b) :prompt a :handle-name b})))
       3 (let [[a b c] spec]
           (if (compiled-agent? a)
-            (spawn a b c)
+            {:agent (validate-spawn-agent! a c) :prompt b :handle-name c}
             (throw (ex-info "spawn-ask: explicit 3-item entries must be [compiled-agent prompt handle-name]"
                             {:spec spec}))))
       (throw (ex-info "spawn-ask: each vector entry must be [compiled-agent prompt], [compiled-agent prompt handle-name], or [prompt handle-name]"
                       {:spec spec})))
-    (spawn (default-spawn-agent "spawn-ask") spec)))
+    (let [agent (default-spawn-agent "spawn-ask")]
+      {:agent (validate-spawn-agent! agent nil) :prompt spec :handle-name nil})))
 
+
+(defn prepare-spawns! [specs]
+  (let [specs (mapv (fn [{:keys [agent handle-name] :as spec}]
+                      (validate-spawn-agent! agent handle-name)
+                      (assoc spec :handle (or handle-name (keyword (gensym "spawn-")))
+                             :parent-handle *current-handle*)) specs)
+        id (coordinator/spawn-request! *current-handle* specs)
+        prepared (mapv #(assoc % :completion (:completed (coordinator/agent (:handle %)))) specs)]
+    (doseq [[index spec] (map-indexed vector prepared)]
+      (try
+        (launch-spawn! spec)
+        (catch Throwable e
+          ;; Already-launched children retain their owners. Every registration
+          ;; that cannot launch receives a terminal result and is removed.
+          (doseq [{:keys [handle completion]} (subvec prepared index)]
+            (coordinator/retire! handle completion (child-failure handle :startup e)))
+          (throw e))))
+    id))
 (defn spawn-ask
-  "Spawn child agent(s) and block until completion messages arrive.
-   Prompt-only forms default the compiled agent to the current agent.
-   Vector form spawns multiple children, then waits for all completions
-   without sending wakeup messages to those children.
-   Combines spawn + block for safe use as a quoted trailing expression:
-     '(agents/!spawn-ask \"do X and send result to (parent-handle)\")
-   The child must send its result via (send (parent-handle) value).
-   Installs completion notifier so child's death wakes the parent."
   ([arg]
-   (assert-agent-context! "spawn-ask")
+   (assert-agent-context! "!spawn-ask")
    (if (vector? arg)
-     (do
-       (when (empty? arg)
-         (throw (ex-info "spawn-ask: empty spawn spec list" {})))
-       (let [children (mapv spawn-from-multi-spec arg)]
-         (wait-for-target-completions children)
-         (block-for-message)))
+     (do (prepare-spawns! (mapv normalize-spawn-from-multi-spec arg)) (sleep!))
      (spawn-ask (default-spawn-agent "spawn-ask") arg nil)))
-  ([a b]
-   (if (compiled-agent? a)
-     (spawn-ask a b nil)
-     (spawn-ask (default-spawn-agent "spawn-ask") a b)))
-  ([agent prompt handle-name]
-   (assert-agent-context! "spawn-ask")
-   (let [child (spawn agent prompt handle-name)]
-     (install-completion-notifier child)
-     (block-for-message))))
-
-;; =============================================================================
-;; Namespace maps
-;; =============================================================================
-
+  ([a b] (if (compiled-agent? a) (spawn-ask a b nil) (spawn-ask (default-spawn-agent "spawn-ask") a b)))
+  ([agent prompt handle]
+   (assert-agent-context! "!spawn-ask")
+   (prepare-spawns! [{:agent agent :prompt prompt :handle-name handle}])
+   (sleep!)))
 (def blocking-namespace
   "Future-only blocking namespace.
    Injected into env by future*; unavailable outside futures."
-  {:short-docs "Future-only blocking helpers: await, await-all, pmap, completion-promise, send-await."
+  {:short-docs "Future-only blocking helpers: await, await-all, pmap, request, send-await."
    :docs {:guide "BLOCKING — Future-only blocking primitives.
 
   (blocking/await fut)                 — await a Spell future token (future-only)
   (blocking/await-all [f1 f2 ...])     — await multiple Spell futures (future-only)
   (blocking/pmap f coll)               — parallel map with blocking join (future-only)
   (blocking/plet [a expr1 b expr2] body) — macro; parallel let with blocking/await
-  (blocking/completion-promise handle) — await token for handle completion (future-only)
-  (blocking/send-await handle msg)     — capture completion, send, await (future-only)
+  (blocking/request handle) — send a tracked poke and return its result token (future-only)
+  (blocking/send-await handle msg)     — send a tracked request, await its result (future-only)
 
 Use from inside (future ...) orchestration code."
           }
@@ -612,12 +517,12 @@ Use from inside (future ...) orchestration code."
     :await-all "(blocking/await-all [f1 f2 ...]) — future-only await-many helper."
     :pmap "(blocking/pmap f coll) — future-only parallel map with blocking join."
     :plet "(blocking/plet [bindings] body...) — macro; parallel let using blocking/await."
-    :completion-promise "(blocking/completion-promise handle) — future-only completion token capture."
-    :send-await "(blocking/send-await handle msg) — future-only capture->send->await helper."}
+    :request "(blocking/request handle) — future-only tracked request token. Lifecycle failures resolve to tagged :spell/child-failure data; nil is a successful nil result."
+    :send-await "(blocking/send-await handle msg) — future-only request->await helper. Lifecycle failures resolve to tagged :spell/child-failure data."}
    :await blocking-await
    :await-all blocking-await-all
    :pmap blocking-pmap
-   :completion-promise completion-promise
+   :request request-token
    :send-await send-await})
 
 (def agents-namespace
@@ -640,9 +545,23 @@ Use from inside (future ...) orchestration code."
   (agents/!spawn-ask agent prompt) — spawn with explicit compiled agent, block until completion
   (agents/!spawn-ask [[agent prompt] [agent prompt :name] ...]) — spawn many, wait for all completions (no ask wakeup poke)
   (agents/!spawn-ask [prompt-a prompt-b ...]) — spawn many with the current agent, wait for all completions (no ask wakeup poke)
+  (agents/!sleep)                  — go back asleep on retained outgoing edges
+  (agents/cancel edge-id)          — cancel one of your outgoing edges (targets keep running)
+  (agents/status)                  — your state plus incoming/outgoing edge summary
+  (agents/status handle)           — another handle's awake/asleep/finished state
+  (agents/graph)                   — read-only snapshot of nodes and hyperedges
+  (agents/out-edges)               — your outgoing edges, target slots, collected outcomes
+  (agents/in-edges)                — edges in which you hold a (possibly pending) result slot
   (agents/current-handle)          — your handle
   (agents/parent-handle)           — handle of agent that spawned you (nil if you are main)
   (agents/send-msg-fn f handle)    — low-level / not recommended
+
+Waiting model: each !ask/!spawn-ask creates one outgoing wait edge with a
+result slot per target. An edge completes when every slot is filled by a
+reply or lifecycle return; completion wakes the asker once with the report.
+A plain send wakes its recipient but never creates or answers an edge. If an
+unrelated message wakes you while you still wait on earlier edges, handle it
+and call (agents/!sleep) to keep waiting on the retained edges.
 
 Use (!describe agents :fn-name) for detailed docs on any function.
 
@@ -682,21 +601,22 @@ Multi-part example:
 1. Main: spawn a summarizer, keep working, then block with !ask.
   ;; turn 1: start child + continue your own CoT
   ...▌'(do (agents/spawn
-         \"You are a summarizer. Read long-file.txt and send me a summary.\"
+         \"You are a summarizer. Read long-file.txt, then reply to my actionable request with the summary.\"
          :summarizer)
        (!extend))
   ;; next turn:
   ... ▌(think \"...\")(think \"Ok, I'll wait for summarizer now\")'(agents/!ask :summarizer)
   ;; main blocks until child responds
 
-2. Summarizer child: use send to return result.
-  ...(quine prompt \"You are a summarizer. Read long-file.txt and send me a summary.\")
+2. Summarizer child: reply to the request that created the wait edge.
+  ...(quine prompt \"You are a summarizer. Read long-file.txt, then reply to my actionable request with the summary.\")
   ▌'(!call-now file-contents (io/read-lines \"long-file.txt\"))
   ;; next turn
   ...(def file-contents \"...\")
+  (def msg-0 {:from :main :expects-response true})
   ▌(def summary \"...\")
-  '(agents/send (agents/parent-handle) summary)
-  ;; child turn ends after send
+  '(agents/reply msg-0 summary)
+  ;; reply fills the request slot; the child turn then ends
 
 3. Main: use !reply-ask to clarify and keep the conversation open.
   ...'(agents/!ask :summarizer)
@@ -725,7 +645,8 @@ Multi-part example:
   Pokes all targets, wakes when all have completed.
   Use for fan-out where you need all results.
 
-Every form wakes the target, preventing deadlocks.
+Every form wakes its targets. The wait-edge ordering rule prevents an
+all-asleep cycle introduced by the communication topology.
 Code after ask is dead code — ask blocks and triggers a new turn.
 
 Example — multi-turn conversation:
@@ -756,20 +677,31 @@ Re-evaluate and re-issue if still appropriate.
 
     :!reply-ask
     "Reply to a received message and block for the next response.
-Keeps the conversation open — sender gets your reply, you wait for theirs.
+Keeps the conversation open by turning your reply into a new reverse request.
 
 (agents/!reply-ask msg value)
   msg: the received message map (e.g. msg-0)
   value: your reply (any value)
 
-The sender's next turn sees (def msg-N {:from your-handle :body value}).
-Your next turn receives the sender's next message as a new def binding.
+The sender's next turn sees one actionable message:
+(def msg-N {:from your-handle :body value :expects-response true :edge-id ...}).
+They should answer that exact message with (agents/reply msg-N response).
+Your next turn receives their response as a new def binding.
+
+A stale, duplicate, or cancelled incoming request is rejected atomically;
+no reverse request is created. Plain reply remains a no-op in that case.
+
+If msg is already a singleton completion report from an earlier !ask, there
+is no old live slot to fill; !reply-ask directly creates the new reverse
+request. A multi-target completion report has several senders and must not be
+passed to !reply-ask—choose one target and start a new !ask instead.
 
 Example (from a spawned agent's perspective):
   ;; received (def msg-0 {:from :main :body 100 :expects-response true})
   '(agents/!reply-ask msg-0 250)
-  ;; sends 250 back to :main, blocks for next message
-  ;; next turn: (def msg-1 {:from :main :body 150 :expects-response true})"
+  ;; :main receives msg-1 carrying 250 and a live reverse edge
+  ;; :main: '(agents/reply msg-1 150)
+  ;; your next turn receives (def msg-2 {:from :main :body 150 ...})"
 
     :reply
     "Reply to a received message (fire-and-forget). Ends the conversation from your side.
@@ -778,7 +710,13 @@ Example (from a spawned agent's perspective):
   msg: the received message map (e.g. msg-0)
   value: your reply (any value)
 
-Does not block. Use as the final message in a conversation.
+Does not block. When msg has :expects-response true (as !ask requests do),
+reply fills your result slot in its edge; the asker wakes when the edge
+completes (all slots filled). A stale, duplicate, or cancelled request is a
+no-op. A singleton completion report has an old :edge-id but no
+:expects-response marker, so reply treats it as a normal message and sends a
+plain reply to :from. Multi-target completion reports cannot be replied to as
+one message; choose a specific target.
 Use !reply-ask instead when you want to continue back-and-forth.
 
 Example:
@@ -827,8 +765,12 @@ Example:
        (agents/!ask :seller 100))"
 
     :!spawn-ask
-    "Spawn child agent(s) and block for result message(s).
+    "Spawn child agent(s), create a completion edge, and block until it completes.
 Combines spawn + block. One-shot delegation pattern.
+The child's lifecycle return fills its result slot; the child does not
+need to send the same result separately.
+Lifecycle failures fill the slot with reader-safe tagged
+{:spell/child-failure true ...} data; a successful nil result remains nil.
 
 (agents/!spawn-ask prompt)
 (agents/!spawn-ask prompt :name)
@@ -849,9 +791,26 @@ Your next turn sees (def msg-N {:from child-handle :body result}).
   Your next turn sees :body as a vector of {:from child-handle :body result}.
 
 Example:
-	  '(agents/!spawn-ask \"Compute 6*7 and (agents/send (agents/parent-handle) result)\")
-	  ;; next turn: (def msg-0 {:from :spawn-42 :body 42})"
+	  '(agents/!spawn-ask \"Compute 6*7 and return the result.\")
+	  ;; next turn: (def msg-0 {:from :spawn-42 :body 42 :edge-id 3})"
 
+    :!sleep "(agents/!sleep) — go asleep on retained outgoing edges.
+
+No message is sent and no new edge is created. Allowed only when the caller
+has a pending outgoing edge created strictly after its newest pending
+incoming edge; otherwise throws without changing the wait graph.
+Use after being awakened by an unrelated message while still waiting on
+earlier !ask/!spawn-ask edges."
+    :cancel "(agents/cancel edge-id) — cancel one of the caller's pending outgoing edges.
+
+Detaches the waiting relationship but does not stop or interrupt the edge's
+targets. Returns a summary of the cancelled edge; throws when the edge does
+not exist, is not pending, or the caller is not its source."
+    :status "(agents/status) — inspect the caller's state and concise incoming/outgoing edge summaries.
+(agents/status handle) — inspect another handle's awake/asleep/finished state and lifecycle generation."
+    :graph "(agents/graph) — read-only snapshot of the wait graph: nodes with state/generation and pending hyperedges with slot status."
+    :out-edges "(agents/out-edges) — inspect the caller's pending outgoing edges, target slots, and collected outcomes."
+    :in-edges "(agents/in-edges) — inspect all live edges containing the caller's target slot, including slots already filled while other targets remain pending."
     :current-handle
     "Returns your handle as a keyword.
 
@@ -882,6 +841,13 @@ Internal plumbing for the communication layer."}
    :!ask ask-builtin
    :spawn spawn
    :!spawn-ask spawn-ask
+   :!sleep sleep!
+   :cancel cancel-edge
+   :status agent-status
+   :graph graph-snapshot
+   :out-edges out-edges
+   :in-edges in-edges
    :current-handle (fn [] *current-handle*)
-   :parent-handle (fn [] (:parent-handle (get @registry *current-handle*)))
+   :parent-handle (fn []
+                    (:parent-handle (coordinator/agent *current-handle*)))
    :send-msg-fn send-msg-fn})
