@@ -62,6 +62,7 @@ writeup/
 # Public docs surface
 docs/*
 !docs/api.md
+!docs/multi-agent.md
 !docs/CHANGELOG.md
 !docs/changelog.md
 !docs/error-recovery.md

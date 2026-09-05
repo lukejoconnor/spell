@@ -13,7 +13,7 @@
 
 (def ^:private public-run-keys
   #{:prompt :init :model-profile :agent-profile :model :reasoning-effort
-    :budget :depth :trace-dir :usage-tracker :user-reader :log-writer})
+    :budget :depth :trace-dir :usage-tracker :user-reader :log-writer :coordinator})
 
 (def ^:private removed-run-keys
   #{:provider :agent :lm-profile :trace :usage :user? :verbose :thinking :prefill? :format :retries
@@ -134,7 +134,7 @@
                 (agent/close-compiled-agent! agent-fn)))))))))
 
 (defn- execute-run [opts]
-  (binding [coordinator/*coordinator* (coordinator/new-coordinator)
+  (binding [coordinator/*coordinator* (coordinator/new-coordinator (get opts :coordinator {}))
             globals/*store* (globals/new-store)]
     (user/call-with-session
       (fn []

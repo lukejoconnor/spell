@@ -292,22 +292,33 @@
 (defn- assert-agent-context! [caller]
   (when-not (and *current-handle* *current-raw*)
     (throw (ex-info (str caller ": requires an active agent context") {}))))
-(defn sleep! []
-  (assert-agent-context! "!sleep")
+(defn wait!
+  "Observe current coordination state and sleep only when a pending edge permits.
+   Available messages continue immediately; an empty wait returns nil."
+  []
+  (assert-agent-context! "!wait")
   (let [outcome (coordinator/wait! *current-handle*)]
     (when-not (= :idle (:status outcome)) (block-for-message))))
+(defn sleep! [] (wait!))
 (defn reply-ask [msg value]
   (assert-agent-context! "!reply-ask")
   (reply-target "!reply-ask" msg)
   (coordinator/reply-request! *current-handle* msg value)
   (sleep!))
-(defn ask-builtin
-  ([targets] (ask-builtin targets nil false))
-  ([targets value] (ask-builtin targets value true))
+(defn ask
+  "Immediately register and deliver a request, returning its edge ID."
+  ([targets] (ask targets nil false))
+  ([targets value] (ask targets value true))
   ([targets value supplied?]
-   (assert-agent-context! "!ask")
-   (coordinator/request! *current-handle* (if (sequential? targets) (vec targets) [targets]) supplied? value)
-   (sleep!)))
+   (assert-agent-context! "ask")
+   (coordinator/request! *current-handle*
+                         (if (sequential? targets) (vec targets) [targets])
+                         supplied? value)))
+
+(defn ask-builtin
+  "Convenience wrapper: request now, then wait on current coordination state."
+  ([targets] (ask targets) (wait!))
+  ([targets value] (ask targets value) (wait!)))
 (defn completion-promise [handle]
   (when-not (handle? handle) (throw (ex-info "Handle not registered" {:handle handle})))
   (assoc (completion-token (:completed (coordinator/agent handle))) :agent-handle handle))
@@ -410,16 +421,26 @@
     (doseq [spec specs] (launch-spawn! spec))
     id))
 (defn spawn-ask
+  "Register children and their result edge before launching; return the edge ID."
   ([arg]
-   (assert-agent-context! "!spawn-ask")
+   (assert-agent-context! "spawn-ask")
    (if (vector? arg)
-     (do (prepare-spawns! (mapv normalize-spawn-from-multi-spec arg)) (sleep!))
+     (prepare-spawns! (mapv normalize-spawn-from-multi-spec arg))
      (spawn-ask (default-spawn-agent "spawn-ask") arg nil)))
-  ([a b] (if (compiled-agent? a) (spawn-ask a b nil) (spawn-ask (default-spawn-agent "spawn-ask") a b)))
+  ([a b]
+   (if (compiled-agent? a)
+     (spawn-ask a b nil)
+     (spawn-ask (default-spawn-agent "spawn-ask") a b)))
   ([agent prompt handle]
-   (assert-agent-context! "!spawn-ask")
-   (prepare-spawns! [{:agent agent :prompt prompt :handle-name handle}])
-   (sleep!)))
+   (assert-agent-context! "spawn-ask")
+   (prepare-spawns! [{:agent agent :prompt prompt :handle-name handle}])))
+
+(defn spawn-ask-and-wait
+  "Convenience wrapper: start the collection, then wait on current state."
+  ([arg] (spawn-ask arg) (wait!))
+  ([a b] (spawn-ask a b) (wait!))
+  ([agent prompt handle] (spawn-ask agent prompt handle) (wait!)))
+
 (def blocking-namespace
   "Future-only blocking namespace.
    Injected into env by future*; unavailable outside futures."
@@ -449,318 +470,79 @@ Use from inside (future ...) orchestration code."
    :send-await send-await})
 
 (def agents-namespace
-  "Agent communication namespace — effect-guarded (trailing expression only)."
-  {:short-docs "Inter-agent communication: spawn, !ask, send, reply."
-   :docs {:guide "AGENTS — Inter-agent communication (effect namespace).
+  "Effect namespace for immediate communication and explicit waiting."
+  {:short-docs "Agents: spawn, ask, spawn-ask, !wait, send, reply, cancel, inspection."
+   :docs
+   {:guide "AGENTS — Immediate coordination controlled by your program.
 
-  (agents/spawn prompt)         — start background agent using the current agent
-  (agents/spawn prompt :handle-name) — same, with explicit handle name
-  (agents/spawn agent prompt)   — start background agent with explicit compiled agent
-  (agents/spawn agent prompt :handle-name) — explicit compiled agent + explicit handle name
-  (agents/send target message)     — send message (usually a string) to target
-  (agents/reply msg-map message)   — reply to msg-map, which must contain :from
-  (agents/!ask target message)     — send message to target, block for reply
-  (agents/!ask target)             — poke target without message, block for reply
-  (agents/!ask [a b c])            — multi-target: poke all, wake when all complete
-  (agents/!reply-ask msg-map message)   — reply to msg-map, block for next message
-  (agents/!spawn-ask prompt) — spawn with the current agent, block until completion
-  (agents/!spawn-ask prompt :handle-name) — same, with explicit handle name
-  (agents/!spawn-ask agent prompt) — spawn with explicit compiled agent, block until completion
-  (agents/!spawn-ask [[agent prompt] [agent prompt :name] ...]) — spawn many, wait for all completions (no ask wakeup poke)
-  (agents/!spawn-ask [prompt-a prompt-b ...]) — spawn many with the current agent, wait for all completions (no ask wakeup poke)
-  (agents/!sleep)                  — go back asleep on retained outgoing edges
-  (agents/cancel edge-id)          — cancel one of your outgoing edges (targets keep running)
-  (agents/status)                  — your state plus incoming/outgoing edge summary
-  (agents/status handle)           — another handle's awake/asleep/finished state
-  (agents/graph)                   — read-only snapshot of nodes and hyperedges
-  (agents/out-edges)               — your outgoing edges, target slots, collected outcomes
-  (agents/in-edges)                — edges in which you hold a (possibly pending) result slot
-  (agents/current-handle)          — your handle
-  (agents/parent-handle)           — handle of agent that spawned you (nil if you are main)
-  (agents/send-msg-fn f handle)    — low-level / not recommended
+All agents/ calls are effects: use them in the quoted trailing expression.
 
-Waiting model: each !ask/!spawn-ask creates one outgoing wait edge with a
-result slot per target. An edge completes when every slot is filled by a
-reply or lifecycle return; completion wakes the asker once with the report.
-A plain send wakes its recipient but never creates or answers an edge. If an
-unrelated message wakes you while you still wait on earlier edges, handle it
-and call (agents/!sleep) to keep waiting on the retained edges.
+(agents/ask target value) creates and sends a request now, returning an edge ID.
+(agents/ask target) or (agents/ask [targets]) sends bodyless requests.
+(agents/spawn-ask prompt) starts a child with the current compiled agent and
+returns its collection edge ID. Explicit forms accept agent/prompt/handle;
+multi-spawn accepts [prompt ...] or [[agent prompt handle] ...].
+(agents/!ask ...) and (agents/!spawn-ask ...) register, then call !wait.
+(agents/!wait) and (agents/!sleep) use the same wait mechanism.
 
-Use (!describe agents :fn-name) for detailed docs on any function.
+Example: '(do (def a (agents/spawn-ask \"Review the API.\"))
+             (def b (agents/spawn-ask \"Check the examples.\"))
+             (agents/!wait))
 
-Special handles:
-  :main — the initial agent (entry point). Always present.
-  :user — the human operator (only present in interactive terminal sessions).
-  Check (globals/get :roles) to see if :user is available before asking.
+One edge collects ALL its target results. Across separate edges, ANY completed
+edge awakens you; the others remain pending. Plain sends can also awaken you.
+After handling an unrelated message, call !wait or !sleep to retain your waits.
+Returning ends your lifecycle and cancels your unfinished outgoing collections;
+targets continue running. Returning a child result fills its claimed slots.
 
-Messages arrive as def bindings: (def msg-N {:from sender :body val}).
-Reply using Spell code, not raw natural language.
-Agents other than :main persist after returning; a later message can wake them for another turn.
+Requests arrive as msg-N maps with :from, :expects-response true, :edge-id and
+optional :body. Pass that exact message to (agents/reply msg-N result).
+Duplicate/cancelled replies are no-ops. A single-target completion report has
+:from/:body/:edge-id; multi-target :body is [{:from target :body result} ...].
+Successful nil is a result. Terminal failures carry :spell/child-failure true.
 
-Message preemption: if another agent sends you a message while your response
-is in flight, the message is appended as an extension and your trailing
-expression becomes inert. A (think \"[preempted or awakened by msg-N]\")
-annotation precedes the message def. 'Preempted' means your trailing expression
-did not fire; 'awakened' means you were sleeping and the message woke you.
-You get a new turn with the incoming message in scope.
-You may then re-run the trailing expression from your previous turn.
+A wait observes current messages and obligations atomically. Fast results cannot
+be missed. With no incoming/outgoing obligations and no messages, it returns nil.
+Otherwise sleep requires an outgoing edge newer than every pending incoming
+edge. Refusal includes the obligations; answer newer requests before retrying.
+Registration wakes targets and happens immediately, including when nested
+!llm-self calls occur before waiting. There is no whole-turn batching.
 
-All agents/ calls are effect functions — quote them in the trailing expression.
-Check (globals/get :roles) to discover available agents.
+Current receipt timing is after model generation, before evaluation. Messages
+arriving in flight may preempt the pending trailing expression. They arrive as
+new bindings on a continuation, as before. Put waiting at the end of a turn.
 
-Common mistakes:
-
-1. agents/send and passing turn when expecting a reply: this ends conversation, instead use agents/!ask
-2. agents/reply and passing turn: same problem
-3. agents/!ask followed by additional expressions: these do not evaluate, instead put them first
-4. hallucinating handles: use (agents/parent-handle), :user, :main, or look up (!print (globals/get :roles)) (if globals/ available)
-5. calling agents/* outside the quoted trailing expression (for example: (def h (agents/current-handle))); effect calls must run in trailing expression code
-6. agents/send argument order: it is (agents/send target message), consistent with (agents/!ask target message).
-
-In examples, ▌ marks cursor position in a completion. It is doc-only; do not type it into code.
-
-Multi-part example:
-
-1. Main: spawn a summarizer, keep working, then block with !ask.
-  ;; turn 1: start child + continue your own CoT
-  ...▌'(do (agents/spawn
-         \"You are a summarizer. Read long-file.txt, then reply to my actionable request with the summary.\"
-         :summarizer)
-       (!extend))
-  ;; next turn:
-  ... ▌(think \"...\")(think \"Ok, I'll wait for summarizer now\")'(agents/!ask :summarizer)
-  ;; main blocks until child responds
-
-2. Summarizer child: reply to the request that created the wait edge.
-  ...(quine prompt \"You are a summarizer. Read long-file.txt, then reply to my actionable request with the summary.\")
-  ▌'(!call-now file-contents (io/read-lines \"long-file.txt\"))
-  ;; next turn
-  ...(def file-contents \"...\")
-  (def msg-0 {:from :main :expects-response true})
-  ▌(def summary \"...\")
-  '(agents/reply msg-0 summary)
-  ;; reply fills the request slot; the child turn then ends
-
-3. Main: use !reply-ask to clarify and keep the conversation open.
-  ...'(agents/!ask :summarizer)
-  (def msg-0 {:from :summarizer :body {...}})
-  (think \"I have a question about the summary.\")
-  ▌'(agents/!reply-ask msg-0 \"What is the...\")
-  ;; child awakens; main blocks for child's response
-
-"
-          }
+Use (!describe agents :function) for signatures. Discover handles through
+(agents/current-handle), (agents/parent-handle), and registered roles. :user
+exists only when the run configured user input. Never invent a handle."}
    :detail
-   {:!ask
-    "Request-reply communication primitive. Three forms:
-
-(agents/!ask target msg) — send msg to target, block for reply.
-  target: keyword handle (:seller, :spawn-42, :main)
-  msg: any value
-  Recipient sees (def msg-N {:from your-handle :body msg :expects-response true}).
-  Your next turn receives the reply as a def binding.
-
-(agents/!ask target) — poke target (wake it) and block.
-  Sends (def msg-N {:from your-handle :expects-response true}) — no :body.
-  Use to wait for a specific agent to respond.
-
-(agents/!ask [a b c]) — multi-target ask.
-  Pokes all targets, wakes when all have completed.
-  Use for fan-out where you need all results.
-
-Every form wakes its targets. The wait-edge ordering rule prevents an
-all-asleep cycle introduced by the communication topology.
-Code after ask is dead code — ask blocks and triggers a new turn.
-
-Example — multi-turn conversation:
-  '(do (agents/spawn \"You are a seller.\" :seller)
-       (agents/!ask :seller 100))
-  ;; next turn: (def msg-0 {:from :seller :body 250})
-  '(agents/!ask :seller 150)
-  ;; ...until one side uses reply to end
-
-Example — fan-out, wait for all:
-  '(do (def a (agents/spawn \"compute X\"))
-       (def b (agents/spawn \"compute Y\"))
-       (agents/!ask [a b]))
-  ;; next turn: msg with :body [{:from a :body result-a} {:from b :body result-b}]
-
-Message preemption: if another agent sends you a message while your response
-is in flight, the message is appended as an extension. Your trailing expression
-(e.g. this ask) becomes inert — it does not fire. A think annotation marks
-the event. You get a new turn with the incoming message in scope.
-Re-evaluate and re-issue if still appropriate.
-
-  ...▌
-  '(agents/!ask :B \"hello\")
-  ;; agent C sends a message before your ask fires; your completion becomes:
-  ...'(agents/!ask :B \"hello\") (think \"[preempted or awakened by msg-0]\")
-  (def msg-0 {:from :C :body \"urgent\"})
-  '(!llm-self (edit-reopen completion))  ;; ask became inert data — it did not fire"
-
-    :!reply-ask
-    "Reply to a received message and block for the next response.
-Keeps the conversation open by turning your reply into a new reverse request.
-
-(agents/!reply-ask msg value)
-  msg: the received message map (e.g. msg-0)
-  value: your reply (any value)
-
-The sender's next turn sees one actionable message:
-(def msg-N {:from your-handle :body value :expects-response true :edge-id ...}).
-They should answer that exact message with (agents/reply msg-N response).
-Your next turn receives their response as a new def binding.
-
-If msg is already a singleton completion report from an earlier !ask, there
-is no old live slot to fill; !reply-ask directly creates the new reverse
-request. A multi-target completion report has several senders and must not be
-passed to !reply-ask—choose one target and start a new !ask instead.
-
-Example (from a spawned agent's perspective):
-  ;; received (def msg-0 {:from :main :body 100 :expects-response true})
-  '(agents/!reply-ask msg-0 250)
-  ;; :main receives msg-1 carrying 250 and a live reverse edge
-  ;; :main: '(agents/reply msg-1 150)
-  ;; your next turn receives (def msg-2 {:from :main :body 150 ...})"
-
-    :reply
-    "Reply to a received message (fire-and-forget). Ends the conversation from your side.
-
-(agents/reply msg value)
-  msg: the received message map (e.g. msg-0)
-  value: your reply (any value)
-
-Does not block. When msg has :expects-response true (as !ask requests do),
-reply fills your result slot in its edge; the asker wakes when the edge
-completes (all slots filled). A stale, duplicate, or cancelled request is a
-no-op. A singleton completion report has an old :edge-id but no
-:expects-response marker, so reply treats it as a normal message and sends a
-plain reply to :from. Multi-target completion reports cannot be replied to as
-one message; choose a specific target.
-Use !reply-ask instead when you want to continue back-and-forth.
-
-Example:
-  ;; received (def msg-0 {:from :main :body \"final offer: 200\" :expects-response true})
-  '(agents/reply msg-0 \"accepted\")
-  ;; :main's next turn sees (def msg-N {:from :seller :body \"accepted\"})"
-
-    :send
-    "Send a value to a target handle with auto-tagged sender.
-The recipient sees (def msg-N {:from your-handle :body val}).
-
-(agents/send target value)
-  target: keyword handle
-  value: any value
-
-If send is your trailing expression, the message is sent and your turn ends.
-To continue after sending, use a trailing do with extend:
-  '(do (agents/send target value) (!extend))
-For request-reply conversations, a more common pattern is:
-  '(agents/!ask target value)
-
-Example (from a spawned child):
-  '(agents/send (agents/parent-handle) 42)"
-
-    :spawn
-    "Start an agent in a background future. Returns its handle immediately.
-
-(agents/spawn prompt)
-(agents/spawn prompt :name)
-(agents/spawn agent prompt)
-(agents/spawn agent prompt :name)
-  agent: explicit compiled agent (for example workers/helper)
-  prompt: string prompt for the child agent
-  :name: optional keyword handle (e.g. :seller). Default: auto-generated :spawn-N.
-Include instructions to the child LLM in its prompt, usually not by sending a message.
-Natural-language prompts are wrapped into an init program automatically.
-Strings that already start with '(' are treated as init programs directly.
-If you have an explicit compiled agent, pass it as the first argument:
-  '(agents/spawn workers/helper \"Do X.\")
-  '(agents/spawn \"Do X.\")                  ; uses current agent
-
-The child runs independently with its own handle and can send messages to you or other agents.
-
-Example:
-  '(do (agents/spawn \"You negotiate prices.\" :seller)
-       (agents/!ask :seller 100))"
-
-    :!spawn-ask
-    "Spawn child agent(s), create a completion edge, and block until it completes.
-Combines spawn + block. One-shot delegation pattern.
-The child's lifecycle return fills its result slot; the child does not
-need to send the same result separately.
-Lifecycle failures fill the slot with reader-safe tagged
-{:spell/child-failure true ...} data; a successful nil result remains nil.
-
-(agents/!spawn-ask prompt)
-(agents/!spawn-ask prompt :name)
-(agents/!spawn-ask agent prompt)
-(agents/!spawn-ask agent prompt :name)
-  agent: explicit compiled agent (for example workers/helper)
-  prompt: string or wrap-cat
-  :name: optional keyword handle (like agents/spawn)
-
-Your next turn sees (def msg-N {:from child-handle :body result}).
-
-(agents/!spawn-ask [[agent-a prompt-a] [agent-b prompt-b :b] ...])
-  Each entry mirrors agents/spawn arities: [agent prompt], [agent prompt :name], or [prompt :name].
-  Non-vector entries are treated as prompt-only entries with the current agent:
-  (agents/!spawn-ask [prompt-a prompt-b prompt-c])
-  Spawns all children concurrently, then waits for all completions.
-  Unlike (agents/!ask [targets]), this does NOT send wakeup/poke messages to targets.
-  Your next turn sees :body as a vector of {:from child-handle :body result}.
-
-Example:
-	  '(agents/!spawn-ask \"Compute 6*7 and return the result.\")
-	  ;; next turn: (def msg-0 {:from :spawn-42 :body 42 :edge-id 3})"
-
-    :!sleep "(agents/!sleep) — go asleep on retained outgoing edges.
-
-No message is sent and no new edge is created. Allowed only when the caller
-has a pending outgoing edge created strictly after its newest pending
-incoming edge; otherwise throws without changing the wait graph.
-Use after being awakened by an unrelated message while still waiting on
-earlier !ask/!spawn-ask edges."
-    :cancel "(agents/cancel edge-id) — cancel one of the caller's pending outgoing edges.
-
-Detaches the waiting relationship but does not stop or interrupt the edge's
-targets. Returns a summary of the cancelled edge; throws when the edge does
-not exist, is not pending, or the caller is not its source."
-    :status "(agents/status) — inspect the caller's state and concise incoming/outgoing edge summaries.
-(agents/status handle) — inspect another handle's awake/asleep/finished state and lifecycle generation."
-    :graph "(agents/graph) — read-only snapshot of the wait graph: nodes with state/generation and pending hyperedges with slot status."
-    :out-edges "(agents/out-edges) — inspect the caller's pending outgoing edges, target slots, and collected outcomes."
-    :in-edges "(agents/in-edges) — inspect all live edges containing the caller's target slot, including slots already filled while other targets remain pending."
-    :current-handle
-    "Returns your handle as a keyword.
-
-(agents/current-handle)
-
-:main for the initial agent, :spawn-N for auto-named spawned agents,
-or the keyword you specified when spawned (e.g. :seller)."
-
-    :parent-handle
-    "Returns the handle of the agent that spawned you, or nil if main.
-
-(agents/parent-handle)
-
-Use in spawned agents to send results back to the parent:
-  '(agents/send (agents/parent-handle) result)"
-
-    :send-msg-fn
-    "Low-level fire-and-forget send. Most agents should use send, !ask, or !reply-ask instead.
-
-(agents/send-msg-fn f handle)
-  f: function taking a raw completion string, returning a modified string
-  handle: target keyword handle
-
-Internal plumbing for the communication layer."}
+   {:spawn "(agents/spawn prompt), (agents/spawn prompt handle), (agents/spawn agent prompt), (agents/spawn agent prompt handle): start without a collection; return the registered handle."
+    :ask "(agents/ask target value), (agents/ask target), (agents/ask [targets]): immediately create and deliver a request edge; return its ID, keep running. Explicit nil body differs from a bodyless request. Capacity rejection sends nothing."
+    :spawn-ask "(agents/spawn-ask prompt), (agents/spawn-ask prompt handle), (agents/spawn-ask agent prompt), (agents/spawn-ask agent prompt handle), (agents/spawn-ask [specs]): register one all-target result edge before child launch; return its ID. Specs are prompt, [prompt handle], [agent prompt], or [agent prompt handle]. Rejection registers/launches no children."
+    :!ask "Same arguments as ask. Register immediately, then !wait; other already-pending messages or completed collections can awaken you."
+    :!spawn-ask "Same arguments as spawn-ask. Register and launch immediately, then !wait. Children return their results; no extra send is needed."
+    :!wait "(agents/!wait): handle queued messages or wait on retained edges if strict ordering permits. Empty wait is a no-op. Refused ordering never creates a hidden passive wait."
+    :!sleep "(agents/!sleep): same primitive as !wait; resume retained collections after an unrelated wakeup."
+    :send "(agents/send target value): send a plain message and awaken target. Does not fill result slots."
+    :reply "(agents/reply message value): answer your slot of an actionable request exactly once. Stale/duplicate/cancelled requests are no-ops. A singleton completion report replies by plain send; aggregate reports require choosing a target."
+    :!reply-ask "(agents/!reply-ask message value): atomically answer and create a reverse request, then wait. Requires a singleton sender."
+    :cancel "(agents/cancel edge-id): detach your pending collection and return its cancelled summary. Does not stop targets or descendants."
+    :status "(agents/status), (agents/status handle): inspect lifecycle status/generation; zero-arity includes your edge summaries."
+    :graph "(agents/graph): inspect agent nodes and pending result edges."
+    :out-edges "(agents/out-edges): inspect your pending outgoing edges and result slots."
+    :in-edges "(agents/in-edges): inspect live edges containing your slot, including filled slots on a still-pending multi-target edge."
+    :current-handle "(agents/current-handle): your registered handle."
+    :parent-handle "(agents/parent-handle): spawning handle, or nil for the main agent."
+    :send-msg-fn "(agents/send-msg-fn macro handle): low-level message-macro delivery. Use send/reply/request operations for ordinary communication."}
    :send send
    :reply reply
-   :!reply-ask reply-ask
+   :ask ask
    :!ask ask-builtin
+   :!reply-ask reply-ask
    :spawn spawn
-   :!spawn-ask spawn-ask
+   :spawn-ask spawn-ask
+   :!spawn-ask spawn-ask-and-wait
+   :!wait wait!
    :!sleep sleep!
    :cancel cancel-edge
    :status agent-status
@@ -768,6 +550,5 @@ Internal plumbing for the communication layer."}
    :out-edges out-edges
    :in-edges in-edges
    :current-handle (fn [] *current-handle*)
-   :parent-handle (fn []
-                    (:parent-handle (coordinator/agent *current-handle*)))
+   :parent-handle (fn [] (:parent-handle (coordinator/agent *current-handle*)))
    :send-msg-fn send-msg-fn})

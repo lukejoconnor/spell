@@ -1,9 +1,9 @@
 (ns spell.composable-waits-test
-  (:require [clojure.test :refer [deftest is testing use-fixtures]]
+  (:require [clojure.test :refer [deftest is use-fixtures]]
             [spell.coordinator :as coordinator]
             [spell.runtime :as runtime]
             [spell.api :as api]
-            [spell.eval :as eval]
+            [spell.provider :as provider]
             [spell.test-helpers :as th]))
 
 (use-fixtures :each
@@ -115,3 +115,108 @@
   (doseq [invalid [{:max-edges 0} {:max-edges -1} {:max-edges 1.5}
                    {:max-edges nil} {:max-edges "10"} {:max-slots 100}]]
     (is (thrown? clojure.lang.ExceptionInfo (coordinator/new-coordinator invalid)))))
+
+(deftest public-nonblocking-request-and-wait-test
+  (register-all :parent :worker)
+  (binding [runtime/*current-handle* :parent
+            runtime/*current-raw* "(quine completion (eval (do )))"
+            runtime/*current-eval-fn* identity]
+    (let [edge ((:ask runtime/agents-namespace) :worker :question)]
+      (is (integer? edge))
+      (is (= :awake (:status (coordinator/agent :parent))))
+      (coordinator/fill! edge :worker :fast-result)
+      (let [raw ((:!wait runtime/agents-namespace))]
+        (is (string? raw))
+        (is (.contains ^String raw ":fast-result")))
+      (is (nil? ((:!wait runtime/agents-namespace))))
+      (is (nil? ((:!sleep runtime/agents-namespace)))))))
+
+(deftest public-spawn-registers-before-launch-and-returns-edge-test
+  (register-all :parent)
+  (let [started (promise)
+        finish (promise)
+        child (th/compiled-agent-fn
+                (fn [_ handle]
+                  (deliver started {:handle handle
+                                    :incoming (coordinator/incoming (coordinator/snapshot) handle)})
+                  @finish))]
+    (try
+      (binding [runtime/*current-handle* :parent
+                runtime/*current-raw* "(quine completion (eval (do )))"]
+        (let [edge ((:spawn-ask runtime/agents-namespace) child :prompt :child)
+              observed (deref started 5000 :timeout)]
+          (is (integer? edge))
+          (is (= :awake (:status (coordinator/agent :parent))))
+          (is (= edge (get-in observed [:incoming 0 :id])))
+          (is (= 1 (get-in observed [:incoming 0 :slots :child :generation])))))
+      (finally (deliver finish :done)))))
+
+(deftest public-multi-spawn-rejection-never-launches-test
+  (binding [coordinator/*coordinator* (coordinator/new-coordinator {:max-edges 1})]
+    (register-all :parent :existing)
+    (coordinator/request! :parent [:existing] false nil)
+    (let [started (atom 0)
+          child (th/compiled-agent-fn (fn [_ _] (swap! started inc)))
+          before (coordinator/snapshot)]
+      (binding [runtime/*current-handle* :parent
+                runtime/*current-raw* "(quine completion (eval (do )))"]
+        (is (thrown? clojure.lang.ExceptionInfo
+                     ((:spawn-ask runtime/agents-namespace)
+                      [[child :prompt :a] [child :prompt :b]]))))
+      (is (= before (coordinator/snapshot)))
+      (is (zero? @started)))))
+
+(deftest lifecycle-return-releases-capacity-test
+  (binding [coordinator/*coordinator* (coordinator/new-coordinator {:max-edges 1})]
+    (register-all :parent :worker)
+    (coordinator/request! :parent [:worker] false nil)
+    (coordinator/finish! :parent (:completed (coordinator/agent :parent)) :done)
+    (is (empty? (:edges (coordinator/snapshot))))
+    (is (integer? (coordinator/request! :worker [:parent] false nil)))))
+
+(deftest public-api-coordinator-capacity-test
+  (let [observed (atom nil)
+        provider (reify provider/LLMProvider
+                   (call-llm [this prompt] (provider/call-llm this prompt {}))
+                   (call-llm [_ _ _]
+                     (reset! observed (get-in (coordinator/snapshot) [:options :max-edges]))
+                     "(def answer 42))")
+                   (plain-text-provider [this] this)
+                   (supports-prefill [_] true))
+        opts {:prompt "Return 42"
+              :model-profile provider
+              :agent-profile "config/agent-profiles/base-msg.agent.edn"}]
+    (is (= 42 (:result (api/run (assoc opts :coordinator {:max-edges 7})))))
+    (is (= 7 @observed))
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (api/run (assoc opts :coordinator {:max-edges 0}))))))
+
+(deftest nested-self-call-between-registration-and-wait-test
+  (register-all :worker)
+  (let [calls (atom [])
+        agent (th/make-test-agent
+                {:response-fn
+                 (fn [prefix]
+                   (swap! calls conj prefix)
+                   (case (count @calls)
+                     1 (let [edge (first (coordinator/outgoing (coordinator/snapshot) :main))]
+                         ;; The request is committed before the nested model call.
+                         (is (some? edge))
+                         (is (= :question (get-in (coordinator/agent :worker)
+                                                 [:mailbox 0 :message :body])))
+                         (coordinator/fill! (:id edge) :worker :fast-result)
+                         "'41)))")
+                     2 (do
+                         ;; Existing receipt timing consumes the fast result in
+                         ;; this nested invocation and requests its continuation.
+                         (is (empty? (:mailbox (coordinator/agent :main))))
+                         "'42)))")
+                     (throw (ex-info "Unexpected model call" {:calls (count @calls)}))))}
+                :recover false)
+        result (future
+                 (th/run-agent-init
+                   agent
+                   "(eval (do '(do (def edge (agents/ask :worker :question)) (def nested (!llm-self \"(quine completion (eval (do \")) (agents/!wait) :continued)))"))]
+    (is (= :continued (deref result 5000 :timeout)))
+    (is (= 2 (count @calls)))
+    (is (empty? (:edges (coordinator/snapshot))))))
