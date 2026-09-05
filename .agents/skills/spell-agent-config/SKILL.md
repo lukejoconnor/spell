@@ -36,7 +36,7 @@ When creating or editing an agent profile:
 2. Use public field names: `:agent-name`, `:agent-description`, `:system-prompt`, `:default-model-profile`, `:default-budget`, `:available-agents`, `:namespaces`.
 3. Keep relative paths valid from the file that declares them.
 4. Expose only needed namespaces. Common namespaces are `stdlib/io`, `stdlib/web`, `stdlib/patterns`, `stdlib/agents`, and `stdlib/globals`.
-5. Use `:available-agents` for worker discovery instead of exposing `.agent.edn` files as namespace values.
+5. Use `:available-agents` for worker discovery instead of exposing `.agent.edn` files as namespace values. Start a worker through `agents/spawn` or `agents/spawn-ask` with its `workers/` value; direct worker calls from agents or computation futures are rejected.
 6. Grant MCP capabilities explicitly through `:mcp-servers`; prefer a tool alias map when only a subset is needed.
 
 ## Model Profile Checklist

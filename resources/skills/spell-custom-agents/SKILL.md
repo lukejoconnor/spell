@@ -43,6 +43,8 @@ Paths in `:base`, `:system-prompt {:file ...}`, and `:default-model-profile` are
 
 Expose only the capabilities the task needs. Use `io` for file/shell work, `web` for search/fetch, `patterns` for reusable Spell programs, `agents` for agent communication, and `globals` for shared state. Use `:available-agents` to expose workers through the `workers/` namespace; do not expose `.agent.edn` files as namespace values for new public config.
 
+Start configured workers with `(agents/spawn workers/explore prompt)` or `(agents/spawn-ask workers/explore prompt)`. Worker functions are lifecycle arguments to spawn operations; direct worker invocation from an active agent or its computation future is rejected. Use `!llm-self` for serial self-calls.
+
 ## Model Profiles And Providers
 
 Start from `config/model-profiles/*.edn` and keep provider details there. Common public provider paths are:
