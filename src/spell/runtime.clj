@@ -211,15 +211,18 @@
     (await-message! handle)
     (box handle raw (make-awake-fn handle eval-fn))))
 
-(defn box [handle completion-source inside-fn]
+(defn box
+  ([handle completion-source inside-fn]
+   (box handle completion-source inside-fn (:completed (coordinator/agent handle))))
+  ([handle completion-source inside-fn completion]
   (let [raw (parse/balance-parens (resolve-completion-source completion-source))
         runner (Thread/currentThread)]
-    (coordinator/acquire! handle runner)
+    (coordinator/acquire! handle runner completion)
     (try
       (record-last-raw! handle raw)
       (binding [*current-handle* handle *current-raw* raw]
         (inside-fn raw))
-      (finally (coordinator/release! handle runner)))))
+      (finally (coordinator/release! handle runner))))))
 
 (defn finish-agent!
   ([handle result] (finish-agent! handle (:completed (coordinator/agent handle)) result))
@@ -241,7 +244,7 @@
           (try
             ;; Wait outside the root box: the earlier lifecycle has unwound.
             (await-message! handle)
-            (run-root-box handle (or raw "") (make-awake-fn handle eval-fn) eval-fn)
+            (run-root-box handle (or raw "") (make-awake-fn handle eval-fn) eval-fn completion)
             (catch Throwable e
               (when-not (= :coordinator-closed (:type (ex-data e)))
                 (coordinator/retire! handle completion (child-failure handle :startup e))
@@ -252,12 +255,14 @@
           (coordinator/retire! handle completion (child-failure handle :startup e))
           (throw e))))))
 
-(defn run-root-box [handle completion-source inside-fn eval-fn]
-  (let [completion (:completed (coordinator/agent handle))
-        entered? (atom false)]
+(defn run-root-box
+  ([handle completion-source inside-fn eval-fn]
+   (run-root-box handle completion-source inside-fn eval-fn (:completed (coordinator/agent handle))))
+  ([handle completion-source inside-fn eval-fn completion]
+  (let [entered? (atom false)]
     (try
       (let [resolved (resolve-completion-source completion-source)
-            value (box handle resolved (fn [raw] (reset! entered? true) (inside-fn raw)))]
+            value (box handle resolved (fn [raw] (reset! entered? true) (inside-fn raw)) completion)]
         (when (finish-agent! handle completion value) (start-orphan! handle eval-fn))
         value)
       (catch Throwable e
@@ -265,7 +270,7 @@
           (if (instance? Error e)
             (coordinator/retire! handle completion failure)
             (when (finish-agent! handle completion failure) (start-orphan! handle eval-fn))))
-        (throw e)))))
+        (throw e))))))
 
 (defn -send! [handle macro] (coordinator/send! handle {:macro macro}))
 (defn send-msg-fn [macro handle] (-send! handle macro) nil)

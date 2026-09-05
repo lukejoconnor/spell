@@ -338,11 +338,14 @@
                   {:message {:from :future :body value}}) true]
         [state false]))))
 
-(defn acquire! [handle runner]
+(defn acquire! [handle runner completion]
   (transact!
     (fn [state]
       (require-open state)
       (let [a (require-agent state handle)]
+        (when-not (identical? completion (:completed a))
+          (throw (ex-info "Scheduled execution belongs to a completed agent lifecycle"
+                          {:type :stale-agent-lifecycle :handle handle})))
         (when (and (:runner a) (not (identical? runner (:runner a))))
           (throw (ex-info "Box already active for handle" {:handle handle})))
         [(-> state (assoc-in [:agents handle :runner] runner)
