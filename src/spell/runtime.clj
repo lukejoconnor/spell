@@ -233,14 +233,24 @@
 
 (defn- start-orphan! [handle eval-fn]
   (when (coordinator/open?)
-    (let [raw (:last-raw @(:execution (coordinator/agent handle)))]
-      (future
-        (try
-          ;; Wait outside the root box: the earlier lifecycle has unwound.
-          (await-message! handle)
-          (run-root-box handle (or raw "") (make-awake-fn handle eval-fn) eval-fn)
-          (catch Exception e
-            (when-not (= :coordinator-closed (:type (ex-data e))) (throw e))))))))
+    (let [a (coordinator/agent handle)
+          completion (:completed a)
+          raw (:last-raw @(:execution a))]
+      (try
+        (future
+          (try
+            ;; Wait outside the root box: the earlier lifecycle has unwound.
+            (await-message! handle)
+            (run-root-box handle (or raw "") (make-awake-fn handle eval-fn) eval-fn)
+            (catch Throwable e
+              (when-not (= :coordinator-closed (:type (ex-data e)))
+                (coordinator/retire! handle completion (child-failure handle :startup e))
+                (throw e)))))
+        (catch Throwable e
+          ;; Submission can fail after the preceding lifecycle rotated its
+          ;; completion. Retire the unstarted next lifecycle, not the old one.
+          (coordinator/retire! handle completion (child-failure handle :startup e))
+          (throw e))))))
 
 (defn run-root-box [handle completion-source inside-fn eval-fn]
   (let [completion (:completed (coordinator/agent handle))
@@ -250,10 +260,11 @@
             value (box handle resolved (fn [raw] (reset! entered? true) (inside-fn raw)))]
         (when (finish-agent! handle completion value) (start-orphan! handle eval-fn))
         value)
-      (catch Exception e
-        (when (finish-agent! handle completion
-                            (child-failure handle (if @entered? :lifecycle :completion-source) e))
-          (start-orphan! handle eval-fn))
+      (catch Throwable e
+        (let [failure (child-failure handle (if @entered? :lifecycle :completion-source) e)]
+          (if (instance? Error e)
+            (coordinator/retire! handle completion failure)
+            (when (finish-agent! handle completion failure) (start-orphan! handle eval-fn))))
         (throw e)))))
 
 (defn -send! [handle macro] (coordinator/send! handle {:macro macro}))
@@ -371,17 +382,24 @@
   (when-not (compiled-agent? agent)
     (throw (ex-info "agents/spawn requires a compiled agent (leaf-llm has no lifecycle)" {:handle handle})))
   agent)
-(defn- launch-spawn! [{:keys [agent prompt handle]}]
-  (let [completion (:completed (coordinator/agent handle))]
-    (future
-      (try
-        (let [value (binding [*computation-future?* false *current-handle* nil]
-                      (agent prompt handle))]
-          (finish-agent! handle completion value) value)
-        (catch Exception e
-          (finish-agent! handle completion (child-failure handle :startup e))
-          (throw e)))))
-  handle)
+(defn- launch-spawn! [{:keys [agent prompt handle completion]}]
+  (let [completion (or completion (:completed (coordinator/agent handle)))]
+    (try
+      (future
+        (try
+          (let [value (binding [*computation-future?* false *current-handle* nil]
+                        (agent prompt handle))]
+            ;; A normal compiled agent already finished and rotated completion.
+            ;; A direct return has no persistent runner, so retire that handle.
+            (coordinator/retire! handle completion value)
+            value)
+          (catch Throwable e
+            (coordinator/retire! handle completion (child-failure handle :startup e))
+            (throw e))))
+      handle
+      (catch Throwable e
+        (coordinator/retire! handle completion (child-failure handle :startup e))
+        (throw e)))))
 (defn spawn
   ([prompt] (spawn (default-spawn-agent "spawn") prompt nil))
   ([a b] (if (compiled-agent? a) (spawn a b nil) (spawn (default-spawn-agent "spawn") a b)))
@@ -422,8 +440,17 @@
                       (validate-spawn-agent! agent handle-name)
                       (assoc spec :handle (or handle-name (keyword (gensym "spawn-")))
                              :parent-handle *current-handle*)) specs)
-        id (coordinator/spawn-request! *current-handle* specs)]
-    (doseq [spec specs] (launch-spawn! spec))
+        id (coordinator/spawn-request! *current-handle* specs)
+        prepared (mapv #(assoc % :completion (:completed (coordinator/agent (:handle %)))) specs)]
+    (doseq [[index spec] (map-indexed vector prepared)]
+      (try
+        (launch-spawn! spec)
+        (catch Throwable e
+          ;; Already-launched children retain their owners. Every registration
+          ;; that cannot launch receives a terminal result and is removed.
+          (doseq [{:keys [handle completion]} (subvec prepared index)]
+            (coordinator/retire! handle completion (child-failure handle :startup e)))
+          (throw e))))
     id))
 (defn spawn-ask
   ([arg]

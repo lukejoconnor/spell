@@ -135,8 +135,10 @@
            {:status :waiting :signal signal}]
           :else (throw (ex-info "Cannot sleep without an outgoing edge newer than every pending incoming edge"
                                 {:type :sleep-refused :handle handle
-                                 :out-edges (outgoing state handle)
-                                 :in-edges (incoming state handle)})))))))
+                                 :out-edges (mapv #(select-keys % [:id :source :targets :created-seq])
+                                                  (outgoing state handle))
+                                 :in-edges (mapv #(select-keys % [:id :source :targets :created-seq])
+                                                 (incoming state handle))})))))))
 
 (defn- add-edge [state source targets]
   (require-open state)
@@ -248,35 +250,52 @@
           [(enqueue state target {:message {:from source :expects-response true :edge-id id :body value}
                                   :request-edge id}) id])))))
 
+(defn- settle-lifecycle
+  [state handle completion value next-completion]
+  (let [a (get-in state [:agents handle])
+        retire? (nil? next-completion)]
+    (if (or (:closed? state) (nil? a)
+            (not (identical? completion (:completed a))))
+      [state nil]
+      (let [state (reduce
+                    (fn [s edge]
+                      (if (or retire?
+                              (= (:generation a) (get-in edge [:slots handle :generation])))
+                        (first (fill s (:id edge) handle value false)) s))
+                    state (incoming state handle))
+            cancelled (outgoing state handle)
+            state (reduce (fn [s edge]
+                            (if-let [p (:result-promise edge)]
+                              (notify s p {:spell/cancelled true :edge-id (:id edge)}) s))
+                          state cancelled)
+            state (-> state
+                      (update :external-waits
+                              #(into {} (remove (fn [[_ wait]] (= handle (:source wait))) %)))
+                      (update :edges #(apply dissoc % (map :id cancelled)))
+                      (notify completion value))
+            state (if retire?
+                    (-> state (update :agents dissoc handle)
+                        (notify (:signal a) :retired))
+                    (-> state
+                        (assoc-in [:agents handle :status] :finished)
+                        (assoc-in [:agents handle :completed] next-completion)))
+            state (if (and (not retire?) (seq (get-in state [:agents handle :mailbox])))
+                    (wake state handle) state)]
+        [state {:cancelled cancelled :retired? retire?}]))))
+
 (defn finish!
   "Complete exactly the captured lifecycle. Fill its claimed slots, cancel its
    outgoing collections, rotate completion, and preserve undrained requests."
   [handle completion value]
   (let [next-completion (promise)]
-    (transact!
-      (fn [state]
-        (let [a (get-in state [:agents handle])]
-          (if (or (:closed? state) (not (identical? completion (:completed a))))
-            [state nil]
-            (let [state (reduce
-                          (fn [s edge]
-                            (if (= (:generation a) (get-in edge [:slots handle :generation]))
-                              (first (fill s (:id edge) handle value false)) s))
-                          state (incoming state handle))
-                  cancelled (outgoing state handle)
-                  state (reduce (fn [s edge]
-                                  (if-let [p (:result-promise edge)]
-                                    (notify s p {:spell/cancelled true :edge-id (:id edge)}) s))
-                                state cancelled)
-                  state (-> state
-                            (update :external-waits
-                                    #(into {} (remove (fn [[_ wait]] (= handle (:source wait))) %)))
-                            (update :edges #(apply dissoc % (map :id cancelled)))
-                            (assoc-in [:agents handle :status] :finished)
-                            (assoc-in [:agents handle :completed] next-completion)
-                            (notify completion value))
-                  state (if (seq (get-in state [:agents handle :mailbox])) (wake state handle) state)]
-              [state {:cancelled cancelled}])))))))
+    (transact! #(settle-lifecycle % handle completion value next-completion))))
+
+(defn retire!
+  "Retire a lifecycle that has no runner able to service a subsequent request.
+   Ownership is checked against its captured completion. Fill even unconsumed
+   incoming requests, cancel outgoing collections, and remove the handle."
+  [handle completion value]
+  (transact! #(settle-lifecycle % handle completion value nil)))
 
 (defn cancel! [handle id]
   (transact!

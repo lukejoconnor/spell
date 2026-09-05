@@ -953,16 +953,17 @@
               (runtime/spawn-ask leaf-fn "test prompt" :leaf-child-2)))))))
 
 (deftest spawn-future-exception-delivers-completed-test
-  (testing "spawn future exception delivers :completed (prevents deadlock)"
-    (let [bad-agent (th/compiled-agent-fn
-                     (fn [_prompt _handle] (throw (ex-info "boom" {}))))]
+  (testing "startup failure resolves completion and removes its unserviceable handle"
+    (let [release (promise)
+          bad-agent (th/compiled-agent-fn
+                      (fn [_prompt _handle] @release (throw (ex-info "boom" {}))))]
       (runtime/register! :boom-parent)
       (binding [runtime/*current-handle* :boom-parent]
-        (let [child-h (runtime/spawn bad-agent "test")]
-          ;; Give the future time to run and fail
-          (Thread/sleep 200)
-          ;; :completed should have been delivered (with nil)
-          (is (= :finished (:status (coordinator/agent child-h)))))))))
+        (let [child-h (runtime/spawn bad-agent "test")
+              completed (:completed (coordinator/agent child-h))]
+          (deliver release true)
+          (is (true? (:spell/child-failure (deref completed 5000 :timeout))))
+          (is (nil? (coordinator/agent child-h))))))))
 
 (deftest spawn-rejects-non-agent-test
   (testing "spawn rejects non-agent values"
