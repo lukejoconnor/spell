@@ -220,3 +220,23 @@
     (is (= :continued (deref result 5000 :timeout)))
     (is (= 2 (count @calls)))
     (is (empty? (:edges (coordinator/snapshot))))))
+
+(deftest reverse-request-capacity-is-atomic-test
+  (binding [coordinator/*coordinator* (coordinator/new-coordinator {:max-edges 1})]
+    (register-all :parent :a :b)
+    (let [edge (coordinator/request! :parent [:a :b] true :question)
+          request (get-in (first (coordinator/drain! :a)) [:message])
+          before (coordinator/snapshot)]
+      ;; Filling only A would leave the old edge live, so its reverse request
+      ;; needs another unit. Rejection must also roll back the old slot fill.
+      (is (thrown? clojure.lang.ExceptionInfo
+                   (coordinator/reply-request! :a request :answer)))
+      (is (= before (coordinator/snapshot)))
+      (coordinator/fill! edge :b :other-answer)
+      ;; A's answer now completes the old edge, freeing capacity for reversal.
+      (is (integer? (coordinator/reply-request! :a request :answer)))
+      (is (= 1 (count (:edges (coordinator/snapshot)))))
+      (let [messages (mapv :message (coordinator/drain! :parent))]
+        (is (= 2 (count messages)))
+        (is (= [:answer :other-answer] (mapv :body (:body (first messages)))))
+        (is (true? (:expects-response (second messages))))))))
