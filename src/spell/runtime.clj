@@ -10,6 +10,7 @@
             [spell.trace :as trace]))
 
 (def ^:dynamic *current-handle* nil)
+(def ^:dynamic *computation-future?* false)
 (def ^:dynamic *current-raw* nil)
 (def ^:dynamic *current-eval-fn* nil)
 (def ^:dynamic *default-spawn-agent* nil)
@@ -271,11 +272,12 @@
         (fill-slot! (:edge-id msg) *current-handle* value) nil)
     (send (reply-target "reply" msg) value)))
 (defn cancel-edge [id] (coordinator/cancel! *current-handle* id))
-(defn out-edges [] (coordinator/outgoing (coordinator/snapshot) *current-handle*))
+(defn- edge-summary [edge] (dissoc edge :result-promise))
+(defn out-edges [] (mapv edge-summary (coordinator/outgoing (coordinator/snapshot) *current-handle*)))
 (defn in-edges []
   (->> (vals (:edges (coordinator/snapshot)))
        (filter #(contains? (:slots %) *current-handle*))
-       (sort-by :created-seq) vec))
+       (sort-by :created-seq) (mapv edge-summary)))
 (defn agent-status
   ([] (assoc (agent-status *current-handle*) :out-edges (out-edges) :in-edges (in-edges)))
   ([handle]
@@ -285,7 +287,7 @@
 (defn graph-snapshot []
   (let [s (coordinator/snapshot)]
     {:nodes (into {} (map (fn [[h a]] [h (select-keys a [:status :generation])]) (:agents s)))
-     :edges (:edges s)}))
+     :edges (into {} (map (fn [[id edge]] [id (edge-summary edge)]) (:edges s)))}))
 (defn sleep-allowed? [handle] (coordinator/sleep-allowed? (coordinator/snapshot) handle))
 (defn block-for-message []
   (box *current-handle* *current-raw* (make-asleep-fn *current-handle* *current-eval-fn*)))
@@ -319,9 +321,17 @@
   "Convenience wrapper: request now, then wait on current coordination state."
   ([targets] (ask targets) (wait!))
   ([targets value] (ask targets value) (wait!)))
-(defn completion-promise [handle]
-  (when-not (handle? handle) (throw (ex-info "Handle not registered" {:handle handle})))
-  (assoc (completion-token (:completed (coordinator/agent handle))) :agent-handle handle))
+(defn request-token
+  "Create a tracked agent request and return a token for its one result."
+  ([handle] (request-token handle nil false))
+  ([handle msg] (request-token handle msg true))
+  ([handle msg supplied?]
+   (when-not *current-handle*
+     (throw (ex-info "blocking/request requires a source agent" {})))
+   (let [result (promise)
+         id (coordinator/request! *current-handle* [handle] supplied? msg result)]
+     (assoc (completion-token result) :edge-id id))))
+
 (defn blocking-await
   "Await helper for Spell futures (exposed via future-gated blocking/ namespace)."
   [fut]
@@ -353,9 +363,7 @@
 
 
 (defn send-await [handle msg]
-  (let [token (completion-promise handle)]
-    (send handle msg)
-    (blocking-await token)))
+  (blocking-await (request-token handle msg)))
 (defn start-box
   ([handle eval-fn initial] (start-box handle eval-fn initial nil))
   ([handle eval-fn initial parent]
@@ -372,7 +380,9 @@
   (let [completion (:completed (coordinator/agent handle))]
     (future
       (try
-        (let [value (agent prompt handle)] (finish-agent! handle completion value) value)
+        (let [value (binding [*computation-future?* false *current-handle* nil]
+                      (agent prompt handle))]
+          (finish-agent! handle completion value) value)
         (catch Exception e
           (finish-agent! handle completion (child-failure handle :startup e))
           (throw e)))))
@@ -444,15 +454,15 @@
 (def blocking-namespace
   "Future-only blocking namespace.
    Injected into env by future*; unavailable outside futures."
-  {:short-docs "Future-only blocking helpers: await, await-all, pmap, completion-promise, send-await."
+  {:short-docs "Future-only blocking helpers: await, await-all, pmap, request, send-await."
    :docs {:guide "BLOCKING — Future-only blocking primitives.
 
   (blocking/await fut)                 — await a Spell future token (future-only)
   (blocking/await-all [f1 f2 ...])     — await multiple Spell futures (future-only)
   (blocking/pmap f coll)               — parallel map with blocking join (future-only)
   (blocking/plet [a expr1 b expr2] body) — macro; parallel let with blocking/await
-  (blocking/completion-promise handle) — await token for handle completion (future-only)
-  (blocking/send-await handle msg)     — capture completion, send, await (future-only)
+  (blocking/request handle) — send a tracked poke and return its result token (future-only)
+  (blocking/send-await handle msg)     — send a tracked request, await its result (future-only)
 
 Use from inside (future ...) orchestration code."
           }
@@ -461,12 +471,12 @@ Use from inside (future ...) orchestration code."
     :await-all "(blocking/await-all [f1 f2 ...]) — future-only await-many helper."
     :pmap "(blocking/pmap f coll) — future-only parallel map with blocking join."
     :plet "(blocking/plet [bindings] body...) — macro; parallel let using blocking/await."
-    :completion-promise "(blocking/completion-promise handle) — future-only completion token capture. Lifecycle failures resolve to tagged :spell/child-failure data; nil is a successful nil result."
-    :send-await "(blocking/send-await handle msg) — future-only capture->send->await helper. Lifecycle failures resolve to tagged :spell/child-failure data."}
+    :request "(blocking/request handle) — future-only tracked request token. Lifecycle failures resolve to tagged :spell/child-failure data; nil is a successful nil result."
+    :send-await "(blocking/send-await handle msg) — future-only request->await helper. Lifecycle failures resolve to tagged :spell/child-failure data."}
    :await blocking-await
    :await-all blocking-await-all
    :pmap blocking-pmap
-   :completion-promise completion-promise
+   :request request-token
    :send-await send-await})
 
 (def agents-namespace

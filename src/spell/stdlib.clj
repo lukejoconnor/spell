@@ -9,6 +9,7 @@
   (:require [clojure.string :as str]
             [spell.eval :as eval]
             [spell.runtime :as runtime]
+            [spell.coordinator :as coordinator]
             [spell.patterns :as patterns-lib]))
 
 ;; =============================================================================
@@ -836,23 +837,18 @@ Example:
                 (get ns key))))
 
 (defn ask-await-builtin
-  "Effect builtin for waiting on a Spell future from a normal agent turn.
-   The waiter future sends the result back as a normal message, then the
-   caller blocks until that wakeup arrives."
+  "Await external computation interruptibly; agent requests within it must use
+   blocking/request so their dependencies remain visible to the coordinator."
   [fut]
   (when-not (eval/spell-future? fut)
     (throw (ex-info "!ask-await requires a future" {:value fut})))
-  (let [target runtime/*current-handle*]
-    (when-not target
-      (throw (ex-info "!ask-await: not inside an agent context" {})))
+  (when-not (and runtime/*current-handle* runtime/*current-raw*)
+    (throw (ex-info "!ask-await requires an active agent turn" {})))
+  (let [token (coordinator/begin-external-wait! runtime/*current-handle*)]
     (future
-      (try
-        (let [result (deref (:ref fut))]
-          (binding [runtime/*current-handle* :future]
-            (runtime/send target result)))
-        (catch Exception e
-          (binding [runtime/*current-handle* :future]
-            (runtime/send target {:future-await/error (.getMessage e)})))))
+      (let [result (try @(:ref fut)
+                        (catch Exception e {:future-await/error (.getMessage e)}))]
+        (coordinator/complete-external-wait! token result)))
     (runtime/block-for-message)))
 
 ;; =============================================================================

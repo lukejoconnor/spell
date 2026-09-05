@@ -12,7 +12,7 @@
 
 (def ^:dynamic *store*
   "Global shared state atom. Keys are keywords, values are arbitrary."
-  (atom default-state))
+  nil)
 
 (defn new-store [] (atom default-state))
 
