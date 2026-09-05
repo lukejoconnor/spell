@@ -341,7 +341,7 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
           (reset! response-atom response)
           (eval/vlog (str indent "Response: " response))
           (deliver completion (str prompt-str response)))
-        (catch Exception e
+        (catch Throwable e
           (deliver completion e))))
     (try
       (let [result (binding [trace/*trace-node-id* node-id]
@@ -355,7 +355,7 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
                     :value result}
                    @trace-data-atom)))
         result)
-      (catch Exception e
+      (catch Throwable e
         (when node-id
           (trace/complete-node! node-id
             (merge {:response (or @response-atom "")
