@@ -555,8 +555,8 @@ Use from inside (future ...) orchestration code."
    :docs
    {:child-prompts "For ordinary child tasks, pass a string literal or a def-bound string to spawn/spawn-ask. A quine binding holds source; wrap-cat builds a program prefix. Use those when deliberately constructing a program, rather than naming task text."
     :waiting "For message handling, put !wait/!sleep/!ask/!spawn-ask/!reply-ask or !ask-await last in the quoted trailing expression. Read received msg-N bindings in the resumed turn. A wait returns the whole resumed computation's value, so capturing it as a message or adding parentheses, ((agents/!wait)), misuses that value. Synchronous !llm-self result capture remains available."
-    :receipts "On waking, establish which required actions executed before continuing dependent work. An incoming request can supersede your own proposed request while its source and local definitions remain. When dispatch must precede another step, capture immediate ask with a fresh name, e.g. '(!call-now question-edge (agents/ask :reviewer question)), then wait separately. Check actual captures, received reports, and out-edges/status before dependent replies or waits. A proposed sent flag is not execution evidence. Resolve uncertain execution before retrying; complete an interrupted prerequisite first. See (!describe agents) for examples."
-    :returning "Returning fills all still-unanswered claimed request slots with the same value and abandons unfinished outgoing collections; targets keep running. Explicitly reply to any request whose answer differs from your final return value. Before waiting, establish that work remains to collect and inspect uncertain obligations. A refused wait is an error: recover by inspecting current state and revising the program. Return when done."
+    :receipts "On waking, establish which required actions executed before continuing dependent work. An incoming request can supersede your own proposed request while its source and local definitions remain. When dispatch must precede another step, capture immediate ask with a fresh name, e.g. '(!call-now question-edge (agents/ask :reviewer question)), then wait separately. Check actual captures, received reports, and out-edges/status before dependent replies, waits, or return. A proposed sent flag is not execution evidence. Resolve uncertain execution before retrying; complete an interrupted prerequisite first. See (!describe agents) for examples."
+    :returning "Returning fills all still-unanswered claimed request slots with the same value and abandons unfinished outgoing collections; targets keep running. Explicitly reply to any request whose answer differs from your final return value. After a wake and before returning, inspect your pending incoming slots and send any such reply that has not executed. Receiving a peer's answer does not establish that your own reply to that peer ran. Before waiting, establish that work remains to collect and inspect uncertain obligations. A refused wait is an error: recover by inspecting current state and revising the program. Return when done."
     :futures "Create a communication future once in a quoted trailing expression and retain it with !call-now for later joins. Inside it, blocking/request creates a token and blocking/await collects it; !ask-await resumes the enclosing agent with messages. (!describe agents) shows the complete pattern."
     :guide "AGENTS — Communication controlled by your program.
 
@@ -616,7 +616,13 @@ request is refused without changing the coordinator.
 
 A lifecycle return fills every remaining claimed incoming slot with the SAME
 return value and cancels its unfinished outgoing collections. Explicitly reply to any request whose answer differs
-from your final return value. Requests not yet consumed belong to a later lifecycle. Successful
+from your final return value. Receiving an answer from a peer does not establish
+that your own reply to that peer executed. After a wake and before returning a
+different final value, inspect that incoming request. If your entry in :slots
+has :status :pending, send its required reply first. A filled slot needs no
+further reply even if another target keeps the edge pending; a completed or
+cancelled edge is absent. Requests not yet
+consumed belong to a later lifecycle. Successful
 nil is a result; terminal failures carry :spell/child-failure true. Normal
 return preserves the handle for later requests; startup failure retires it.
 Cancelling a collection abandons its results while targets continue running.
@@ -649,7 +655,7 @@ awakens; the annotation or old source alone does not identify what executed.
 On waking, establish whether each prerequisite actually ran before continuing
 operations that depend on it. Receiving a peer request does not establish that
 your own request was dispatched. Complete a required interrupted request before
-a dependent reply or wait. When execution is uncertain, inspect first:
+a dependent reply, wait, or return. When execution is uncertain, inspect first:
   '(!call-now current-obligations (agents/status))
 Use actual result captures, received completion reports, and pending edge records.
 An empty outgoing set alone does not exclude a completed or cancelled request.
