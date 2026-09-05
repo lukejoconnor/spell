@@ -177,7 +177,7 @@ previous action.
 On waking, establish which prerequisite actions actually ran before continuing
 dependent work. Receiving a peer request does not establish that your own
 request was dispatched. Complete an interrupted prerequisite before a dependent
-reply or wait. If execution is uncertain, inspect the current state first:
+reply, wait, or return. If execution is uncertain, inspect the current state first:
 
 ```clojure
 '(!call-now current-obligations (agents/status))
@@ -204,7 +204,11 @@ inspect pending edges and obligations before retrying.
 
 Explicitly reply to any request whose answer differs from your final return
 value. The lifecycle return supplies the same value to every remaining claimed
-slot.
+slot. Receiving an answer from a peer does not establish that your own reply to
+that peer executed. After a wake and before returning a different final value,
+inspect that incoming request. If your entry in `:slots` has `:status :pending`,
+send its required reply first. A filled slot needs no further reply even if
+another target keeps the edge pending; a completed or cancelled edge is absent.
 Before waiting, inspect uncertain obligations and establish that work remains
 to collect. A refused wait is a recoverable error and leaves the agent awake.
 Spell `try/catch` can handle it, and normal evaluation recovery can revise the
