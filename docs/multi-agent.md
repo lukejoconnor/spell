@@ -125,7 +125,11 @@ surrounding `!ask-await` must obey the same incoming/outgoing ordering rule when
 its computation depends on agents. New incoming requests wake the enclosing
 agent so it can answer. Ordinary computation futures and external I/O have
 separate progress assumptions. `blocking/completion-promise` is replaced by the
-atomic request operation.
+atomic request operation. Awaiting a cancelled token raises `:request-cancelled`;
+closing the run raises `:coordinator-closed`. A child failure remains tagged result
+data, and successful `nil` or cancellation-shaped maps retain their exact values.
+Future-only blocking helpers also check the actual calling thread, so passing a
+helper function back into an agent turn cannot create an uninterruptible wait.
 
 ## Capacity
 
