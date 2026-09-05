@@ -252,8 +252,15 @@
         (when-not (:filled? filled)
           (throw (ex-info "Incoming request slot is no longer pending" {:edge-id (:edge-id msg)})))
         (let [[state id] (add-edge state source [target])]
-          [(enqueue state target {:message {:from source :expects-response true :edge-id id :body value}
-                                  :request-edge id}) id])))))
+          [(enqueue state target
+                    {:message (cond-> {:from source :expects-response true :edge-id id :body value}
+                                ;; The terminal labels completed user collections. A
+                                ;; reverse singleton request replaces the usual report,
+                                ;; so preserve its exact original ID for that endpoint.
+                                (and (= :user target) (:completed? filled)
+                                     (= 1 (count (get-in filled [:edge :targets]))))
+                                (assoc :reply-to-edge-id (:edge-id msg)))
+                     :request-edge id}) id])))))
 
 (defn- settle-lifecycle
   [state handle completion value next-completion]
