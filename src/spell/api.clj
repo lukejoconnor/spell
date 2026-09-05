@@ -4,6 +4,7 @@
             [spell.agent :as agent]
             [spell.runtime :as runtime]
             [spell.eval :as eval]
+            [spell.context :as context]
             [spell.globals :as globals]
             [spell.llm :as llm]
             [spell.provider :as provider]
@@ -12,7 +13,7 @@
 
 (def ^:private public-run-keys
   #{:prompt :init :model-profile :agent-profile :model :reasoning-effort
-    :budget :depth :trace-dir :usage-tracker :user-reader :log-writer})
+    :budget :depth :context-max-chars :trace-dir :usage-tracker :user-reader :log-writer})
 
 (def ^:private removed-run-keys
   #{:provider :agent :lm-profile :trace :usage :user? :verbose :thinking :prefill? :format :retries
@@ -67,6 +68,7 @@
                            (nil? budget) (or (:budget agent-spec) provider/*budget*)
                            (zero? budget) nil
                            :else budget)
+        run-context (context/new-context {:max-chars (get opts :context-max-chars context/default-max-chars)})
         effective-verbose (some? log-writer)
         trace-atom (when trace-dir (trace/new-trace))
         trace-written? (atom false)
@@ -86,52 +88,53 @@
                             (try
                               (write-trace-once! false)
                               (catch Exception _)))))]
-    (user/reset-state!)
-    (reset! runtime/registry {})
-    (globals/reset-globals!)
-    (globals/set-val :roles {:main {}})
-    (try
-      (cond
-        interactive-user? (reset! user-session (user/register-interactive-user-agent!))
-        user-reader (user/register-user-agent!
-                      (if (instance? java.io.BufferedReader user-reader)
-                        user-reader
-                        (java.io.BufferedReader. user-reader))))
-      (when shutdown-hook
-        (.addShutdownHook (Runtime/getRuntime) shutdown-hook))
-      (binding [eval/*verbose* effective-verbose
-                eval/*log-writer* log-writer
-                eval/*max-llm-depth* depth
-                provider/*usage* usage-atom
-                provider/*budget* effective-budget
-                provider/*retries* (or (:retries opts) (:retries profile) (:retries agent-spec) provider/*retries*)
-                trace/*trace* trace-atom]
-        (let [result (try
-                       {:result (agent-fn run-input :main)
-                        :usage-tracker usage-atom}
-                       (catch Exception e
-                         {:error (.getMessage e)
-                          :error-data (ex-data e)
-                          :usage-tracker usage-atom}))]
-          (when trace-atom
-            (write-trace-once! true))
-          (cond-> result
-            trace-dir (assoc :trace-dir trace-dir))))
-      (finally
-        (try
-          (when-let [^java.io.Closeable session @user-session]
-            (.close session))
-          (finally
-            (try
-              (user/reset-state!)
-              (finally
-                (when shutdown-hook
-                  (try
-                    (.removeShutdownHook (Runtime/getRuntime) shutdown-hook)
-                    (catch IllegalStateException _)))
-                (when log-writer
-                  (.flush ^java.io.Writer log-writer))
-                (agent/close-compiled-agent! agent-fn)))))))))
+    (binding [context/*context* run-context]
+      (user/reset-state!)
+      (reset! runtime/registry {})
+      (globals/reset-globals!)
+      (globals/set-val :roles {:main {}})
+      (try
+        (cond
+          interactive-user? (reset! user-session (user/register-interactive-user-agent!))
+          user-reader (user/register-user-agent!
+                        (if (instance? java.io.BufferedReader user-reader)
+                          user-reader
+                          (java.io.BufferedReader. user-reader))))
+        (when shutdown-hook
+          (.addShutdownHook (Runtime/getRuntime) shutdown-hook))
+        (binding [eval/*verbose* effective-verbose
+                  eval/*log-writer* log-writer
+                  eval/*max-llm-depth* depth
+                  provider/*usage* usage-atom
+                  provider/*budget* effective-budget
+                  provider/*retries* (or (:retries opts) (:retries profile) (:retries agent-spec) provider/*retries*)
+                  trace/*trace* trace-atom]
+          (let [result (try
+                         {:result (agent-fn run-input :main)
+                          :usage-tracker usage-atom}
+                         (catch Exception e
+                           {:error (.getMessage e)
+                            :error-data (ex-data e)
+                            :usage-tracker usage-atom}))]
+            (when trace-atom
+              (write-trace-once! true))
+            (cond-> result
+              trace-dir (assoc :trace-dir trace-dir))))
+        (finally
+          (try
+            (when-let [^java.io.Closeable session @user-session]
+              (.close session))
+            (finally
+              (try
+                (user/reset-state!)
+                (finally
+                  (when shutdown-hook
+                    (try
+                      (.removeShutdownHook (Runtime/getRuntime) shutdown-hook)
+                      (catch IllegalStateException _)))
+                  (when log-writer
+                    (.flush ^java.io.Writer log-writer))
+                  (agent/close-compiled-agent! agent-fn))))))))))
 
 (defn run
   "Run a Spell agent with the v0.3.0 public API.

@@ -275,11 +275,11 @@
    trailing expression (if active) or awakened it (if sleeping).
    Internal plumbing for signaling (waiting-for, spawn-result)."
   [name value]
-  (let [value-form (parse/read-first (eval/serialize-for-continuation value))]
-    (append-forms-macro
-      [(list 'think (str "[preempted or awakened by " name "]"))
-       (list 'def name value-form)
-       (list 'quote (list '!extend))])))
+  (append-forms-macro
+    (eval/context-forms
+      [{:form (list 'think (str "[preempted or awakened by " name "]"))}
+       {:name name :value value}
+       {:form (list 'quote (list '!extend))}])))
 
 (defn send
   "Send a message to target with auto-tagged sender handle.

@@ -5,6 +5,7 @@
    - On success: {:ok value :env env'}
    - On error: {:err msg :env env :expr failing-expr}"
   (:require [spell.macros :as macros]
+            [spell.context :as context]
             [spell.parse :as parse]
             [clojure.string :as str]
             [clojure.set :as set]))
@@ -128,40 +129,9 @@
 ;; Call-now value store (out-of-band storage for large values)
 ;; =============================================================================
 
-(def call-now-store
-  "Global store for large values that shouldn't be inlined in continuations.
-   Maps string IDs to values. Used by !call-now to avoid embedding huge strings
-   (like file contents) directly in the code the LLM sees."
-  (atom {}))
-
-(def call-now-inline-limit
-  "Default max character count of pr-str output before truncation/storage.
-   Used by serialize-for-continuation when no explicit limit is provided."
-  10000)
-
-(defn store-value!
-  "Store a value in the !call-now store, return its ID."
-  [value]
-  (let [id (str (gensym "ref-"))]
-    (swap! call-now-store assoc id value)
-    id))
-
-(defn stored
-  "Retrieve a value from the !call-now store."
-  [id]
-  (let [v (get @call-now-store id ::not-found)]
-    (if (= v ::not-found)
-      (throw (ex-info (str "No stored value: " id) {:id id}))
-      v)))
-
-(defn- truncate-string
-  "Truncate a string to fit within limit chars when serialized.
-   Appends a note showing original length."
-  [s limit]
-  (let [note (format "\n... [truncated, %d chars total]" (count s))
-        max-chars (max 100 (- limit (count (pr-str note)) 50))
-        truncated (str (subs s 0 (min (count s) max-chars)) note)]
-    (pr-str truncated)))
+(def store-value! context/store-value!)
+(def stored context/stored)
+(def context-forms context/contribution-forms)
 
 (defn- deep-truncate
   "Recursively truncate string values within maps and sequences.
@@ -218,41 +188,11 @@
     (with-meta (nth form 2) {:spell/first-line (second form)})))
 
 (defn serialize-for-continuation
-  "Serialize a value for embedding in a !call-now continuation.
-   Small values are inlined via pr-str. Large strings are truncated with a note.
-   Large non-strings are deep-truncated (string values within maps/seqs are
-   individually truncated) then inlined. Only stored out-of-band if still too large.
-   Vectors with :spell/first-line metadata produce a (first-line ...) form
-   with inline line-number comments.
-   limit: max pr-str chars before truncation/storage. Negative means always inline."
-  ([value] (serialize-for-continuation value call-now-inline-limit))
-  ([value limit]
-   ;; Check for first-line metadata first
-   (if-let [formatted (and (vector? value) (meta value) (format-first-line-vector value))]
-     (if (or (neg? limit) (<= (count formatted) (* (max 1 limit) 2)))
-       formatted
-       ;; Too large — fall through to normal serialization (truncation/storage)
-       (let [serialized (pr-str value)]
-         (if (<= (count serialized) limit)
-           serialized
-           (let [id (store-value! value)]
-             (str "(stored " (pr-str id) ")")))))
-     (if (neg? limit)
-       (pr-str value)
-       (let [serialized (pr-str value)]
-         (if (<= (count serialized) limit)
-           serialized
-           (if (string? value)
-             (truncate-string value limit)
-             ;; Non-string: deep-truncate string values within, then try to inline
-             (let [truncated (deep-truncate value limit)
-                   truncated-str (pr-str truncated)]
-               (if (<= (count truncated-str) (* limit 2))
-                 ;; Fits after truncation (allow 2x limit since map structure has overhead)
-                 truncated-str
-                 ;; Still too large — store out-of-band
-                 (let [id (store-value! value)]
-                   (str "(stored " (pr-str id) ")")))))))))))
+  "Return a lossless value expression within the run's context character limit.
+   Oversized values remain complete in run-owned storage. An explicit limit may
+   lower the run cap; a negative limit uses the cap."
+  ([value] (context/serialize-value value))
+  ([value limit] (context/serialize-value value limit)))
 
 (defn- serialize-prefix-form
   [form]
@@ -585,6 +525,7 @@
                   (apply-edits quine-form (or *spell-env* {}))),
    ;; Value store (for !call-now out-of-band large values)
    'stored stored,
+   'context-forms context-forms,
    'serialize (fn
                ([value] (serialize-for-continuation value))
                ([value limit] (serialize-for-continuation value limit))),

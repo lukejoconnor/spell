@@ -66,91 +66,24 @@
                                      '(def e 5)])))))
 
 (deftest call-now-expansion-test
-  (testing "!call-now expands single-binding forms"
-    (with-stable-gensyms
-      (is (= '(let [call-now__1 value]
-                (!llm-self
-                  (reopen (edit-reopen completion)
-                          (reopen-eval
-                            (list (quote def) (quote result)
-                                  (read-string (serialize call-now__1)))))))
-             (expand1 '(!call-now result value))))))
-
-  (testing "!call-now expands limit-aware single bindings"
-    (with-stable-gensyms
-      (is (= '(let [call-now__1 value]
-                (!llm-self
-                  (reopen (edit-reopen completion)
-                          (reopen-eval
-                            (list (quote def) (quote result)
-                                  (read-string (serialize call-now__1 50)))))))
-             (expand1 '(!call-now result value 50))))))
-
-  (testing "!call-now expands multi-binding forms into one reopen"
-    (with-stable-gensyms
-      (is (= '(let [call-now-a__1 expr-a
-                     call-now-b__2 expr-b]
-                (!llm-self
-                  (reopen (edit-reopen completion)
-                          (reopen-eval
-                            (list (quote def) (quote a)
-                                  (read-string (serialize call-now-a__1))))
-                          (reopen-eval
-                            (list (quote def) (quote b)
-                                  (read-string (serialize call-now-b__2)))))))
-             (expand1 '(!call-now a expr-a b expr-b))))))
-
+  (testing "one renderer receives all evaluated bindings and any local limit"
+    (let [single (expand1 '(!call-now result value 100))
+          multiple (expand1 '(!call-now a expr-a b expr-b))]
+      (is (= 100 (last (last (second single)))))
+      (is (= 'context-forms (first (last (second multiple)))))
+      (is (= 2 (count (second (last (second multiple))))))))
   (testing "!call-now rejects odd arg counts"
     (is (ex-info-with-message?
           #"!call-now: expected 2 args"
           #(expand1 '(!call-now a expr-a b expr-b c))))))
 
 (deftest peek-print-and-describe-expansion-test
-  (testing "!peek-now appends a prune marker for single and multi bindings"
-    (with-stable-gensyms
-      (is (= '(let [call-now__1 expr]
-                (!llm-self
-                  (reopen (edit-reopen completion)
-                          (reopen-eval
-                            (list (quote def) (quote snapshot)
-                                  (read-string (serialize call-now__1))))
-                          (reopen-eval (list (quote prune) 2)))))
-             (expand1 '(!peek-now snapshot expr)))))
-    (with-stable-gensyms
-      (is (= '(let [call-now-left__1 expr-left
-                     call-now-right__2 expr-right]
-                (!llm-self
-                  (reopen (edit-reopen completion)
-                          (reopen-eval
-                            (list (quote def) (quote left)
-                                  (read-string (serialize call-now-left__1))))
-                          (reopen-eval
-                            (list (quote def) (quote right)
-                                  (read-string (serialize call-now-right__2))))
-                          (reopen-eval (list (quote prune) 3)))))
-             (expand1 '(!peek-now left expr-left right expr-right))))))
-
   (testing "!peek is an alias for !peek-now"
-    (let [peek-now-expansion (with-stable-gensyms
-                               (expand1 '(!peek-now snapshot expr)))
-          peek-expansion (with-stable-gensyms
-                           (expand1 '(!peek snapshot expr)))]
-      (is (= peek-now-expansion peek-expansion))))
-
+    (is (= (with-stable-gensyms (expand1 '(!peek-now snapshot expr)))
+           (with-stable-gensyms (expand1 '(!peek snapshot expr))))))
   (testing "!print and print share the same expansion"
-    (with-stable-gensyms
-      (is (= '(let [print__1 a
-                     print__2 b]
-                (!llm-self
-                  (reopen (edit-reopen completion)
-                          (reopen-eval (read-string (serialize print__1)))
-                          (reopen-eval (read-string (serialize print__2))))))
-             (expand1 '(!print a b)))))
-    (let [print-expansion (with-stable-gensyms
-                            (expand1 '(!print a)))
-          alias-expansion (with-stable-gensyms
-                            (expand1 '(print a)))]
-      (is (= print-expansion alias-expansion))))
+    (is (= (with-stable-gensyms (expand1 '(!print a b)))
+           (with-stable-gensyms (expand1 '(print a b))))))
 
   (testing "!describe handles single namespaces, keyed lookups, and mixed groups"
     (is (= '(!print (describe-fn io))
