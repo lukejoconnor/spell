@@ -5,6 +5,7 @@
             [spell.runtime :as runtime]
             [spell.coordinator :as coordinator]
             [spell.eval :as eval]
+            [spell.context :as context]
             [spell.globals :as globals]
             [spell.llm :as llm]
             [spell.provider :as provider]
@@ -13,7 +14,7 @@
 
 (def ^:private public-run-keys
   #{:prompt :init :model-profile :agent-profile :model :reasoning-effort
-    :budget :depth :trace-dir :usage-tracker :user-reader :log-writer :coordinator})
+    :budget :depth :context-max-chars :trace-dir :usage-tracker :user-reader :log-writer :coordinator})
 
 (def ^:private removed-run-keys
   #{:provider :agent :lm-profile :trace :usage :user? :verbose :thinking :prefill? :format :retries
@@ -134,7 +135,11 @@
                 (agent/close-compiled-agent! agent-fn)))))))))
 
 (defn- execute-run [opts]
-  (binding [coordinator/*coordinator* (coordinator/new-coordinator (get opts :coordinator {}))
+  (binding [context/*context* (context/new-context
+                               {:max-chars (if (nil? (:context-max-chars opts))
+                                             context/default-max-chars
+                                             (:context-max-chars opts))})
+            coordinator/*coordinator* (coordinator/new-coordinator (get opts :coordinator {}))
             globals/*store* (globals/new-store)]
     (user/call-with-session
       (fn []

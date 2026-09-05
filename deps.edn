@@ -22,6 +22,7 @@
                                    "-n" "spell.stdlib-test"
                                    "-n" "spell.skills-test"
                                    "-n" "spell.eval-test"
+                                   "-n" "spell.context-test"
                                    "-n" "spell.llm-test"
                                    "-n" "spell.agent-test"
                                    "-n" "spell.web-test"
