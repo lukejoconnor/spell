@@ -6,6 +6,7 @@
             [spell.io :as sio]
             [spell.runtime :as runtime]
             [spell.coordinator :as coordinator]
+            [spell.coordinator :as coordinator]
             [spell.stdlib :as stdlib]))
 
 (use-fixtures :each th/with-test-run)
@@ -116,12 +117,15 @@
           send-await-calls (atom [])
           send-calls (atom [])
           worker-runs (atom 0)
+          owned-requests (atom [])
           done (promise)
           spawn-fn
           (fn [prompt handle-name]
             (swap! spawn-calls conj {:prompt prompt :handle handle-name})
             (runtime/start-box handle-name
                                (fn [_]
+                                 (swap! owned-requests conj
+                                        (coordinator/incoming (coordinator/snapshot) handle-name))
                                  (let [n (swap! worker-runs inc)]
                                    (if (>= n 3)
                                      {:ok "fixed!"}
@@ -154,6 +158,13 @@
         (is (= {:pass {:ok "fixed!"}} final-result))
         (is (= 1 (count @spawn-calls)))
         (is (= 3 @worker-runs))
+        (is (= [1 1 1] (mapv count @owned-requests)))
+        (is (every? #(= parent-handle (:source (first %))) @owned-requests))
+        (is (every? (fn [edges]
+                      (let [edge (first edges)
+                            worker (first (:targets edge))]
+                        (integer? (get-in edge [:slots worker :generation]))))
+                    @owned-requests))
         (is (= 3 (count worker-calls)))
         (is (= [0 1 2] (mapv #(get-in % [:msg :attempt]) worker-calls)))
         (is (= parent-handle (:target (last @send-calls))))))))
