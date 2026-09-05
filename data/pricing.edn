@@ -31,6 +31,7 @@
  "gpt-5.4" {"input" 2.50 "cache-read-input" 0.25 "cache-write-input" 3.125 "output" 15.00}
  "gpt-5.5" {"input" 5.00 "cache-read-input" 0.50 "cache-write-input" 5.00 "output" 30.00}
  "gpt-5.6-sol" {"input" 5.00 "cache-read-input" 0.50 "cache-write-input" 5.00 "output" 30.00}
+ "gpt-6-astra" {"input" 10.00 "cache-read-input" 1.00 "cache-write-input" 12.50 "output" 50.00}
 
  "accounts/fireworks/models/glm-5" {"input" 1.00 "cache-read-input" 0.20 "cache-write-input" 1.25 "output" 3.20}
  "accounts/fireworks/models/glm-5p1" {"input" 1.40 "cache-read-input" 0.26 "cache-write-input" 1.75 "output" 4.40}

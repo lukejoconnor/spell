@@ -1,6 +1,7 @@
 {:provider :codex-tc
  :base-url "https://chatgpt.com/backend-api/codex"
  :auth-file "~/.codex/auth.json"
- :default-model "gpt-5.3-codex"
+ :default-model "gpt-6-astra"
+ :default-reasoning-effort "medium"
  :max-tokens 16384
  :default-agent-profile "../agent-profiles/base-tc.agent.edn"}
