@@ -846,8 +846,10 @@ Example:
     (throw (ex-info "!ask-await requires an active agent turn" {})))
   (let [token (coordinator/begin-external-wait! runtime/*current-handle*)]
     (future
-      (let [result (try @(:ref fut)
-                        (catch Exception e {:future-await/error (.getMessage e)}))]
+      (let [result (try (runtime/future-value fut)
+                        (catch Throwable e
+                          {:future-await/error (.getMessage e)
+                           :class (.getName (class e))}))]
         (coordinator/complete-external-wait! token result)))
     (runtime/block-for-message)))
 

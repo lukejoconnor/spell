@@ -590,7 +590,7 @@
         (is (= true (llm "(do ")))))))
 
 ;; =============================================================================
-;; Completion promise tests
+;; Tracked request token tests
 ;; =============================================================================
 
 (deftest tracked-request-token-test
@@ -599,7 +599,8 @@
   (binding [runtime/*current-handle* :source]
     (let [token (runtime/request-token :target :question)]
       (is (:spell/future token))
-      (is (= :finished (deref (:ref token) 3000 :timeout)))
+      (is (not= :timeout (deref (:ref token) 3000 :timeout)))
+      (is (= :finished (runtime/blocking-await token)))
       (is (empty? (:mailbox (coordinator/agent :source)))))))
 
 (deftest tracked-request-invalid-target-test

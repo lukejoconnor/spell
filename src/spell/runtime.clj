@@ -347,46 +347,75 @@
    (let [result (promise)
          id (coordinator/request! *current-handle* [handle] supplied? msg result
                                   (when *computation-future?* (:completion *computation-owner*)))]
-     (assoc (completion-token result) :edge-id id))))
+     (assoc (completion-token result) :edge-id id :request-result true))))
+
+(defn- assert-computation-wait! [caller]
+  ;; Function values can escape a future's namespace into an agent program.
+  ;; Test the live runner rather than trusting namespace visibility or bindings
+  ;; inherited by a host future, whose thread does not own that runner.
+  (when (and *current-handle*
+             (identical? (Thread/currentThread) (:runner (coordinator/agent *current-handle*))))
+    (throw (ex-info (str caller " cannot block an agent runner; use !ask-await")
+                    {:type :agent-blocking-call :handle *current-handle*}))))
+
+(defn future-value
+  "Resolve a computation or request token. Request outcomes wrap successful
+   values so cancellation cannot be confused with a caller's ordinary map."
+  [fut]
+  (when-not (eval/spell-future? fut)
+    (throw (ex-info "Await requires a future" {:value fut})))
+  (let [result (deref (:ref fut))]
+    (if (:request-result fut)
+      (case (:status result)
+        :completed (:value result)
+        :cancelled (throw (ex-info "Agent request was cancelled"
+                                   {:type :request-cancelled :edge-id (:edge-id result)}))
+        :closed (throw (ex-info "Coordinator is closed" {:type :coordinator-closed})))
+      result)))
 
 (defn blocking-await
   "Await helper for Spell futures (exposed via future-gated blocking/ namespace)."
   [fut]
-  (if (eval/spell-future? fut)
-    (deref (:ref fut))
-    (throw (ex-info "blocking/await requires a future" {:value fut}))))
+  (assert-computation-wait! "blocking/await")
+  (when-not (eval/spell-future? fut)
+    (throw (ex-info "blocking/await requires a future" {:value fut})))
+  (future-value fut))
 
 (defn blocking-await-all
   "Await a collection of Spell futures (exposed via future-gated blocking/ namespace)."
   [futures]
+  (assert-computation-wait! "blocking/await-all")
   (when-not (sequential? futures)
     (throw (ex-info "blocking/await-all: argument must be a collection" {:got futures})))
   (mapv (fn [f]
           (when-not (eval/spell-future? f)
             (throw (ex-info "blocking/await-all: all elements must be futures" {:got f})))
-          (deref (:ref f)))
+          (future-value f))
         futures))
 
 (defn blocking-pmap
   "Parallel map over Spell futures (exposed via future-gated blocking/ namespace)."
   [f coll]
-  (let [futures (mapv (fn [item]
+  (assert-computation-wait! "blocking/pmap")
+  (let [owner (computation-owner)
+        futures (mapv (fn [item]
                         (completion-token
                           (clojure.core/future
-                            ((bound-fn [] (eval/invoke-fn f [item])))))
-                        )
+                            (binding [*computation-future?* true *computation-owner* owner
+                                      *current-raw* nil]
+                              (eval/invoke-fn f [item])))))
                       coll)]
     (blocking-await-all futures)))
 
 
 (defn send-await [handle msg]
+  (assert-computation-wait! "blocking/send-await")
   (blocking-await (request-token handle msg)))
 (defn start-box
   ([handle eval-fn initial] (start-box handle eval-fn initial nil))
   ([handle eval-fn initial parent]
-   (register! handle parent)
+   (register! handle parent :finished)
    (record-last-raw! handle initial)
-   (coordinator/dormant! handle)
    (start-orphan! handle eval-fn)
    handle))
 (defn- validate-spawn-agent! [agent handle]

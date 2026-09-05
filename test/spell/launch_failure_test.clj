@@ -28,7 +28,7 @@
       (is (nil? (coordinator/agent :worker)))
       (is (empty? (:edges (coordinator/snapshot))))
       (is (= :terminal (:body (first (messages :parent)))))
-      (is (true? (:spell/cancelled (deref outgoing-result 100 :timeout))))
+      (is (= :cancelled (:status (deref outgoing-result 100 :timeout))))
       (coordinator/register! :worker)
       (let [replacement (coordinator/agent :worker)]
         (is (nil? (coordinator/retire! :worker current :late)))
