@@ -147,7 +147,7 @@
              (finally (coordinator/close!)))))))
 
 (defn run
-  "Run a Spell agent with the v0.3.0 public API.
+  "Run a Spell agent with the public API.
 
    Required:
      :model-profile — model profile path, inline profile map, or provider instance
