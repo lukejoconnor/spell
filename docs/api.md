@@ -380,7 +380,7 @@ bin/spell mcp scaffold https://example.com/mcp
 
 Use `--json` for structured output, `--raw` for a complete tool result, and `-N` for expanded catalog text. `call` accepts an argument JSON object or `-` for stdin; repeatable `-a NAME VALUE` pairs override it. A configured alias can be explored with `--agent-profile PATH`. A one-shot stdio server is a JSON command array such as `'["my-server","--stdio"]'`.
 
-For a complete runnable configuration backed by the official Python SDK, see the [MCP Everything example](../examples/mcp-everything.md).
+For a complete runnable configuration backed by the official Python SDK, see the [MCP Everything example](https://github.com/lukejoconnor/spell/blob/main/examples/mcp-everything.md).
 
 ### Supported surface
 

@@ -2,7 +2,7 @@
 
 This file is a public orientation guide for agents, readers, and contributors working through the Spell source tree. Start with `README.md` for the human-facing project overview, CLI usage, and core language ideas, then use this file for installation checks, source-map lookup, tests, and implementation orientation.
 
-Current release state: `v0.3.0` is unreleased. The public Clojure API and configuration surface is documented in `docs/api.md`.
+Current release state: this branch is preparing `v0.4.0`. See `docs/CHANGELOG.md` for release notes and `docs/api.md` for the public Clojure API and configuration surface.
 
 Spell is a Lisp dialect for LLM self-orchestration. A Spell completion is itself a program: the evaluator runs the program, and the program can call back into an LLM, spawn sub-agents, manage context, and use configured namespaces such as `io`, `web`, `agents`, `globals`, and `patterns`.
 
@@ -40,7 +40,8 @@ This repo includes Spell-specific skills under `.agents/skills/`. Use them as th
 | `test/` | Unit and integration tests. |
 | `data/pricing.edn` | Model pricing table used for usage and cost reporting. |
 | `docs/` | Public documentation for the release. |
-| `docs/CHANGELOG.md` | Release notes; `v0.3.0` is currently unreleased. |
+| `docs/index.md` | Documentation home; preview the VitePress site with `npm ci` and `npm run docs:dev`. |
+| `docs/CHANGELOG.md` | Release notes, including upcoming `v0.4.0` changes. |
 | `LICENSE` | MIT license text. |
 
 ## Agent Quick Start
@@ -105,7 +106,7 @@ The `-t` flag uses the test provider and is useful for checking Java, Clojure, d
 | `src/spell/trace_tool.clj` | Developer tooling for inspecting recorded traces. |
 | `src/spell/api.clj` | Programmatic entry point used by library callers; API details are documented separately. |
 
-The public API/configuration reference is `docs/api.md`. In `v0.3.0`, `spell.api/run` requires `:model-profile` and `:agent-profile`, and rejects old public run keys such as `:provider`.
+The public API/configuration reference is `docs/api.md`. `spell.api/run` requires `:model-profile` and `:agent-profile`, and rejects old public run keys such as `:provider`.
 
 ## Standard Namespaces
 

@@ -38,8 +38,25 @@ When no messages or incoming/outgoing obligations remain, waiting is a no-op.
 
 Programs may run other expressions, including nested `!llm-self` calls, between
 registration and waiting. Coordinator operations are eager; they are never
-batched across those expressions. Current inbox receipt timing remains after
-model generation and before evaluation.
+batched across those expressions.
+
+## Message receipt
+
+Raw `(!llm-self prefix)` calls leave incoming messages queued. Pass
+`{:receive? true}` to accept a mailbox batch after model generation and before
+evaluation. Convenience wrappers such as `!extend` and `!call-now` enable
+receipt automatically. Messages received at that point can replace the
+generated trailing action, letting the agent respond before taking that action.
+
+`(receive completion)` accepts a batch into a completed quine and returns the
+transformed program as data. It does not call a model or evaluate the program.
+Receipt also claims the incoming requests that the agent may answer by returning.
+Wait admission considers all pending incoming requests, including unread ones.
+
+Explicit waits and dormant wakeups use the latest resumable context established
+by startup, a receiving continuation, or explicit receipt. Raw helper calls
+preserve that context, and recovery preserves the failing call's receipt choice.
+See [self-calls and receipt](api.md#self-calls-and-receipt) for the exact API.
 
 ## Operations
 

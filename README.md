@@ -2,10 +2,13 @@
 
 Self-programmed execution (SPE) is when a language model (LM) acts as a self-orchestrating agent by writing a program which the harness simply evaluates. Spell (self-programmed execution language for LMs) is a language designed for SPE. SPE and Spell are described in [this paper](https://arxiv.org/abs/2605.06898). The language is based upon and embedded within Clojure. It is currently a prototype intended for academic research.
 
+**[Documentation](docs/index.md)** · [API and configuration](docs/api.md) · [Multi-agent communication](docs/multi-agent.md) · [Changelog](docs/CHANGELOG.md)
+
 ## Contents
 
 - [Core semantics](#core-semantics)
 - [Quick start](#quick-start)
+- [Communication model](#communication-model)
 - [Spell language overview](#spell-language-overview)
   - [Relationship with Clojure](#relationship-with-clojure)
   - [The completion is the program](#the-completion-is-the-program)
@@ -16,7 +19,6 @@ Self-programmed execution (SPE) is when a language model (LM) acts as a self-orc
   - [Edit markers](#edit-markers)
   - [Error recovery](#error-recovery)
   - [Namespaces](#namespaces)
-  - [Multiple agents](#multiple-agents)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -65,6 +67,14 @@ To run `spell` directly instead of `bin/spell`, put this checkout's `bin/` direc
 - [Chat](examples/chat.md) demonstrates an interactive conversation through agent communication. The [user communication guide](docs/multi-agent.md#communicating-with-the-user) covers terminal requests (`/ask`), pending collections (`/requests`), and cancellation (`/cancel`).
 
 See the [examples guide](examples/README.md) for the complete runnable set, including sequential, game-loop, and MCP examples.
+
+## Communication model
+
+Spell programs choose when to launch agents, exchange messages, and wait. A synchronous `!llm-self` call evaluates another completion and returns its value. Through the `agents/` namespace, agents can also run concurrently: `send` delivers a message, while `ask` and `spawn-ask` request results from one or more agents. A request returns immediately, allowing the caller to do other work before waiting. Replies are associated with their requests, and a multi-target request collects one result from each target.
+
+Waiting agents can awaken to handle new messages while their requests remain pending. A per-run coordinator tracks requests and wakeups and enforces a waiting order that prevents communication deadlock, assuming fair scheduling and eventual progress of model calls, tools, and evaluator work. When terminal input is enabled, the user participates in the same communication system as `:user`. Agents can also share values through `globals/`.
+
+See [multi-agent communication](docs/multi-agent.md) for operations, examples, message receipt, and the scope of the non-deadlock guarantee.
 
 ## Spell language overview
 
@@ -165,24 +175,14 @@ Optional effect namespaces:
 - `io` (also `io-read`, `io-write`, and `io-exec`; these form a partition of `io`)
 - `web`
 - `patterns`: library of orchestration patterns written in Spell
-- `agents`: see below
-- `globals`: see below
+- `agents`: asynchronous agents and [communication](#communication-model)
+- `globals`: shared bindings across agents
 - `workers`: named child-agent entry points, when the selected agent defines them
 - `blocking`: helpers for awaiting concurrent work, available only inside of `future` threads
 
 ### MCP server namespaces
 
 Spell can also turn a configured stateless MCP `2026-07-28` server into an effect namespace. Server profiles hold connection and environment-backed authentication settings, while agent profiles select the tools, resources, prompts, completion, and subscriptions exposed to the model. See [MCP server profiles](docs/api.md#mcp-server-profiles).
-
-## Multiple agents
-
-Spell supports two broad multiple-agent delegation protocols.
-
-The simplest is a synchronous self-call. A parent program calls `!llm-self`, waits for the child completion to evaluate, and uses the returned value. With this protocol there is no clear distinction between different agents versus different turns of the same agent.
-
-The second protocol is asynchronous and operates via an optional `agents/` namespace. This provides functions like `spawn` (create an agent with a prompt), `send` (send a message asynchronously), and `!ask` (send a message and block for a response). The key design constraint of the multi-agent communication system is that it never causes deadlock: for example, if two agents simultaneously call `!ask`, then both awaken each other.
-
-The `globals/` namespace allows synchronous or asynchronous agents to coordinate via globally available bindings. Like in Clojure, objects in Spell are immutable; whereas a `globals/` binding name can change what value it refers to, the underlying value never changes once fetched.
 
 ## Contributing
 
