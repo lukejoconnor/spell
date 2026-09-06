@@ -1,7 +1,7 @@
 (ns spell.user
   "User-as-agent: treat the human as an agent with handle :user.
    Supports both agent-initiated communication (agents/!ask :user msg)
-   and user-initiated messaging (press Enter to signal readiness).
+   and user-initiated messages and tracked requests (/ask).
    Uses a LinkedBlockingQueue to decouple stdin reading from message
    processing, avoiding contention between the reader thread and
    user-call-fn."
@@ -22,60 +22,77 @@
 ;; State
 ;; =============================================================================
 
-(def ^:private last-sender
+(def ^:dynamic last-sender
   "Last agent that sent a message to :user. Used as default recipient."
-  (atom :main))
+  nil)
 
-(def ^:private stdin-queue
+(def ^:dynamic stdin-queue
   "Queue decoupling stdin reading from message processing.
    The reader thread puts InputEvents; tests may also put raw values directly.
    user-call-fn takes and unwraps them."
-  (LinkedBlockingQueue.))
+  nil)
 
 (defrecord ^:private InputEvent [value wake-when-idle? waiter-token])
 
-(def ^:private input-lock
+(def ^:dynamic input-lock
   "Serializes waiter registration with enqueue-and-wake decisions."
-  (Object.))
+  nil)
 
-(def ^:private input-waiting?
+(def ^:dynamic input-waiting?
   "True while user-call-fn owns the one active terminal input waiter."
-  (atom false))
+  nil)
 
-(def ^:private input-waiter-token
+(def ^:dynamic input-waiter-token
   "Identity token for the invocation that owns input-waiting?."
-  (atom nil))
+  nil)
 
-(def ^:private input-cycle-depth
+(def ^:dynamic input-cycle-depth
   "Number of active :user wake/eval cycles, including the pre-drain phase."
-  (atom 0))
+  nil)
 
-(def ^:private input-closed?
+(def ^:dynamic input-closed?
   "Sticky EOF state. Once closed, later asks fail promptly instead of hanging."
-  (atom false))
+  nil)
 
-(def ^:private signal-pending
+(def ^:dynamic signal-pending
   "Whether a stdin-signal is pending. Prevents duplicate signals from
    rapid Enter presses — only one signal is sent until processed."
-  (atom false))
+  nil)
 
-(def ^:private seen-msg-names
+(def ^:dynamic seen-msg-names
   "Set of message def symbol names already displayed/processed.
    Prevents re-display when reopen rebuilds the AST including
    historical message defs from inert quine args."
-  (atom #{}))
+  nil)
 
-(def ^:private interactive-session
+(def ^:dynamic interactive-session
   "Active JLine session, when the CLI is attached to a TTY."
-  (atom nil))
+  nil)
 
-(def ^:private reader-tasks
+(def ^:dynamic reader-tasks
   "Reader futures owned by this module, cancelled during reset/session cleanup."
-  (atom #{}))
+  nil)
 
-(def ^:private reader-generation
+(def ^:dynamic reader-generation
   "Invalidates late events from a reader that was cancelled during reset."
-  (atom 0))
+  nil)
+
+(def ^:dynamic input-coordination-waiting?
+  "True while the user lifecycle has yielded to coordinator communication."
+  nil)
+
+(def ^:dynamic user-edge-ids
+  "Edge ids of tracked requests the user created with /ask (atom of a set)."
+  nil)
+
+(defn call-with-session [f]
+  (binding [last-sender (atom :main) stdin-queue (LinkedBlockingQueue.)
+            input-lock (Object.) input-waiting? (atom false) input-waiter-token (atom nil)
+            input-cycle-depth (atom 0) input-closed? (atom false) signal-pending (atom false)
+            seen-msg-names (atom #{}) interactive-session (atom nil)
+            reader-tasks (atom #{}) reader-generation (atom 0)
+            user-edge-ids (atom #{}) input-coordination-waiting? (atom false)]
+    (f)))
 
 (defn- wake-user! []
   (when (compare-and-set! signal-pending false true)
@@ -93,13 +110,14 @@
 
 (defn- wake-queued-input-if-idle! []
   (when (and (not @input-waiting?)
-             (zero? @input-cycle-depth)
+             (or (zero? @input-cycle-depth) @input-coordination-waiting?)
              (queued-idle-wake?))
     (wake-user!)))
 
 (defn- begin-input-cycle! [generation]
   (locking input-lock
     (when (= generation @reader-generation)
+      (reset! input-coordination-waiting? false)
       (swap! input-cycle-depth inc))))
 
 (defn- end-input-cycle! [generation]
@@ -121,7 +139,7 @@
       ;; that EOF wake :user ahead of the pending reply and steal it from an ask.
       (when (and wake-idle?
                  (not @input-waiting?)
-                 (zero? @input-cycle-depth)
+                 (or (zero? @input-cycle-depth) @input-coordination-waiting?)
                  (or (not= value ::eof) queue-empty?))
         (wake-user!)))))
 
@@ -397,16 +415,25 @@
 
 (defn- extract-messages
   "Extract ALL messages from a raw completion string.
-   Walks the parsed AST to find all (def msg-N {:from h ...}) forms.
+   Reads message bindings, resolving quoted data and run-owned references.
    Returns a vector of {:name sym :msg map}."
   [raw]
   (try
     (let [form (first (parse/read-all (parse/balance-parens raw)))
-          msgs (->> (tree-seq seq? seq form)
+          msgs (->> (tree-seq #(and (seq? %) (not= 'quote (first %))) seq form)
                     (keep (fn [f]
                             (when (and (seq? f) (= 'def (first f)) (>= (count f) 3))
                               (let [sym (second f)
-                                    val (nth f 2)]
+                                    value-form (nth f 2)
+                                    val (cond
+                                          (and (seq? value-form) (= 2 (count value-form))
+                                               (= 'quote (first value-form)))
+                                          (second value-form)
+                                          (and (seq? value-form) (= 2 (count value-form))
+                                               (= 'stored (first value-form))
+                                               (string? (second value-form)))
+                                          (eval/stored (second value-form))
+                                          :else value-form)]
                                 (when (and (map? val) (contains? val :from))
                                   {:name sym :msg val})))))
                     vec)]
@@ -497,9 +524,11 @@
   "Display messages safely above an active JLine prompt."
   [messages]
   (print-lines!
-    (keep (fn [{:keys [from body expects-response]}]
+    (keep (fn [{:keys [from body expects-response] :as message}]
             (cond
-              body (str "[agent " from "] " body)
+              (and expects-response (:reply-to-edge-id message))
+              (str "[agent " from " requests a response, edge " (:edge-id message) "]")
+              (contains? message :body) (str "[agent " from "] " (if (nil? body) "nil" body))
               expects-response (str "[agent " from " is waiting for input]")))
           messages)))
 
@@ -508,8 +537,142 @@
     (throw (ex-info "User input session reset" {:type :user-input-reset}))))
 
 (defn- newest-sender [messages fallback]
-  (or (:from (last (filter #(or (:body %) (:expects-response %)) messages)))
+  (or (:from (last (filter #(and (keyword? (:from %)) (or (contains? % :body) (:expects-response %))) messages)))
       fallback))
+
+(defn- user-edge-id-set []
+  (if user-edge-ids @user-edge-ids #{}))
+
+(defn- user-result-report?
+  "True when msg is a completed-collection report for a request the user created with /ask."
+  [msg]
+  (and (map? msg)
+       (contains? msg :edge-id)
+       (not (:expects-response msg))
+       (contains? (user-edge-id-set) (:edge-id msg))))
+
+(defn- format-result-value [v]
+  (if (and (map? v) (:spell/child-failure v))
+    (str "FAILED " (pr-str v))
+    (pr-str v)))
+
+(defn- display-results!
+  "Print completed user requests above the terminal prompt, including nil/false."
+  [results]
+  (print-lines!
+    (mapcat
+      (fn [{:keys [from edge-id body]}]
+        (if (vector? from)
+          (cons (str "[request " edge-id " completed from " (pr-str from) "]")
+                (map (fn [{:keys [from body]}]
+                       (str "  [" from "] " (format-result-value body))) body))
+          [(str "[request " edge-id " result from " from "] " (format-result-value body))]))
+      results)))
+
+(defn- slash-command? [^String input]
+  (and (.startsWith input "/") (not (.startsWith input "//"))))
+
+(defn- unescape-slash
+  "A leading // sends literal text that begins with a single slash."
+  [^String input]
+  (if (.startsWith input "//") (subs input 1) input))
+
+(defn- parse-slash-command
+  "Parse one terminal command, leaving ordinary message routing unchanged."
+  [input]
+  (let [[_ cmd arg] (re-matches #"(?s)(\S+)(?:\s+(.*))?" (str/trim input))
+        arg (str/trim (or arg ""))]
+    (case cmd
+      "/ask"
+      (if-let [[recipients j] (parse-recipient-spec-at arg 0 (or (str/index-of arg "\n") (count arg))) ]
+        (if (or (= j (count arg)) (Character/isWhitespace (.charAt arg j)))
+          {:command :ask :recipients recipients :body (not-empty (str/trim (subs arg j)))}
+          {:command :error :message "separate the request targets and body with whitespace"})
+        {:command :error :message "usage: /ask :target body  |  /ask (:a :b) body"})
+      "/requests"
+      (if (str/blank? arg) {:command :requests}
+          {:command :error :message "usage: /requests"})
+      "/cancel"
+      (if (re-matches #"[0-9]+" arg)
+        (try {:command :cancel :edge-id (Long/parseLong arg)}
+             (catch NumberFormatException _
+               {:command :error :message "request ID is out of range"}))
+        {:command :error :message "usage: /cancel <edge-id> (see /requests)"})
+      {:command :error
+       :message (str "unknown command " cmd "; commands: /ask, /requests, /cancel (start with // to send literal slash text)")})))
+
+(defn- pending-slot-targets [slots]
+  (vec (keep (fn [[target slot]] (when (not= :filled (:status slot)) target)) slots)))
+
+(defn- command-line! [line] (print-lines! [line]))
+
+(defn- run-slash-command!
+  "Execute a slash command immediately (runs with *current-handle* :user)."
+  [input]
+  (let [{:keys [command] :as cmd} (parse-slash-command input)]
+    (case command
+      :ask
+      (try
+        (let [{:keys [recipients body]} cmd
+              targets (if (= 1 (count recipients)) (first recipients) (vec recipients))
+              id (if (nil? body) (runtime/ask targets) (runtime/ask targets body))]
+          (swap! user-edge-ids conj id)
+          (command-line! (str "[request " id " sent to " (pr-str targets) "]")))
+        (catch Exception e
+          (command-line! (str "[request failed] " (.getMessage e)))))
+
+      :requests
+      (let [ids (user-edge-id-set)
+            pending (->> (runtime/out-edges)
+                         (filter #(contains? ids (:id %)))
+                         (remove #(empty? (pending-slot-targets (:slots %)))))]
+        (if (seq pending)
+          (doseq [{:keys [id targets slots]} pending]
+            (command-line! (str "[request " id " -> " (pr-str targets) " waiting on " (pr-str (pending-slot-targets slots)) "]")))
+          (command-line! "[no pending requests]")))
+
+      :cancel
+      (let [id (:edge-id cmd)]
+        (if (contains? (user-edge-id-set) id)
+          (try
+            (runtime/cancel-edge id)
+            (swap! user-edge-ids disj id)
+            (command-line! (str "[request " id " cancelled]"))
+            (catch Exception e
+              (command-line! (str "[cancel failed] " (.getMessage e)))))
+          (command-line! (str "[cancel failed] no pending user request with id " id))))
+
+      (command-line! (str "[error] " (:message cmd))))))
+
+(defn- abandon-user-edges!
+  "Cancel every outstanding user-created collection (input EOF or session reset)."
+  []
+  (when user-edge-ids
+    (let [ids @user-edge-ids]
+      (reset! user-edge-ids #{})
+      (binding [runtime/*current-handle* :user]
+        (doseq [id ids]
+          (try (runtime/cancel-edge id) (catch Exception _ nil)))))))
+
+(defn- continue-user-suffix [restart live-requests]
+  (cond
+    (some runtime/actionable-request-live? live-requests)
+    "'(!llm-self (reopen completion) {:receive? true}) "
+    (seq (runtime/out-edges)) "'(!user-wait) "
+    :else restart))
+
+(defn- user-wait! [generation]
+  ;; Return terminal ownership before the ordinary guarded wait. The input
+  ;; reader can then wake this same lifecycle for /requests, /cancel, or text.
+  (locking input-lock
+    (ensure-current-generation! generation)
+    (reset! input-coordination-waiting? true)
+    (wake-queued-input-if-idle!))
+  (try (runtime/wait!)
+       (finally
+         (locking input-lock
+           (when (= generation @reader-generation)
+             (reset! input-coordination-waiting? false))))))
 
 (defn- user-call-fn
   "The 'API call' for the user agent.
@@ -519,22 +682,42 @@
    Two cases, checked in order (using only NEW messages):
    1. stdin-signal or expects-reply: display messages, show agent list,
       read input, parse :target routing, send to resolved recipient.
-   2. fire-and-forget: display messages, quine-restart (no stdin read)."
+   2. fire-and-forget: display messages, quine-restart (no stdin read).
+
+   Completed reports for user-created requests (/ask) are displayed separately
+   with their edge IDs. Text replies answer the newest live request
+   from the addressed agent, considering ALL retained requests, not only new ones."
   ([prompt-str]
    (user-call-fn prompt-str @reader-generation))
   ([prompt-str generation]
   (let [balanced    (parse/balance-parens prompt-str)
         all-entries (or (extract-messages balanced) [])
+        all-msgs    (mapv :msg all-entries)
         new-entries (remove #(@seen-msg-names (:name %)) all-entries)
         new-msgs    (mapv :msg new-entries)
-        agent-msgs    (vec (remove #(= :stdin-watch (:from %)) new-msgs))
-        expects-reply? (some :expects-response new-msgs)
+        result-msgs (into (vec (filter user-result-report? new-msgs))
+                          (keep (fn [msg]
+                                  (when (and (:expects-response msg)
+                                             (contains? (user-edge-id-set) (:reply-to-edge-id msg)))
+                                    {:from (:from msg) :edge-id (:reply-to-edge-id msg)
+                                     :body (:body msg)})))
+                          new-msgs)
+        agent-msgs  (vec (remove #(or (= :stdin-watch (:from %)) (user-result-report? %)) new-msgs))
+        all-requests (vec (filter #(and (map? %) (:expects-response %)) all-msgs))
+        expects-reply? (or (some :expects-response agent-msgs)
+                           (some runtime/actionable-request-live? all-requests))
         stdin-signal?  (some #(= :stdin-watch (:from %)) new-msgs)
+        finish! (fn [restart]
+                  (locking input-lock
+                    (ensure-current-generation! generation)
+                    (swap! seen-msg-names into (map :name new-entries))
+                    (swap! user-edge-ids #(apply disj % (map :edge-id result-msgs)))
+                    (continue-user-suffix restart all-requests)))
         result
         (cond
           ;; No new messages — nothing to do
-          (empty? new-entries)
-          "nil "
+          (and (empty? new-entries) (not expects-reply?))
+          (finish! "nil ")
 
           ;; Interactive: user pressed Enter or agent asked for reply
           (or stdin-signal? expects-reply?)
@@ -544,43 +727,62 @@
               (when stdin-signal?
                 (reset! signal-pending false)
                 (drain-blank-lines!))
-              (reset! last-sender (newest-sender agent-msgs @last-sender)))
+              (reset! last-sender (newest-sender (concat result-msgs agent-msgs) @last-sender)))
+            (when (seq result-msgs)
+              (display-results! result-msgs))
             (when (seq agent-msgs)
               (display-messages! agent-msgs))
             (if-let [input (prompt-and-read generation)]
-              (let [segments (parse-user-inputs input)]
-                (locking input-lock
-                  (ensure-current-generation! generation)
-                  (let [final-target
-                        (reduce
-                          (fn [default-target {:keys [recipients msg]}]
-                            (let [targets (or recipients
-                                              [(resolve-recipient nil default-target)])]
-                              (doseq [target targets]
-                                (runtime/send target msg))
-                              (or (last targets) default-target)))
-                          @last-sender
-                          segments)]
-                    (reset! last-sender final-target)
-                    (swap! seen-msg-names into (map :name new-entries)))
-                  split-top-level-restart))
-              ;; Blank input — cancel text entry, return to idle
-              (locking input-lock
-                (ensure-current-generation! generation)
-                (swap! seen-msg-names into (map :name new-entries))
-                quine-restart)))
+              (cond
+                (empty? (.trim ^String input))
+                (finish! quine-restart)
 
-          ;; Fire-and-forget — no stdin read needed
+                (slash-command? (str/trim input))
+                (do (locking input-lock
+                      (ensure-current-generation! generation)
+                      (run-slash-command! (str/trim input)))
+                    (finish! split-top-level-restart))
+
+                :else
+                (let [segments (parse-user-inputs (unescape-slash input))]
+                  (locking input-lock
+                    (ensure-current-generation! generation)
+                    (let [final-target
+                          (reduce (fn [default-target {:keys [recipients msg]}]
+                                    (reduce
+                                      (fn [last-target target]
+                                        (try
+                                          (if-let [request (last (filter #(and (= target (:from %))
+                                                                               (runtime/actionable-request-live? %))
+                                                                         all-requests))]
+                                            (runtime/reply request msg)
+                                            (runtime/send target msg))
+                                          target
+                                          (catch Exception e
+                                            (when (= :coordinator-closed (:type (ex-data e)))
+                                              (throw e))
+                                            (command-line! (str "[message failed for " target "] " (.getMessage e)))
+                                            last-target)))
+                                      default-target
+                                      (or recipients [(resolve-recipient nil default-target)])))
+                                  @last-sender segments)]
+                      (reset! last-sender final-target)
+                      (swap! seen-msg-names into (map :name new-entries))))
+                  (finish! split-top-level-restart)))
+              ;; Blank input/Ctrl-C cancels this text entry. Live obligations
+              ;; continue; EOF/reset instead throw through lifecycle cleanup.
+              (finish! quine-restart)))
+
           :else
           (do
             (locking input-lock
               (ensure-current-generation! generation)
-              (reset! last-sender (newest-sender new-msgs @last-sender)))
-            (display-messages! new-msgs)
-            (locking input-lock
-              (ensure-current-generation! generation)
-              (swap! seen-msg-names into (map :name new-entries))
-              quine-restart)))]
+              (reset! last-sender (newest-sender (concat result-msgs agent-msgs) @last-sender)))
+            (when (seq result-msgs)
+              (display-results! result-msgs))
+            (when (seq agent-msgs)
+              (display-messages! agent-msgs))
+            (finish! quine-restart)))]
     result)))
 
 ;; =============================================================================
@@ -591,9 +793,9 @@
   "Box-based execution for the user agent.
    Structurally similar to -llm but simpler (no trace, no retry, no verbose).
    Uses make-awake-fn to construct the inside-fn from the eval-fn."
-  [eval-fn handle parent-handle prompt-str generation]
+  [eval-fn handle parent-handle prompt-str generation receive?]
   (let [completion (promise)
-        awake-fn (runtime/make-awake-fn handle eval-fn)]
+        awake-fn (runtime/make-awake-fn handle eval-fn receive?)]
     (future
       (try
         (when-not (= generation @reader-generation)
@@ -602,7 +804,8 @@
           (deliver completion (str prompt-str response)))
         (catch Exception e
           (deliver completion e))))
-    (runtime/box handle completion awake-fn)))
+    (binding [runtime/*checkpoint?* receive?]
+      (runtime/box handle completion awake-fn))))
 
 ;; =============================================================================
 ;; Registration
@@ -615,15 +818,20 @@
                                 {'describe-fn stdlib/describe}
                                 llm/core-namespaces)
         ;; user-self-fn reads eval-fn dynamically via *current-eval-fn*
-        user-self-fn (fn [prompt]
-                       (let [prompt-str (if (and (seq? prompt) (= 'quine (first prompt)))
+        user-self-fn (fn user-self-fn
+                      ([prompt] (user-self-fn prompt {}))
+                      ([prompt options]
+                       (let [receive? (llm/self-call-receive? options)
+                             prompt-str (if (and (seq? prompt) (= 'quine (first prompt)))
                                           (eval/serialize-quine-prefix prompt)
                                           (str prompt))]
                          (user-self runtime/*current-eval-fn*
                                     runtime/*current-handle* runtime/*current-handle* prompt-str
-                                    generation)))
+                                    generation receive?))))
         ;; Effect builtins: !llm-self (user-self) + agents namespace
         effect-builtins {'!llm-self user-self-fn
+                         'receive runtime/receive
+                         '!user-wait #(user-wait! generation)
                          'agents runtime/agents-namespace}
         eval-builtin (llm/make-eval variant-builtins
                                     effect-builtins
@@ -647,6 +855,8 @@
   (let [waiter-token
         (locking input-lock
           (swap! reader-generation inc)
+          (abandon-user-edges!)
+          (reset! input-coordination-waiting? false)
           (when-let [waiter-token @input-waiter-token]
             (.put stdin-queue (->InputEvent ::reset false waiter-token)))
           @input-waiter-token)]

@@ -3,17 +3,14 @@
             [spell.agent :as agent]
             [spell.feedback :as feedback]
             [spell.runtime :as runtime]
+            [spell.coordinator :as coordinator]
             [spell.llm :as llm]
             [spell.mcp.namespace :as mcp]
             [spell.provider :as provider]
             [spell.stdlib :as stdlib]
             [spell.test-helpers :as th]))
 
-(use-fixtures :each
-  (fn [f]
-    (reset! runtime/registry {})
-    (f)
-    (reset! runtime/registry {})))
+(use-fixtures :each th/with-test-run)
 
 ;; =============================================================================
 ;; resolve-workers tests

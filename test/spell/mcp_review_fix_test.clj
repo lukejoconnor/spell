@@ -2,6 +2,9 @@
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [spell.http :as http]
+            [spell.context :as context]
+            [spell.eval :as eval]
+            [spell.parse :as parse]
             [spell.mcp.client :as client]
             [spell.mcp.http :as mcp-http]
             [spell.mcp.protocol :as protocol]
@@ -396,20 +399,25 @@
     (is @stream-closed?)
     (is (empty? @(:subscription-streams mcp-client)))))
 
-(deftest model-facing-values-have-one-aggregate-bound-test
-  (let [large-text (apply str (repeat 10000 "x"))
-        blocks (vec (repeat 100 {"type" "text" "text" large-text}))
-        resources (vec (repeat 100 {"uri" "memory://large" "text" large-text}))
-        messages (vec (repeat 100 {"role" "user"
-                                   "content" {"type" "text" "text" large-text}}))]
-    (doseq [[label value]
-            [["tool" (protocol/model-value :demo "large" {"content" blocks})]
-             ["resource" (protocol/model-resource-value :demo {"contents" resources})]
-             ["prompt" (protocol/model-prompt-value :demo {"messages" messages})]]]
+(deftest mcp-model-values-share-lossless-context-budget
+  (let [large-text (apply str (repeat 250000 "x"))
+        blocks (vec (repeat 130 {"type" "text" "text" large-text}))
+        resources (vec (repeat 130 {"uri" "memory://large" "text" large-text}))
+        messages (vec (repeat 130 {"role" "user" "content" {"type" "text" "text" large-text}}))
+        completions (vec (repeat 1100 large-text))]
+    (doseq [[label value field original]
+            [["tool" (protocol/model-value :demo "large" {"content" blocks}) "content" blocks]
+             ["structured" (protocol/model-value :demo "large" {"structuredContent" {:data large-text}})
+              "structuredContent" {:data large-text}]
+             ["resource" (protocol/model-resource-value :demo {"contents" resources}) "contents" resources]
+             ["prompt" (protocol/model-prompt-value :demo {"messages" messages}) "messages" messages]
+             ["completion" (protocol/model-completion-value :demo {"completion" {"values" completions}})
+              "completion" {"values" completions}]
+             ["info" (protocol/model-info-value :demo {"instructions" large-text}) "instructions" large-text]]]
       (testing label
-        (is (<= (count (protocol/json-encode value)) protocol/max-model-total-chars))
-        (is (or (true? (get value "omitted"))
-                (some #(true? (get % "omitted"))
-                      (or (get value "content")
-                          (get value "contents")
-                          (get value "messages")))))))))
+        (binding [context/*context* (context/new-context {:max-chars 256})]
+          (let [text (context/serialize-value value)
+                decoded (:ok (eval/spell-eval (parse/read-first text) {}))]
+            (is (= original (get value field)))
+            (is (<= (count text) 256))
+            (is (identical? value decoded))))))))

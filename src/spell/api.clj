@@ -3,7 +3,9 @@
   (:require [clojure.set :as set]
             [spell.agent :as agent]
             [spell.runtime :as runtime]
+            [spell.coordinator :as coordinator]
             [spell.eval :as eval]
+            [spell.context :as context]
             [spell.globals :as globals]
             [spell.llm :as llm]
             [spell.provider :as provider]
@@ -12,7 +14,7 @@
 
 (def ^:private public-run-keys
   #{:prompt :init :model-profile :agent-profile :model :reasoning-effort
-    :budget :depth :trace-dir :usage-tracker :user-reader :log-writer})
+    :budget :depth :context-max-chars :trace-dir :usage-tracker :user-reader :log-writer :coordinator})
 
 (def ^:private removed-run-keys
   #{:provider :agent :lm-profile :trace :usage :user? :verbose :thinking :prefill? :format :retries
@@ -41,7 +43,7 @@
   (when-not model-profile
     (throw (ex-info "Must specify :model-profile" {}))))
 
-(defn- execute-run
+(defn- execute-run*
   [{:keys [prompt init model-profile agent-profile model reasoning-effort budget depth trace-dir
            usage-tracker user-reader interactive-user? log-writer agent-namespace-overrides]
     :as opts}]
@@ -87,7 +89,6 @@
                               (write-trace-once! false)
                               (catch Exception _)))))]
     (user/reset-state!)
-    (reset! runtime/registry {})
     (globals/reset-globals!)
     (globals/set-val :roles {:main {}})
     (try
@@ -133,8 +134,20 @@
                   (.flush ^java.io.Writer log-writer))
                 (agent/close-compiled-agent! agent-fn)))))))))
 
+(defn- execute-run [opts]
+  (binding [context/*context* (context/new-context
+                               {:max-chars (if (nil? (:context-max-chars opts))
+                                             context/default-max-chars
+                                             (:context-max-chars opts))})
+            coordinator/*coordinator* (coordinator/new-coordinator (get opts :coordinator {}))
+            globals/*store* (globals/new-store)]
+    (user/call-with-session
+      (fn []
+        (try (execute-run* opts)
+             (finally (coordinator/close!)))))))
+
 (defn run
-  "Run a Spell agent with the v0.3.0 public API.
+  "Run a Spell agent with the public API.
 
    Required:
      :model-profile — model profile path, inline profile map, or provider instance

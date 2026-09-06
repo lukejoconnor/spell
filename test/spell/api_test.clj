@@ -1,7 +1,9 @@
 (ns spell.api-test
-  (:require [clojure.test :refer [deftest testing is use-fixtures]]
+  (:require [spell.test-helpers :as th]
+            [clojure.test :refer [deftest testing is use-fixtures]]
             [spell.api :as api]
             [spell.runtime :as runtime]
+            [spell.coordinator :as coordinator]
             [spell.globals :as globals]
             [spell.mcp.namespace :as mcp]
             [spell.provider :as provider]
@@ -9,11 +11,7 @@
   (:import [java.io Reader StringReader StringWriter]
            [java.util.concurrent CountDownLatch TimeUnit]))
 
-(use-fixtures :each
-  (fn [f]
-    (reset! runtime/registry {})
-    (f)
-    (reset! runtime/registry {})))
+(use-fixtures :each th/with-test-run)
 
 ;; =============================================================================
 ;; Basic run tests
@@ -226,7 +224,7 @@
           (api/run {:prompt "Return 42"
                     :model-profile (provider/test-provider {:response "{:result 42}))"})
                     :agent-profile test-agent
-                    :format {:required [:result]}})))))
+                    :format {:required [:result]}}))))
 
   (testing "inline model profile map is accepted"
     (let [result (api/run {:prompt "Return 42"
@@ -270,12 +268,16 @@
       (is (false? @closed?))))
 
   (testing "user-reader registers :user"
-    (let [result (api/run {:init "(do 42)"
-                           :model-profile (provider/test-provider {:response "unused"})
+    (let [roles (atom nil)
+          result (api/run {:prompt "Return 42"
+                           :model-profile (provider/test-provider
+                                            {:response-fn (fn [_]
+                                                            (reset! roles (globals/get-val :roles))
+                                                            "42))")})
                            :agent-profile test-agent
                            :user-reader (StringReader. "")})]
       (is (= 42 (:result result)))
-      (is (contains? (globals/get-val :roles) :user))))
+      (is (contains? @roles :user)))))
 
 
 (deftest user-reader-lifecycle-test
@@ -294,8 +296,22 @@
                          (.countDown interrupted)
                          -1)))
                    (close [] (reset! closed? true)))
+          sessions (atom [])
+          call-with-session user/call-with-session
+          run-in-session (fn [options]
+                           (with-redefs [user/call-with-session
+                                         (fn [f]
+                                           (call-with-session
+                                             #(do
+                                                (swap! sessions conj
+                                                       {:coordinator coordinator/*coordinator*
+                                                        :readers user/reader-tasks
+                                                        :queue user/stdin-queue
+                                                        :closed user/input-closed?})
+                                                (f))))]
+                             (api/run options)))
           run-future (future
-                       (api/run {:init "(do 42)"
+                       (run-in-session {:init "(do 42)"
                                  :model-profile (provider/test-provider {:response "unused"})
                                  :agent-profile test-agent
                                  :user-reader reader}))]
@@ -305,12 +321,16 @@
         (is (false? @closed?) "the caller retains ownership of :user-reader")
         (is (.await interrupted 3 TimeUnit/SECONDS)
             "run cleanup interrupts a cooperative blocking read")
-        (is (empty? @@#'user/reader-tasks))
-        (is (.isEmpty ^java.util.concurrent.LinkedBlockingQueue @#'user/stdin-queue))
-        (is (false? @@#'user/input-closed?))
-        (let [second-result (api/run {:init "(do 43)"
+        (let [{:keys [coordinator readers queue closed]} (first @sessions)]
+          (is (empty? @readers))
+          (is (.isEmpty ^java.util.concurrent.LinkedBlockingQueue queue))
+          (is (false? @closed))
+          (is (:closed? @coordinator)))
+        (let [second-result (run-in-session {:init "(do 43)"
                                       :model-profile (provider/test-provider {:response "unused"})
                                       :agent-profile test-agent})]
           (is (= 43 (:result second-result)))
-          (is (false? (runtime/handle? :user))
+          (is (not (identical? (:coordinator (first @sessions))
+                               (:coordinator (second @sessions)))))
+          (is (not (contains? (:agents @(:coordinator (second @sessions))) :user))
               "the next run does not inherit the previous :user handle or input state"))))))

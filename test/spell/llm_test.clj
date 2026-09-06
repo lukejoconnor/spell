@@ -3,6 +3,7 @@
             [clojure.data.json :as json]
             [spell.cli :as cli]
             [spell.runtime :as runtime]
+            [spell.coordinator :as coordinator]
             [spell.core :as spell]
             [spell.llm :as llm]
             [spell.provider :as provider]
@@ -16,15 +17,9 @@
             [spell.stdlib :as stdlib]
             [spell.parse :as parse]))
 
-(use-fixtures :each
-  (fn [f]
-    (reset! runtime/registry {})
-    (f)
-    (reset! runtime/registry {})))
+(use-fixtures :each th/with-test-run)
 
-(defn- append-forms-macro
-  [& forms]
-  (#'runtime/append-forms-macro forms))
+(def ^:private append-forms-macro th/append-forms-macro)
 
 (deftest llm-basic-test
   (testing "llm evaluates response and extracts return"
@@ -120,10 +115,10 @@
     (is (= expected
            (runtime/run-root-box handle p (runtime/make-awake-fn handle inbox-fn) inbox-fn))
         "evaluation should see the reopenable completion, not the ignored suffix")
-    (is (= expected @(:last-raw (get @runtime/registry handle)))
+    (is (= expected (:last-raw @(:execution (coordinator/agent handle))))
         "stored raw should drop ignored suffixes so later wakeups can reopen it")
     (is (= (parse/read-first expected)
-           (parse/read-first @(:last-raw (get @runtime/registry handle))))
+           (parse/read-first (:last-raw @(:execution (coordinator/agent handle)))))
         "stored raw should remain parseable for later inbox macro application paths")))
 
 (deftest inbox-preserves-split-top-level-raw-for-reopen-test
@@ -145,7 +140,7 @@
     (runtime/-send! handle (append-forms-macro '(def injected :yes)))
     (deliver p raw)
     (runtime/box handle p (runtime/make-awake-fn handle inbox-fn))
-    (let [stored @(:last-raw (get @runtime/registry handle))
+    (let [stored (:last-raw @(:execution (coordinator/agent handle)))
           forms (vec (parse/read-all stored))
           reopened-form (last forms)
           body-exprs (rest (second (last reopened-form)))]
@@ -361,17 +356,32 @@
                                      {:input_tokens 1000000
                                       :output_tokens 500000})))))))
 
+(deftest kimi-k3-cost-accounting-test
+  (testing "Kimi K3 usage is priced from the shared pricing table"
+    (let [usage-atom (atom {:by-model {}})]
+      (binding [provider/*usage* usage-atom
+                provider/*budget* nil]
+        (provider/track-usage! "accounts/fireworks/models/kimi-k3"
+                               {:input_tokens 1000000
+                                :cache_read_input_tokens 1000000
+                                :output_tokens 100000}))
+      ;; 1M uncached input at $3 + 1M cached input at $0.30 + 100K output at $15
+      (is (< (Math/abs (- 4.8 (double (get-in @usage-atom [:by-model "accounts/fireworks/models/kimi-k3" :cost])))) 1e-9))
+      (is (< (Math/abs (- 4.8 (double (provider/current-cost usage-atom)))) 1e-9)))))
+
 (deftest current-cost-prices-latest-models-test
   (testing "shared pricing covers input, cached input, and output for the latest configured model families"
     (doseq [[model expected-input expected-cache-read expected-cache-write expected-output]
             [["gpt-5.5" 5.0 0.5 5.0 30.0]
              ["gpt-5.6-sol" 5.0 0.5 5.0 30.0]
+             ["gpt-6-astra" 10.0 1.0 12.5 50.0]
              ["claude-sonnet-5" 3.0 0.3 3.75 15.0]
              ["claude-opus-4-8" 5.0 0.5 6.25 25.0]
              ["claude-fable-5-1" 10.0 0.25 12.5 50.0]
              ["claude-fable-5" 10.0 1.0 12.5 50.0]
              ["accounts/fireworks/models/glm-5p2" 1.4 0.14 1.4 4.4]
              ["accounts/fireworks/models/kimi-k2p7-code" 0.95 0.19 0.95 4.0]
+             ["accounts/fireworks/models/kimi-k3" 3.0 0.3 3.0 15.0]
              ["accounts/fireworks/models/qwen3p7-plus" 0.4 0.08 0.4 1.6]]]
       (let [cost (#'provider/lookup-cost model provider/default-costs)]
         (is (= expected-input (:input cost)) model)
@@ -701,14 +711,15 @@
     (let [provider (provider/openai-provider {:api-key "sk-test"})]
       (is (instance? spell.provider.OpenAIProvider provider))
       (is (some? (:base-url provider)))
-      (is (some? (:model provider)))))
+      (is (= "gpt-6-astra" (:model provider)))))
 
   (testing "custom base-url and model"
     (let [provider (provider/openai-provider {:api-key "sk-test"
                                           :base-url "https://custom.api.com/v1"
                                           :model "gpt-4o-mini"})]
       (is (= "https://custom.api.com/v1" (:base-url provider)))
-      (is (= "gpt-4o-mini" (:model provider)))))
+      (is (= "gpt-4o-mini" (:model provider)))
+      (is (nil? (:max-tokens provider)))))
 
   (testing "strips trailing slash from base-url"
     (let [provider (provider/openai-provider {:api-key "sk-test"
@@ -966,6 +977,10 @@
       (is (false? (provider/supports-prefill p)))
       (is (instance? spell.provider.FireworksProvider (provider/plain-text-provider p)))))
 
+  (testing "fireworks-tc-provider accepts explicit Kimi K3 model"
+    (let [p (provider/fireworks-tc-provider {:api-key "fw-test" :model "kimi-k3"})]
+      (is (= "accounts/fireworks/models/kimi-k3" (:model p)))))
+
   (testing "fireworks-tc-provider accepts custom request-timeout-sec"
     (let [p (provider/fireworks-tc-provider {:api-key "fw-test" :request-timeout-sec 120})]
       (is (= 120 (:request-timeout-sec p)))))
@@ -1010,6 +1025,20 @@
                 true
                 nil
                 "high")]
+      (is (= {:type "auto"} (:tool_choice body)))
+      (is (= {:type "enabled" :budget_tokens 1024} (:thinking body)))
+      (is (= {:effort "high"} (:output_config body)))))
+
+  (testing "fireworks-tc request maps Kimi K3 high reasoning effort"
+    (let [body (#'provider/fireworks-tc-request-body
+                "accounts/fireworks/models/kimi-k3"
+                "prompt"
+                nil
+                4096
+                true
+                nil
+                "high")]
+      (is (= "accounts/fireworks/models/kimi-k3" (:model body)))
       (is (= {:type "auto"} (:tool_choice body)))
       (is (= {:type "enabled" :budget_tokens 1024} (:thinking body)))
       (is (= {:effort "high"} (:output_config body)))))
@@ -1332,6 +1361,12 @@
       (is (thrown-with-msg? Exception #"missing spell_suffix tool_use"
             (#'provider/parse-anthropic-tc-stream sse))))))
 
+(deftest astra-uses-openai-responses-api-test
+  (testing "Astra routes to Responses even when a generic OpenAI provider does not force it"
+    (is (true? (#'provider/responses-model? "gpt-6-astra"))))
+  (testing "explicit older models retain their existing routing"
+    (is (false? (boolean (#'provider/responses-model? "gpt-5.6-sol"))))))
+
 (deftest codex-msg-provider-constructor-test
   (testing "constructs with explicit token override"
     (let [p (provider/codex-msg-provider {:api-key "chatgpt-token"
@@ -1340,7 +1375,7 @@
       (is (= "chatgpt-token" (:api-key p)))
       (is (= "acc_123" (:account-id p)))
       (is (some? (:base-url p)))
-      (is (some? (:model p)))))
+      (is (= "gpt-6-astra" (:model p)))))
 
   (testing "loads token and account id from auth file"
     (let [tmp (java.io.File/createTempFile "codex-msg-auth-" ".json")]
@@ -1366,7 +1401,7 @@
       (is (= "chatgpt-token" (:api-key p)))
       (is (= "acc_123" (:account-id p)))
       (is (some? (:base-url p)))
-      (is (some? (:model p)))))
+      (is (= "gpt-6-astra" (:model p)))))
 
   (testing "loads token and account id from auth file"
     (let [tmp (java.io.File/createTempFile "codex-tc-auth-" ".json")]
@@ -1423,7 +1458,18 @@
                                                  nil
                                                  nil
                                                  nil)]
-      (is (nil? (:prompt_cache_key body))))))
+      (is (nil? (:prompt_cache_key body)))))
+
+  (testing "Astra preserves every supported reasoning override"
+    (doseq [effort ["low" "medium" "high" "xhigh" "max"]]
+      (let [body (#'provider/codex-tc-request-body "gpt-6-astra"
+                                                   "prompt"
+                                                   "system"
+                                                   nil
+                                                   effort
+                                                   nil
+                                                   nil)]
+        (is (= {:effort effort} (:reasoning body)))))))
 
 (deftest codex-msg-stream-parse-test
   (testing "parses response.completed with assistant message output"
@@ -1464,6 +1510,68 @@
                    "\n\n")]
       (is (thrown-with-msg? Exception #"ChatGPT Codex Responses API error"
             (#'provider/parse-codex-msg-stream sse))))))
+
+(deftest codex-stream-finished-items-test
+  (let [sse (fn [events]
+              (apply str (map #(str "data: " (json/write-str %) "\n\n") events)))
+        tool-item {:type "custom_tool_call" :status "completed"
+                   :name "spell_suffix" :input "42\n"}
+        message-item (fn [text]
+                       {:type "message" :status "completed" :role "assistant"
+                        :content [{:type "output_text" :text text}]})
+        done (fn [index item]
+               {:type "response.output_item.done" :output_index index :item item})
+        completed (fn [response]
+                    {:type "response.completed"
+                     :response (merge {:status "completed"
+                                       :usage {:input_tokens 9 :output_tokens 3}}
+                                      response)})]
+    (doseq [[label parse-stream item expected]
+            [["tool" #'provider/parse-codex-tc-stream tool-item "42\n"]
+             ["message" #'provider/parse-codex-msg-stream (message-item "42\n") "42\n"]]]
+      (testing (str label " recovers finished output when terminal output is empty or absent")
+        (doseq [terminal [{} {:output []}]]
+          (let [result (parse-stream (sse [(done 0 item) (completed terminal)]))]
+            (is (= expected (:text result)))
+            (is (= 9 (get-in result [:usage :input_tokens])))
+            (is (= 3 (get-in result [:usage :output_tokens]))))))
+      (testing (str label " keeps populated terminal output authoritative")
+        (let [other-item (if (= label "tool")
+                           (assoc tool-item :input "terminal")
+                           (message-item "terminal"))]
+          (is (= "terminal"
+                 (:text (parse-stream
+                          (sse [(done 0 item) (completed {:output [other-item]})])))))))
+      (testing (str label " never accepts finished items after failed or incomplete events")
+        (doseq [event [{:type "response.failed" :response {}}
+                       {:type "response.incomplete"
+                        :response {:status "incomplete"
+                                   :incomplete_details {:reason "max_output_tokens"}}}
+                       {:type "error" :message "stream error"}]]
+          (is (thrown-with-msg? Exception #"ChatGPT Codex Responses API error"
+                (parse-stream (sse [(done 0 item) event]))))
+          (is (thrown-with-msg? Exception #"ChatGPT Codex Responses API error"
+                (parse-stream (sse [(done 0 item) event (completed {:output []})]))))))
+      (testing (str label " rejects explicitly unsuccessful completed status")
+        (is (thrown-with-msg? Exception #"ChatGPT Codex Responses API error"
+              (parse-stream (sse [(done 0 item) (completed {:status "incomplete"})])))))
+      (testing (str label " requires a terminal completion even after finished output")
+        (is (thrown-with-msg? Exception #"missing response.completed"
+              (parse-stream (str (sse [(done 0 item)]) "data: [DONE]\n\n"))))))
+    (testing "finished items are ordered by output index and repeated indexes replace once"
+      (let [stream (sse [(done 1 (message-item "B"))
+                         (done 0 (message-item "old"))
+                         (done 0 (message-item "A"))
+                         (completed {:output []})])]
+        (is (= "AB" (:text (#'provider/parse-codex-msg-stream stream))))))
+    (testing "tool mode never accepts partial items or input deltas"
+      (doseq [events [[]
+                      [{:type "response.output_item.added" :output_index 0 :item tool-item}]
+                      [{:type "response.custom_tool_call_input.delta"
+                        :output_index 0 :delta "42\n"}]]]
+        (is (thrown-with-msg? Exception #"missing custom_tool_call"
+              (#'provider/parse-codex-tc-stream
+                (sse (conj events (completed {:output []}))))))))))
 
 (deftest codex-tc-stream-parse-test
   (testing "parses custom_tool_call output"
@@ -2020,6 +2128,112 @@
   (testing "retryable? returns false for other errors"
     (is (not (provider/retryable? (ex-info "bad request" {:status 400}))))
     (is (not (provider/retryable? (ex-info "generic" {}))))))
+
+(deftest retryable-status-types-test
+  (testing "textual response statuses are not HTTP status codes"
+    (doseq [status ["incomplete" "unknown" "429" "500"]]
+      (let [ex (ex-info "Response status" {:status status})
+            calls (atom 0)
+            caught (try (provider/call-with-retries
+                          (fn [_] (swap! calls inc) (throw ex)) [0 0])
+                        (catch Exception e e))]
+        (is (false? (provider/retryable? ex)) (str status))
+        (is (identical? ex caught) "Non-retryable errors are preserved")
+        (is (= 1 @calls)))))
+  (testing "existing numeric status policy is unchanged"
+    (doseq [status [429 500 503 599 600]]
+      (is (true? (provider/retryable? (ex-info "HTTP failure" {:status status})))))
+    (doseq [status [200 400 499]]
+      (is (false? (provider/retryable? (ex-info "HTTP failure" {:status status})))))))
+
+(defn- incomplete-openai-response [output]
+  (json/write-str {:status "incomplete"
+                   :incomplete_details {:reason "max_output_tokens"}
+                   :output output
+                   :usage {:input_tokens 100 :output_tokens 8192
+                           :input_tokens_details {:cached_tokens 20}
+                           :output_tokens_details {:reasoning_tokens 8188}}}))
+
+(deftest incomplete-responses-parser-error-retries-test
+  (doseq [output [[] [{:type "custom_tool_call" :name "spell_suffix" :input "(def x"}]]
+          succeeds? [true false]]
+    (let [body (incomplete-openai-response output)
+          calls (atom 0) previous (atom []) errors (atom [])
+          outcome (try
+                    (provider/call-with-retries
+                      (fn [last-error]
+                        (swap! previous conj last-error)
+                        (swap! calls inc)
+                        (if (and succeeds? (> @calls 1))
+                          (#'provider/parse-openai-responses-response
+                            (json/write-str {:status "completed"
+                                             :output [{:type "custom_tool_call" :name "spell_suffix"
+                                                       :input "42"}]}) true)
+                          (try (#'provider/parse-openai-responses-response body true)
+                               (catch Exception e (swap! errors conj e) (throw e)))))
+                      [0 0])
+                    (catch Exception e e))]
+      (is (= (if succeeds? 2 3) @calls))
+      (is (= (if succeeds? 1 3) (count @errors)))
+      (is (every? #(= :missing-tool-call (:type (ex-data %))) @errors))
+      (is (every? #(= "incomplete" (:status (ex-data %))) @errors))
+      (is (every? #(= "max_output_tokens" (get-in (ex-data %) [:incomplete_details :reason])) @errors))
+      (is (nil? (first @previous)))
+      (is (every? true? (map identical? @errors (rest @previous)))
+          "Each retry receives the actual preceding parser exception")
+      (if succeeds?
+        (is (= "42" (:text outcome)))
+        (is (identical? (last @errors) outcome) "Exhaustion preserves the last parser error")))))
+
+(deftest incomplete-openai-usage-is-recorded-before-retry-test
+  (doseq [succeeds? [true false]]
+    (let [usage (atom {}) requests (atom []) before-retry (atom []) errors (atom [])
+          incomplete (incomplete-openai-response [])
+          complete (json/write-str {:status "completed"
+                                    :output [{:type "custom_tool_call" :name "spell_suffix" :input "42"}]
+                                    :usage {:input_tokens 50 :output_tokens 4
+                                            :input_tokens_details {:cached_tokens 5}
+                                            :output_tokens_details {:reasoning_tokens 1}}})
+          client (proxy [java.net.http.HttpClient] []
+                   (send [request _]
+                     (swap! requests conj request)
+                     (let [body (if (and succeeds? (> (count @requests) 1)) complete incomplete)]
+                       (reify java.net.http.HttpResponse
+                         (statusCode [_] 200)
+                         (body [_] body)
+                         (request [_] request)
+                         (previousResponse [_] (java.util.Optional/empty))
+                         (headers [_] nil)
+                         (sslSession [_] (java.util.Optional/empty))
+                         (uri [_] (.uri request))
+                         (version [_] java.net.http.HttpClient$Version/HTTP_1_1)))))
+          p (provider/map->OpenAIProvider
+              {:api-key "offline-test" :base-url "https://example.invalid/v1" :model "gpt-5.4"
+               :max-tokens 8192 :http-client client :use-responses-api true :force-tool-call true})
+          outcome (binding [provider/*usage* usage provider/*budget* nil]
+                    (try (provider/call-with-retries
+                           (fn [last-error]
+                             (when last-error (swap! before-retry conj @usage))
+                             (try (provider/call-llm p "unchanged prompt" {:system "unchanged system"})
+                                  (catch Exception e (swap! errors conj e) (throw e))))
+                           [0 0])
+                         (catch Exception e e)))
+          stats (get-in @usage [:by-model "gpt-5.4"])]
+      (is (= (if succeeds? 2 3) (count @requests)))
+      (is (= (if succeeds? [1] [1 2])
+             (mapv #(get-in % [:by-model "gpt-5.4" :calls]) @before-retry)))
+      (is (= (if succeeds? [1] [1 2]) (mapv #(count (:records %)) @before-retry))
+          "Incomplete usage is already recorded before retry enters the provider")
+      (is (= (count @requests) (:calls stats) (count (:records @usage)))
+          "Every incomplete or successful response is counted exactly once")
+      (is (= (if succeeds? 125 240) (:uncached_input_tokens stats)))
+      (is (= (if succeeds? 25 60) (:cached_input_tokens stats)))
+      (is (= (if succeeds? 7 12) (:visible_output_tokens stats)))
+      (is (= (if succeeds? 8189 24564) (:reasoning_output_tokens stats)))
+      (is (every? #(= :missing-tool-call (:type (ex-data %))) @errors))
+      (if succeeds?
+        (is (= "42" outcome))
+        (is (identical? (last @errors) outcome))))))
 
 (deftest call-with-retries-passes-last-error
   (testing "f receives nil on first call and the exception on retry"

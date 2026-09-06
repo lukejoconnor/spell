@@ -62,9 +62,21 @@ writeup/
 # Public docs surface
 docs/*
 !docs/api.md
+!docs/multi-agent.md
 !docs/CHANGELOG.md
 !docs/changelog.md
 !docs/error-recovery.md
+!docs/index.md
+!docs/start.md
+!docs/language-overview.md
+!docs/capabilities.md
+!docs/.vitepress/
+!docs/.vitepress/**
+
+# Documentation build
+node_modules/
+docs/.vitepress/dist/
+docs/.vitepress/cache/
 
 # LaTeX build artifacts
 *.aux

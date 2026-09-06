@@ -56,7 +56,7 @@ wants to configure any additional provider. If none are present, ask whether the
 user wants to configure one now and list these options:
 
 - Codex CLI: install Codex and run `codex` once so `~/.codex/auth.json` exists.
-- OpenAI API: set `OPENAI_API_KEY`; use `openai-tc:<model>`.
+- OpenAI API: set `OPENAI_API_KEY`; the default is `openai-tc:gpt-6-astra`, and explicit older exact model IDs remain selectable.
 - Anthropic API: set `ANTHROPIC_API_KEY`; use `anthropic-pf:<model>` or `anthropic-tc:<model>`.
 - Fireworks API: set `FIREWORKS_API_KEY`; use `fireworks:<model>` or `fireworks-tc:<model>`.
 

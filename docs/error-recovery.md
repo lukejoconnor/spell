@@ -46,7 +46,7 @@ The runtime catches the error and appends three arguments to the top-level `(qui
        :in '(def files (io/ls "."))}))
   (prune 2)                       ;; drops the failed program and recovery context
   (eval (do                       ;; the new program begins here
-    '(!llm-self (reopen completion)))))
+    '(!llm-self (reopen completion) {:receive? true}))))
 ```
 This works because `quine` with arity greater than two evaluates only the last form; appending a recovery form to the error-producing form avoids re-raising the error. The error-causing form, recovery prompt, and error message are visible to the model for only one turn. On the following extension, `(prune 2)` removes both inert arguments, leaving the new program without stale recovery context. The recovery prompt is:
 ```tex
@@ -60,3 +60,5 @@ Emit a `(quine task "...")` form describing the original task, followed by a (qu
 If the completion cannot be parsed at all—for example because of unbalanced parentheses—Spell cannot embed it as normal code. In that case, the raw text is wrapped into a fresh recovery quine as an inert string, followed by the inert recovery-context block, `(prune 2)`, and a fresh program. The LM sees the raw program and a separate `_error` value, including the reader error, and gets another chance to produce a valid continuation. On the following extension, the raw program, recovery prompt, and error are pruned while the task and context-summary forms requested by the recovery prompt remain. Compared with the more common evaluation recovery path, this path can be expensive because when the error-producing program is wrapped as a string literal, it misses the KV cache.
 
 Reader and evaluation recovery share one limit of two recovery re-prompts. Each reader or evaluation retry consumes one attempt.
+
+Recovery self-calls explicitly retain the failing call's receipt choice: raw calls use `{:receive? false}`, and receiving calls use `{:receive? true}` as illustrated above. An inbox batch already consumed before a reader error is carried into the recovery program once.

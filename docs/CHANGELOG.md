@@ -1,6 +1,30 @@
 # Changelog
 
-## v0.3.0 - Unreleased
+## v0.4.0 - 2026-09-06
+
+### Communication and context
+
+- Each run now owns an atomic coordinator for agent lifecycles, mailboxes, requests, and wakeups. Concurrent runs keep their coordination state separate.
+- Added immediate `agents/ask` and `agents/spawn-ask`: request results from one or more agents, continue working, then use `agents/!wait` or `agents/!sleep`. Multi-target requests collect one result per target. Replies identify their request, and unrelated messages can awaken a caller while its collections remain pending. See [multi-agent communication](multi-agent.md).
+- Enforced an ordering rule for communication waits to prevent coordinator-wait deadlock, assuming fair scheduling and eventual external progress. Refused waits raise recoverable errors so agents can handle outstanding requests. Added atomic capacity admission through `:coordinator {:max-edges 10000}`.
+- Added tracked terminal requests through `/ask`, `/requests`, and `/cancel`. Users can collect results from several agents while continuing to exchange messages and answer clarification requests.
+- Made message receipt explicit for raw `!llm-self` calls: messages remain queued unless `{:receive? true}` is supplied. Convenience wrappers receive automatically. Added `(receive completion)` to accept messages into a completed program without evaluating it. Waits and wakeups retain the latest resumable context, and recovery preserves the failing call's receipt policy.
+- Replaced the future-only `blocking/completion-promise` helper with atomic `blocking/request` tokens. Requests from futures participate in the coordinator's dependency tracking.
+- Unified tool, agent-message, and MCP result rendering under `:context-max-chars`, defaulting to 10,000 characters per contribution. Oversized values remain complete in run-local storage and can be inspected in smaller pieces. Negative local display limits now use the run cap.
+- Improved agent guidance for retaining continuations, checking which communication actions executed, recovering from refused waits, and answering outstanding requests before returning.
+
+### Models and providers
+
+- Changed the CLI, OpenAI, and Codex model-profile defaults to GPT-6 Astra with medium reasoning. Added Astra aliases, model limits, and standard-tier cost tracking. Higher pricing above 272K input tokens is documented but not applied automatically.
+- Fixed Codex streaming responses that deliver completed tool or message items before an empty final output list, while still rejecting failed or incomplete responses.
+- Added opt-in Kimi K3 aliases and Fireworks pricing.
+- Fixed retries for incomplete OpenAI Responses output when a response status is a string, preserving reported usage.
+
+### Documentation
+
+- Added the VitePress documentation site, with guides, API reference, local search, and a production-build check. The README links to the documentation, and both landing pages introduce the communication model.
+
+## v0.3.0
 
 - Changed the CLI and OpenAI model-profile default to GPT-5.6 Sol with medium reasoning, while retaining explicit provider and reasoning overrides.
 - Removed the CLI launcher's unnecessary dependency on `rlwrap` by invoking `clojure` directly.

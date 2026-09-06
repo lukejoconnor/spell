@@ -3,6 +3,8 @@
             [clojure.string :as str]
             [spell.io :as io]
             [spell.runtime :as runtime]
+            [spell.coordinator :as coordinator]
+            [spell.test-helpers :as th]
             [clojure.java.io :as jio]))
 
 (def test-dir "target/test-files")
@@ -14,7 +16,7 @@
   (doseq [f (reverse (file-seq (jio/file test-dir)))]
     (.delete f)))
 
-(use-fixtures :each
+(use-fixtures :each th/with-test-run
   (fn [f]
     (setup-test-dir)
     (try (f)
@@ -642,8 +644,7 @@
       ;; Wait for the watcher to time out
       (Thread/sleep 200)
       ;; Inbox should still be empty (no message sent)
-      (let [state (:state (get @runtime/registry :ws-test-timeout))]
-        (is (= [] (:inbox-macros @state)))))))
+      (is (= [] (:mailbox (coordinator/agent :ws-test-timeout)))))))
 
 ;; =============================================================================
 ;; io-namespace tests
@@ -824,9 +825,7 @@
 (deftest event-send-returns-nil-test
   (testing "event-send returns nil immediately"
     (runtime/register! :es-io-nil)
-    (try
-      (is (nil? (io/event-send (fn [] {:ok "data"}) :es-io-nil :test-sender)))
-      (finally (swap! runtime/registry dissoc :es-io-nil)))))
+    (is (nil? (io/event-send (fn [] {:ok "data"}) :es-io-nil :test-sender)))))
 
 (deftest event-send-sends-on-ok-test
   (testing "event-send sends message when event-fn returns {:ok val}"
@@ -835,24 +834,20 @@
           eval-fn (fn [raw] (deliver received raw) :done)]
       (runtime/start-box handle eval-fn "(quine c (eval (do 1)))")
       (Thread/sleep 50)
-      (try
-        (io/event-send (fn [] {:ok "event-data"}) handle :test-event)
-        (let [raw (deref received 5000 :timeout)]
-          (is (not= :timeout raw))
-          (is (string? raw))
-          (is (.contains ^String raw ":from :test-event"))
-          (is (.contains ^String raw ":body \"event-data\"")))
-        (finally (swap! runtime/registry dissoc handle))))))
+      (io/event-send (fn [] {:ok "event-data"}) handle :test-event)
+      (let [raw (deref received 5000 :timeout)]
+        (is (not= :timeout raw))
+        (is (string? raw))
+        (is (.contains ^String raw ":from :test-event"))
+        (is (.contains ^String raw ":body \"event-data\""))))))
 
 (deftest event-send-silent-on-non-ok-test
   (testing "event-send does not send when event-fn returns non-:ok"
     (let [handle :es-io-silent]
       (runtime/register! handle)
-      (try
-        (io/event-send (fn [] {:timeout true}) handle :test-event)
-        (Thread/sleep 50)
-        (is (= [] (:inbox-macros @(:state (get @runtime/registry handle)))))
-        (finally (swap! runtime/registry dissoc handle))))))
+      (io/event-send (fn [] {:timeout true}) handle :test-event)
+      (Thread/sleep 50)
+      (is (= [] (:mailbox (coordinator/agent handle)))))))
 
 (deftest event-send-notifies-on-exception-test
   (testing "event-send sends {:error msg} when event-fn throws"
@@ -861,21 +856,17 @@
           eval-fn (fn [raw] (deliver received raw) :done)]
       (runtime/start-box handle eval-fn "(quine c (eval (do 1)))")
       (Thread/sleep 50)
-      (try
-        (io/event-send (fn [] (throw (ex-info "boom" {}))) handle :test-event)
-        (let [raw (deref received 5000 :timeout)]
-          (is (not= :timeout raw))
-          (is (string? raw))
-          (is (.contains ^String raw ":from :test-event"))
-          (is (.contains ^String raw ":error")))
-        (finally (swap! runtime/registry dissoc handle))))))
+      (io/event-send (fn [] (throw (ex-info "boom" {}))) handle :test-event)
+      (let [raw (deref received 5000 :timeout)]
+        (is (not= :timeout raw))
+        (is (string? raw))
+        (is (.contains ^String raw ":from :test-event"))
+        (is (.contains ^String raw ":error"))))))
 
 (deftest event-send-abort-test
   (testing "event-send does not send when event-fn returns {:abort ...}"
     (let [handle :es-io-abort]
       (runtime/register! handle)
-      (try
-        (io/event-send (fn [] {:abort :reason}) handle :test-event)
-        (Thread/sleep 50)
-        (is (= [] (:inbox-macros @(:state (get @runtime/registry handle)))))
-        (finally (swap! runtime/registry dissoc handle))))))
+      (io/event-send (fn [] {:abort :reason}) handle :test-event)
+      (Thread/sleep 50)
+      (is (= [] (:mailbox (coordinator/agent handle)))))))

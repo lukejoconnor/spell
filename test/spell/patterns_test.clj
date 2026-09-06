@@ -1,16 +1,14 @@
 (ns spell.patterns-test
-  (:require [clojure.string :as str]
+  (:require [spell.test-helpers :as th]
+            [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [spell.eval :as eval]
             [spell.io :as sio]
             [spell.runtime :as runtime]
+            [spell.coordinator :as coordinator]
             [spell.stdlib :as stdlib]))
 
-(use-fixtures :each
-  (fn [f]
-    (reset! runtime/registry {})
-    (f)
-    (reset! runtime/registry {})))
+(use-fixtures :each th/with-test-run)
 
 (def fix-loop (:fix-loop stdlib/patterns))
 (def ralph (:ralph stdlib/patterns))
@@ -18,6 +16,32 @@
 (def team (:team stdlib/patterns))
 (def sh-test (:sh-test sio/io-namespace))
 (def stub-ask-await (fn [fut] (deref (:ref fut) 5000 :timeout)))
+
+(deftest clean-prompt-receives-during-cleaned-continuation
+  (let [calls (atom []) stale (atom 0)
+        agent (th/make-test-agent
+                {:response-fn
+                 (fn [prompt]
+                   (case (count (swap! calls conj prompt))
+                     1 "The cleaned assignment"
+                     2 (do
+                         (coordinator/send! :main
+                           {:message {:from :observer :body :clean-prompt-message}})
+                         "'(audit/stale)))")
+                     3 "':clean-received)))"
+                     (throw (ex-info "Unexpected clean-prompt call" {:prompt prompt}))))}
+                :prefill? false :recover false
+                :namespaces {'patterns stdlib/patterns
+                             'audit {:stale #(swap! stale inc)
+                                     :finish (fn [value] (coordinator/close!) value)}})
+        result (th/run-agent-init agent
+                 "(quine completion (eval (do '(audit/finish (patterns/clean-prompt \"messy original\")))))")]
+    (is (= :clean-received result))
+    (is (zero? @stale) "Receipt preempts the cleaned child's generated action")
+    (is (= 3 (count @calls)))
+    (is (str/includes? (last @calls) "The cleaned assignment"))
+    (is (not (str/includes? (last @calls) "messy original")))
+    (is (= 1 (count (re-seq #":clean-prompt-message" (last @calls)))))))
 
 (defn- run-fix-loop [opts env]
   (binding [eval/*builtins* (assoc eval/*builtins* '!ask-await stub-ask-await)
@@ -118,12 +142,15 @@
           send-await-calls (atom [])
           send-calls (atom [])
           worker-runs (atom 0)
+          owned-requests (atom [])
           done (promise)
           spawn-fn
           (fn [prompt handle-name]
             (swap! spawn-calls conj {:prompt prompt :handle handle-name})
             (runtime/start-box handle-name
                                (fn [_]
+                                 (swap! owned-requests conj
+                                        (coordinator/incoming (coordinator/snapshot) handle-name))
                                  (let [n (swap! worker-runs inc)]
                                    (if (>= n 3)
                                      {:ok "fixed!"}
@@ -156,6 +183,13 @@
         (is (= {:pass {:ok "fixed!"}} final-result))
         (is (= 1 (count @spawn-calls)))
         (is (= 3 @worker-runs))
+        (is (= [1 1 1] (mapv count @owned-requests)))
+        (is (every? #(= parent-handle (:source (first %))) @owned-requests))
+        (is (every? (fn [edges]
+                      (let [edge (first edges)
+                            worker (first (:targets edge))]
+                        (integer? (get-in edge [:slots worker :generation]))))
+                    @owned-requests))
         (is (= 3 (count worker-calls)))
         (is (= [0 1 2] (mapv #(get-in % [:msg :attempt]) worker-calls)))
         (is (= parent-handle (:target (last @send-calls))))))))
@@ -216,7 +250,7 @@
 
                             :else
                             {:approved false :summary "unexpected handle"}))
-          completion-promise-fn (fn [handle] handle)
+          request-fn (fn [handle msg] (send-fn handle msg) handle)
           await-all-fn (fn [tokens]
                          (mapv #(get @worker-results %) tokens))]
       (try
@@ -227,7 +261,7 @@
                                  {'agents {:register register-fn
                                            :send send-fn}
                                   'blocking {:send-await send-await-fn
-                                             :completion-promise completion-promise-fn
+                                             :request request-fn
                                              :await-all await-all-fn}})
                 end-branch (str/trim (:out (sio/sh "git rev-parse --abbrev-ref HEAD")))]
             (is (= :completed (:status result)))
@@ -270,7 +304,7 @@
                              :commit-msg "unused"
                              :panic false
                              :resolved-conflict false}))
-          completion-promise-fn (fn [handle] handle)
+          request-fn (fn [handle msg] (send-fn handle msg) handle)
           await-all-fn (fn [tokens]
                          (mapv #(get @worker-results %) tokens))]
       (try
@@ -281,7 +315,7 @@
                                  {'agents {:register register-fn
                                            :send send-fn}
                                   'blocking {:send-await send-await-fn
-                                             :completion-promise completion-promise-fn
+                                             :request request-fn
                                              :await-all await-all-fn}})
                 end-branch (str/trim (:out (sio/sh "git rev-parse --abbrev-ref HEAD")))]
             (is (= :failed (:status result)))
@@ -323,7 +357,7 @@
                              (= "commit" (nth args 3 nil)))
                       {:exit 1 :out "" :err "hook rejected commit"}
                       (original-exec args)))
-          completion-promise-fn (fn [handle] handle)
+          request-fn (fn [handle msg] (send-fn handle msg) handle)
           await-all-fn (fn [tokens]
                          (mapv (fn [_] {:summary "wrote worker.txt"}) tokens))]
       (try
@@ -333,7 +367,7 @@
                                  {'agents {:register register-fn
                                            :send send-fn}
                                   'blocking {:send-await send-await-fn
-                                             :completion-promise completion-promise-fn
+                                             :request request-fn
                                              :await-all await-all-fn}
                                   'io (assoc sio/io-namespace
                                              :sh sio/sh
@@ -383,7 +417,7 @@
                              :summary "unexpected handle"
                              :panic true
                              :resolved-conflict false}))
-          completion-promise-fn (fn [handle] handle)
+          request-fn (fn [handle msg] (send-fn handle msg) handle)
           await-all-fn (fn [tokens]
                          (mapv (fn [_] {:summary "done"}) tokens))]
       (try
@@ -393,7 +427,7 @@
                                  {'agents {:register (fn [handle completion] handle)
                                            :send send-fn}
                                   'blocking {:send-await send-await-fn
-                                             :completion-promise completion-promise-fn
+                                             :request request-fn
                                              :await-all await-all-fn}})]
             (is (= :completed (:status result)))
             (is (= 2 @planner-calls))
@@ -424,7 +458,7 @@
                                :commit-msg "unused"
                                :panic true
                                :resolved-conflict false})))
-          completion-promise-fn (fn [handle] handle)
+          request-fn (fn [handle msg] (send-fn handle msg) handle)
           await-all-fn (fn [tokens]
                          (mapv (fn [_] {:summary "panic change"}) tokens))]
       (try
@@ -434,7 +468,7 @@
                                  {'agents {:register register-fn
                                            :send send-fn}
                                   'blocking {:send-await send-await-fn
-                                             :completion-promise completion-promise-fn
+                                             :request request-fn
                                              :await-all await-all-fn}})
                 verifier-prompt (some #(when (str/includes? (:completion %) "verifier agent in patterns/team")
                                          (:completion %))
@@ -464,7 +498,7 @@
                              :commit-msg malicious-msg
                              :panic false
                              :resolved-conflict false}))
-          completion-promise-fn (fn [handle] handle)
+          request-fn (fn [handle msg] (send-fn handle msg) handle)
           await-all-fn (fn [tokens]
                          (mapv (fn [_] {:summary "safe change"}) tokens))]
       (try
@@ -475,7 +509,7 @@
                                  {'agents {:register (fn [handle completion] handle)
                                            :send send-fn}
                                   'blocking {:send-await send-await-fn
-                                             :completion-promise completion-promise-fn
+                                             :request request-fn
                                              :await-all await-all-fn}})
                 last-msg (:out (sio/exec ["git" "-C" dir "log" "-1" "--pretty=%B"]))]
             (is (= :completed (:status result)))

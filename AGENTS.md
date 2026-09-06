@@ -2,7 +2,7 @@
 
 This file is a public orientation guide for agents, readers, and contributors working through the Spell source tree. Start with `README.md` for the human-facing project overview, CLI usage, and core language ideas, then use this file for installation checks, source-map lookup, tests, and implementation orientation.
 
-Current release state: `v0.3.0` is unreleased. The public Clojure API and configuration surface is documented in `docs/api.md`.
+Current release: `v0.4.0`. See `docs/CHANGELOG.md` for release notes and `docs/api.md` for the public Clojure API and configuration surface.
 
 Spell is a Lisp dialect for LLM self-orchestration. A Spell completion is itself a program: the evaluator runs the program, and the program can call back into an LLM, spawn sub-agents, manage context, and use configured namespaces such as `io`, `web`, `agents`, `globals`, and `patterns`.
 
@@ -15,6 +15,13 @@ This repo includes Spell-specific skills under `.agents/skills/`. Use them as th
 - `spell-developer`: navigate and modify the Spell source code, choose relevant files, and run focused checks.
 
 ## Terminology
+
+- Receipt: atomically accept a mailbox batch and transform a completed program with its messages.
+- Resumable context: the latest startup, receiving continuation, or explicitly received completion used by waits and dormant wakeups; raw helper calls keep their context temporary.
+
+- Coordinator: per-run owner of agent identities, mailboxes, lifecycle results, and outstanding collections.
+- Edge: one result collection with a source and one slot per target; it completes when every slot is filled.
+- Context contribution: values and generated binding syntax inserted by one tool-result or communication operation, sharing one run-configured character budget.
 
 - Edit marker: a source form, such as `prune`, `rethink`, or `persist`, that affects how `apply-edits` rewrites a completion for a later turn.
 - Edit time: the phase when `apply-edits` applies edit markers to a completion before it is used as a model prefix.
@@ -33,7 +40,8 @@ This repo includes Spell-specific skills under `.agents/skills/`. Use them as th
 | `test/` | Unit and integration tests. |
 | `data/pricing.edn` | Model pricing table used for usage and cost reporting. |
 | `docs/` | Public documentation for the release. |
-| `docs/CHANGELOG.md` | Release notes; `v0.3.0` is currently unreleased. |
+| `docs/index.md` | Documentation home; preview the VitePress site with `npm ci` and `npm run docs:dev`. |
+| `docs/CHANGELOG.md` | Release notes through `v0.4.0`. |
 | `LICENSE` | MIT license text. |
 
 ## Agent Quick Start
@@ -52,7 +60,7 @@ brew install clojure/tools/clojure
 
 Provider setup:
 
-- OpenAI API, the CLI default: set `OPENAI_API_KEY`.
+- OpenAI API, the GPT-6 Astra CLI default: set `OPENAI_API_KEY`.
 - Codex tool-call provider: install the OpenAI Codex CLI and run `codex` once so `~/.codex/auth.json` exists. This path is experimental and must be selected explicitly.
 - Anthropic API: set `ANTHROPIC_API_KEY`.
 - OpenAI API: set `OPENAI_API_KEY`.
@@ -87,7 +95,8 @@ The `-t` flag uses the test provider and is useful for checking Java, Clojure, d
 | `src/spell/grammar.clj` | Parenthesis and delimiter grammar checks. |
 | `src/spell/format.clj` | Formatting helpers for Spell forms. |
 | `src/spell/macros.clj` | Macro registry and macro expansion. |
-| `src/spell/runtime.clj` | Agent boxes, registry, `spawn`, `ask`, `send`, notifier flow, and completion coordination. |
+| `src/spell/runtime.clj` | Agent execution and adapters for immediate requests, messages, explicit waits, and lifecycle completion. |
+| `src/spell/coordinator.clj` | Per-run atomic registry, mailbox, result-edge, readiness, and completion transitions. |
 | `src/spell/llm.clj` | LLM request construction, prompt prefix handling, suffix cleanup, and inbox pipeline. |
 | `src/spell/provider.clj` | Provider implementations for Anthropic, OpenAI, Codex CLI, Fireworks, Ollama, user, and test modes. |
 | `src/spell/agent.clj` | Agent definition loading, inheritance, namespace resolution, and provider default wiring. |
@@ -97,7 +106,7 @@ The `-t` flag uses the test provider and is useful for checking Java, Clojure, d
 | `src/spell/trace_tool.clj` | Developer tooling for inspecting recorded traces. |
 | `src/spell/api.clj` | Programmatic entry point used by library callers; API details are documented separately. |
 
-The public API/configuration reference is `docs/api.md`. In `v0.3.0`, `spell.api/run` requires `:model-profile` and `:agent-profile`, and rejects old public run keys such as `:provider`.
+The public API/configuration reference is `docs/api.md`. `spell.api/run` requires `:model-profile` and `:agent-profile`, and rejects old public run keys such as `:provider`.
 
 ## Standard Namespaces
 

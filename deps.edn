@@ -22,8 +22,11 @@
                                    "-n" "spell.stdlib-test"
                                    "-n" "spell.skills-test"
                                    "-n" "spell.eval-test"
+                                   "-n" "spell.context-test"
                                    "-n" "spell.llm-test"
                                    "-n" "spell.agent-test"
+                                   "-n" "spell.agents-prompt-test"
+                                   "-n" "spell.sleep-refusal-recovery-test"
                                    "-n" "spell.web-test"
                                    "-n" "spell.api-test"
                                    "-n" "spell.trace-test"
@@ -42,6 +45,7 @@
                                    "-n" "spell.core-test"
                                    "-n" "spell.io-test"
                                    "-n" "spell.runtime-test"
+                                   "-n" "spell.composable-waits-test"
                                    "-n" "spell.globals-test"
                                    "-n" "spell.user-test"]}
            ;; Optional official-SDK oracle. Requires uv; Python is not a Spell runtime dependency.

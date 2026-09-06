@@ -783,8 +783,8 @@ Recommended usage pattern: Grep through large files.
 1. Read the file.
   ...▌'(!call-now code (io/read-file \"big-module.py\"))
 
-2. Next turn: file was too large and got truncated. Rethink to discard it, then grep for what you need.
-  ...(def code \"1: import os\\n2: import sys\\n...\\n... [truncated, 58302 chars total]\")
+2. Next turn: the full file is stored because it exceeds the context budget. Grep for what you need.
+  ...(def code (stored \"id\"))
   ▌(rethink \"File too large to scan inline. Grep for the target instead.\")
   '(!call-now matches (io/grep \"def handle_request\" \"big-module.py\"))
 "

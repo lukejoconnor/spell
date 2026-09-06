@@ -9,6 +9,7 @@
   (:require [clojure.string :as str]
             [spell.eval :as eval]
             [spell.runtime :as runtime]
+            [spell.coordinator :as coordinator]
             [spell.patterns :as patterns-lib]))
 
 ;; =============================================================================
@@ -208,7 +209,7 @@ Bind the result, inspect it on the next turn, then decide what to do next."}
 Categories (use (!describe builtins :category) for full listing):
   special-forms — quote, def, persist, do, if, let, fn, quine, loop, recur, for, try
   macros        — when, defn, cond, if-let/if-some, when-let/when-some, case, ->, ->>, !call-now, ...
-  effect        — eval, !llm-self, !ask-await, leaf-llm, describe-fn, llm (trailing expression only)
+  effect        — eval, !llm-self, receive, !ask-await, leaf-llm, describe-fn, llm (trailing expression only)
   math          — +, -, *, /, inc, dec, mod, abs, integer?, numerator, denominator, rand, ...
   comparison    — <, >, =, not, nil?, empty?, identity, ...
   types         — string?, number?, vector?, map?, fn?, keyword?, integer?, ratio?, rational?, ...
@@ -288,7 +289,8 @@ Common mistakes:
     "Per-agent effect builtins (available in trailing expression via double evaluation):
 
   eval — transparent evaluator; inverse of quote. Merges effect builtins with pure builtins
-  !llm-self — call yourself recursively with a new prompt; child inherits your handle
+  !llm-self — call yourself recursively; raw calls leave messages queued, {:receive? true} opts in
+  receive — accept pending messages into a completed quine and return the transformed program
   !ask-await — wait for a future via message wakeup (safe in the caller turn)
   leaf-llm — plain text-in/text-out LLM call; no Spell parsing or evaluation, returns string
   describe-fn — retrieve documentation from a namespace: (describe-fn ns) or (describe-fn ns :key)
@@ -584,9 +586,10 @@ Used internally by !call-now, !print, !describe, and !extend."
 (serialize value)
 (serialize value limit)
 
-If the serialized form exceeds the limit, large subvalues are stored
-out-of-band and replaced with (stored \"id\") references.
-Negative limit means always inline (never store out-of-band)."
+If the serialized form exceeds the run's character budget, the complete value
+is stored and represented by (stored \"id\"). Lists and symbols remain data.
+An explicit limit may lower the run budget; a negative limit uses the run budget.
+Display a slice or selected fields to inspect an oversized result."
 
     :stored
     "Retrieve a large value from the out-of-band store by its ID.
@@ -594,7 +597,8 @@ Negative limit means always inline (never store out-of-band)."
 (stored id)
 
 Values too large to inline during serialization are stored out-of-band
-and referenced as (stored \"id\"). This function retrieves them."
+and referenced as (stored \"id\"). This function retrieves the complete original
+value from the current run. References are shared by agents within that run."
 
     :deep-truncate
     "Recursively truncate string values within nested data structures to a character limit.
@@ -616,7 +620,7 @@ Lower-level than serialize-prefix. Use reopen / wrap-cat for quine forms."
 
 (eval expr)
 
-Merges effect builtins (!llm-self, !ask-await, leaf-llm, agents/, io/, globals/)
+Merges effect builtins (!llm-self, receive, !ask-await, leaf-llm, agents/, io/, globals/)
 with pure builtins, then evaluates expr. This is what makes effect functions
 available in the trailing expression of the completion wrapper.
 
@@ -630,17 +634,44 @@ The double evaluation pattern:
 (same logical agent, serial execution).
 
 (!llm-self prompt)
+(!llm-self prompt {:receive? true})
 
 prompt: string or quine form. If a bare string, automatically wrapped in
 the completion wrapper. If given a quine form (from reopen, wrap-cat, or
 edit-reopen), that quine is serialized as the child's open prefix.
 
-The child writes Spell code that is parsed and evaluated. Use for:
+The child writes Spell code that is parsed and evaluated. Raw calls leave
+messages queued and keep their context temporary. {:receive? true} accepts one
+batch after generation and before evaluation; that batch may replace the
+generated trailing action. Each nested call chooses independently. Recovery
+preserves that call's receipt choice. !extend, !call-now, !print, !peek, and
+!compact opt in automatically. Options accept only a boolean :receive? key.
+
+Startup, receiving continuations, and explicit receive establish resumable
+context for waits and dormant wakeups. Raw helper calls preserve that context,
+including newer context established by a receiving descendant.
+
+Use self-calls for:
 - Extending context (!extend, !compact)
 - Delegating computation to a child
 - Multi-step tool use chains
 
 For parallel LLM work, use agents/spawn instead (separate handles)."
+
+    :receive
+    "Accept one pending mailbox batch into a canonical completed quine.
+
+(receive completion)
+
+Returns the transformed program as data without evaluating it or calling a
+model. Empty receipt returns the supplied program. Input is validated before
+messages are consumed. Receipt claims incoming requests for the current
+lifecycle and records the transformed quine as resumable context. Use the
+returned program when constructing subsequent execution/context.
+
+This is an effect builtin, available even without agents/. It requires an
+active agent and cannot run inside a computation future. !wait/!sleep and
+!ask-await still receive when they resume, respecting unread obligations."
 
     :!ask-await
     "Wait for a Spell future via message wakeup from a normal agent turn.
@@ -648,12 +679,14 @@ For parallel LLM work, use agents/spawn instead (separate handles)."
 (!ask-await fut)
 
 fut: Spell future returned by (future ...)
-Returns: the next wakeup message from the waiter thread
-
-This installs a background waiter future that dereferences fut, sends the
-result back to the current handle as a normal message, then blocks the current
-turn until that message arrives. Use this when you need to wait on a future
-without entering future-only blocking/ APIs from a normal agent turn.
+Registers a future-completion message and suspends interruptibly. Already
+queued or unrelated messages can resume the agent before fut finishes; the
+completion message remains pending while this lifecycle is active. Resumption
+does not mean the future completed. Process messages and continue, or call
+!ask-await again to wait further (each call registers another notification).
+Agent dependencies inside fut must use blocking/request, and suspension obeys
+the coordinator incoming/outgoing ordering rule. Use this from agent turns;
+blocking/await is available only to computation futures.
 
 Example:
   '(!ask-await some-future)
@@ -688,7 +721,9 @@ and extend the completion so the child LLM continues with the binding in scope.
 
 This is the primary tool-calling pattern. The expr is evaluated with effect
 functions available, the result is serialized as (def name result) in the
-continuation, and a child LLM turn begins.
+continuation, and a child LLM turn begins. A multi-binding call shares one
+context character budget, including binding syntax. Oversized values are shown
+as (stored \"id\"); name still holds the full value. Inspect a slice next.
 
 Example — tool call:
   '(!call-now files (io/sh \"ls\"))
@@ -836,23 +871,20 @@ Example:
                 (get ns key))))
 
 (defn ask-await-builtin
-  "Effect builtin for waiting on a Spell future from a normal agent turn.
-   The waiter future sends the result back as a normal message, then the
-   caller blocks until that wakeup arrives."
+  "Await external computation interruptibly; agent requests within it must use
+   blocking/request so their dependencies remain visible to the coordinator."
   [fut]
   (when-not (eval/spell-future? fut)
     (throw (ex-info "!ask-await requires a future" {:value fut})))
-  (let [target runtime/*current-handle*]
-    (when-not target
-      (throw (ex-info "!ask-await: not inside an agent context" {})))
+  (when-not (and runtime/*current-handle* runtime/*current-raw*)
+    (throw (ex-info "!ask-await requires an active agent turn" {})))
+  (let [token (coordinator/begin-external-wait! runtime/*current-handle*)]
     (future
-      (try
-        (let [result (deref (:ref fut))]
-          (binding [runtime/*current-handle* :future]
-            (runtime/send target result)))
-        (catch Exception e
-          (binding [runtime/*current-handle* :future]
-            (runtime/send target {:future-await/error (.getMessage e)})))))
+      (let [result (try (runtime/future-value fut)
+                        (catch Throwable e
+                          {:future-await/error (.getMessage e)
+                           :class (.getName (class e))}))]
+        (coordinator/complete-external-wait! token result)))
     (runtime/block-for-message)))
 
 ;; =============================================================================

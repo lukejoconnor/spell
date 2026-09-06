@@ -38,11 +38,41 @@ These options are scoped to one invocation of `run`.
 | `:reasoning-effort` | model profile `:default-reasoning-effort` | Reasoning-effort override for this run. |
 | `:budget` | agent profile `:default-budget` or runtime default | Maximum spend in dollars for the run. `nil` means the configured default. `0` means unlimited. |
 | `:depth` | unlimited | Maximum recursive LLM depth for this run. |
+| `:coordinator` | `{:max-edges 10000}` | Per-run coordination capacity. `:max-edges` must be a positive integer and counts pending hyperedges, regardless of target count. Admission rejects atomically before sending requests or launching children. |
+| `:context-max-chars` | 10000 | Maximum characters inserted by one tool-result or message contribution, including binding syntax. Integer of at least 128; `nil` uses the default. |
 | `:trace-dir` | none | When non-nil, record a Spell execution trace in this directory. |
 | `:usage-tracker` | fresh atom | Existing usage atom to accumulate token and cost accounting into. |
 | `:user-reader` | none | When non-nil, register the interactive `:user` handle and read from this reader. The caller retains ownership of the reader. Spell requests cancellation of its reader task and clears input state when the run ends, so use a finite reader or one whose blocking read responds to thread interruption. An arbitrary reader that ignores interruption must be unblocked by its owner before reuse. |
 | `:log-writer` | none | Writer for raw LLM debugging output. Pass `*out*` or another writer for logging. |
 
+
+## Self-calls and Receipt
+
+`(!llm-self prefix)` generates and evaluates a completion without implicitly receiving messages. `(!llm-self prefix {:receive? true})` accepts one mailbox batch after generation and before evaluation, so messages arriving during generation can replace the generated trailing action. The only option is boolean `:receive?`, defaulting to `false`; invalid options fail before a model call. Each nested self-call makes its own choice. Recovery preserves the originating call's receipt policy.
+
+`!extend`, `!call-now`, `!print`, `!peek`, and both stages of `!compact` explicitly enable receipt. `(receive completion)` is an effect builtin that accepts one batch into a canonical completed quine and returns the transformed program as data. It neither evaluates the program nor calls a model. Invalid input is rejected before consumption; an empty mailbox returns the input unchanged. It is available even when the `agents` namespace is omitted, and requires an active agent outside computation futures.
+
+Startup, receiving continuations, and explicit receipt establish the context used for later resumption. A raw helper's context is temporary, even if it is a quine. Returning from it preserves any newer context established by a receiving descendant. Explicit waits and dormant wakeups resume the latest such context and receive normally. Receipt atomically claims incoming requests; wait admission continues to consider every pending incoming obligation, including unread requests.
+
+## Context Contributions
+
+`!call-now`, `!peek`, `!print`, and incoming agent messages use the same lossless rendering policy. Fitting results are inserted directly, including small siblings of oversized results. Oversized results remain complete in storage owned by this run and appear as `(stored "id")`; the resulting binding still holds the original value. Read a slice or select fields, then use `!peek` or `!print` to display that smaller value. Lists and symbols are quoted as data. Numbered source vectors retain their starting-line metadata, with line comments restored when rendered in a model prefix. Values with other metadata, including nested source vectors, use storage to preserve that metadata.
+
+`:context-max-chars` counts UTF-16 characters, not tokens, and bounds the whole contribution: a multi-binding call shares one budget, as does one aggregate completion report. Rendering stops at the budget instead of traversing or printing the entire payload. Bindings and reference syntax must fit too; if they cannot, the operation raises an explicit capacity error. Use fewer bindings or a larger limit. Complete successful payloads have no item-count or depth cap. MCP tool, resource, prompt, completion, and discovery results use this same insertion policy; their transport byte limits remain separate.
+
+The optional limit argument to `!call-now`, `!peek`, and `serialize` may lower the run limit. A negative limit uses the run limit; it no longer forces unlimited inlining. Explicit `deep-truncate` remains available when the program chooses to shorten data. Program-written context and explicit `persist` are still controlled by the program. Stored references are private to this API invocation and cannot retrieve another run's values.
+
+Low-level embedding through `spell.eval` can allocate the same storage explicitly:
+
+```clojure
+(require '[spell.context :as context])
+(binding [context/*context* (context/new-context {:max-chars 10000})]
+  ;; Evaluate all related agents and stored-value accesses in this scope.
+  ;; Clojure future and bound-fn convey the binding; raw Thread does not.
+  ...)
+```
+
+Standalone serialization can render small values without storage. Oversized values require the bound context. Stored values remain retained for the lifetime of that run. Invalid API configuration raises an exception; execution failures use the return shape below.
 
 ## Return Shape
 
@@ -128,7 +158,7 @@ Model profile files live under `config/model-profiles/` and use EDN maps.
 ```clojure
 {:provider :openai
  :api-key-env "OPENAI_API_KEY"
- :default-model "gpt-5.6-sol"
+ :default-model "gpt-6-astra"
  :default-reasoning-effort "medium"
  :use-responses-api true
  :force-tool-call true
@@ -165,7 +195,11 @@ Model profile files live under `config/model-profiles/` and use EDN maps.
 | `:response` | `:test` | Single fixed test response. |
 | `:prefill?` | `:test` | Whether the test provider reports prefill support. |
 
-`:default-reasoning-effort` maps to each provider's native mechanism, including Anthropic thinking budgets. Prefill behavior is derived from provider capability and the selected agent prompt profile.
+`:default-reasoning-effort` maps to each provider's native mechanism, including Anthropic thinking budgets. GPT-6 Astra supports `low`, `medium`, `high`, `xhigh`, and `max`; the checked-in OpenAI and Codex profiles default to `medium`, and `spell.api/run :reasoning-effort` may override them. Prefill behavior is derived from provider capability and the selected agent prompt profile.
+
+GPT-6 Astra has a 1,050,000-token context window and a maximum output of 128,000 tokens. Spell retains its configured per-response output limits. [Its standard pricing](https://developers.openai.com/api/docs/models/gpt-6-astra) is recorded in `data/pricing.edn` at $10/M uncached input tokens, $1/M cached input tokens, $12.50/M cache-write tokens, and $50/M output tokens, so normal usage and dollar-budget enforcement use the shared cost architecture. OpenAI prices requests with more than 272K input tokens at 2x input/cache rates and 1.5x output for the full request; Spell does not currently select a pricing tier from per-request context length, so reported cost and budget enforcement use the standard tier above that threshold.
+
+Kimi K3 is available through Fireworks with `bin/spell -m fireworks-tc:kimi-k3 -R high "task"`. The aliases `kimi3` and `kimik3` select the same provider model, `accounts/fireworks/models/kimi-k3`. Spell sends high effort through the [Fireworks Anthropic-compatible Messages API](https://docs.fireworks.ai/tools-sdks/anthropic-compatibility#reasoning-effort-mapping). Its [published serverless prices](https://fireworks.ai/models/fireworks/kimi-k3) are $3/M input tokens, $0.30/M cached input tokens, and $15/M output tokens; the shared pricing table uses ordinary input pricing for cache writes.
 
 Low-level provider constructor functions may accept direct `:api-key` values for programmatic use. Public model profile files use `:api-key-env` instead, so secrets do not land in the repository.
 
@@ -232,6 +266,12 @@ The `:available-agents` option accepts:
 | map | Explicit mapping from `workers/` names to agent profile files or inline mini agent profile specs. |
 
 Inline mini specs can use agent profile options such as `:agent-description`, `:system-prompt`, `:default-model-profile`, `:format`, and `:namespaces`.
+
+Start configured workers through `agents/spawn` or `agents/spawn-ask`, for example
+`(agents/spawn-ask workers/explore "Inspect the relevant files.")`. Directly calling
+a compiled worker from an active agent or its computation future is rejected,
+because it would create an untracked lifecycle wait. Nested `!llm-self` remains
+the supported same-agent model call.
 
 Sub-agent resolution happens when the parent agent is compiled. Each `:available-agents` entry is resolved to an agent profile spec and compiled into a runnable function exposed in the `workers/` namespace. If the sub-agent profile spec has its own `:default-model-profile`, that profile is used. Otherwise the sub-agent inherits the parent agent's resolved model profile. Model differences should usually be represented by choosing a different `:default-model-profile`; otherwise the sub-agent uses the inherited profile's `:default-model`.
 
@@ -340,7 +380,7 @@ bin/spell mcp scaffold https://example.com/mcp
 
 Use `--json` for structured output, `--raw` for a complete tool result, and `-N` for expanded catalog text. `call` accepts an argument JSON object or `-` for stdin; repeatable `-a NAME VALUE` pairs override it. A configured alias can be explored with `--agent-profile PATH`. A one-shot stdio server is a JSON command array such as `'["my-server","--stdio"]'`.
 
-For a complete runnable configuration backed by the official Python SDK, see the [MCP Everything example](../examples/mcp-everything.md).
+For a complete runnable configuration backed by the official Python SDK, see the [MCP Everything example](https://github.com/lukejoconnor/spell/blob/main/examples/mcp-everything.md).
 
 ### Supported surface
 
@@ -361,3 +401,14 @@ These profile defaults can be overridden for one run:
 | Model | model profile `:default-model` | `run :model` |
 | Reasoning effort | model profile `:default-reasoning-effort` | `run :reasoning-effort` |
 | Budget | agent profile `:default-budget` | `run :budget` |
+
+## Multi-Agent Coordination
+
+The optional `agents/` namespace exposes immediate `ask` and `spawn-ask` operations
+that return collection IDs, waiting wrappers `!ask` and `!spawn-ask`, and the shared
+`!wait`/`!sleep` primitive. It also exposes `cancel`, `status`, `graph`, `out-edges`,
+and `in-edges` for retained collections. See [multi-agent coordination](multi-agent.md)
+for signatures, lifecycle results, cancellation, and the non-deadlock guarantee.
+Future orchestration uses `blocking/request` for an atomic request/result token
+and `blocking/send-await` to request and collect directly; both create tracked
+agent dependencies.

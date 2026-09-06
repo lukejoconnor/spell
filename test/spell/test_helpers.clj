@@ -1,8 +1,27 @@
 (ns spell.test-helpers
   "Shared test utilities for Spell tests."
   (:require [spell.core :as spell]
+            [spell.coordinator :as coordinator]
+            [spell.context :as context]
+            [spell.globals :as globals]
             [spell.llm :as llm]
             [spell.provider :as provider]))
+
+(defn with-test-run
+  "Give each test an isolated communication environment, including its futures."
+  [f]
+  (binding [context/*context* (context/new-context)
+            coordinator/*coordinator* (coordinator/new-coordinator)
+            globals/*store* (globals/new-store)]
+    (try (f) (finally (coordinator/close!)))))
+
+(defn append-forms-macro
+  "Build a deterministic inbox macro for tests."
+  [& forms]
+  {:spell/macro true
+   :expander {:spell/fn true
+              :params ['q]
+              :body [(list* 'reopen 'q forms)]}})
 
 (defn make-test-agent
   "Create a compiled test agent with test provider.
@@ -32,12 +51,12 @@
   (agent-fn init-program :main))
 
 (defn run-agent-prefix
-  "Run a compiled agent through !llm-self to preserve same-handle prefix semantics."
+  "Run an agent prefix with the receiving semantics of ordinary startup."
   [agent-fn prefix]
   (run-agent-init agent-fn
                   (str "(eval (do '(!llm-self "
                        (pr-str prefix)
-                       ")))")))
+                       " {:receive? true})))")))
 
 (defn compiled-agent-fn
   "Mark a test function as a compiled spawn-agent."
