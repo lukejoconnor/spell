@@ -346,7 +346,6 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
                          (trace/begin-node! trace/*trace-node-id*
                                             eval/*llm-depth* :default prompt-str))
         _              (when eval/*verbose*
-                         (Thread/sleep (rand-int 500))
                          (eval/vlog (str indent "=== LLM Call (depth " eval/*llm-depth* ") ==="))
                          (eval/vlog (str indent "Prompt: " (pr-str prompt-str))))
         response-atom  (atom nil)
@@ -650,7 +649,6 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
                                              eval/*llm-depth* :leaf prompt-str))
                indent   (apply str (repeat eval/*llm-depth* "  "))
                _        (when eval/*verbose*
-                          (Thread/sleep (rand-int 500))
                           (eval/vlog (str indent "=== Leaf LLM Call (depth " eval/*llm-depth* ") ==="))
                           (eval/vlog (str indent "Prompt: " (pr-str prompt))))
                opts     (cond-> {:system system}

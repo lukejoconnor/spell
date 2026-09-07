@@ -1,39 +1,31 @@
 # Runtime Optimization Changelog
 
-Run: `2026-09-07-runtime-optimization-001`. Base: `4abaa1d696413503ee4dd9a296e1e3df953ceb5f`; branch: `codex/dogfood-reliability`. Historical baseline is immutable. Lead approvals below remain subject to final integrated validation and fresh complementary review.
+Run: `2026-09-07-runtime-optimization-001`; base `4abaa1d696413503ee4dd9a296e1e3df953ceb5f`; same branch `codex/dogfood-reliability`. Implementation was delegated; lead approves the explicit tradeoffs below. Historical baseline and prior evidence are preserved.
 
-## Selected-line retention — approved and committed `3e2cc1b`
+| Change | Commit | Accepted benefit and cost |
+| --- | --- | --- |
+| Detach selected lines | `3e2cc1b` | Three fresh pairs: 200,000-line backing becomes an independent 100-line selection; held-minus-released heap 29,884,320 → 15,136 B. Caller allocation +976 B. Retention-only claim; small GC delta is noise-sensitive. |
+| Stream trace output | `0405fb6` | Three fresh pairs: median export 9,463.012 → 168.512 ms; caller allocation ~21.203 GB → 130.145 MB. Compact formatting; explicitly accepted partial/truncated diagnostic output on printer failure. Full records/program bytes/tree and real consumer checked. |
+| Lazy sanitizer output | `89a6347` | Unchanged read-first caller allocation −38.2–38.5%. Rewritten read-first +3.6–3.8%; some rewrite timings regress. An asymmetric allocation tradeoff, NOT an unconditional speedup. State machines and existing behavior preserved. |
+| Remove verbose presentation waits | Commit accompanying this record | Exactly two verbose-only sleeps removed; logging/order/lifecycle/retries unchanged. Three offline pairs remove four fixed 250 ms waits; observed elapsed reduction 1,016.34–1,022.81 ms. WAIT reduction only, not CPU acceleration. |
 
-- Copy only the returned selection into an independent vector; preserve strings, line metadata, clamping, full-file arity and error maps. No eviction of retrievable context.
-- Three fresh control/candidate pairs, identical generated 200,000-line fixture and 256 MiB heap: held-minus-released heap **29,884,320 → 15,136 bytes** in every pair. Backing vector: 200,000 lines → 100 selected lines.
-- Caller allocation **121,682,264 → 121,683,240 bytes** (+976 bytes). Retained-data reduction only, not transient-allocation or speed improvement; candidate heap delta itself is near GC noise.
-- Evidence: `perf/selected_lines_probe.clj`, `perf/results/optimization-selected-lines-q_aloiij/`. Focused I/O suite: **95 tests / 265 assertions**, no failures/errors; six probe exits 0 with content/metadata assertions. Fable actual review edge 4 and lead approve.
-- Cost/rollback: O(selected-lines) copy; reverting restores whole-file backing retention while avoiding a small copy allocation.
+## Validation actually completed
 
-## Streamed trace export — approved and committed `0405fb6`
+- Maintained fast suite: **513 tests / 4,564 assertions**, exit 0.
+- Maintained slow suite (including trace export): **246 tests / 960 assertions**, exit 0.
+- Explicit trace-tool suite: **23 tests / 104 assertions**, exit 0.
+- All have positive test counts, zero failures/errors, and reaped children. Receipts: `perf/results/optimization-final-validation-001/`.
+- Full deterministic suite: **80/80 cases**, complete, exit 0, **343.270 s**, 2 warmups / 5 wall repetitions / 3 memory repetitions. `perf/results/optimization-final-80cases-001.json`. Four production source hashes match the tested candidate, including the then-uncommitted verbose deletion. This single convergence run is NOT an aggregate speedup comparison; 18/80 cases have wall CV > 0.2.
+- Guarded wait regression: **77 tests / 675 assertions**, exit 0; six offline comparison processes each pass 53 semantic checks. Earlier exit-0/zero-test diagnostic is explicitly rejected and preserved.
+- Focused I/O: 95/265; parser: 12/1,496 plus 55 assertions per comparison process. Earlier trace 42/214 output lost its exit capture; the integrated slow and trace-tool receipts now close that gap.
+- Python benchmark-runner tests: 6 tests passed.
 
-- Replace whole-trace pretty-printing through a full intermediate string with readable whole-map streaming. Preserve all cleaned records, arbitrary keys, warning/source data, program-file bytes and tree output; no manual schema or compatibility path.
-- Three fresh process pairs at 512 MiB, generated 144-node/48-form fixture: median export **9,463.012 → 168.512 ms** (56.16×); median caller allocation approximately **21.203 GB → 130.145 MB** (~163× lower). Candidate wall range **122.116–179.603 ms** is noisy. Export bytes **4,108,274 → 3,684,224**. These are bounded synthetic export measurements, not a prediction for private traces or retained-heap measurements.
-- Fixture generation is outside measurement. Export-only timing covers `write-trace!`; a separate inclusive meter covers temporary-directory setup, export, full readback/assertions and cleanup.
-- Evidence: `perf/trace-export-results-002.json`, `perf/trace-export-probe.md`, generated probe, comparison supervisor and raw receipts. Interrupted comparison 001 is preserved and excluded; clean comparison 002 has six successful process receipts.
-- Fable actual patch review edge 5 approved; subsequent explicit review and lead accepted the non-atomic diagnostic-output contract: printer failure may truncate/leave partial `trace.edn`. Exceptions propagate, writer closes, and truncated output fails the real consumer. No staging abstraction added.
-- Final focused output: **42 tests / 214 assertions**, no failures/errors, including actual trace-tool consumer, print settings, full data/bytes/tree and failure cleanup. Process exit was verified absent, but exit-code capture was lost to orchestration error; final integrated suites must provide a clean exit receipt. Source and final test output inspected by lead.
-- Cost/rollback: compact rather than pretty whitespace; partial output on printing failure. Reverting restores expensive pretty formatting and whole-string buffering. Arbitrary custom host values are not promised universal strict-EDN support.
+## Review and rollback
 
-## Ongoing experiments and final validation
+Original Fable design and actual patch reviews approved the mechanisms. A fresh independent reviewer returned final **APPROVE, no blocking fixes**, on tracked edge 13 after inspecting maintained-suite receipts and the guarded wait regression. The reviewer accepted full-suite completion and candidate hash matching on the lead's direct verification; the large result was opaque in the reviewer's read. Optional atomic trace staging is deliberately deferred: diagnostic partial output is documented, tested, loud, and accepted. Each source optimization is independently revertible; its focused evidence is committed alongside it.
 
-- Three fresh attribution runs locate roughly 40% of unchanged `read-first` caller allocation in unconditional sanitizer copying. Bounded lazy-copy candidate and differential tests authorized; parser behavior changes are excluded from this optimization.
-- Two verbose-only random sleeps are approved for a separate offline-tested wait-reduction experiment, not a CPU-speedup claim. Provider retry/backoff remains untouched.
-- Discovered multiline-string comment normalization bug is recorded separately, not silently repaired in performance comparisons.
-- Python benchmark-runner validation executed: **6 tests**, all passed.
-- Full 80-case suite, complete Clojure suites, fresh final Fable verdict and final report/commit index remain pending. No full-memory-profiling or long-run-reliability claim.
+No hidden orchestration policy, compatibility path, context eviction, replay deduplication or weakened receipt/isolation semantics was introduced. Common-path parser frequency in paid workloads is unmeasured. Caller allocation excludes worker threads; retained-data probes are not complete heap profiling. No private trace extrapolation or long-run reliability claim.
 
-## Lazy sanitizer output — approved as an asymmetric allocation tradeoff
+## Remaining work and known issues
 
-- Allocate an output builder only at the first actual rewrite; unchanged strings are returned directly. Preserve both state machines, sanitizer ordering, nil/empty behavior and reader results/errors. No cache, deduplication, input suppression or parser behavior repair.
-- Three fresh matched process pairs, identical 256 MiB heap, 30 warmups and five ten-call batches: unchanged `read-first` caller allocation falls **38.2–38.5%** across 64/256/1024-chunk fixtures. Ordered sanitizer allocation falls **79,568.8 → 4,728.8**, **306,128.8 → 7,800.8**, and **1,212,368.8 → 20,088.8 bytes/call**.
-- Real cost: rewritten sanitizers allocate approximately **424 extra bytes/call**; rewritten `read-first` median allocation increases **3.6–3.8%**. Small rewritten sanitizer wall ranges regress from **251.98–256.32 to 276.35–312.57 µs/call**. Other timings are noisy and operation-order/JIT-sensitive. This is NOT an unconditional speedup or a runtime-neutral optimization.
-- Lead accepts the common unchanged-input allocation benefit for a small local mechanism, with the recovery-input tradeoff explicit. Revert this commit independently if rewrite-heavy workloads dominate. Frequency of unchanged input in paid workloads was not measured.
-- Evidence: `perf/parse_sanitizer_probe.clj` and `perf/results/optimization-parse-sanitizer-matched-vyqze266/README.md`; attribution and initially failing probe evidence retained separately. Caller-thread allocation only; no retained-heap claim.
-- Validation: **12 tests / 1,496 assertions**, no failures/errors; all six comparison processes exit 0 with **55 semantic assertions each**. Differential tests use independent baseline functions and seeded inputs. Actual Fable review edge 9 approved and closed the independent escape-oracle check; lead inspected the exact final mechanism and accepts it.
-- Existing multiline-string comment normalization corruption is explicitly preserved by this optimization and remains a separate correctness follow-up, not a newly introduced behavior.
+Final report and review closure accompany the documentation commit. The pre-existing multiline-string comment normalization bug remains a separate correctness follow-up; changing it would invalidate the behavior-preserving parser comparison. Evaluator allocation remains the largest measured local bottleneck. Further broad runtime work is deferred pending a bounded attribution hypothesis; hitting old targets was not used as the stopping rule.

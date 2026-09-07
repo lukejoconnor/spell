@@ -1,0 +1,17 @@
+{
+  "cwd": "/private/tmp/spell-dogfood-reliability",
+  "command": [
+    "clojure",
+    "-J-Xms256m",
+    "-J-Xmx1g",
+    "-Sdeps",
+    "{:aliases {:wait-probe {:extra-paths [\"test\"]}}}",
+    "-M:wait-probe",
+    "/private/tmp/spell-dogfood-reliability/perf/results/optimization-verbose-wait-20260225-b81f36a2/wait_probe.clj"
+  ],
+  "timeout_s": 30.0,
+  "exit": 0,
+  "timed_out": false,
+  "child_reaped": true,
+  "wall_s": 2.5000236253254116
+}

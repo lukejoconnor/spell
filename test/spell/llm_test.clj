@@ -2552,3 +2552,35 @@
       (let [fut (llm "(eval (do ")]
         (is (:spell/future fut))
         (is (= ["result-a" "result-b"] (deref (:ref fut) 5000 :timeout)))))))
+
+(deftest verbose-llm-presentation-does-not-wait-test
+  (testing "Self and leaf logging preserve content/order without random presentation waits"
+    (doseq [kind [:self :leaf]
+            verbose? [false true]]
+      (th/with-test-run
+        (fn []
+          (let [writer (java.io.StringWriter.)
+                waits (atom 0)
+                calls (atom 0)
+                original-rand-int clojure.core/rand-int
+                self? (= kind :self)
+                response (if self? "42)" "offline leaf response")
+                input (if self? "(do " "offline leaf")
+                opts {:response-fn (fn [_] (swap! calls inc) response)}
+                invoke (if self? (th/make-test-runner opts) (th/make-test-leaf-llm opts))
+                expected-log (if self?
+                               "  === LLM Call (depth 1) ===\n  Prompt: \"(do \"\n  Response: 42)\n"
+                               "=== Leaf LLM Call (depth 0) ===\nPrompt: \"offline leaf\"\nResponse: offline leaf response\n")]
+            (with-redefs [clojure.core/rand-int
+                          (fn [n]
+                            (if (= n 500)
+                              (do (swap! waits inc) 0)
+                              (original-rand-int n)))]
+              (binding [eval/*verbose* verbose?
+                        eval/*log-writer* writer
+                        eval/*llm-depth* 0]
+                (is (= (if self? 42 response) (invoke input)) (str kind " return value"))))
+            (is (= 1 @calls) (str kind " provider lifecycle"))
+            (is (zero? @waits) (str kind " must not request presentation sleep"))
+            (is (= (if verbose? expected-log "") (str writer))
+                (str kind " verbose=" verbose? " exact log content/order"))))))))
