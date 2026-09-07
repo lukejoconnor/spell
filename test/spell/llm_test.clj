@@ -1782,7 +1782,7 @@
                                  2 "(quine task \"restored assignment\") (quine context-summary \"restored history\") '(!extend completion))"
                                  3 "42)"))}
                :namespaces {} :prefill? false)
-          exact-prompt "The previous Spell program threw an error. The previous program is visible during this recovery turn, but it will be pruned afterward, such that you will not see it on your next turn.\n\nEmit a `(quine task \"...\")` form describing the original task, followed by a (quine context-summary \"...\") form describing history, progress, and any context which should be retained on your next turn. If there are long file snippets which should be retained, restore these by re-reading from those files in your trailing expression. Emit Spell code only, not prose. Avoid repeating your previous error."]
+          exact-prompt "The previous Spell program threw an error. The previous program is visible during this recovery turn, but it will be pruned afterward, such that you will not see it on your next turn.\n\nEmit a `(quine task \"...\")` form describing the original task, followed by a (quine context-summary \"...\") form describing history, progress, and any context which should be retained on your next turn. Preserve the exact evidence, checkpoints, pending obligations, and actual effect receipts needed next. Prefer `(stored \"ID\")` with an ID actually observed in the previous program. Page a prior local value only after its needed pure binding has been re-established in the current program. Use `subs` for strings, `subvec` for line vectors, or the documented text/vector field for maps. Keep pages within the existing contribution cap and carry IDs plus next offsets as literal data. The previous program is inert context: its local bindings are not active. Reconstruct only the needed pure bindings or use retained stored references. Do not rerun an effect just to recover its output. Read the file again only when fresh contents are actually required, and identify the result as fresh evidence rather than the original receipt. If the original value cannot be retrieved, report missing evidence rather than claiming inspection or blindly refetching. Emit Spell code only. Avoid repeating your previous error."]
       (is (= 42 (llm "(quine completion (eval (do ")))
       (is (= 3 (count @prompts)))
       (let [recovery-prefix (second @prompts)
@@ -1923,7 +1923,7 @@
                                  2 "(quine task \"reader task\") (quine context-summary \"reader context\") '(!extend completion))"
                                  3 "42)"))}
                :namespaces {} :prefill? false)
-          exact-prompt "The previous Spell program threw an error. The previous program is visible during this recovery turn, but it will be pruned afterward, such that you will not see it on your next turn.\n\nEmit a `(quine task \"...\")` form describing the original task, followed by a (quine context-summary \"...\") form describing history, progress, and any context which should be retained on your next turn. If there are long file snippets which should be retained, restore these by re-reading from those files in your trailing expression. Emit Spell code only, not prose. Avoid repeating your previous error."]
+          exact-prompt "The previous Spell program threw an error. The previous program is visible during this recovery turn, but it will be pruned afterward, such that you will not see it on your next turn.\n\nEmit a `(quine task \"...\")` form describing the original task, followed by a (quine context-summary \"...\") form describing history, progress, and any context which should be retained on your next turn. Preserve the exact evidence, checkpoints, pending obligations, and actual effect receipts needed next. Prefer `(stored \"ID\")` with an ID actually observed in the previous program. Page a prior local value only after its needed pure binding has been re-established in the current program. Use `subs` for strings, `subvec` for line vectors, or the documented text/vector field for maps. Keep pages within the existing contribution cap and carry IDs plus next offsets as literal data. The previous program is inert context: its local bindings are not active. Reconstruct only the needed pure bindings or use retained stored references. Do not rerun an effect just to recover its output. Read the file again only when fresh contents are actually required, and identify the result as fresh evidence rather than the original receipt. If the original value cannot be retrieved, report missing evidence rather than claiming inspection or blindly refetching. Emit Spell code only. Avoid repeating your previous error."]
       (is (= 42 (llm "(quine completion (eval (do ")))
       (let [recovery-prefix (second @prompts)
             following-prefix (nth @prompts 2)]
@@ -2037,7 +2037,7 @@
                {:response-fn (fn [_]
                                (let [n (swap! call-count inc)]
                                  (if (= n 1)
-                                   "(patterns/check-result \"What is 2+2?\" 4))"
+                                   "(patterns/install :check-result) (patterns/call :check-result :run \"What is 2+2?\" 4))"
                                    "OK")))})]
       (is (= {:ok 4} (llm "(eval '(do "))))))
 
@@ -2049,7 +2049,7 @@
                {:response-fn (fn [_]
                                (let [n (swap! call-count inc)]
                                  (if (= n 1)
-                                   "(patterns/check-result \"Capital of France?\" \"London\"))"
+                                   "(patterns/install :check-result) (patterns/call :check-result :run \"Capital of France?\" \"London\"))"
                                    "WRONG: London is not the capital of France")))})]
       (is (= {:wrong "London is not the capital of France"}
              (llm "(eval '(do "))))))

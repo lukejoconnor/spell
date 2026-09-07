@@ -193,7 +193,7 @@ Bind the result, inspect it on the next turn, then decide what to do next."}
 ;; =============================================================================
 
 (def patterns
-  "Reusable orchestration patterns (Spell-specific)."
+  "Installable run-local modules: install, catalog, source, update, call."
   patterns-lib/patterns)
 
 ;; =============================================================================
@@ -893,7 +893,7 @@ Example:
 
 (def all-namespaces
   "Core standard library namespaces (always available, not gated by eval).
-   patterns is an effect namespace (its functions call leaf-llm, agents/!spawn-ask).
+   patterns is an effect namespace (run-local module registry and invocation).
    Note: seqs, fns, and bit- operations are in core-builtins (matching Clojure)."
   {'strings strings
    'math math})

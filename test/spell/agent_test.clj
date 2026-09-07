@@ -400,7 +400,11 @@
               (pr-str {:provider {:type :test :response "unused"}
                        :namespaces (array-map 'child 'child.agent.edn
                                               'patterns 'stdlib/patterns)}))
-        (with-redefs [mcp/compile-servers
+        ;; Explicit post-resolution failure; bundled modules are now opt-in.
+        (with-redefs [agent/stdlib-namespaces
+                      (assoc agent/stdlib-namespaces 'patterns
+                             {:cleanup-probe {:requires '[missing-cleanup-namespace]}})
+                      mcp/compile-servers
                       (fn [_ _]
                         {:namespaces {}
                          :close! #(swap! closed inc)})]

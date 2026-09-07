@@ -32,6 +32,8 @@
                                    "-n" "spell.agent-test"
                                    "-n" "spell.agents-prompt-test"
                                    "-n" "spell.sleep-refusal-recovery-test"
+                                   "-n" "spell.recovery-continuation-test"
+                                   "-n" "spell.patterns-loader-test"
                                    "-n" "spell.web-test"
                                    "-n" "spell.api-test"
                                    "-n" "spell.trace-test"
@@ -53,6 +55,8 @@
                                    "-n" "spell.composable-waits-test"
                                    "-n" "spell.globals-test"
                                    "-n" "spell.mailing-list-test"
+                                   "-n" "spell.installable-modules-test"
+                                   "-n" "spell.patterns-test"
                                    "-n" "spell.reliability-workflow-test"
                                    "-n" "spell.trace-export-test"
                                    "-n" "spell.user-test"]}

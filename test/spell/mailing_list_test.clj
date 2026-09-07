@@ -15,28 +15,35 @@
 (def ^:dynamic *deliver* (fn [_ _] nil))
 (defn eval-source [form]
   (let [r (eval/spell-eval form eval/*spell-env*)]
-    (if (eval/ok? r) (:ok r) (throw (ex-info (:err r) {})))))
-(defn call-pattern [op args]
+    (if (contains? r :ok)
+      (:ok r)
+      (throw (ex-info (str (:err r)) r)))))
+(defn eval-pattern [form]
   (binding [eval/*spell-env* {'eval eval-source
                             'globals globals/globals-namespace
                             'patterns stdlib/patterns
                             'agents {:current-handle (fn [] *handle*)
                                      :send (fn [h msg] (*deliver* h msg))}}]
-    (eval/invoke-fn (get stdlib/patterns op) [args])))
-(defn init! ([] (init! {})) ([opts] (call-pattern :mailing-list opts)))
+    (eval-source form)))
+(defn call-pattern [op & args]
+  (eval-pattern (list* (symbol "patterns" (name op))
+                       (map #(list 'quote %) args))))
+(defn init!
+  ([] (init! {}))
+  ([opts]
+   (call-pattern :install :mailing-list)
+   (call-pattern :call :mailing-list :init opts)))
 (defn mail [op args]
-  (binding [eval/*spell-env* {'eval eval-source
-                            'globals globals/globals-namespace
-                            'patterns stdlib/patterns
-                            'agents {:current-handle (fn [] *handle*)
-                                     :send (fn [h msg] (*deliver* h msg))}}]
-    (eval/invoke-fn (:mail stdlib/patterns) [op args])))
+  (call-pattern :call :mailing-list :call op args))
 (defn create! [] (mail :create {:list :research :description "Research evidence"}))
 (defn post! [s] (mail :post {:list :research :summary s :body {:evidence "full"}}))
 
 (deftest basic-shared-source
   (globals/set-val :unrelated {:keep true})
   (is (= {:owner :main :global :mailing-list :ready true} (init!)))
+  (let [info (mail :info {})]
+    (is (= #{:init :call :change :digest :deliver} (set (:module-functions info))))
+    (is (not (contains? info :operations))))
   (create!)
   (mail :subscribe {:list :research :from :earliest})
   (is (= 1 (:id (post! "First"))))
@@ -44,10 +51,13 @@
   (is (= {:evidence "full"} (get-in (mail :message {:list :research :id 1}) [:message :body])))
   (let [before (globals/get-val :mailing-list)]
     (is (thrown? Throwable (init!)))
-    (is (= before (globals/get-val :mailing-list))))
   (is (= {:keep true} (globals/get-val :unrelated)))
-  (globals/update-val :mailing-list
-    #(assoc-in % [:code :digest] '(fn [b a] {:custom (:agent a)})))
+    (is (= before (globals/get-val :mailing-list))))
+  (eval-pattern
+    '(patterns/update :mailing-list
+       (fn [definition]
+         (assoc-in definition [:functions :digest :source]
+                   '(fn [b a] {:custom (:agent a)})))))
   (binding [*handle* :fresh]
     (is (= {:custom :fresh} (mail :digest {})))))
 
@@ -123,7 +133,7 @@
                        (is (some? (get-in (globals/get-val :mailing-list)
                                          [:lists :research :subscriptions :board-worker]))
                            "Subscription exists BEFORE first model generation")
-                       "'(do (patterns/mail :post {:list :research :summary \"Worker evidence\"}) (patterns/mail :digest {:list :research}))))")
+                       "'(do (patterns/call :mailing-list :call :post {:list :research :summary \"Worker evidence\"}) (patterns/call :mailing-list :call :digest {:list :research}))))")
                      (let [msg (last (re-seq #"msg-[0-9]+" p))]
                        (str "'(audit/finish " msg ")))"))))}
                 :recover false :prefill? false
@@ -133,20 +143,20 @@
                              'audit {:finish (fn [v] (reset! result v) (coordinator/close!) v)}})
         value (th/run-agent-init agent
                 "(quine completion (eval (do '(do
-                   (patterns/mailing-list {})
-                   (patterns/mail :create {:list :research :description \"Evidence\"})
-                   (globals/update :mailing-list
-                     (fn [b] (assoc-in b [:code :digest]
+                   (patterns/install :mailing-list) (patterns/call :mailing-list :init {})
+                   (patterns/call :mailing-list :call :create {:list :research :description \"Evidence\"})
+                   (patterns/update :mailing-list
+                     (fn [b] (assoc-in b [:functions :digest :source]
                                       '(fn [board args] {:custom true :agent (:agent args)
                                                         :count (count (get-in board [:lists :research :messages]))}))))
-                   (patterns/mail :spawn {:task \"Post evidence and return a digest\"
+                   (patterns/call :mailing-list :call :spawn {:task \"Post evidence and return a digest\"
                                           :handle :board-worker :lists [:research]})
                    (agents/!wait)))))")]
     (is (= true (get-in value [:body :custom])))
     (is (= :board-worker (get-in value [:body :agent])))
     (is (= 1 (get-in value [:body :count])))
     (is (some #(and (= :board-worker (:handle %))
-                    (.contains ^String (:prompt %) "Do NOT initialize")) @seen))
+                    (.contains ^String (:prompt %) "Do NOT call patterns/call :mailing-list :init")) @seen))
     (is (= :board-worker (get-in (globals/get-val :mailing-list)
                                 [:lists :research :messages 0 :author])))))
 
@@ -258,9 +268,9 @@
 (deftest public-api-run-isolation
   (let [run (fn [label]
               (api/run
-                {:init (str "(quine completion (eval (do '(do (patterns/mailing-list {}) "
-                            "(patterns/mail :create {:list :research :description " (pr-str label) "}) "
-                            "(patterns/mail :lists {})))))")
+                {:init (str "(quine completion (eval (do '(do (patterns/install :mailing-list) (patterns/call :mailing-list :init {}) "
+                            "(patterns/call :mailing-list :call :create {:list :research :description " (pr-str label) "}) "
+                            "(patterns/call :mailing-list :call :lists {})))))")
                  :model-profile (provider/test-provider {:response "unused"})
                  :agent-profile "config/agent-profiles/cli.agent.edn"}))
         results (mapv #(future (run %)) ["run-A" "run-B"])]
@@ -291,7 +301,7 @@
                                      'audit {:finish (fn [v] (coordinator/close!) v)}})
                 value (th/run-agent-init agent
                         "(quine completion (eval (do '(do
-                           (patterns/mail :spawn {:task \"No capacity\" :handle :full-worker
+                           (patterns/call :mailing-list :call :spawn {:task \"No capacity\" :handle :full-worker
                                                   :lists [:research :second]})
                            (agents/!wait)))))")]
             (is (true? (get-in value [:body :spell/child-failure])))
@@ -324,7 +334,7 @@
                              'audit {:finish (fn [v] (coordinator/close!) v)}})
         value (th/run-agent-init agent
                 "(quine completion (eval (do '(do
-                   (patterns/mail :spawn {:task \"Recover from a task error\"
+                   (patterns/call :mailing-list :call :spawn {:task \"Recover from a task error\"
                                           :handle :recovering-worker :lists [:research]})
                    (agents/!wait)))))")]
     (is (= :task-recovered (:body value)))

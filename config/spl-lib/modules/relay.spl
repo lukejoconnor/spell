@@ -1,0 +1,231 @@
+;; Installable definition data; reading/installing never runs this source.
+{:doc "Fresh-worker reasoning rounds with independent solution verification.",
+ :functions
+ {:run
+  {:doc
+   "Run a problem string or options map; carry bounded reports across fresh workers and verify claimed solutions. Returns {:solved boolean :answer value? :rounds vector}.",
+   :requires [agents strings],
+   :source
+   (fn
+    [opts]
+    (let
+     [team-read-literal
+      (fn [raw] (if (string? raw) (try (read-string raw) (catch e raw)) raw))
+      relay-normalize-report
+      (fn
+       [raw round worker-handle]
+       (let
+        [parsed
+         (team-read-literal raw)
+         invalid
+         (fn
+          [reason]
+          {:round round,
+           :status :stuck,
+           :worker-handle worker-handle,
+           :report (str reason "\nRaw response:\n" (pr-str raw))})]
+        (if
+         (not (map? parsed))
+         (invalid "Invalid relay worker response. Expected a Spell map literal.")
+         (let
+          [status
+           (:status parsed)
+           report-raw
+           (:report parsed)
+           report
+           (if (string? report-raw) report-raw (if (nil? report-raw) "" (pr-str report-raw)))]
+          (cond
+           (not (or (= status :progress) (= status :solved) (= status :stuck)))
+           (invalid
+            "Invalid relay worker response: :status must be :progress, :solved, or :stuck.")
+           (strings/blank? report)
+           (invalid "Invalid relay worker response: :report must be a non-empty string.")
+           (and (= status :solved) (not (contains? parsed :answer)))
+           (invalid "Invalid relay worker response: :answer is required when :status is :solved.")
+           :else
+           (let
+            [base {:round round, :status status, :report report, :worker-handle worker-handle}]
+            (if (= status :solved) (assoc base :answer (:answer parsed)) base)))))))
+      relay-normalize-verdict
+      (fn
+       [raw verifier-handle]
+       (let
+        [parsed (team-read-literal raw)]
+        (if
+         (not (map? parsed))
+         {:ok false,
+          :feedback
+          (str
+           "Verifier must return a Spell map literal with keys "
+           ":confirmed and :feedback.\nRaw response:\n"
+           (pr-str raw))}
+         (let
+          [confirmed
+           (:confirmed parsed)
+           feedback-raw
+           (:feedback parsed)
+           feedback
+           (if
+            (string? feedback-raw)
+            feedback-raw
+            (if (nil? feedback-raw) "" (pr-str feedback-raw)))]
+          (if
+           (or (= true confirmed) (= false confirmed))
+           {:ok true,
+            :confirmed confirmed,
+            :feedback
+            (if
+             (strings/blank? feedback)
+             (if confirmed "Confirmed without feedback." "Rejected without feedback.")
+             feedback),
+            :verifier-handle verifier-handle}
+           {:ok false,
+            :feedback
+            (str
+             "Verifier must return {:confirmed true|false :feedback \"...\"}.\n"
+             "Raw response:\n"
+             (pr-str raw))})))))
+      relay-rejection-report
+      (fn
+       [round solved-report verdict]
+       {:round round,
+        :status :rejected,
+        :worker-handle (:worker-handle solved-report),
+        :verifier-handle (:verifier-handle verdict),
+        :report (:feedback verdict)})
+      relay-verify-solution
+      (fn
+       [run-id verifier-init-completion problem previous-reports solved-report]
+       (let
+        [make-verifier-handle
+         (fn
+          [round attempt]
+          (read-string (str ":relay-verifier-" run-id "-r" round "-a" attempt)))]
+        (loop
+         [feedback "" attempt 0]
+         (let
+          [verifier-handle
+           (make-verifier-handle (:round solved-report) attempt)
+           _
+           (agents/register verifier-handle verifier-init-completion)
+           raw
+           (blocking/send-await
+            verifier-handle
+            {:kind :verify,
+             :problem problem,
+             :round (:round solved-report),
+             :answer (:answer solved-report),
+             :candidate-report solved-report,
+             :previous-reports previous-reports,
+             :feedback feedback})
+           verdict
+           (relay-normalize-verdict raw verifier-handle)]
+          (if
+           (:ok verdict)
+           verdict
+           (if
+            (>= attempt 2)
+            {:ok true,
+             :confirmed false,
+             :feedback (:feedback verdict),
+             :verifier-handle verifier-handle}
+            (recur (:feedback verdict) (inc attempt))))))))]
+     (let
+      [opts
+       (if (string? opts) {:problem opts} (if (map? opts) opts {:problem opts}))
+       problem-raw
+       (:problem opts)
+       problem
+       (if (string? problem-raw) problem-raw (if (nil? problem-raw) "" (pr-str problem-raw)))
+       max-rounds
+       (if (number? (:max-rounds opts)) (:max-rounds opts) 5)
+       run-id
+       (abs (rand-int 1000000))
+       make-worker-handle
+       (fn [round] (read-string (str ":relay-worker-" run-id "-" round)))
+       worker-init-prompt
+       (str
+        "You are a reasoning worker in patterns/call :relay :run.\n\n\nContext discipline: avoid the prune-evidence-then-rediscover antipattern. Before pruning a tool result, persist the exact evidence, actual effect receipts and next-action checkpoint needed for the artifact; retrieve retained or stored output instead of repeating effects.\n"
+        "On each wake, inspect the newest msg-* binding.\n"
+        "Its :body is one of:\n"
+        "{:kind :solve :problem str :round int :previous-reports vector}\n"
+        "{:kind :clarify :question str}\n\n"
+        "Each prior report may include :worker-handle and :verifier-handle.\n"
+        "If useful, you may message previous workers named by :worker-handle for clarification,\n"
+        "but you are not required to do so. Use exactly {:kind :clarify :question \"your question\"}\n"
+        "for those requests, and expect {:status :clarified :report \"concise answer\"} in reply.\n"
+        "If you are asked a :clarify question after submitting your initial report, use the reply\n"
+        "function on that msg-* value to send {:status :clarified :report \"concise answer\"}, then stop.\n"
+        "Do not continue your completion after that reply, and do not attempt to solve the original\n"
+        "problem again.\n\n"
+        "Return ONLY a Spell map literal with:\n"
+        "{:status :progress|:solved|:stuck\n"
+        " :report \"concise reasoning summary\"\n"
+        " :answer any}  ; include :answer only when :status is :solved\n"
+        "Do NOT wrap your response in {:result ...} or {result ...}. Return the map directly.\n")
+       worker-init-completion
+       (str
+        "(quine completion (eval (do "
+        "(quine prompt "
+        (pr-str worker-init-prompt)
+        ") "
+        "'(!extend))))")
+       verifier-init-prompt
+       (str
+        "You are the verification agent in patterns/call :relay :run.\n\n\nContext discipline: avoid the prune-evidence-then-rediscover antipattern. Before pruning a tool result, persist the exact evidence, actual effect receipts and next-action checkpoint needed for the artifact; retrieve retained or stored output instead of repeating effects.\n"
+        "On each wake, inspect the newest msg-* binding.\n"
+        "Its :body has keys:\n"
+        "{:kind :verify :problem str :round int :answer any\n"
+        " :candidate-report map :previous-reports vector :feedback str}\n\n"
+        "Independently verify whether the candidate answer is correct.\n"
+        "If useful, you may message previous workers named by :worker-handle in\n"
+        ":candidate-report or :previous-reports, but you are not required to do so.\n"
+        "Use exactly {:kind :clarify :question \"your question\"} for those requests, and expect\n"
+        "{:status :clarified :report \"concise answer\"} in reply.\n"
+        "You are freshly registered on each verification attempt, so do not rely on prior state.\n\n\nContext discipline: avoid the prune-evidence-then-rediscover antipattern. Before pruning a tool result, persist the exact evidence, actual effect receipts and next-action checkpoint needed for the artifact; retrieve retained or stored output instead of repeating effects.\n"
+        "Return ONLY a Spell map literal with:\n"
+        "{:confirmed true|false\n"
+        " :feedback \"what you checked or why you rejected\"}\n"
+        "Do NOT wrap your response in {:result ...} or {result ...}. Return the map directly.\n")
+       verifier-init-completion
+       (str
+        "(quine completion (eval (do "
+        "(quine prompt "
+        (pr-str verifier-init-prompt)
+        ") "
+        "'(!extend))))")]
+      (if
+       (strings/blank? problem)
+       {:solved false, :rounds [], :error "relay requires non-empty :problem"}
+       (!ask-await
+        (future
+         (loop
+          [round 0 reports []]
+          (if
+           (>= round max-rounds)
+           {:solved false, :rounds reports}
+           (let
+            [worker-handle
+             (make-worker-handle round)
+             _
+             (agents/register worker-handle worker-init-completion)
+             raw
+             (blocking/send-await
+              worker-handle
+              {:kind :solve, :problem problem, :round round, :previous-reports reports})
+             report
+             (relay-normalize-report raw round worker-handle)
+             next-reports
+             (conj reports report)]
+            (if
+             (= :solved (:status report))
+             (let
+              [verdict
+               (relay-verify-solution run-id verifier-init-completion problem reports report)]
+              (if
+               (:confirmed verdict)
+               {:solved true, :answer (:answer report), :rounds next-reports}
+               (recur
+                (inc round)
+                (conj next-reports (relay-rejection-report round report verdict)))))
+             (recur (inc round) next-reports)))))))))))}}}

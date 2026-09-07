@@ -1,0 +1,56 @@
+;; Installable definition data; reading/installing never runs this source.
+{:doc "Persistent-worker retry orchestration.",
+ :functions
+ {:run
+  {:doc
+   "Start a persistent retry worker from a task string or {:task :test-fn :max-retries :worker-prompt}; send {:pass result} or {:fail result} to the caller.",
+   :requires [agents],
+   :source
+   (fn
+    [opts]
+    (let
+     [opts
+      (if (string? opts) {:task opts} opts)
+      task
+      (or (:task opts) (throw "ralph: :task required"))
+      test-fn
+      (or (:test-fn opts) (fn [result] (:ok result)))
+      max-retries
+      (or (:max-retries opts) 3)
+      worker-prompt
+      (or
+       (:worker-prompt opts)
+       (str
+        "You are a worker agent for patterns/call :ralph :run.\n\nContext discipline: avoid the prune-evidence-then-rediscover antipattern. Before pruning a tool result, persist the exact evidence, actual effect receipts and next-action checkpoint needed for the artifact; retrieve retained or stored output instead of repeating effects.\n"
+        "On each wake, inspect the newest msg-* binding.\n"
+        "Read :body {:kind :task|:retry ...} and produce an improved result.\n"
+        "Do not send messages to parent; return your result as completion value."))
+      me
+      (agents/current-handle)
+      worker-handle
+      (read-string (str ":ralph-worker-" (abs (rand-int 1000000))))
+      worker
+      (agents/spawn worker-prompt worker-handle)]
+     (future
+      (let
+       [final-result
+        (loop
+         [attempt 0 feedback {:kind :task, :body task, :attempt 0}]
+         (let
+          [result (blocking/send-await worker feedback)]
+          (if
+           (test-fn result)
+           {:pass result}
+           (if
+            (>= (inc attempt) max-retries)
+            {:fail result}
+            (recur
+             (inc attempt)
+             {:kind :retry,
+              :attempt (inc attempt),
+              :task task,
+              :previous result,
+              :feedback
+              (str "Test failed, retry with a better result. Previous: " (pr-str result))})))))]
+       (agents/send me final-result)))
+     {:started true, :worker worker}))}}}

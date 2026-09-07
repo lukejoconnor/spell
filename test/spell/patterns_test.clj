@@ -9,59 +9,37 @@
             [spell.stdlib :as stdlib]))
 
 (use-fixtures :each th/with-test-run)
-
-(def fix-loop (:fix-loop stdlib/patterns))
-(def ralph (:ralph stdlib/patterns))
-(def relay (:relay stdlib/patterns))
-(def team (:team stdlib/patterns))
 (def sh-test (:sh-test sio/io-namespace))
 (def stub-ask-await (fn [fut] (deref (:ref fut) 5000 :timeout)))
 
-(deftest clean-prompt-receives-during-cleaned-continuation
-  (let [calls (atom []) stale (atom 0)
-        agent (th/make-test-agent
-                {:response-fn
-                 (fn [prompt]
-                   (case (count (swap! calls conj prompt))
-                     1 "The cleaned assignment"
-                     2 (do
-                         (coordinator/send! :main
-                           {:message {:from :observer :body :clean-prompt-message}})
-                         "'(audit/stale)))")
-                     3 "':clean-received)))"
-                     (throw (ex-info "Unexpected clean-prompt call" {:prompt prompt}))))}
-                :prefill? false :recover false
-                :namespaces {'patterns stdlib/patterns
-                             'audit {:stale #(swap! stale inc)
-                                     :finish (fn [value] (coordinator/close!) value)}})
-        result (th/run-agent-init agent
-                 "(quine completion (eval (do '(audit/finish (patterns/clean-prompt \"messy original\")))))")]
-    (is (= :clean-received result))
-    (is (zero? @stale) "Receipt preempts the cleaned child's generated action")
-    (is (= 3 (count @calls)))
-    (is (str/includes? (last @calls) "The cleaned assignment"))
-    (is (not (str/includes? (last @calls) "messy original")))
-    (is (= 1 (count (re-seq #":clean-prompt-message" (last @calls)))))))
+(defn- invoke-module [module opts]
+  (let [env (assoc eval/*spell-env* 'patterns stdlib/patterns)
+        result (eval/spell-eval
+                 (list 'do (list 'patterns/install module)
+                       (list 'patterns/call module :run (list 'quote opts)))
+                 env)]
+    (if (eval/ok? result) (:ok result)
+      (throw (ex-info (:err result) {:result result})))))
 
 (defn- run-fix-loop [opts env]
   (binding [eval/*builtins* (assoc eval/*builtins* '!ask-await stub-ask-await)
             eval/*spell-env* (merge {'strings stdlib/strings
                                      'io (assoc sio/io-namespace :sh sio/sh)}
                                     env)]
-    (eval/invoke-fn fix-loop [opts])))
+    (invoke-module :fix-loop opts)))
 
 (defn- run-ralph [opts env]
   (binding [eval/*spell-env* (merge {'strings stdlib/strings
                                      'io (assoc sio/io-namespace :sh sio/sh)}
                                     env)]
-    (eval/invoke-fn ralph [opts])))
+    (invoke-module :ralph opts)))
 
 (defn- run-relay [opts env]
   (binding [eval/*builtins* (assoc eval/*builtins* '!ask-await stub-ask-await)
             eval/*spell-env* (merge {'strings stdlib/strings
                                      'patterns stdlib/patterns}
                                     env)]
-    (eval/invoke-fn relay [opts])))
+    (invoke-module :relay opts)))
 
 (defn- run-team [opts env]
   (binding [eval/*builtins* (assoc eval/*builtins* '!ask-await stub-ask-await)
@@ -69,7 +47,7 @@
                                      'patterns stdlib/patterns
                                      'io (assoc sio/io-namespace :sh sio/sh :exec sio/exec)}
                                     env)]
-    (eval/invoke-fn team [opts])))
+    (invoke-module :team opts)))
 
 (defn- create-temp-git-repo
   [files]
@@ -275,9 +253,9 @@
             (is (= "ok" (slurp (str dir "/done.txt"))))
             (is (= (:branch result) end-branch))
             (is (every? #(= :completed (:status %)) (:tasks result)))
-            (is (some #(str/includes? (:completion %) "planner agent in patterns/team")
+            (is (some #(str/includes? (:completion %) "planner agent in patterns/call :team :run")
                       @register-calls))
-            (is (some #(str/includes? (:completion %) "verifier agent in patterns/team")
+            (is (some #(str/includes? (:completion %) "verifier agent in patterns/call :team :run")
                       @register-calls))))
         (finally
           (cleanup-dir dir))))))
@@ -470,7 +448,7 @@
                                   'blocking {:send-await send-await-fn
                                              :request request-fn
                                              :await-all await-all-fn}})
-                verifier-prompt (some #(when (str/includes? (:completion %) "verifier agent in patterns/team")
+                verifier-prompt (some #(when (str/includes? (:completion %) "verifier agent in patterns/call :team :run")
                                          (:completion %))
                                       @register-calls)]
             (is (= :failed (:status result)))
@@ -572,7 +550,7 @@
                                 :last-test-output)))
             (is (not (contains? (get-in (second @send-await-calls) [:msg])
                                 :failed-output)))
-            (is (some #(str/includes? (:completion %) "reflector agent in patterns/fix-loop")
+            (is (some #(str/includes? (:completion %) "reflector agent in patterns/call :fix-loop :run")
                       @register-calls))
             (is (some #(str/includes? (:completion %) "You are a code repair worker.")
                       @register-calls))
