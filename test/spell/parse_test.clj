@@ -215,6 +215,133 @@
 ;; non-Spell comment token normalization tests
 ;; =============================================================================
 
+;; Pre-optimization sanitizer snapshots pin exact existing behavior, including
+;; the separately tracked multiline-string comment-rewrite issue.
+(def ^:private baseline-valid-escape?
+  #{\t \b \n \r \f \\ \" \u \0 \1 \2 \3 \4 \5 \6 \7})
+
+(defn- baseline-sanitize-comments
+  "Normalize common non-Spell comment tokens at line start when outside strings.
+   Rewrites line-start //, /*, and */ to ';' comments so reader recovery can
+   continue when models emit C/C++-style comment syntax."
+  [s]
+  (let [len (count s)
+        sb  (StringBuilder. len)]
+    (loop [i 0, in-string false, escape false, line-start true]
+      (if (>= i len)
+        (.toString sb)
+        (let [c  (.charAt ^String s i)
+              c2 (when (< (inc i) len) (.charAt ^String s (inc i)))]
+          (cond
+            escape
+            (do (.append sb c)
+                (recur (inc i) in-string false (= c \newline)))
+
+            in-string
+            (cond
+              (= c \\) (do (.append sb c) (recur (inc i) true true false))
+              (= c \") (do (.append sb c) (recur (inc i) false false false))
+              :else    (do (.append sb c) (recur (inc i) true false (= c \newline))))
+
+            (= c \newline)
+            (do (.append sb c) (recur (inc i) false false true))
+
+            (and line-start (or (= c \space) (= c \tab) (= c \return)))
+            (do (.append sb c) (recur (inc i) false false true))
+
+            (and line-start (= c \/) (or (= c2 \/) (= c2 \*)))
+            (do (.append sb \;) (recur (inc i) false false false))
+
+            (and line-start (= c \*) (= c2 \/))
+            (do (.append sb \;) (recur (inc i) false false false))
+
+            :else
+            (do (.append sb c)
+                (recur (inc i) false false false))))))))
+
+(defn- baseline-sanitize-escapes
+  "Fix invalid escape sequences inside string literals.
+   LLMs often write LaTeX-like \\equiv, \\frac etc. in strings.
+   Clojure's reader rejects \\e, \\f is formfeed, etc.
+   This doubles the backslash for unknown escapes so they read as literal text."
+  [s]
+  (let [len (count s)
+        sb (StringBuilder. len)]
+    (loop [i 0, in-string false, escape false]
+      (if (>= i len)
+        (.toString sb)
+        (let [c (.charAt ^String s i)]
+          (cond
+            escape
+            (if (baseline-valid-escape? c)
+              (do (.append sb c) (recur (inc i) in-string false))
+              ;; Unknown escape: double the backslash so \e becomes \\e
+              (do (.append sb \\) (.append sb c) (recur (inc i) in-string false)))
+
+            in-string
+            (cond
+              (= c \\) (do (.append sb c) (recur (inc i) true true))
+              (= c \") (do (.append sb c) (recur (inc i) false false))
+              :else    (do (.append sb c) (recur (inc i) true false)))
+
+            :else
+            (do (.append sb c)
+                (recur (inc i) (= c \") false))))))))
+
+(defn- reader-outcome [reader input]
+  (try {:ok (reader input)}
+       (catch RuntimeException e
+         {:error [(class e) (.getMessage e)]})))
+
+(deftest sanitizers-match-original-output
+  (let [targeted [nil "" "x" "λ" "\n" "\r\n" "//" "/*" "*/" "/" "*"
+                  "  // comment\r\n42" "\t/* comment\n*/\n42"
+                  "(str \"line\n// inside string\")"
+                  "(str \"line\n/* inside string\n*/\")"
+                  "\"x\\equiv y\"" "\"\\q\\e\"" "\"trailing\\"
+                  "\"valid\\n\\t\\\\\\\"\"" "outside\\equiv"
+                  "42\n(" "42 ] not-tail" "42 ] " "] not-tail"
+                  "// comment\n(think \"x\\equiv y\")"
+                  (str (apply str (repeat 4096 \x)) "\n// late rewrite")
+                  (str "\"" (apply str (repeat 4096 \x)) "\\e\"")]
+        rng (java.util.Random. 73491)
+        tokens ["x" "λ" "\n" "\r" "\t" " " "\"" "\\" "\\e" "\\n"
+                "//" "/*" "*/" "(" ")" "[" "]" ";" "42"]
+        generated (repeatedly 256
+                    #(apply str (repeatedly 32
+                                  (fn [] (nth tokens (.nextInt rng (count tokens)))))))
+        inputs (vec (concat targeted generated))]
+    (doseq [input inputs]
+      (testing (pr-str input)
+        (is (= (baseline-sanitize-comments input)
+               (sanitize-nonspell-comment-markers input)))
+        (is (= (baseline-sanitize-escapes input)
+               (sanitize-string-escapes input)))
+        (is (= (baseline-sanitize-escapes (baseline-sanitize-comments input))
+               (sanitize-string-escapes (sanitize-nonspell-comment-markers input))))
+        (doseq [reader [read-first read-all]]
+          (let [expected (with-redefs [spell.parse/sanitize-nonspell-comment-markers baseline-sanitize-comments
+                                      spell.parse/sanitize-string-escapes baseline-sanitize-escapes]
+                           (reader-outcome reader input))]
+            (is (= expected (reader-outcome reader input)))))))))
+
+(deftest unchanged-sanitizers-reuse-input
+  (doseq [input ["" "42" "(think \"valid\\ntext and unicode λ\")"
+                "  ; ordinary comment\n42" "(str \"https://example.invalid\")"]]
+    (is (identical? input (sanitize-nonspell-comment-markers input)))
+    (is (identical? input (sanitize-string-escapes input))))
+  (testing "nil input keeps the original empty-string result"
+    (is (= "" (sanitize-nonspell-comment-markers nil)))
+    (is (= "" (sanitize-string-escapes nil)))))
+
+(deftest sanitizer-reader-boundaries-unchanged
+  (is (= 42 (read-first "// comment\n42\n(")))
+  (is (= 42 (read-first "42 ] not-tail")))
+  (is (= [42] (read-all "42 ]  ")))
+  (testing "preserve baseline multiline-string rewriting; correctness fix is separate"
+    (is (= "(str \"line\n;/ inside string\")"
+           (sanitize-nonspell-comment-markers "(str \"line\n// inside string\")")))))
+
 (deftest sanitize-nonspell-comment-markers-test
   (testing "line-start // comments are normalized"
     (is (= ";/ C style comment\n(def x 1)"

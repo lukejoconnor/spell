@@ -10,7 +10,7 @@ Run: `2026-09-07-runtime-optimization-001`. Base: `4abaa1d696413503ee4dd9a296e1e
 - Evidence: `perf/selected_lines_probe.clj`, `perf/results/optimization-selected-lines-q_aloiij/`. Focused I/O suite: **95 tests / 265 assertions**, no failures/errors; six probe exits 0 with content/metadata assertions. Fable actual review edge 4 and lead approve.
 - Cost/rollback: O(selected-lines) copy; reverting restores whole-file backing retention while avoiding a small copy allocation.
 
-## Streamed trace export — approved
+## Streamed trace export — approved and committed `0405fb6`
 
 - Replace whole-trace pretty-printing through a full intermediate string with readable whole-map streaming. Preserve all cleaned records, arbitrary keys, warning/source data, program-file bytes and tree output; no manual schema or compatibility path.
 - Three fresh process pairs at 512 MiB, generated 144-node/48-form fixture: median export **9,463.012 → 168.512 ms** (56.16×); median caller allocation approximately **21.203 GB → 130.145 MB** (~163× lower). Candidate wall range **122.116–179.603 ms** is noisy. Export bytes **4,108,274 → 3,684,224**. These are bounded synthetic export measurements, not a prediction for private traces or retained-heap measurements.
@@ -27,3 +27,13 @@ Run: `2026-09-07-runtime-optimization-001`. Base: `4abaa1d696413503ee4dd9a296e1e
 - Discovered multiline-string comment normalization bug is recorded separately, not silently repaired in performance comparisons.
 - Python benchmark-runner validation executed: **6 tests**, all passed.
 - Full 80-case suite, complete Clojure suites, fresh final Fable verdict and final report/commit index remain pending. No full-memory-profiling or long-run-reliability claim.
+
+## Lazy sanitizer output — approved as an asymmetric allocation tradeoff
+
+- Allocate an output builder only at the first actual rewrite; unchanged strings are returned directly. Preserve both state machines, sanitizer ordering, nil/empty behavior and reader results/errors. No cache, deduplication, input suppression or parser behavior repair.
+- Three fresh matched process pairs, identical 256 MiB heap, 30 warmups and five ten-call batches: unchanged `read-first` caller allocation falls **38.2–38.5%** across 64/256/1024-chunk fixtures. Ordered sanitizer allocation falls **79,568.8 → 4,728.8**, **306,128.8 → 7,800.8**, and **1,212,368.8 → 20,088.8 bytes/call**.
+- Real cost: rewritten sanitizers allocate approximately **424 extra bytes/call**; rewritten `read-first` median allocation increases **3.6–3.8%**. Small rewritten sanitizer wall ranges regress from **251.98–256.32 to 276.35–312.57 µs/call**. Other timings are noisy and operation-order/JIT-sensitive. This is NOT an unconditional speedup or a runtime-neutral optimization.
+- Lead accepts the common unchanged-input allocation benefit for a small local mechanism, with the recovery-input tradeoff explicit. Revert this commit independently if rewrite-heavy workloads dominate. Frequency of unchanged input in paid workloads was not measured.
+- Evidence: `perf/parse_sanitizer_probe.clj` and `perf/results/optimization-parse-sanitizer-matched-vyqze266/README.md`; attribution and initially failing probe evidence retained separately. Caller-thread allocation only; no retained-heap claim.
+- Validation: **12 tests / 1,496 assertions**, no failures/errors; all six comparison processes exit 0 with **55 semantic assertions each**. Differential tests use independent baseline functions and seeded inputs. Actual Fable review edge 9 approved and closed the independent escape-oracle check; lead inspected the exact final mechanism and accepts it.
+- Existing multiline-string comment normalization corruption is explicitly preserved by this optimization and remains a separate correctness follow-up, not a newly introduced behavior.

@@ -66,39 +66,46 @@
    Rewrites line-start //, /*, and */ to ';' comments so reader recovery can
    continue when models emit C/C++-style comment syntax."
   [s]
-  (let [len (count s)
-        sb  (StringBuilder. len)]
-    (loop [i 0, in-string false, escape false, line-start true]
+  (let [len (count s)]
+    ;; Allocate output only when a character actually needs rewriting.
+    (loop [i 0, in-string false, escape false, line-start true,
+           ^StringBuilder sb nil]
       (if (>= i len)
-        (.toString sb)
+        (if sb (.toString sb) (if (zero? len) "" s))
         (let [c  (.charAt ^String s i)
               c2 (when (< (inc i) len) (.charAt ^String s (inc i)))]
           (cond
             escape
-            (do (.append sb c)
-                (recur (inc i) in-string false (= c \newline)))
+            (do (when sb (.append sb c))
+                (recur (inc i) in-string false (= c \newline) sb))
 
             in-string
             (cond
-              (= c \\) (do (.append sb c) (recur (inc i) true true false))
-              (= c \") (do (.append sb c) (recur (inc i) false false false))
-              :else    (do (.append sb c) (recur (inc i) true false (= c \newline))))
+              (= c \\) (do (when sb (.append sb c)) (recur (inc i) true true false sb))
+              (= c \") (do (when sb (.append sb c)) (recur (inc i) false false false sb))
+              :else    (do (when sb (.append sb c)) (recur (inc i) true false (= c \newline) sb)))
 
             (= c \newline)
-            (do (.append sb c) (recur (inc i) false false true))
+            (do (when sb (.append sb c)) (recur (inc i) false false true sb))
 
             (and line-start (or (= c \space) (= c \tab) (= c \return)))
-            (do (.append sb c) (recur (inc i) false false true))
+            (do (when sb (.append sb c)) (recur (inc i) false false true sb))
 
             (and line-start (= c \/) (or (= c2 \/) (= c2 \*)))
-            (do (.append sb \;) (recur (inc i) false false false))
+            (let [^StringBuilder sb (or sb (doto (StringBuilder. len)
+                                             (.append ^CharSequence s 0 i)))]
+              (.append sb \;)
+              (recur (inc i) false false false sb))
 
             (and line-start (= c \*) (= c2 \/))
-            (do (.append sb \;) (recur (inc i) false false false))
+            (let [^StringBuilder sb (or sb (doto (StringBuilder. len)
+                                             (.append ^CharSequence s 0 i)))]
+              (.append sb \;)
+              (recur (inc i) false false false sb))
 
             :else
-            (do (.append sb c)
-                (recur (inc i) false false false))))))))
+            (do (when sb (.append sb c))
+                (recur (inc i) false false false sb))))))))
 
 (defn sanitize-string-escapes
   "Fix invalid escape sequences inside string literals.
@@ -106,28 +113,31 @@
    Clojure's reader rejects \\e, \\f is formfeed, etc.
    This doubles the backslash for unknown escapes so they read as literal text."
   [s]
-  (let [len (count s)
-        sb (StringBuilder. len)]
-    (loop [i 0, in-string false, escape false]
+  (let [len (count s)]
+    (loop [i 0, in-string false, escape false, ^StringBuilder sb nil]
       (if (>= i len)
-        (.toString sb)
+        (if sb (.toString sb) (if (zero? len) "" s))
         (let [c (.charAt ^String s i)]
           (cond
             escape
             (if (valid-escape? c)
-              (do (.append sb c) (recur (inc i) in-string false))
-              ;; Unknown escape: double the backslash so \e becomes \\e
-              (do (.append sb \\) (.append sb c) (recur (inc i) in-string false)))
+              (do (when sb (.append sb c)) (recur (inc i) in-string false sb))
+              ;; The copied prefix already contains the original backslash.
+              (let [^StringBuilder sb (or sb (doto (StringBuilder. len)
+                                               (.append ^CharSequence s 0 i)))]
+                (.append sb \\)
+                (.append sb c)
+                (recur (inc i) in-string false sb)))
 
             in-string
             (cond
-              (= c \\) (do (.append sb c) (recur (inc i) true true))
-              (= c \") (do (.append sb c) (recur (inc i) false false))
-              :else    (do (.append sb c) (recur (inc i) true false)))
+              (= c \\) (do (when sb (.append sb c)) (recur (inc i) true true sb))
+              (= c \") (do (when sb (.append sb c)) (recur (inc i) false false sb))
+              :else    (do (when sb (.append sb c)) (recur (inc i) true false sb)))
 
             :else
-            (do (.append sb c)
-                (recur (inc i) (= c \") false))))))))
+            (do (when sb (.append sb c))
+                (recur (inc i) (= c \") false sb))))))))
 
 (defn- read-all-internal
   "Read all forms from an already-sanitized string."
