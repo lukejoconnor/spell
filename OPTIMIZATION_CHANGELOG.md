@@ -35,3 +35,10 @@ The subsequent parser correctness repair preserves line-start comment markers in
 The correction distinguishes reader-dispatch comments from `#!` embedded in symbols, and preserves reader-prefix handling such as `#_`. Regression coverage includes the exact quoted shebang case that exposed a flaw in an intermediate draft.
 
 Correctness follow-up validation: parser 16 tests / 1,654 assertions; maintained fast suite 517 / 4,722; both exit 0 with zero failures/errors. No performance suite was rerun for this repair.
+
+
+## Post-run evidence-retention guidance
+
+Added Luke's approved “Pruning evidence and rediscovering it” antipattern, unchanged, to the existing ANTIPATTERNS section in all three system prompts. The example retains source evidence with persist before !peek removes it and proceeds to a concrete reproduction. Applied after both live runs completed; verified identical text in prefill, message and tool-call variants. This is instruction guidance; no live claim of improved behavior or resolution of opaque skill disclosure is made.
+
+The final trace audit found actual coding/context-efficiency requests whose results were opaque stored references, with no visible retrieval of their instruction bodies. It also confirmed autonomous lead recovery from failed workers and a rejected zero-test run, with no evidenced coordinator deadlock. Full audit and review provenance: notebook/results/spell-runs/2026-09-07-runtime-optimization-001/codex-final-trace-audit.md.

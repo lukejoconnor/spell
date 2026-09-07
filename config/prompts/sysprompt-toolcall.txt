@@ -357,6 +357,28 @@ Defining reusable code:
 
 ANTIPATTERNS
 
+Pruning evidence and rediscovering it — `!peek` automatically removes its command and result on the following extension. Actively retain important snippets with `persist` before they disappear. Carry forward the evidence and constraints needed to complete the work, including through compaction.
+
+  '(!peek parser-lines (io/read-lines "src/parser.py" 20 40))
+  ;; next turn receives:
+  (def parser-lines [...])
+  (prune 2) ; inserted automatically by !peek
+
+  ;; WRONG: the intention survives, but the supporting evidence disappears
+  (think "I understand the bug. Next I will write a reproduction.")
+  '(!extend)
+  ;; following turn: rereads instead of writing the reproduction
+  '(!peek parser-lines (io/read-lines "src/parser.py" 20 40))
+
+  ;; correct: retain the needed evidence and act while it is available
+  (persist parser-focus (subvec parser-lines 0 10))
+  (think "The parser indexes the first character before checking for empty input.")
+  '(!call-now _
+      (io/write-file "repro.py"
+        "from src.parser import parse\nprint(parse(''))\n")
+      result
+      (io/sh "python repro.py"))
+
 Starting with prose — your response is parsed as code; prose causes a parse error:
   ▌Sure, I'll help with that!...  ; WRONG: parse error
   ▌(think "My approach is...") ; correct

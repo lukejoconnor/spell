@@ -114,3 +114,12 @@ The run continued beyond the two starting tasks into measured parser allocation 
 The shared authorization was **$100**, separate from prior reliability spend. Actual billed model dollars/tokens are **not exposed to this agent or its workers**; no usage total or certified remaining budget is invented. External run accounting/notebook is authoritative for the actual spend. There were no paid subprocess agents or repeated live provider demo. Portable local process durations and measurement scope are in receipts; they are not model billing metrics.
 
 Lead approves these four commits and the documented tradeoffs. Codex final acceptance and its notebook entry remain external. All commits carry `Spell-Run: 2026-09-07-runtime-optimization-001` and `Notebook-Entry: notebook/entries/2026-09-07-runtime-optimization.md` trailers.
+
+
+## Codex acceptance follow-through
+
+Parser correctness repair: `23ce9ac`, separately reversible. Final focused parser16/1,654, maintained fast517/4,722 and slow246/960 pass with exit0 and no failures/errors. Fable5.1/high separately approved the actual correction; Codex verified the final explicit char-cast delta and tested hashes. Historical performance figures remain attached to their measured source snapshots.
+
+Luke's approved evidence-retention antipattern was added identically to all three system prompts after the runs finished. This instruction change was statically verified; no further paid run was requested. The completed trace shows that coding/context-efficiency disclosures produced opaque stored references, without evidence that the instruction bodies were retrieved. API misuse and short stalls remained, while the lead recovered autonomously and completed the measured work. See the notebook run's codex-final-trace-audit.md for response-only counts and actual review receipts.
+
+Recorded spend: main001 $88.78901525 plus bounded Fable002 review $0.8677375, total **$89.65675275 of $100**. Independent Codex reviews verified all80cases,44source hashes for the convergence candidate, positive test receipts, measurement arithmetic and the fresh Fable verdict. No push or merge.
