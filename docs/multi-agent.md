@@ -313,3 +313,7 @@ rejected spawn collection registers or starts no children. Rejection raises a
 capacity error immediately and never waits for space. Completed, cancelled, and
 abandoned edges release their capacity. Context presentation limits are
 separate from coordinator admission and do not change stored result values.
+
+## Quiet shared research boards
+
+For long-running teams, use the [in-run mailing-list pattern](./mailing-list.md) to share bounded evidence summaries without awakening every subscriber. Explicit urgent notification and tracked worker onboarding use the existing coordinator; there are no additional blocking or persistence semantics.

@@ -412,3 +412,7 @@ for signatures, lifecycle results, cancellation, and the non-deadlock guarantee.
 Future orchestration uses `blocking/request` for an atomic request/result token
 and `blocking/send-await` to request and collect directly; both create tracked
 agent dependencies.
+
+## In-run mailing-list pattern
+
+`patterns/mailing-list` initializes shared executable code and bounded board state in the current API invocation’s globals. Designate exactly one loader; `patterns/mail` invokes the customizable source for all participating agents. Enable `patterns`, `globals`, and `agents`. Quiet posting, paginated digests with explicit acknowledgements and retention gaps, urgent notification, and tracked worker onboarding are described in [In-run mailing lists](./mailing-list.md). The bundled `mailing-list` skill gives compact invocation examples. This state is isolated per `spell.api/run`, not durable recovery across JVM exits.

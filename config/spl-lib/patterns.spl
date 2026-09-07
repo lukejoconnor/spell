@@ -1280,3 +1280,343 @@
                             (conj next-reports
                                   (patterns/relay-rejection-report round report verdict)))))
                  (recur (inc round) next-reports))))))))))
+
+;; ---------------------------------------------------------------------------
+;; mailing-list — per-run, shared executable message board
+;; All operations below are installed as source in globals. mail is only a bridge.
+;; Atomic callbacks are pure; delivery and launch happen after the transaction.
+;; ---------------------------------------------------------------------------
+
+(defn mailing-list [options]
+  (let [ml-owner (agents/current-handle)
+        ml-config (merge
+                    {:retention 200,
+                     :page-size 20,
+                     :max-lists 32,
+                     :max-subscribers 32,
+                     :max-message-chars 16000}
+                    options)
+        ml-code {:change
+                 '(fn [b op a]
+                    (let [k (:list a) ls (get-in b [:lists k]) who (:agent a)]
+                      (case
+                        op
+                        :create
+                        (do
+                          (when (or (not (keyword? k)) (> (count (str k)) 128))
+                            (throw "mail: :list must be a short keyword"))
+                          (when ls (throw "mail: list already exists"))
+                          (when (>= (count (:lists b)) (get-in b [:config :max-lists]))
+                            (throw "mail: list limit reached"))
+                          (when (or
+                                  (not (string? (:description a)))
+                                  (> (count (:description a)) 1000))
+                            (throw
+                              "mail: description must be a string of at most 1000 characters"))
+                          [(assoc-in
+                             b
+                             [:lists k]
+                             {:description (:description a),
+                              :next 1,
+                              :messages [],
+                              :subscriptions {}})
+                           {:list k, :created true}])
+                        :subscribe
+                        (do
+                          (when (not ls) (throw "mail: unknown list"))
+                          (when (or (not (keyword? who)) (> (count (str who)) 128))
+                            (throw "mail: :agent must be a short handle keyword"))
+                          (when (not (contains? #{:latest :earliest} (get a :from :latest)))
+                            (throw "mail: :from must be :latest or :earliest"))
+                          (if-let [sub (get-in ls [:subscriptions who])]
+                            [b (assoc sub :list k :agent who)]
+                            (do
+                              (when (>=
+                                      (count (:subscriptions ls))
+                                      (get-in b [:config :max-subscribers]))
+                                (throw "mail: subscriber limit reached"))
+                              (let [epoch (inc (:epoch b))
+                                    cursor (if (= :earliest (:from a)) 0 (dec (:next ls)))
+                                    sub {:epoch epoch, :cursor cursor}]
+                                [(-> b
+                                  (assoc :epoch epoch)
+                                  (assoc-in [:lists k :subscriptions who] sub))
+                                 (assoc sub :list k :agent who)]))))
+                        :subscribe-many
+                        (do
+                          (when (or
+                                  (not (vector? (:lists a)))
+                                  (> (count (:lists a)) (get-in b [:config :max-lists])))
+                            (throw "mail: :lists must be a bounded vector"))
+                          (loop [state b todo (:lists a) results []]
+                            (if (empty? todo)
+                              [state {:agent who, :subscriptions results}]
+                              (let [[next-state result] ((eval (get-in state [:code :change]))
+                                                          state
+                                                          :subscribe
+                                                          (assoc a :list (first todo)))]
+                                (recur next-state (rest todo) (conj results result))))))
+                        :unsubscribe
+                        (do
+                          (when (not ls) (throw "mail: unknown list"))
+                          [(update-in b [:lists k :subscriptions] dissoc who)
+                           {:list k, :agent who, :unsubscribed true}])
+                        :post
+                        (do
+                          (when (not ls) (throw "mail: unknown list"))
+                          (when (or
+                                  (not (string? (:summary a)))
+                                  (empty? (:summary a))
+                                  (> (count (:summary a)) 500))
+                            (throw "mail: :summary must contain 1-500 characters"))
+                          (when (and
+                                  (:thread a)
+                                  (or (not (string? (:thread a))) (> (count (:thread a)) 128)))
+                            (throw "mail: :thread must be a short string"))
+                          (when (and
+                                  (:reply-to a)
+                                  (not
+                                    (and
+                                      (integer? (:reply-to a))
+                                      (pos? (:reply-to a))
+                                      (< (:reply-to a) (:next ls)))))
+                            (throw "mail: :reply-to must reference an earlier ID in this list"))
+                          (let [id (:next ls)
+                                msg (assoc
+                                      (select-keys
+                                        a
+                                        [:summary :body :thread :reply-to :provenance :tags])
+                                      :id
+                                      id
+                                      :author
+                                      who)
+                                all (conj (:messages ls) msg)
+                                keep-n (get-in b [:config :retention])]
+                            (when (> (count (pr-str msg)) (get-in b [:config :max-message-chars]))
+                              (throw
+                                "mail: message too large; store evidence elsewhere and post a reference"))
+                            [(-> b
+                              (assoc-in [:lists k :next] (inc id))
+                              (assoc-in
+                                [:lists k :messages]
+                                (vec (drop (max 0 (- (count all) keep-n)) all))))
+                             {:list k, :id id, :targets (vec (keys (:subscriptions ls)))}]))
+                        :ack
+                        (let [token (:token a)
+                              tk (:list token)
+                              agent (:agent token)
+                              sub (get-in b [:lists tk :subscriptions agent])
+                              through (:through token)
+                              high (dec (get-in b [:lists tk :next] 1))]
+                          (when (or (nil? sub) (not= (:epoch sub) (:epoch token)) (not= who agent))
+                            (throw "mail: stale subscription token or wrong agent"))
+                          (when (not (and (integer? through) (<= 0 through high)))
+                            (throw "mail: invalid acknowledgement watermark"))
+                          (let [cursor (max (:cursor sub) through)]
+                            [(assoc-in b [:lists tk :subscriptions agent :cursor] cursor)
+                             {:list tk, :agent agent, :cursor cursor}]))
+                        (throw (str "mail: unknown change " op))))),
+                 :digest
+                 '(fn [b a]
+                    (let [k (:list a)
+                          who (:agent a)
+                          ls (get-in b [:lists k])
+                          sub (get-in ls [:subscriptions who])
+                          limit (get a :limit (get-in b [:config :page-size]))]
+                      (when (not sub) (throw "mail: subscribe before reading a digest"))
+                      (when (not (and (integer? limit) (<= 1 limit 100)))
+                        (throw "mail: :limit must be 1-100"))
+                      (let [cursor (:cursor sub)
+                            high (dec (:next ls))
+                            oldest (if (seq (:messages ls))
+                                     (:id (first (:messages ls)))
+                                     (:next ls))
+                            page (vec
+                                   (take
+                                     limit
+                                     (filter (fn [m] (> (:id m) cursor)) (:messages ls))))
+                            through (if (seq page) (:id (last page)) cursor)]
+                        {:list k,
+                         :agent who,
+                         :cursor cursor,
+                         :high-water high,
+                         :gap
+                         (when (< cursor (dec oldest))
+                           {:from (inc cursor), :through (dec oldest)}),
+                         :messages
+                         (map
+                           (fn [m] (select-keys m [:id :author :summary :thread :reply-to]))
+                           page),
+                         :remaining (- high through),
+                         :token {:list k, :agent who, :epoch (:epoch sub), :through through}}))),
+                 :deliver
+                 '(fn [targets notice]
+                    (map
+                      (fn [target]
+                        (try
+                          (do (agents/send target notice) {:agent target, :sent true})
+                          (catch e {:agent target, :sent false, :error (str e)})))
+                      targets)),
+                 :dispatch
+                 '(fn [ml-operation ml-arguments]
+                    (let [ml-state (globals/get :mailing-list)
+                          ml-args (assoc
+                                    ml-arguments
+                                    :agent
+                                    (get ml-arguments :agent (agents/current-handle)))]
+                      (when (not (map? ml-arguments)) (throw "mail: arguments must be a map"))
+                      (case
+                        ml-operation
+                        :info
+                        {:owner (:owner ml-state),
+                         :config (:config ml-state),
+                         :operations (vec (keys (:code ml-state)))}
+                        :lists
+                        (map
+                          (fn [[k ls]]
+                            {:list k,
+                             :description (:description ls),
+                             :high-water (dec (:next ls)),
+                             :retained (count (:messages ls)),
+                             :subscribers (vec (keys (:subscriptions ls)))})
+                          (:lists ml-state))
+                        :digest
+                        ((eval (get-in ml-state [:code :digest])) ml-state ml-args)
+                        :message
+                        (let [ls (get-in ml-state [:lists (:list ml-args)]) id (:id ml-args)]
+                          (when (not ls) (throw "mail: unknown list"))
+                          (when (not (and (integer? id) (pos? id) (< id (:next ls))))
+                            (throw "mail: unknown message ID"))
+                          (let [m (first (filter (fn [m] (= id (:id m))) (:messages ls)))]
+                            {:list (:list ml-args), :id id, :message m, :expired? (nil? m)}))
+                        :notify
+                        (let [ls (get-in ml-state [:lists (:list ml-args)])
+                              id (get ml-args :id (dec (:next ls)))]
+                          (when (not ls) (throw "mail: unknown list"))
+                          (when (not (and (integer? id) (<= 0 id (dec (:next ls)))))
+                            (throw "mail: invalid notification watermark"))
+                          {:list (:list ml-args),
+                           :id id,
+                           :deliveries
+                           ((eval (get-in ml-state [:code :deliver]))
+                             (vec (keys (:subscriptions ls)))
+                             {:kind :mailing-list, :list (:list ml-args), :through id})})
+                        :post!
+                        (let [posted (patterns/mail :post ml-args)]
+                          (assoc
+                            posted
+                            :deliveries
+                            ((eval (get-in (globals/get :mailing-list) [:code :deliver]))
+                              (:targets posted)
+                              {:kind :mailing-list, :list (:list posted), :through (:id posted)})))
+                        :spawn
+                        (let [task (:task ml-args) handle (:handle ml-args) lists (:lists ml-args)]
+                          (when (not
+                                  (and
+                                    (string? task)
+                                    (keyword? handle)
+                                    (vector? lists)
+                                    (<= (count lists) (get-in ml-state [:config :max-lists]))
+                                    (every? (fn [k] (contains? (:lists ml-state) k)) lists)))
+                            (throw
+                              "mail: spawn needs :task string, :handle keyword, and existing :lists vector"))
+                          (let [teaching (str
+                                           "You are a mailing-list board worker. Do NOT initialize the board. "
+                                           "Your subscriptions are already installed before this generation. "
+                                           "Use quoted trailing effects, e.g. '(!call-now page (patterns/mail :digest {:list :research})). "
+                                           "Use the actual list names: "
+                                           (pr-str lists)
+                                           ". "
+                                           "Digest is read-only; after processing its messages and visible :gap, "
+                                           "acknowledge exactly its :token with patterns/mail :ack {:token (:token page)}. "
+                                           "Post compact summaries with :post; :post! explicitly awakens every subscriber. "
+                                           "Retrieve full evidence with :message {:list k :id n}. "
+                                           "Read (!describe skills :mailing-list) for progressive guidance when available. "
+                                           "Communicate via normal tracked agents requests; do not poll or invent blocking waits. "
+                                           "Task: "
+                                           task)
+                                bootstrap (list
+                                            'quine
+                                            'completion
+                                            (list
+                                              'eval
+                                              (list
+                                                'do
+                                                (list
+                                                  'quote
+                                                  (list
+                                                    'let
+                                                    ['ml-onboarding-failure
+                                                     (list
+                                                       'try
+                                                       (list
+                                                         'do
+                                                         (list
+                                                           'patterns/mail
+                                                           :subscribe-many
+                                                           {:agent handle,
+                                                            :lists lists,
+                                                            :from (get ml-args :from :earliest)})
+                                                         nil)
+                                                       (list
+                                                         'catch
+                                                         'ml-onboarding-error
+                                                         {:spell/child-failure true,
+                                                          :handle handle,
+                                                          :phase :onboarding,
+                                                          :error (list 'str 'ml-onboarding-error)}))]
+                                                    (list
+                                                      'if
+                                                      'ml-onboarding-failure
+                                                      'ml-onboarding-failure
+                                                      (list
+                                                        '!llm-self
+                                                        (wrap-cat teaching)
+                                                        {:receive? true})))))))]
+                            {:handle handle,
+                             :onboarding :pending,
+                             :edge (agents/spawn-ask (pr-str bootstrap) handle)}))
+                        (let [updated (globals/update
+                                        :mailing-list
+                                        (fn [ml-current]
+                                          (let [[next-board result] ((eval
+                                                                       (get-in
+                                                                         ml-current
+                                                                         [:code :change]))
+                                                                      ml-current
+                                                                      ml-operation
+                                                                      ml-args)]
+                                            (assoc next-board :last-result result))))]
+                          (:last-result updated)))))}
+        ml-initial {:owner ml-owner,
+                    :version 1,
+                    :config ml-config,
+                    :epoch 0,
+                    :code ml-code,
+                    :lists {},
+                    :last-result nil}]
+    (map
+      (fn [[k upper]]
+        (when (not (and (integer? (get ml-config k)) (<= 1 (get ml-config k) upper)))
+          (throw (str "mailing-list: invalid bound " k))))
+      [[:retention 2000]
+       [:page-size 100]
+       [:max-lists 128]
+       [:max-subscribers 64]
+       [:max-message-chars 65536]])
+    (when (seq
+            (remove
+              #{:max-lists :page-size :retention :max-message-chars :max-subscribers}
+              (keys options)))
+      (throw "mailing-list: unknown option"))
+    (globals/update
+      :mailing-list
+      (fn [ml-existing]
+        (when (some? ml-existing) (throw "mailing-list: already initialized"))
+        ml-initial))
+    {:owner ml-owner, :global :mailing-list, :ready true}))
+
+(defn mail [operation arguments]
+  (let [board (globals/get :mailing-list)]
+    (when (not board) (throw "mail: board not initialized; designate exactly one loader"))
+    ((eval (get-in board [:code :dispatch])) operation arguments)))

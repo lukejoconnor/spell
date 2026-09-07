@@ -47,6 +47,7 @@
                                    "-n" "spell.runtime-test"
                                    "-n" "spell.composable-waits-test"
                                    "-n" "spell.globals-test"
+                                   "-n" "spell.mailing-list-test"
                                    "-n" "spell.user-test"]}
            ;; Optional official-SDK oracle. Requires uv; Python is not a Spell runtime dependency.
            :test-mcp-interop {:extra-paths ["test-interop"]

@@ -100,3 +100,12 @@ docs/.vitepress/cache/
 skills-lock.json
 .codex/skills/run-benchmark/
 .claude/skills/run-benchmark/
+
+# Mailing-list documentation and reproducible demonstration.
+!docs/mailing-list.md
+!dev/
+dev/*
+!dev/mailing-list/
+dev/mailing-list/*
+!dev/mailing-list/demo.clj
+!dev/mailing-list/dogfood-evidence.edn

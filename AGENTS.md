@@ -28,6 +28,8 @@ This repo includes Spell-specific skills under `.agents/skills/`. Use them as th
 - MCP server profile: a reusable `.mcp.edn` connection and environment-backed authentication definition.
 - Server alias: the agent-profile name that identifies an MCP server and becomes its generated Spell namespace.
 
+- Mailing-list board: per-run shared executable pattern code and bounded message state in globals; quiet posts are distinct from coordinator inbox notifications. See `docs/mailing-list.md` and the bundled `mailing-list` skill.
+
 ## Top-Level Layout
 
 | Path | Purpose |
