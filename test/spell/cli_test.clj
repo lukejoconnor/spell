@@ -148,17 +148,15 @@
         (is (= expected (:result result)))))))
 
 (deftest make-provider-resolves-shared-model-aliases-test
-  (testing "the CLI default uses GPT-6 Astra through OpenAI tool-call transport"
+  (testing "the CLI default uses GPT-6 Astra through Codex tool-call transport"
     (let [captured (atom nil)]
-      (with-redefs [provider/openai-provider
+      (with-redefs [provider/codex-tc-provider
                     (fn [opts]
                       (reset! captured opts)
-                      {:provider :openai-tc :opts opts})]
-        (is (= :openai-tc
+                      {:provider :codex-tc :opts opts})]
+        (is (= :codex-tc
                (:provider ((var cli/make-provider) {}))))
-        (is (= "gpt-6-astra" (:model @captured)))
-        (is (:use-responses-api @captured))
-        (is (:force-tool-call @captured)))))
+        (is (= "gpt-6-astra" (:model @captured))))))
 
   (testing "bare gpt alias routes to OpenAI tool-call transport"
     (let [captured (atom nil)]
@@ -216,7 +214,9 @@
 (deftest run-input-default-reasoning-effort-test
   (let [seen (atom nil)
         run! (fn [opts]
-               (with-redefs [provider/openai-provider
+               (with-redefs [provider/codex-tc-provider
+                             (fn [_] (provider/test-provider {:response "unused"}))
+                             provider/openai-provider
                              (fn [_] (provider/test-provider {:response "unused"}))
                              api/run-internal
                              (fn [run-opts]
@@ -244,7 +244,7 @@
 (deftest help-text-uses-public-provider-specs-and-curated-examples
   (let [{:keys [exit-message ok?]} (cli/validate-args ["--help"])]
     (is ok?)
-    (is (str/includes? exit-message "default: openai-tc:gpt-6-astra"))
+    (is (str/includes? exit-message "default: codex-tc:gpt-6-astra"))
     (is (str/includes? exit-message "default: medium for the default model"))
     (is (str/includes? exit-message "token budget for extended thinking; adaptive for supported models"))
     (is (str/includes? exit-message "Reasoning effort for OpenAI and adaptive Anthropic models"))
