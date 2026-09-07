@@ -82,7 +82,7 @@ Explore a large file ephemerally, then persist only the relevant subset:
   ;; end of turn 1 completion
   (prune 2)
   ;; start of turn 2 suffix
-  (persist handler-block (subvec file-lines 200 240))
+  (persist handler-block (subvec file-lines 20 40))
   '(!peek test-lines (io/read-lines "tests/test_server.py" 52 84))
   ;; end of turn 2 completion
   (prune 2)
