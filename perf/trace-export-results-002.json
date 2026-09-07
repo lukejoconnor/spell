@@ -1,0 +1,251 @@
+{
+  "status": "complete",
+  "experiment": "trace-export-matched-002",
+  "control-revision": "4abaa1d696413503ee4dd9a296e1e3df953ceb5f",
+  "trace-sha256": {
+    "control": "799f6463015742819c6848f7fb33dc685e7438c497a00503123ced8b3c2df760",
+    "candidate": "30c546fa2afaccf2aed90bf8779cebc45fe2ab58b3752e688b8bfb6ba797dc49"
+  },
+  "probe-sha256": "e4087d41c08e84752aa414ae18df97e020b550f55f1d98d8455b438dfb95ed75",
+  "probe-version": 2,
+  "options": {
+    "nodes": 144,
+    "forms": 48,
+    "warmup": 1,
+    "runs": 1
+  },
+  "java-version": "11.0.23",
+  "clojure-version": "1.12.4",
+  "heap-bytes": 536870912,
+  "command": "python3 -B perf/trace_export_compare.py --control CONTROL_CHECKOUT --name NEW_RESULT_NAME",
+  "jvm-command": "clojure -J-Xms512m -J-Xmx512m -Sdeps {:paths [SELECTED_SRC SHARED_PERF]} -M -m trace-export-probe {:nodes 144 :forms 48 :warmup 1 :runs 1}",
+  "process-timeout-seconds": 120,
+  "order": [
+    [
+      "control",
+      1
+    ],
+    [
+      "candidate",
+      1
+    ],
+    [
+      "candidate",
+      2
+    ],
+    [
+      "control",
+      2
+    ],
+    [
+      "control",
+      3
+    ],
+    [
+      "candidate",
+      3
+    ]
+  ],
+  "runs": {
+    "control": [
+      {
+        "run": 1,
+        "exit": 0,
+        "readback-ok": true,
+        "export-wall-ms": 9308.294958,
+        "export-thread-cpu-ms": 9225.767,
+        "export-thread-allocated-bytes": 21464385584,
+        "wall-ms": 9493.078625,
+        "thread-cpu-ms": 9408.808,
+        "thread-allocated-bytes": 21600340440,
+        "edn-bytes": 4108274,
+        "total-bytes": 4842629
+      },
+      {
+        "run": 2,
+        "exit": 0,
+        "readback-ok": true,
+        "export-wall-ms": 9497.912334,
+        "export-thread-cpu-ms": 9433.595,
+        "export-thread-allocated-bytes": 21202829320,
+        "wall-ms": 9747.514916,
+        "thread-cpu-ms": 9674.114,
+        "thread-allocated-bytes": 21338736184,
+        "edn-bytes": 4108274,
+        "total-bytes": 4842629
+      },
+      {
+        "run": 3,
+        "exit": 0,
+        "readback-ok": true,
+        "export-wall-ms": 9463.011709,
+        "export-thread-cpu-ms": 9404.599,
+        "export-thread-allocated-bytes": 21202831016,
+        "wall-ms": 9648.247458,
+        "thread-cpu-ms": 9574.284,
+        "thread-allocated-bytes": 21340883560,
+        "edn-bytes": 4108274,
+        "total-bytes": 4842629
+      }
+    ],
+    "candidate": [
+      {
+        "run": 1,
+        "exit": 0,
+        "readback-ok": true,
+        "export-wall-ms": 122.116,
+        "export-thread-cpu-ms": 120.395,
+        "export-thread-allocated-bytes": 130144592,
+        "wall-ms": 270.523833,
+        "thread-cpu-ms": 260.935,
+        "thread-allocated-bytes": 276487704,
+        "edn-bytes": 3684224,
+        "total-bytes": 4418579
+      },
+      {
+        "run": 2,
+        "exit": 0,
+        "readback-ok": true,
+        "export-wall-ms": 179.603041,
+        "export-thread-cpu-ms": 170.659,
+        "export-thread-allocated-bytes": 130146640,
+        "wall-ms": 305.294084,
+        "thread-cpu-ms": 294.731,
+        "thread-allocated-bytes": 276488040,
+        "edn-bytes": 3684224,
+        "total-bytes": 4418579
+      },
+      {
+        "run": 3,
+        "exit": 0,
+        "readback-ok": true,
+        "export-wall-ms": 168.512458,
+        "export-thread-cpu-ms": 164.57,
+        "export-thread-allocated-bytes": 129692176,
+        "wall-ms": 310.753417,
+        "thread-cpu-ms": 304.619,
+        "thread-allocated-bytes": 276032208,
+        "edn-bytes": 3684224,
+        "total-bytes": 4418579
+      }
+    ]
+  },
+  "summary": {
+    "export-wall-ms": {
+      "control-median": 9463.011709,
+      "candidate-median": 168.512458,
+      "control-range": [
+        9308.294958,
+        9497.912334
+      ],
+      "candidate-range": [
+        122.116,
+        179.603041
+      ],
+      "control/candidate": 56.15615498884955
+    },
+    "export-thread-cpu-ms": {
+      "control-median": 9404.599,
+      "candidate-median": 164.57,
+      "control-range": [
+        9225.767,
+        9433.595
+      ],
+      "candidate-range": [
+        120.395,
+        170.659
+      ],
+      "control/candidate": 57.146496931396975
+    },
+    "export-thread-allocated-bytes": {
+      "control-median": 21202831016,
+      "candidate-median": 130144592,
+      "control-range": [
+        21202829320,
+        21464385584
+      ],
+      "candidate-range": [
+        129692176,
+        130146640
+      ],
+      "control/candidate": 162.91749576501803
+    },
+    "wall-ms": {
+      "control-median": 9648.247458,
+      "candidate-median": 305.294084,
+      "control-range": [
+        9493.078625,
+        9747.514916
+      ],
+      "candidate-range": [
+        270.523833,
+        310.753417
+      ],
+      "control/candidate": 31.603126177839727
+    },
+    "thread-cpu-ms": {
+      "control-median": 9574.284,
+      "candidate-median": 294.731,
+      "control-range": [
+        9408.808,
+        9674.114
+      ],
+      "candidate-range": [
+        260.935,
+        304.619
+      ],
+      "control/candidate": 32.48482175271688
+    },
+    "thread-allocated-bytes": {
+      "control-median": 21340883560,
+      "candidate-median": 276487704,
+      "control-range": [
+        21338736184,
+        21600340440
+      ],
+      "candidate-range": [
+        276032208,
+        276488040
+      ],
+      "control/candidate": 77.1856514819914
+    },
+    "edn-bytes": {
+      "control-median": 4108274,
+      "candidate-median": 3684224,
+      "control-range": [
+        4108274,
+        4108274
+      ],
+      "candidate-range": [
+        3684224,
+        3684224
+      ],
+      "control/candidate": 1.1150988647812945
+    },
+    "total-bytes": {
+      "control-median": 4842629,
+      "candidate-median": 4418579,
+      "control-range": [
+        4842629,
+        4842629
+      ],
+      "candidate-range": [
+        4418579,
+        4418579
+      ],
+      "control/candidate": 1.0959697676560722
+    }
+  },
+  "scope": {
+    "export": "write-trace! only; fixture prebuilt outside meters",
+    "inclusive": "temp directory creation, export, safe Clojure readback, program/tree checks, output sizing, cleanup; fixture construction and JVM startup excluded",
+    "allocation": "calling-thread allocated bytes, not RSS, retained heap or whole-process allocation",
+    "correctness": "Safe Clojure reader with read-eval false, single form and EOF; complete cleaned map equality; every program file and tree checked on every warmup/measured run. Strict EDN regression is tested separately."
+  },
+  "limitations": [
+    "Three fresh processes per side with one warmup; candidate wall range 122.116-179.603ms, so ratios are descriptive not precise forecasts.",
+    "Synthetic repeated-source fixture only; no private trace read and no extrapolation to full agent runtime or memory.",
+    "Incomplete trace-export-matched-001 excluded: incorrect outer shell timeout option killed the launcher; an orphan was inspected until no process remained.",
+    "Printer whitespace is not preserved; raw program output and tree output are unchanged. Unsupported unreadable host values are not made EDN-readable."
+  ]
+}

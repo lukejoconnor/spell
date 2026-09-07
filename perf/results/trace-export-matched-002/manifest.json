@@ -1,0 +1,77 @@
+{
+  "control_head": "4abaa1d696413503ee4dd9a296e1e3df953ceb5f",
+  "trace_sha256": {
+    "control": "799f6463015742819c6848f7fb33dc685e7438c497a00503123ced8b3c2df760",
+    "candidate": "30c546fa2afaccf2aed90bf8779cebc45fe2ab58b3752e688b8bfb6ba797dc49"
+  },
+  "probe_sha256": "e4087d41c08e84752aa414ae18df97e020b550f55f1d98d8455b438dfb95ed75",
+  "options_edn": "{:nodes 144 :forms 48 :warmup 1 :runs 1}",
+  "heap_bytes": 536870912,
+  "warmup": 1,
+  "runs_per_process": 1,
+  "order": [
+    [
+      "control",
+      1
+    ],
+    [
+      "candidate",
+      1
+    ],
+    [
+      "candidate",
+      2
+    ],
+    [
+      "control",
+      2
+    ],
+    [
+      "control",
+      3
+    ],
+    [
+      "candidate",
+      3
+    ]
+  ],
+  "receipts": [
+    {
+      "name": "control-1",
+      "status": "ok",
+      "exit": 0,
+      "timed_out": false
+    },
+    {
+      "name": "candidate-1",
+      "status": "ok",
+      "exit": 0,
+      "timed_out": false
+    },
+    {
+      "name": "candidate-2",
+      "status": "ok",
+      "exit": 0,
+      "timed_out": false
+    },
+    {
+      "name": "control-2",
+      "status": "ok",
+      "exit": 0,
+      "timed_out": false
+    },
+    {
+      "name": "control-3",
+      "status": "ok",
+      "exit": 0,
+      "timed_out": false
+    },
+    {
+      "name": "candidate-3",
+      "status": "ok",
+      "exit": 0,
+      "timed_out": false
+    }
+  ],
+  "status": "complete"
+}

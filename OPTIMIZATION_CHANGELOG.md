@@ -1,25 +1,29 @@
 # Runtime Optimization Changelog
 
-Run: `2026-09-07-runtime-optimization-001`. Base: `4abaa1d696413503ee4dd9a296e1e3df953ceb5f`; branch: `codex/dogfood-reliability`. Lead approval is subject to final integrated validation and fresh complementary review. Historical baseline remains immutable.
+Run: `2026-09-07-runtime-optimization-001`. Base: `4abaa1d696413503ee4dd9a296e1e3df953ceb5f`; branch: `codex/dogfood-reliability`. Historical baseline is immutable. Lead approvals below remain subject to final integrated validation and fresh complementary review.
 
-## Selected-line retention — approved
+## Selected-line retention — approved and committed `3e2cc1b`
 
-- Replace the returned `SubVector` with an independent vector; preserve selected strings, metadata, range clamping, full-file arity and error maps. No eviction or changes to retrievable context.
-- Three fresh control/candidate process pairs, identical generated 200,000-line fixture and 256 MiB heap: held-minus-released heap **29,884,320 → 15,136 bytes** in each pair. Structural backing: whole 200,000-line vector → independent 100-line selection.
-- Caller allocation **121,682,264 → 121,683,240 bytes** (+976 bytes). This is a retained-data reduction, NOT a transient-allocation or speed claim. The small candidate heap delta is near GC measurement noise.
-- Evidence: `perf/selected_lines_probe.clj`, `perf/results/optimization-selected-lines-q_aloiij/`. Forced GC is outside read timing; generated data only; probe root released and temporary file deleted.
-- Validation: focused I/O suite **95 tests / 265 assertions**, no failures/errors; six probe processes exit 0 with contents/metadata assertions. Fable actual review returned APPROVE on tracked edge 4; lead inspected source, tests, probe and command manifest and approves this bounded change.
-- Complexity/rollback: O(selected-lines) copy; reverting restores parent-vector retention while avoiding the small copy allocation. No compatibility path.
+- Copy only the returned selection into an independent vector; preserve strings, line metadata, clamping, full-file arity and error maps. No eviction of retrievable context.
+- Three fresh control/candidate pairs, identical generated 200,000-line fixture and 256 MiB heap: held-minus-released heap **29,884,320 → 15,136 bytes** in every pair. Backing vector: 200,000 lines → 100 selected lines.
+- Caller allocation **121,682,264 → 121,683,240 bytes** (+976 bytes). Retained-data reduction only, not transient-allocation or speed improvement; candidate heap delta itself is near GC noise.
+- Evidence: `perf/selected_lines_probe.clj`, `perf/results/optimization-selected-lines-q_aloiij/`. Focused I/O suite: **95 tests / 265 assertions**, no failures/errors; six probe exits 0 with content/metadata assertions. Fable actual review edge 4 and lead approve.
+- Cost/rollback: O(selected-lines) copy; reverting restores whole-file backing retention while avoiding a small copy allocation.
 
-## Streamed trace export — measured, final consumer validation pending
+## Streamed trace export — approved
 
-- Whole-map streamed readable printing replaces pretty-printing through an intermediate full string. Source/program files/tree and complete cleaned trace data are retained.
-- Three fresh process pairs: median export **9,463.012 → 168.512 ms**; caller allocation approximately **21.203 GB → 130.145 MB**. Candidate wall range 122.116–179.603 ms is noisy; no private-trace extrapolation.
-- Evidence: `perf/trace-export-results-002.json`, probe and comparison script. Interrupted comparison 001 is diagnostic only, excluded from the successful comparison.
-- Fable actual patch review returned APPROVE on tracked edge 5; consumer integration and final tests still pending.
+- Replace whole-trace pretty-printing through a full intermediate string with readable whole-map streaming. Preserve all cleaned records, arbitrary keys, warning/source data, program-file bytes and tree output; no manual schema or compatibility path.
+- Three fresh process pairs at 512 MiB, generated 144-node/48-form fixture: median export **9,463.012 → 168.512 ms** (56.16×); median caller allocation approximately **21.203 GB → 130.145 MB** (~163× lower). Candidate wall range **122.116–179.603 ms** is noisy. Export bytes **4,108,274 → 3,684,224**. These are bounded synthetic export measurements, not a prediction for private traces or retained-heap measurements.
+- Fixture generation is outside measurement. Export-only timing covers `write-trace!`; a separate inclusive meter covers temporary-directory setup, export, full readback/assertions and cleanup.
+- Evidence: `perf/trace-export-results-002.json`, `perf/trace-export-probe.md`, generated probe, comparison supervisor and raw receipts. Interrupted comparison 001 is preserved and excluded; clean comparison 002 has six successful process receipts.
+- Fable actual patch review edge 5 approved; subsequent explicit review and lead accepted the non-atomic diagnostic-output contract: printer failure may truncate/leave partial `trace.edn`. Exceptions propagate, writer closes, and truncated output fails the real consumer. No staging abstraction added.
+- Final focused output: **42 tests / 214 assertions**, no failures/errors, including actual trace-tool consumer, print settings, full data/bytes/tree and failure cleanup. Process exit was verified absent, but exit-code capture was lost to orchestration error; final integrated suites must provide a clean exit receipt. Source and final test output inspected by lead.
+- Cost/rollback: compact rather than pretty whitespace; partial output on printing failure. Reverting restores expensive pretty formatting and whole-string buffering. Arbitrary custom host values are not promised universal strict-EDN support.
 
-## Ongoing experiments and validation
+## Ongoing experiments and final validation
 
-- Bounded parse-sanitizer attribution is authorized; no parser source change approved yet.
-- Python benchmark-runner validation executed: 6 tests, all passed.
-- Full 80-case suite, complete Clojure suites, final fresh Fable verdict, commit index and final optimization report remain pending. No claim of full memory profiling or long-run reliability.
+- Three fresh attribution runs locate roughly 40% of unchanged `read-first` caller allocation in unconditional sanitizer copying. Bounded lazy-copy candidate and differential tests authorized; parser behavior changes are excluded from this optimization.
+- Two verbose-only random sleeps are approved for a separate offline-tested wait-reduction experiment, not a CPU-speedup claim. Provider retry/backoff remains untouched.
+- Discovered multiline-string comment normalization bug is recorded separately, not silently repaired in performance comparisons.
+- Python benchmark-runner validation executed: **6 tests**, all passed.
+- Full 80-case suite, complete Clojure suites, fresh final Fable verdict and final report/commit index remain pending. No full-memory-profiling or long-run-reliability claim.
