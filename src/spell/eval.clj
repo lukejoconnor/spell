@@ -357,9 +357,20 @@
 
     :else (throw (ex-info (str "Invalid destructuring pattern: " (pr-str param)) {:param param}))))
 
-(defn bind-params
-  "Bind fn params to args, supporting destructuring. Returns a flat seq of [sym val] pairs."
+(defn- fixed-arity-error
+  "Return an error message when fixed fn params and evaluated args differ in count."
   [params args]
+  (let [expected (count params)
+        actual (count args)]
+    (when-not (= expected actual)
+      (str "Wrong number of args: expected " expected ", got " actual))))
+
+(defn bind-params
+  "Bind fixed fn params to args, supporting destructuring.
+   Validate arity before destructuring; returns a flat seq of [sym val] pairs."
+  [params args]
+  (when-let [message (fixed-arity-error params args)]
+    (throw (ex-info message {:expected (count params) :actual (count args)})))
   (mapcat destructure-bind params args))
 
 (defn param-symbols
@@ -1339,15 +1350,17 @@
             (if (spell-fn? f)
               ;; Spell fn: loop to support fn-level recur
               (loop [current-args args]
-                (let [local-env (into e (bind-params (:params f) current-args))
-                      body-result (eval-seq (:body f) local-env)]
-                  (if (err? body-result)
-                    (update body-result :trace (fnil conj []) (first expr))
-                    (if (and (map? (:ok body-result)) (:spell/recur (:ok body-result)))
-                      ;; recur: rebind params, re-enter function body
-                      (recur (:vals (:ok body-result)))
-                      ;; normal return
-                      (ok (:ok body-result) e)))))
+                (if-let [message (fixed-arity-error (:params f) current-args)]
+                  (err message e expr)
+                  (let [local-env (into e (bind-params (:params f) current-args))
+                        body-result (eval-seq (:body f) local-env)]
+                    (if (err? body-result)
+                      (update body-result :trace (fnil conj []) (first expr))
+                      (if (and (map? (:ok body-result)) (:spell/recur (:ok body-result)))
+                        ;; recur: rebind params, re-enter function body
+                        (recur (:vals (:ok body-result)))
+                        ;; normal return
+                        (ok (:ok body-result) e))))))
               ;; Call Clojure function - wrap in try/catch for error handling
               (try
                 (ok (binding [*spell-env* e] (apply f args)) e)

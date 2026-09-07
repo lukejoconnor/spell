@@ -315,7 +315,6 @@
                                                   (or (nil? model) astra?))
                                          default-reasoning-effort))
         prov (make-provider opts)
-        prefill? (and (provider/supports-prefill prov) (not thinking))
         resolved-agent-profile (or agent-profile "config/agent-profiles/cli.agent.edn")
         log-writer (when log (io/writer (io/file log) :append true))]
     (try
@@ -327,7 +326,6 @@
                                            (zero? budget) 0
                                            :else budget)
                                  :depth max-depth
-                                 :prefill? prefill?
                                  :thinking thinking
                                  :reasoning-effort effective-reasoning-effort
                                  :verbosity verbosity

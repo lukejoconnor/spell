@@ -39,6 +39,18 @@
   (supports-prefill [this]
     "Returns true if this provider supports assistant prefill."))
 
+(defprotocol PrefillCapabilities
+  "Optional provider-owned prefill capability for effective request options."
+  (supports-prefill-with-options [this opts]
+    "Return whether assistant prefill is supported with these request options."))
+
+(defn prefill-supported?
+  "Query effective request capability, falling back to legacy provider capability."
+  [provider opts]
+  (if (satisfies? PrefillCapabilities provider)
+    (supports-prefill-with-options provider opts)
+    (supports-prefill provider)))
+
 ;; ---------------------------------------------------------------------------
 ;; Token usage tracking
 ;; ---------------------------------------------------------------------------
@@ -646,10 +658,14 @@
         (throw (ex-info "Anthropic API request failed"
                         {:status status :body (:body response)})))))
   (plain-text-provider [this] this)
-  (supports-prefill [_]
-    ;; Current Opus and Claude 5 models do not support assistant prefill.
-    (not (or (str/includes? (str model) "opus-4-6")
-             (anthropic-adaptive-thinking-model? model)))))
+  (supports-prefill [this]
+    (supports-prefill-with-options this {}))
+  PrefillCapabilities
+  (supports-prefill-with-options [_ opts]
+    ;; Capability and call-llm must select the same effective model.
+    (let [effective-model (or (:model opts) model)]
+      (not (or (str/includes? (str effective-model) "opus-4-6")
+               (anthropic-adaptive-thinking-model? effective-model))))))
 
 (defn anthropic-pf-provider
   "Create an Anthropic provider.

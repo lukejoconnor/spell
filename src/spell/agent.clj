@@ -356,7 +356,7 @@
                            m))
                        parent
                        [:name :doc :system :model :budget :recover :format :max-retries :retries
-                        :thinking :reasoning-effort :verbosity :suffix-grammar? :grammar-max-chars
+                        :thinking :prefill? :reasoning-effort :verbosity :suffix-grammar? :grammar-max-chars
                         :api :workers :provider])
         ;; Merge namespaces
         merged (if (or (:namespaces parent) (:namespaces child))

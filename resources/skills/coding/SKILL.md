@@ -12,7 +12,29 @@ RESEARCH before committing to a plan or implementation:
 - Treat the real environment as the source of truth. Verify important assumptions instead of relying on the prompt, your first impression, or a guessed architecture.
 - Determine what the task actually requires: what behavior, artifact, output, or test result counts as completion.
 - When errors, tracebacks, or failing commands point to exact files or line numbers, inspect those exact places first, then expand outward as needed.
-- Use !peek-now for exploratory reads and disposable probes. Persist only the specific snippets, facts, or outputs you will need on later turns.
+- Use !peek for exploratory reads and disposable probes. Persist only the specific snippets, facts, or outputs you will need on later turns.
+
+Bound research by the decision it enables (see [context-efficiency](../context-efficiency/SKILL.md#bounded-read-packets-and-a-durable-decision-record)):
+- Start with one unresolved question, exact source/test pointers, and one small read packet. Bound aggregate rendered output up front, including multiple bindings (roughly 3,000 characters is a starting point, not a guaranteed inline threshold). Use exact `io/read-lines` ranges or narrow `io/grep` paths with documented `:include`, `:max-count`, and small `:context` options. `:max-count` limits matches per file, not total output; many files or large context can still overflow the packet.
+- Before disposable results are pruned, write an explicit compact action checkpoint as a literal `(def checkpoint {...})` after the packet's prune marker, or use `(persist checkpoint expression)` to materialize computed evidence. Include observed path/range or symbol, finding, decision, remaining uncertainty, named next artifact/edit, and verification command. A `think` alone or a `def` that depends on soon-pruned bindings is not a portable record. Retain the checkpoint explicitly through later pruning, compaction, or a fresh self-call; do not replay tool effects to reconstruct it. Keep actual execution receipts distinct from proposed actions.
+- Once the next action is known, produce its named artifact (patch, prototype, test, or report) or report a specific blocker before overlapping rereads. A blocker names the missing contract/evidence and the smallest request or experiment that would resolve it; it is not another broad reading plan.
+- Before another research packet, identify genuinely new evidence needed: a changed source, failing check, unanswered question, or unavailable result. State what the bounded packet adds to the checkpoint. Do not reread merely because raw output was pruned.
+- An opaque stored-result marker is not inspected evidence. Do not claim its contents were reviewed or infer success from the marker. Narrow the retained binding only if the underlying data is accessible; otherwise request a smaller exact range or report the unavailable evidence. For partially visible output, record only what was actually inspected. Do not repeat the same broad describe/read batch.
+- Carry checkpoint data and outstanding receipt obligations explicitly into new self-call source, using fresh locals rather than relying on stale bindings. These are optional, model-controlled task decisions expressed in ordinary Spell programs, not hidden harness progress counters, retry/deduplication rules, read suppression, or changes to coordinator semantics.
+
+For example, after inspecting a packet (illustrative facts, not execution receipts):
+```clojure
+(def checkpoint {:source "src/parser.clj:21-32"
+                 :finding "Empty input reaches the indexing branch."
+                 :decision "Add an empty-input guard."
+                 :open "Expected empty result is established by the test."
+                 :next-artifact "src/parser.clj guard and one regression test"
+                 :check "Run the targeted parser test."
+                 :receipts []})
+'(!extend)
+```
+
+Shell examples below assume `io/sh` is exposed by the current agent. Check available namespace documentation first; if unavailable, use an exposed equivalent or report the verification blocker rather than assuming shell access.
 
 Examples:
 

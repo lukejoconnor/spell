@@ -430,8 +430,10 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
                            a prunable inert recovery context)
                          - false: disable recovery (errors propagate immediately)
                          - fn: custom namespace recovery function (result-map) -> fixed-expr
-   - :prefill?         - whether the provider supports assistant prefill (default: true).
-                         When false, prefix is sent as user message only and prefix echo is stripped.
+   - :prefill?         - optional assistant prefill policy. When omitted/nil, use the
+                         provider's effective-model capability unless thinking is enabled.
+                         Explicit true rejects unsupported providers/models or thinking.
+                         Explicit false sends prefix as user content only; prefix echo is stripped.
    - :thinking         - Anthropic adaptive thinking. When truthy, passed to provider opts.
                          Number = budget_tokens, true = default (10000).
    - :reasoning-effort - OpenAI reasoning effort (\"low\", \"medium\", \"high\").
@@ -446,8 +448,19 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
    prefix completion remains internal via !llm-self only."
   [{:keys [namespaces provider model system llm-var recover format prefill? thinking reasoning-effort verbosity
            suffix-grammar? grammar-max-chars]
-    :or {namespaces {} model nil recover true prefill? true suffix-grammar? false grammar-max-chars 2000}}]
-  (let [compiled-core-namespaces (assoc core-namespaces 'skills (skills/skills-namespace))
+    :or {namespaces {} model nil recover true suffix-grammar? false grammar-max-chars 2000}}]
+  (let [native-prefill? (provider/prefill-supported? provider {:model model})
+        compatible-prefill? (and native-prefill? (not thinking))
+        _ (when (and (true? prefill?) (not compatible-prefill?))
+            (throw (ex-info "Explicit :prefill? true is unsupported by this provider or thinking mode; omit :prefill? or set false"
+                            {:prefill? true
+                             :provider (some-> provider class .getSimpleName)
+                             :model (or model (:model provider))
+                             :supports-prefill native-prefill?
+                             :thinking thinking
+                             :remedy "omit :prefill? or set false"})))
+        prefill? (if (some? prefill?) prefill? compatible-prefill?)
+        compiled-core-namespaces (assoc core-namespaces 'skills (skills/skills-namespace))
         core-ns-names (set (keys compiled-core-namespaces))
         ns-builtins (into {} (map (fn [[sym ns-map]] [sym ns-map]) namespaces))
         effect-ns-builtins (into {} (remove #(core-ns-names (key %)) ns-builtins))
