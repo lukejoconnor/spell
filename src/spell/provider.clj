@@ -36,20 +36,9 @@
   (plain-text-provider [this]
     "Return the provider instance that should back leaf-llm.
      Must be a genuine plain-text/no-tools transport.")
-  (supports-prefill [this]
-    "Returns true if this provider supports assistant prefill."))
-
-(defprotocol PrefillCapabilities
-  "Optional provider-owned prefill capability for effective request options."
-  (supports-prefill-with-options [this opts]
-    "Return whether assistant prefill is supported with these request options."))
-
-(defn prefill-supported?
-  "Query effective request capability, falling back to legacy provider capability."
-  [provider opts]
-  (if (satisfies? PrefillCapabilities provider)
-    (supports-prefill-with-options provider opts)
-    (supports-prefill provider)))
+  (supports-prefill [this opts]
+    "Returns whether assistant prefill is supported for these request options.
+     :model overrides the provider's default model when supplied."))
 
 ;; ---------------------------------------------------------------------------
 ;; Token usage tracking
@@ -658,10 +647,7 @@
         (throw (ex-info "Anthropic API request failed"
                         {:status status :body (:body response)})))))
   (plain-text-provider [this] this)
-  (supports-prefill [this]
-    (supports-prefill-with-options this {}))
-  PrefillCapabilities
-  (supports-prefill-with-options [_ opts]
+  (supports-prefill [_ opts]
     ;; Capability and call-llm must select the same effective model.
     (let [effective-model (or (:model opts) model)]
       (not (or (str/includes? (str effective-model) "opus-4-6")
@@ -881,7 +867,7 @@
   (plain-text-provider [_]
     (->AnthropicPfProvider api-key model max-tokens http-client request-timeout-sec
                            sse-idle-timeout-sec sse-completion-timeout-sec costs))
-  (supports-prefill [_] false))
+  (supports-prefill [_ _] false))
 
 (defn anthropic-tc-provider
   "Create an Anthropic provider with mandatory spell_suffix tool output.
@@ -955,7 +941,7 @@
         (throw (ex-info "Ollama API request failed"
                         {:status status :body (.body response)})))))
   (plain-text-provider [this] this)
-  (supports-prefill [_] true))
+  (supports-prefill [_ _] true))
 
 (defn ollama-provider
   "Create an Ollama provider for local models.
@@ -1160,7 +1146,7 @@
       (->OpenAIProvider api-key base-url model max-tokens http-client use-responses-api false
                         prompt-cache-key request-timeout-sec costs)
       this))
-  (supports-prefill [_] false))
+  (supports-prefill [_ _] false))
 
 (defn openai-provider
   "Create an OpenAI provider.
@@ -1417,7 +1403,7 @@
         (throw (ex-info "ChatGPT Codex Responses request failed"
                         {:status status :body (.body response)})))))
   (plain-text-provider [this] this)
-  (supports-prefill [_] false))
+  (supports-prefill [_ _] false))
 
 (defrecord CodexTcProvider [api-key account-id base-url model max-tokens prompt-cache-key http-client costs]
   LLMProvider
@@ -1442,7 +1428,7 @@
                         {:status status :body (.body response)})))))
   (plain-text-provider [_]
     (->CodexMsgProvider api-key account-id base-url model max-tokens http-client costs))
-  (supports-prefill [_] false))
+  (supports-prefill [_ _] false))
 
 (defn codex-msg-provider
   "Create a ChatGPT subscription-backed Codex provider (message transport).
@@ -1671,7 +1657,7 @@
         (throw (ex-info "Fireworks completions request failed"
                         {:status status :body (:body response)})))))
   (plain-text-provider [this] this)
-  (supports-prefill [_] true))
+  (supports-prefill [_ _] true))
 
 (defn fireworks-provider
   "Create a Fireworks provider using the completions API for true prefill.
@@ -2041,7 +2027,7 @@
   (plain-text-provider [_]
     (->FireworksProvider api-key base-url model max-tokens http-client request-timeout-sec
                          sse-idle-timeout-sec sse-completion-timeout-sec costs nil false))
-  (supports-prefill [_] false))
+  (supports-prefill [_ _] false))
 
 (defn fireworks-tc-provider
   "Create a Fireworks provider using the Anthropic-compatible Messages API
@@ -2113,7 +2099,7 @@
           (Thread/sleep (long latency)))
         response)))
   (plain-text-provider [this] this)
-  (supports-prefill [_] (if (some? prefill?) prefill? true)))
+  (supports-prefill [_ _] (if (some? prefill?) prefill? true)))
 
 (defn test-provider
   "Create a declarative test provider.
@@ -2162,7 +2148,7 @@
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (plain-text-provider [this] this)
-  (supports-prefill [_] true)
+  (supports-prefill [_ _] true)
   (call-llm [_ prompt opts]
     (let [system (:system opts)
           prefix (:prefix opts)]

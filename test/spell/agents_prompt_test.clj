@@ -47,7 +47,7 @@
                                   (swap! requests conj {:text text :opts opts})
                                   (provider/call-llm delegate text opts))
                                 (plain-text-provider [this] this)
-                                (supports-prefill [_] false))
+                                (supports-prefill [_ _] false))
                     agent (llm/compile-agent
                             {:provider capturing :prefill? false :recover false :system "SCOPE-BASE"
                              :namespaces (cond-> (array-map 'io spell-io/io-namespace)

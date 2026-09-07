@@ -449,7 +449,7 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
   [{:keys [namespaces provider model system llm-var recover format prefill? thinking reasoning-effort verbosity
            suffix-grammar? grammar-max-chars]
     :or {namespaces {} model nil recover true suffix-grammar? false grammar-max-chars 2000}}]
-  (let [native-prefill? (provider/prefill-supported? provider {:model model})
+  (let [native-prefill? (provider/supports-prefill provider {:model model})
         compatible-prefill? (and native-prefill? (not thinking))
         _ (when (and (true? prefill?) (not compatible-prefill?))
             (throw (ex-info "Explicit :prefill? true is unsupported by this provider or thinking mode; omit :prefill? or set false"

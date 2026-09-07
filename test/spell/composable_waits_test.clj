@@ -183,7 +183,7 @@
                      (reset! observed (get-in (coordinator/snapshot) [:options :max-edges]))
                      "(def answer 42))")
                    (plain-text-provider [this] this)
-                   (supports-prefill [_] true))
+                   (supports-prefill [_ _] true))
         opts {:prompt "Return 42"
               :model-profile provider
               :agent-profile "config/agent-profiles/base-msg.agent.edn"}]

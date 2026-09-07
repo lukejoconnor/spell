@@ -2,6 +2,11 @@
          '[clojure.edn :as edn]
          '[spell.reliability-workflow-test :as workflow])
 (let [[workflow-path test-path] *command-line-args*
+      ;; Standalone callers must invalidate old receipts before running tests.
+      _ (when (some #(.exists (java.io.File. %)) [workflow-path test-path])
+          (println "Receipt precondition failed: destinations must be absent.")
+          (shutdown-agents)
+          (System/exit 1))
       result (binding [workflow/*workflow-report-path* workflow-path]
                (test/run-tests 'spell.reliability-workflow-test))
       assertions (+ (:pass result) (:fail result) (:error result))

@@ -1,11 +1,45 @@
 # Spell reliability dogfood changes
 
-Run `2026-09-07-dogfood-reliability-003` completes the seven preserved run002 drafts on base `ac6d8da`, on branch `codex/dogfood-reliability`. Production and test implementation was delegated; the lead reviewed, verified, documented and committed approved work.
+Runs `2026-09-07-dogfood-reliability-004` and `2026-09-07-dogfood-reliability-005` finish the reliability acceptance followups on `9ece4a1`, on branch `codex/dogfood-reliability`. All production/test edits were delegated to implementers; the lead coordinated, reviewed, verified and documented them.
+
+## Run004/005 acceptance followups
+
+- **Replacement provider interface, not compatibility.** Preserved and verified the eight run004 drafts: the sole `LLMProvider` method is `supports-prefill [this opts]`. Providers, fakes and callers use it directly; the optional protocol/helper/fallback are gone. Capability and dispatch use the provider-owned effective model; compile-agent remains the centralized policy point. Exact removed-symbol checks in `src`/`test` passed.
+- **Explicit child false at the request boundary.** The missing regression loads real temporary child `:base` profiles for parent `{}` and parent `{:prefill? true}`, both with child `{:prefill? false}`. It verifies explicit false through root and worker compilation and user-only request content with the original task retained. Existing inherited-parent-false and actual provider-record/model-override/request-shape coverage remain intact. No new provider production fix was inferred.
+- **Atomic runner lifecycle.** Same-directory temporary files plus replace publish running JSON before either old EDN cleanup or JVM launch, then publish terminal JSON atomically. Failed running publication returns failure without cleanup or launch; existing artifacts may remain but are not a successful invocation. Interruption after publication leaves running, not prior completed. A worker-added standalone `run.clj` guard rejects either preexisting receipt path before tests.
+- **Useful malformed ack diagnostics.** Bare page-token maps and missing/nil `:token` explain `:ack requires {:token page-token}`. Owner/epoch/watermark checks and monotone atomic cursor updates remain unchanged. Regressions verify whole-board equality on malformed, wrong-agent and stale-token failures.
+
+### Run005 execution evidence
+
+All listed checks had positive test counts and zero failures/errors. The lead ran the full suite **once**, after implementers finished; raw output remains ignored.
+
+| Check | Result |
+| --- | --- |
+| `clojure -M:test` | 893 tests, 5102 assertions; exit 0 |
+| Missing child-false regression | 1 test, 12 assertions |
+| Prefill/provider/LLM focused namespaces | 103 tests, 865 assertions |
+| Mailing-list focused namespace | 15 tests, 108 assertions |
+| Python runner and standalone JVM guard tests | 17 tests (15 mocked runner tests, 2 fresh-JVM guards) |
+| Fresh deterministic portable workflow | 3 tests, 40 assertions; completed, exit 0 |
+
+The lead inspected the actual fresh `report.json`, `run005-python-tests.json`, `tests.edn` and `workflow.edn`: completed status, positive counts, two distinct tracked completed child returns, subscriptions before generation, and one self-call effect. Baseline bytes and SHA-256 remain unchanged: `54754377fd62516b5971715bcd334237733b07370e24fc83fa514d98a08837ce`.
+
+### Run005 review, recovery and limits
+
+Fable 5.1 high initial design review (edge 4) endorsed the sole opts-aware interface, provider-owned model and centralized policy. Its actual cumulative source/test/runner review (edge 7) returned **APPROVE, no blocking locations**. The standalone stale-receipt finding was fixed by the runner implementer and covered by fresh-JVM tests. A claimed missing baseline key was disproved by current initialization; failed-publication preservation and interruption-at-running were accepted as intentional. The effective-model diagnostic concern was nonfunctional; no speculative provider fix was added. Fresh independent Fable 5.1 high final reviewer `:spawn-7582` (edge 8) returned **APPROVE, no blockers** after reviewing the actual cumulative source/test/runner diff and portable evidence. It confirmed the replacement interface, real child-false request coverage, unchanged ack guards, atomic publication ordering and standalone stale-receipt fix; the declared limitations remain. This was read-only source review, not independent test execution. See `dev/dogfood-reliability-run/review-run005.md`.
+
+Run004 failed after documentation/API misuse and malformed bare-token acknowledgement exhausted recovery slots, leaving eight drafts rather than acceptance. Run005 repaired missing board-list descriptions without reinitializing the board, preserved those drafts, and used quiet substantive posts and tracked request edges. Superseded proposed effects were not treated as executed receipts. Token validation was not weakened; no hidden retry, read suppression or deduplication policy was introduced.
+
+Evidence is deterministic/offline, not live-provider autonomy, exact API wait or complete memory profiling. Non-POSIX process-tree cleanup is unverified; atomic replace is not fsync/power-loss durability. Unexpected non-OSError exceptions leave running; a process-group kill error can prevent output collection. EDN writing is not a general cross-process atomic publisher. Trace-export measurement remains a separate followup. No live demo, 80-case perf rerun, paid subprocess, branch switch, push, PR or merge was performed. Shared paid-run accounting was not independently available. Lead approval is not Codex final acceptance.
+
+## Run003 historical record
+
+Run `2026-09-07-dogfood-reliability-003` completed the seven preserved run002 drafts on base `ac6d8da`. The validation and review counts below are historical, not the run005 full-suite result.
 
 ## What changed and why
 
 - **Fixed callable arity.** Validate the number of outer function parameters before binding/destructuring or executing the body, after evaluating arguments. Missing arguments no longer capture caller bindings. Direct calls, `apply`, callbacks and function `recur` produce catchable errors while valid dynamic scope/destructuring and effect ordering remain intact. The evaluator guard and `bind-params` guard protect distinct entry paths and are intentionally retained.
-- **Single provider-owned prefill policy.** Agent compilation derives defaults from effective-model capability and thinking mode. Anthropic capability now honors a per-call `:model` override, just as dispatch does. An optional capability protocol preserves existing provider implementations. Explicit and inherited false remain false; incompatible explicit true fails with a useful diagnostic rather than silently downgrading or retrying. CLI/benchmark eager defaults were removed, inheritance corrected, and the compilation docstring updated.
+- **Single provider-owned prefill policy.** Agent compilation derives defaults from effective-model capability and thinking mode. Anthropic capability now honors a per-call `:model` override, just as dispatch does. The sole `LLMProvider` interface is now `supports-prefill [this opts]`; providers, fakes, and callers use that replacement directly. The optional capability protocol, helper, and legacy fallback are removed, with no backwards-compatibility path. Explicit and inherited false remain false; incompatible explicit true fails with a useful diagnostic rather than silently downgrading or retrying. CLI/benchmark eager defaults were removed, inheritance corrected, and the compilation docstring updated.
 - **Meaningful, registered regressions.** New callable-arity and prefill-policy suites run in `:test-fast`; the new deterministic multi-agent workflow runs in `:test-slow`. Provider tests exercise actual provider records and serialized request shapes before HTTP, including both override directions, thinking conflicts, retained task content, inherited false at root/worker compilation and Anthropic TC tool choice.
 - **Portable board workflow.** A fresh-JVM runner verifies subscriptions before child generation, quiet posts, bounded digests, actual-token acknowledgement, two tracked completed returns, persisted report readback, source retention and effect replay safety. Failure coverage includes duplicate initialization, retention gaps, stale tokens, atomic onboarding failure and task recovery outside the setup-only catch. Runner failure gates include missing baseline/receipts, zero discovered tests, timeout and incomplete child returns; these are explicit test-program checks, not runtime rescue.
 - **Action-oriented skills.** Coding/context guidance makes compact literal checkpoints, bounded evidence packets and artifact-or-blocker handoffs explicit. Opaque stored-result markers are not inspected evidence; proposed effects are not receipts. Guidance remains task-level ordinary program logic, not hidden read suppression, deduplication or retries.

@@ -17,7 +17,7 @@
     "design_digest_limit": 3,
     "paid_calls": 0
   },
-  "elapsed_seconds": 1.966,
+  "elapsed_seconds": 2.045,
   "elapsed_seconds_scope": "subprocess launch through exit/termination and output collection; includes JVM startup, tests, receipt writes and shutdown; not internal test time or CPU time",
   "baseline_sha256_before": "54754377fd62516b5971715bcd334237733b07370e24fc83fa514d98a08837ce",
   "baseline_sha256_after": "54754377fd62516b5971715bcd334237733b07370e24fc83fa514d98a08837ce",

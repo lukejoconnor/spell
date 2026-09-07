@@ -98,6 +98,38 @@
       (is (= ["user"] (mapv :role (:messages body))))
       (is (clojure.string/includes? (pr-str (:messages body)) "Preserve my task"))) ))
 
+(deftest child-explicit-false-reaches-root-and-worker-dispatch
+  (let [pf (provider/map->AnthropicPfProvider
+            {:api-key "offline-test" :model "claude-sonnet-4-5-20250929"
+             :max-tokens 1024})
+        dir (.toFile (java.nio.file.Files/createTempDirectory
+                      "spell-child-prefill-policy-"
+                      (make-array java.nio.file.attribute.FileAttribute 0)))
+        parent-file (java.io.File. dir "parent.agent.edn")
+        child-file (java.io.File. dir "child.agent.edn")]
+    (try
+      (spit child-file (pr-str {:base "parent.agent.edn" :prefill? false}))
+      (doseq [parent [{} {:prefill? true}]]
+        (spit parent-file (pr-str parent))
+        (let [child (spell.agent/load-agent-spec (.getAbsolutePath child-file))]
+          (is (false? (:prefill? child))
+              (str "Loaded child false must override parent " parent))
+          (is (not (contains? child :base)) "The real :base profile was resolved")
+          (doseq [compile-fn
+                  [#(spell.agent/compile-agent-spec (assoc child :provider pf))
+                   #(get (spell.agent/resolve-workers
+                          {'child child} llm/compile-agent
+                          spell.agent/compile-agent-spec nil pf nil)
+                         :child)]]
+            (let [{:keys [body]} (capture-pf-body compile-fn)]
+              (is (= ["user"] (mapv :role (:messages body))))
+              (is (clojure.string/includes? (pr-str (:messages body))
+                                          "Preserve my task"))))))
+      (finally
+        (.delete child-file)
+        (.delete parent-file)
+        (.delete dir)))))
+
 (deftest inherited-false-reaches-root-and-worker-dispatch
   (let [pf (provider/map->AnthropicPfProvider
             {:api-key "offline-test" :model "claude-sonnet-4-5-20250929"

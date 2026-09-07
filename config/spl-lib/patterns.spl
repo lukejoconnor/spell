@@ -1408,6 +1408,8 @@
                               sub (get-in b [:lists tk :subscriptions agent])
                               through (:through token)
                               high (dec (get-in b [:lists tk :next] 1))]
+                          (when (nil? token)
+                            (throw "mail: :ack requires {:token page-token}"))
                           (when (or (nil? sub) (not= (:epoch sub) (:epoch token)) (not= who agent))
                             (throw "mail: stale subscription token or wrong agent"))
                           (when (not (and (integer? through) (<= 0 through high)))

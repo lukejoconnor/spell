@@ -172,6 +172,55 @@
     (is (thrown? Throwable (mail :ack {:token (assoc token :through 2)})))
     (is (thrown? Throwable (mail :ack {:token token :agent :other})))))
 
+(deftest ack-requires-wrapped-non-nil-token
+  (init!) (create!)
+  (mail :subscribe {:list :research :from :earliest})
+  (post! "pending")
+  (let [token (:token (mail :digest {:list :research}))
+        before (globals/get-val :mailing-list)]
+    (doseq [args [token {} {:list :research} {:token nil}
+                 {:list :research :token nil}]]
+      (is (thrown-with-msg? Throwable #":ack requires \{:token page-token\}"
+                           (mail :ack args))
+          (str "Malformed acknowledgement: " args))
+      (is (= before (globals/get-val :mailing-list))
+          "Malformed acknowledgements leave subscriptions and cursors unchanged"))
+    (is (= (:through token) (:cursor (mail :ack {:token token}))))))
+
+(deftest ack-wrong-agent-guard-precedes-watermark-validation
+  (init!) (create!)
+  (mail :subscribe {:list :research :from :earliest})
+  (binding [*handle* :other]
+    (mail :subscribe {:list :research :from :earliest}))
+  (post! "pending")
+  (let [token (:token (mail :digest {:list :research}))
+        before (globals/get-val :mailing-list)]
+    (binding [*handle* :other]
+      (doseq [rejected-token [token (assoc token :through -1)]]
+        (is (thrown-with-msg? Throwable #"stale subscription token or wrong agent"
+                             (mail :ack {:token rejected-token})))
+        (is (= before (globals/get-val :mailing-list))
+            "Wrong-agent acknowledgements leave all subscriptions unchanged")))
+    (is (= (:through token) (:cursor (mail :ack {:token token}))))))
+
+(deftest ack-stale-epoch-guard-precedes-watermark-validation
+  (init!) (create!)
+  (mail :subscribe {:list :research :from :earliest})
+  (post! "pending")
+  (let [token (:token (mail :digest {:list :research}))]
+    (mail :unsubscribe {:list :research})
+    (mail :subscribe {:list :research :from :earliest})
+    (let [before (globals/get-val :mailing-list)]
+      (doseq [rejected-token [token (assoc token :through -1)]]
+        (is (thrown-with-msg? Throwable #"stale subscription token or wrong agent"
+                             (mail :ack {:token rejected-token})))
+        (is (= before (globals/get-val :mailing-list))
+            "Stale acknowledgements leave the replacement subscription unchanged")))
+    (let [fresh-token (:token (mail :digest {:list :research}))]
+      (is (not= (:epoch token) (:epoch fresh-token)))
+      (is (= (:through fresh-token)
+             (:cursor (mail :ack {:token fresh-token})))))))
+
 (deftest notification-snapshot-and-ack-concurrent-post
   (init!) (create!)
   (mail :subscribe {:list :research :agent :a :from :earliest})

@@ -90,7 +90,7 @@
                        (call-llm [_ _prompt opts]
                          (reset! seen-opts opts)
                          "\"child\")")
-                       (supports-prefill [_] true))
+                       (supports-prefill [_ _] true))
           workers-map {'helper {:doc "Helper"
                              :default-model-profile child-prov}}
           workers-ns (agent/resolve-workers workers-map llm/compile-agent agent/compile-agent-spec
@@ -198,7 +198,7 @@
                  (call-llm [_ _prompt opts]
                    (reset! seen-opts opts)
                    "\"ok\")")
-                 (supports-prefill [_] true))
+                 (supports-prefill [_ _] true))
           compiled (agent/compile-agent-spec
                     {:provider prov
                      :namespace-overrides {'feedback 'stdlib/feedback}})]
@@ -214,7 +214,7 @@
                  (call-llm [_ _prompt opts]
                    (reset! seen-opts opts)
                    "\"ok\")")
-                 (supports-prefill [_] true))
+                 (supports-prefill [_ _] true))
           workers-ns (agent/resolve-workers
                        {'helper {:doc "Helper agent"}}
                        llm/compile-agent agent/compile-agent-spec nil prov nil
@@ -232,7 +232,7 @@
                  (call-llm [_ _prompt opts]
                    (reset! seen-opts opts)
                    "\"ok\")")
-                 (supports-prefill [_] true))
+                 (supports-prefill [_ _] true))
           workers-ns (agent/resolve-workers
                        {'helper {:doc "Helper agent"
                                  :namespaces {'workers 'stdlib/strings}}}
@@ -250,7 +250,7 @@
                  (call-llm [_ _prompt opts]
                    (reset! seen-opts opts)
                    "\"ok\")")
-                 (supports-prefill [_] true))
+                 (supports-prefill [_ _] true))
           workers-ns (agent/resolve-workers
                        {'helper {:doc "Helper agent"
                                  :namespaces {'feedback 'stdlib/strings}}}
@@ -638,7 +638,7 @@
                  (call-llm [_ _prompt opts]
                    (reset! seen-opts opts)
                    "{:result 42})")
-                 (supports-prefill [_] true))
+                 (supports-prefill [_ _] true))
           compiled (agent/compile-agent-spec
                     {:name 'formatter
                      :provider prov

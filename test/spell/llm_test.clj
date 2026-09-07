@@ -988,7 +988,7 @@
       (is (= 32768 (:max-tokens p)))
       (is (= 600 (:request-timeout-sec p))
           "Default request-timeout-sec is 600 seconds, matching anthropic-tc")
-      (is (false? (provider/supports-prefill p)))
+      (is (false? (provider/supports-prefill p {})))
       (is (instance? spell.provider.FireworksProvider (provider/plain-text-provider p)))))
 
   (testing "fireworks-tc-provider accepts explicit Kimi K3 model"
@@ -2063,7 +2063,7 @@
     (let [call-count (atom 0)
           prov (reify provider/LLMProvider
                  (plain-text-provider [this] this)
-                 (supports-prefill [_] true)
+                 (supports-prefill [_ _] true)
                  (call-llm [_ prompt] (provider/call-llm _ prompt {}))
                  (call-llm [_ prompt opts]
                    (swap! call-count inc)
@@ -2080,7 +2080,7 @@
     (let [call-count (atom 0)
           prov (reify provider/LLMProvider
                  (plain-text-provider [this] this)
-                 (supports-prefill [_] true)
+                 (supports-prefill [_ _] true)
                  (call-llm [_ prompt] (provider/call-llm _ prompt {}))
                  (call-llm [_ prompt opts]
                    (swap! call-count inc)
@@ -2095,7 +2095,7 @@
     (let [call-count (atom 0)
           prov (reify provider/LLMProvider
                  (plain-text-provider [this] this)
-                 (supports-prefill [_] true)
+                 (supports-prefill [_ _] true)
                  (call-llm [_ prompt] (provider/call-llm _ prompt {}))
                  (call-llm [_ prompt opts]
                    (swap! call-count inc)
@@ -2111,7 +2111,7 @@
     (let [call-count (atom 0)
           prov (reify provider/LLMProvider
                  (plain-text-provider [this] this)
-                 (supports-prefill [_] true)
+                 (supports-prefill [_ _] true)
                  (call-llm [_ prompt] (provider/call-llm _ prompt {}))
                  (call-llm [_ prompt opts]
                    (swap! call-count inc)
@@ -2273,7 +2273,7 @@
           received-opts (atom [])
           prov (reify provider/LLMProvider
                  (plain-text-provider [this] this)
-                 (supports-prefill [_] true)
+                 (supports-prefill [_ _] true)
                  (call-llm [_ prompt] (provider/call-llm _ prompt {}))
                  (call-llm [_ prompt opts]
                    (swap! received-prompts conj prompt)
@@ -2304,7 +2304,7 @@
           received-opts (atom [])
           prov (reify provider/LLMProvider
                  (plain-text-provider [this] this)
-                 (supports-prefill [_] false)
+                 (supports-prefill [_ _] false)
                  (call-llm [_ prompt] (provider/call-llm _ prompt {}))
                  (call-llm [_ prompt opts]
                    (swap! received-prompts conj prompt)
@@ -2328,14 +2328,14 @@
           leaf-calls (atom 0)
           leaf-provider (reify provider/LLMProvider
                           (plain-text-provider [this] this)
-                          (supports-prefill [_] false)
+                          (supports-prefill [_ _] false)
                           (call-llm [_ prompt] (provider/call-llm _ prompt {}))
                           (call-llm [_ prompt _opts]
                             (swap! leaf-calls inc)
                             (str "leaf:" prompt)))
           prov (reify provider/LLMProvider
                  (plain-text-provider [_] leaf-provider)
-                 (supports-prefill [_] true)
+                 (supports-prefill [_ _] true)
                  (call-llm [_ prompt] (provider/call-llm _ prompt {}))
                  (call-llm [_ _prompt _opts]
                    (swap! main-calls inc)
@@ -2350,7 +2350,7 @@
                    (throw (ex-info "no plain-text leaf transport"
                                    {:type :leaf-llm-plain-text-unsupported
                                     :provider :fake-tc})))
-                 (supports-prefill [_] true)
+                 (supports-prefill [_ _] true)
                  (call-llm [_ prompt] (provider/call-llm _ prompt {}))
                  (call-llm [_ _prompt _opts] "(def return 1))"))]
       (is (thrown-with-msg? clojure.lang.ExceptionInfo
@@ -2384,31 +2384,31 @@
 (deftest supports-prefill-test
   (testing "Anthropic tc provider does not support prefill"
     (let [p (provider/anthropic-tc-provider {:api-key "test"})]
-      (is (false? (provider/supports-prefill p)))))
+      (is (false? (provider/supports-prefill p {})))))
 
   (testing "OpenAI provider does not support prefill"
     (let [p (provider/openai-provider {:api-key "test"})]
-      (is (false? (provider/supports-prefill p)))))
+      (is (false? (provider/supports-prefill p {})))))
 
   (testing "Test provider defaults to supporting prefill"
     (let [p (provider/test-provider {})]
-      (is (true? (provider/supports-prefill p)))))
+      (is (true? (provider/supports-prefill p {})))))
 
   (testing "Test provider can be configured as no-prefill"
     (let [p (provider/test-provider {:prefill? false})]
-      (is (false? (provider/supports-prefill p)))))
+      (is (false? (provider/supports-prefill p {})))))
 
   (testing "Ollama provider supports prefill"
     (let [p (provider/ollama-provider)]
-      (is (true? (provider/supports-prefill p)))))
+      (is (true? (provider/supports-prefill p {})))))
 
   (testing "Fireworks provider supports prefill"
     (let [p (provider/fireworks-provider {:api-key "test"})]
-      (is (true? (provider/supports-prefill p)))))
+      (is (true? (provider/supports-prefill p {})))))
 
   (testing "Fireworks tc provider does not support prefill"
     (let [p (provider/fireworks-tc-provider {:api-key "test"})]
-      (is (false? (provider/supports-prefill p))))))
+      (is (false? (provider/supports-prefill p {}))))))
 
 ;; =============================================================================
 ;; User provider display tests
@@ -2490,7 +2490,7 @@
     (let [seen-opts (atom nil)
           prov (reify provider/LLMProvider
                  (plain-text-provider [this] this)
-                 (supports-prefill [_] true)
+                 (supports-prefill [_ _] true)
                  (call-llm [this prompt] (provider/call-llm this prompt {}))
                  (call-llm [_ _ opts]
                    (reset! seen-opts opts)
@@ -2507,7 +2507,7 @@
     (let [seen-opts (atom nil)
           prov (reify provider/LLMProvider
                  (plain-text-provider [this] this)
-                 (supports-prefill [_] true)
+                 (supports-prefill [_ _] true)
                  (call-llm [this prompt] (provider/call-llm this prompt {}))
                  (call-llm [_ _ opts]
                    (reset! seen-opts opts)

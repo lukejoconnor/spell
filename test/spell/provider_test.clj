@@ -585,23 +585,23 @@
 (deftest anthropic-pf-supports-prefill-test
   (testing "opus-4-6 model returns false"
     (let [p (provider/anthropic-pf-provider {:api-key "test" :model "claude-opus-4-6-20250301"})]
-      (is (false? (provider/supports-prefill p)))))
+      (is (false? (provider/supports-prefill p {})))))
 
   (testing "opus-4-7 model returns false"
     (let [p (provider/anthropic-pf-provider {:api-key "test" :model "claude-opus-4-7-20250416"})]
-      (is (false? (provider/supports-prefill p)))))
+      (is (false? (provider/supports-prefill p {})))))
 
   (testing "sonnet model returns true"
     (let [p (provider/anthropic-pf-provider {:api-key "test" :model "claude-sonnet-4-20250514"})]
-      (is (true? (provider/supports-prefill p)))))
+      (is (true? (provider/supports-prefill p {})))))
 
   (testing "opus-4-5 model returns true"
     (let [p (provider/anthropic-pf-provider {:api-key "test" :model "claude-opus-4-5-20250901"})]
-      (is (true? (provider/supports-prefill p)))))
+      (is (true? (provider/supports-prefill p {})))))
 
   (testing "Fable 5.1 returns false"
     (let [p (provider/anthropic-pf-provider {:api-key "test" :model "claude-fable-5-1"})]
-      (is (false? (provider/supports-prefill p))))))
+      (is (false? (provider/supports-prefill p {}))))))
 
 (deftest anthropic-adaptive-thinking-request-test
   (testing "tool-call path uses adaptive thinking on current model families"
