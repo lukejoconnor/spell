@@ -101,6 +101,22 @@
                          "\n\n"))
            (expand1 '(!describe io web :search math))))))
 
+(deftest describe-keyword-namespace-validation-test
+  (testing "a second skill key reports the supported repeated-namespace syntax"
+    (doseq [form ['(!describe skills :coding :spell-developer)
+                  '(!describe :coding)
+                  '(!describe :coding :spell-developer)
+                  '(!describe io skills :coding :spell-developer)]]
+      (is (ex-info-with-message?
+            #"repeat the namespace for each key, e.g\. \(!describe skills :coding skills :spell-developer\)"
+            #(expand1 form))
+          (pr-str form))))
+  (testing "namespace expressions and map literals remain supported"
+    (is (= '(!print (describe-fn (get namespaces :tools) :run))
+           (expand1 '(!describe (get namespaces :tools) :run))))
+    (is (= '(!print (describe-fn {:docs {:guide "guide"}}))
+           (expand1 '(!describe {:docs {:guide "guide"}}))))))
+
 (deftest simple-macro-expansion-test
   (testing "!extend defaults to completion and accepts an explicit continuation"
     (is (= '(!llm-self (edit-reopen completion) {:receive? true})

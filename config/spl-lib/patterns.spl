@@ -1603,4 +1603,3 @@
   (let [board (globals/get :mailing-list)]
     (when (not board) (throw "mail: board not initialized; designate exactly one loader"))
     ((eval (get-in board [:code :dispatch])) operation arguments)))
-
