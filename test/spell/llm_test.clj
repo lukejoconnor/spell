@@ -446,6 +446,20 @@
                                    :namespaces ns-map)]
       (is (= {:a "first" :b "second"} (llm "(eval (do '"))))))
 
+(deftest repeated-namespace-disclosure-test
+  (testing "both requested details reach the next model prefix"
+    (let [result (eval/spell-eval
+                   '(!describe skills :coding skills :spell-developer)
+                   {'completion '(quine completion (eval (do)))
+                    'skills {:detail {:coding "CODING DETAIL SENTINEL"
+                                      :spell-developer "DEVELOPER DETAIL SENTINEL"}}
+                    'describe-fn stdlib/describe
+                    '!llm-self (fn [prefix _options] prefix)})
+          prefix (pr-str (:ok result))]
+      (is (eval/ok? result))
+      (is (str/includes? prefix "CODING DETAIL SENTINEL"))
+      (is (str/includes? prefix "DEVELOPER DETAIL SENTINEL")))))
+
 (deftest describe-fallback-test
   (testing "describe prefers :docs :guide over raw :docs when both present"
     (let [ns-map {:docs {:guide "full guide text" :a "doc for a"} :a identity}]
