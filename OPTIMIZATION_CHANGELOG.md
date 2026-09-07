@@ -28,4 +28,10 @@ No hidden orchestration policy, compatibility path, context eviction, replay ded
 
 ## Remaining work and known issues
 
-Final report: `perf/runtime-optimization-report.md`; actual fresh review: `perf/runtime-optimization-review.edn`. Integrated receipts and the full 80-case result are preserved with the documentation commit. The pre-existing multiline-string comment normalization bug remains a separate correctness follow-up; changing it would invalidate the behavior-preserving parser comparison. Evaluator allocation remains the largest measured local bottleneck. Further broad runtime work is deferred pending a bounded attribution hypothesis; hitting old targets was not used as the stopping rule.
+Final report: `perf/runtime-optimization-report.md`; actual fresh review: `perf/runtime-optimization-review.edn`. Integrated receipts and the full 80-case result are preserved with the documentation commit. Evaluator allocation remains the largest measured local bottleneck. Further broad runtime work is deferred pending a bounded attribution hypothesis; hitting old targets was not used as the stopping rule.
+
+The subsequent parser correctness repair preserves line-start comment markers inside multiline strings and distinguishes quotes in comment bodies and character literals in both sanitizers. Lazy output allocation remains. The differential oracle now compares eager and lazy output with those explicit lexical corrections; the current probe expects preserved string content. Historical parser comparisons, their original probe, and original oracle remain available at `89a6347` and in the unchanged result bundle. Their performance figures apply to that measured parser revision. The correctness repair makes no new performance claim; the previous 80-case run predates it.
+
+The correction distinguishes reader-dispatch comments from `#!` embedded in symbols, and preserves reader-prefix handling such as `#_`. Regression coverage includes the exact quoted shebang case that exposed a flaw in an intermediate draft.
+
+Correctness follow-up validation: parser 16 tests / 1,654 assertions; maintained fast suite 517 / 4,722; both exit 0 with zero failures/errors. No performance suite was rerun for this repair.

@@ -54,6 +54,12 @@ Tool: `perf/parse_sanitizer_probe.clj`; attribution: `results/optimization-parse
 
 Three fresh pairs, fixed 256 MiB heap, 30 warmups and five ten-call batches. Each comparison process passes 55 semantic assertions. Independent baseline sanitizer copies, exact reader outcome comparisons and bounded seeded tests guard preservation of the state machines.
 
+These are historical measurements of parser revision `89a6347`. A subsequent correctness repair retains lazy output creation and corrects string/comment/character-literal state in both sanitizers. It preserves literal multiline comment markers and prevents comment-body or character-literal quotes from changing string state. The maintained differential oracle applies those explicit corrections to eager output; the maintained probe now checks the corrected literal. The original oracle remains in `89a6347`, and the original measured probe and raw results remain unchanged in the result bundle. The repair makes no new performance claim.
+
+The follow-up distinguishes `#!` reader-dispatch comments from `#!` embedded in symbols, including nonterminating apostrophes. It also preserves reader-prefix boundaries such as `#_`. Regression coverage includes exact quoted shebang inputs that exposed a flaw in an intermediate draft.
+
+Correctness follow-up validation: 16 focused parser tests / 1,654 assertions and 517 maintained fast tests / 4,722 assertions, both exit 0 with zero failures/errors. The historical 80-case performance run was not repeated for this repair.
+
 | Input | Chunks | Ordered sanitizer B/call, control → candidate | read-first B/call, control → candidate |
 | --- | ---: | ---: | ---: |
 | Unchanged | 64 | 79,568.8 → 4,728.8 | 195,504.8 → 120,664.8 |
@@ -82,7 +88,7 @@ Three fresh pairs, eight self/leaf × verbose × trace cases per process, 53 sem
 
 Integrated receipts and positive-count summaries: `results/optimization-final-validation-001/`. Commands are `clojure -J-Dclojure.main.report=stderr -M:test-fast`, `-M:test-slow`, and `-M:test -n spell.trace-tool-test`. Processes were reaped. The repaired focused regression additionally hard-fails on insufficient positive test/assertion counts. Earlier focused I/O 95/265 and parser 12/1,496 also passed. Python runner validation executed six passing tests.
 
-**Full suite:** `python3 -B perf/run.py baseline --timeout 900 --name optimization-final-80cases-001` ran once after convergence: complete **80/80**, exit 0, **343.2703038 s**, two warmups, five wall repetitions, three memory repetitions. Results/log/receipt are preserved under that unique name. Four optimized production-file hashes match the measured candidate; result revision 89a6347 predates the then-uncommitted wait change, so source hashes, not that revision alone, establish provenance.
+**Full suite:** `python3 -B perf/run.py baseline --timeout 900 --name optimization-final-80cases-001` ran once after optimization convergence, before the subsequent parser correctness repair: complete **80/80**, exit 0, **343.2703038 s**, two warmups, five wall repetitions, three memory repetitions. Results/log/receipt are preserved under that unique name. Four optimized production-file hashes match the candidate at that measurement; result revision 89a6347 predates the then-uncommitted wait change, so source hashes, not that revision alone, establish provenance.
 
 18/80 final cases have wall CV > 0.2. The historical 608.930953 s baseline predates reliability HEAD and includes different intentional waits. This one final total is validation evidence, **not a claimed aggregate speedup**. Historical `results/baseline.json` remains unchanged, SHA256 `54754377fd62516b5971715bcd334237733b07370e24fc83fa514d98a08837ce`.
 
@@ -92,14 +98,14 @@ Integrated receipts and positive-count summaries: `results/optimization-final-va
 - Initial trace EDN warmup failed on pprint quote shorthand; preserved as diagnostic, not timing evidence. Interrupted trace comparison001 used unsupported `io/sh :timeout-ms`, causing default30s timeout and a temporarily orphaned JVM; child absence was verified before clean comparison002. Incomplete receipts are excluded, not erased.
 - An exit0/zero-test wait run is explicitly **rejected**. Repaired and positively guarded77/675 runs, then integrated validation, replace it. Missing exit capture for early42/214 trace output is closed by final slow/trace-tool clean receipts. A large failed full-test snapshot remains uncommitted.
 - Dogfooding exposed invalid communication targets, unsupported Spell strings/split arity and unknown shell timeout vocabulary. These were workflow failures, not reasons to weaken receipt/recovery policy. Log concrete API errors and prefer precise documented calls. Future receipt tools should embed discovered counts and reject zero tests; unknown I/O option keys should fail clearly.
-- The parser probe exposed pre-existing rewriting of line-start comment markers inside multiline strings. It is preserved by differential tests, logged separately, and **not fixed** here. A separate correctness patch needs explicit handling of quoted strings, escaped quotes/backslashes and quotes inside ordinary/normalized comment bodies; a naive opening-quote toggle is insufficiently reviewed.
+- The parser probe exposed pre-existing rewriting of line-start comment markers inside multiline strings. A subsequent correctness repair handles quoted strings, escaped quotes/backslashes, character literals, and quotes inside ordinary/normalized comment bodies. The original performance comparison remains an immutable pre-repair measurement; focused correctness validation is separate.
 - No serializer schema hand-maintenance, trace dedup, cache, broad profiler framework, atomic staging, or context eviction was added. No additional benchmark-wide reruns were spent after final convergence.
 
 ## Remaining bottlenecks, next actions and stopping rationale
 
 The final full suite still identifies `core-evaluator` at iterations=10,000/evals=20 as the largest local timed case: mean3,477.479 ms, wall CV0.008, ~1,400,091,184 caller-allocated bytes. Next justified performance work is a bounded allocation attribution of that exact fixture before choosing any evaluator change. Do not weaken dynamic scope, fresh locals or structural replay safety. Lifecycle dormant wake (20 agents/100 cycles) mean264.990 ms and API cleanup100cycles mean158.737 ms are further attribution candidates, not established optimization mechanisms.
 
-Measure real unchanged/rewrite sanitizer frequency before further tuning; repair the known multiline-string correctness issue separately. Coordinator/globals/board worker allocation and intentionally rooted context remain unprofiled here; caller allocation alone cannot support whole-process claims. No full memory census, peak-RSS guarantee, API-wait attribution or long-run reliability claim is made.
+Measure real unchanged/rewrite sanitizer frequency before further tuning. Coordinator/globals/board worker allocation and intentionally rooted context remain unprofiled here; caller allocation alone cannot support whole-process claims. No full memory census, peak-RSS guarantee, API-wait attribution or long-run reliability claim is made.
 
 The run continued beyond the two starting tasks into measured parser allocation and presentation-wait work. It stops after four small accepted changes, explicit rejected/failed experiments, integrated validation and fresh review—not because historical targets were hit. Further evaluator/concurrency changes need a new attribution hypothesis and risk more semantic complexity; preserving the verified result and validation reserve is preferable to speculative expansion.
 

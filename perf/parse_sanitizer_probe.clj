@@ -1,5 +1,7 @@
 (ns parse-sanitizer-probe
   "Bounded attribution, not an optimization benchmark. Generated public fixtures only.
+   Current semantic checks include the multiline-string correctness repair.
+   Historical 89a6347 comparison used the preserved probe.clj under perf/results/.
    clojure -J-Xms256m -J-Xmx256m -M perf/parse_sanitizer_probe.clj LABEL
    Run >=3 fresh JVMs with identical flags before interpreting allocation/timing."
   (:require [clojure.java.io :as jio]
@@ -40,8 +42,7 @@
            ["\t/* note\n*/\n42" "\t;* note\n;/\n42"]
            ["\r// note\r\n42" "\r;/ note\r\n42"]
            ["(str \"// not a comment\")" "(str \"// not a comment\")"]
-           ;; Preserve observed baseline behavior; a separate correctness issue.
-           ["(str \"line\n// inside string\")" "(str \"line\n;/ inside string\")"]]]
+           ["(str \"line\n// inside string\")" "(str \"line\n// inside string\")"]]]
     (check= [:comments input] expected (p/sanitize-nonspell-comment-markers input)))
   (doseq [[input expected]
           [["\"x\\equiv y\"" "\"x\\\\equiv y\""]

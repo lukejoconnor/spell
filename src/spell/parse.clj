@@ -61,6 +61,23 @@
                  (= delim-char (.charAt ^String trimmed (dec n))))
         (subs trimmed 0 (dec n))))))
 
+(defn- reader-token-state
+  "Track token boundaries outside strings/comments so #! is a reader dispatch
+   only at a form boundary. Clojure keeps #, ' and % inside existing tokens."
+  [state c]
+  (cond
+    (= state :dispatch)
+    (when-not (#{\_ \' \( \{ \" \= \^ \? \:} c) :token)
+
+    (or (Character/isWhitespace (char c)) (= c \,)
+        (#{\( \) \[ \] \{ \} \" \; \\ \@ \^ \` \~} c))
+    nil
+
+    (= state :token) :token
+    (= c \#) :dispatch
+    (= c \') nil
+    :else :token))
+
 (defn sanitize-nonspell-comment-markers
   "Normalize common non-Spell comment tokens at line start when outside strings.
    Rewrites line-start //, /*, and */ to ';' comments so reader recovery can
@@ -68,44 +85,60 @@
   [s]
   (let [len (count s)]
     ;; Allocate output only when a character actually needs rewriting.
-    (loop [i 0, in-string false, escape false, line-start true,
+    (loop [i 0, in-string false, escape false, line-start true, in-comment false, token-state nil,
            ^StringBuilder sb nil]
       (if (>= i len)
         (if sb (.toString sb) (if (zero? len) "" s))
         (let [c  (.charAt ^String s i)
               c2 (when (< (inc i) len) (.charAt ^String s (inc i)))]
           (cond
+            in-comment
+            (let [end? (or (= c \newline) (= c \return))]
+              (when sb (.append sb c))
+              (recur (inc i) false false end? (not end?) nil sb))
+
             escape
             (do (when sb (.append sb c))
-                (recur (inc i) in-string false (= c \newline) sb))
+                (recur (inc i) in-string false (= c \newline) false
+                       (when-not in-string :token) sb))
 
             in-string
             (cond
-              (= c \\) (do (when sb (.append sb c)) (recur (inc i) true true false sb))
-              (= c \") (do (when sb (.append sb c)) (recur (inc i) false false false sb))
-              :else    (do (when sb (.append sb c)) (recur (inc i) true false (= c \newline) sb)))
+              (= c \\) (do (when sb (.append sb c)) (recur (inc i) true true false false nil sb))
+              (= c \") (do (when sb (.append sb c)) (recur (inc i) false false false false nil sb))
+              :else    (do (when sb (.append sb c)) (recur (inc i) true false (= c \newline) false nil sb)))
+
+            (= c \\)
+            ;; A character literal consumes its first character, even \" or ;.
+            (do (when sb (.append sb c))
+                (recur (inc i) false true false false nil sb))
+
+            (or (= c \;) (and (= token-state :dispatch) (= c \!)))
+            (do (when sb (.append sb c))
+                (recur (inc i) false false false true nil sb))
 
             (= c \newline)
-            (do (when sb (.append sb c)) (recur (inc i) false false true sb))
+            (do (when sb (.append sb c)) (recur (inc i) false false true false nil sb))
 
             (and line-start (or (= c \space) (= c \tab) (= c \return)))
-            (do (when sb (.append sb c)) (recur (inc i) false false true sb))
+            (do (when sb (.append sb c)) (recur (inc i) false false true false nil sb))
 
             (and line-start (= c \/) (or (= c2 \/) (= c2 \*)))
             (let [^StringBuilder sb (or sb (doto (StringBuilder. len)
                                              (.append ^CharSequence s 0 i)))]
               (.append sb \;)
-              (recur (inc i) false false false sb))
+              (recur (inc i) false false false true nil sb))
 
             (and line-start (= c \*) (= c2 \/))
             (let [^StringBuilder sb (or sb (doto (StringBuilder. len)
                                              (.append ^CharSequence s 0 i)))]
               (.append sb \;)
-              (recur (inc i) false false false sb))
+              (recur (inc i) false false false true nil sb))
 
             :else
             (do (when sb (.append sb c))
-                (recur (inc i) false false false sb))))))))
+                (recur (inc i) (= c \") false false false
+                       (reader-token-state token-state c) sb))))))))
 
 (defn sanitize-string-escapes
   "Fix invalid escape sequences inside string literals.
@@ -114,30 +147,45 @@
    This doubles the backslash for unknown escapes so they read as literal text."
   [s]
   (let [len (count s)]
-    (loop [i 0, in-string false, escape false, ^StringBuilder sb nil]
+    (loop [i 0, in-string false, escape false, in-comment false, token-state nil, ^StringBuilder sb nil]
       (if (>= i len)
         (if sb (.toString sb) (if (zero? len) "" s))
         (let [c (.charAt ^String s i)]
           (cond
+            in-comment
+            (do (when sb (.append sb c))
+                (recur (inc i) false false
+                       (not (or (= c \newline) (= c \return))) nil sb))
+
             escape
-            (if (valid-escape? c)
-              (do (when sb (.append sb c)) (recur (inc i) in-string false sb))
+            (if (or (not in-string) (valid-escape? c))
+              (do (when sb (.append sb c)) (recur (inc i) in-string false false (when-not in-string :token) sb))
               ;; The copied prefix already contains the original backslash.
               (let [^StringBuilder sb (or sb (doto (StringBuilder. len)
                                                (.append ^CharSequence s 0 i)))]
                 (.append sb \\)
                 (.append sb c)
-                (recur (inc i) in-string false sb)))
+                (recur (inc i) in-string false false nil sb)))
 
             in-string
             (cond
-              (= c \\) (do (when sb (.append sb c)) (recur (inc i) true true sb))
-              (= c \") (do (when sb (.append sb c)) (recur (inc i) false false sb))
-              :else    (do (when sb (.append sb c)) (recur (inc i) true false sb)))
+              (= c \\) (do (when sb (.append sb c)) (recur (inc i) true true false nil sb))
+              (= c \") (do (when sb (.append sb c)) (recur (inc i) false false false nil sb))
+              :else    (do (when sb (.append sb c)) (recur (inc i) true false false nil sb)))
+
+            (= c \\)
+            ;; Outside a string, this introduces a character, not an escape.
+            (do (when sb (.append sb c))
+                (recur (inc i) false true false nil sb))
+
+            (or (= c \;) (and (= token-state :dispatch) (= c \!)))
+            (do (when sb (.append sb c))
+                (recur (inc i) false false true nil sb))
 
             :else
             (do (when sb (.append sb c))
-                (recur (inc i) (= c \") false sb))))))))
+                (recur (inc i) (= c \") false false
+                       (reader-token-state token-state c) sb))))))))
 
 (defn- read-all-internal
   "Read all forms from an already-sanitized string."
