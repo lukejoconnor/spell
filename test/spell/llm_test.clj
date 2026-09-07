@@ -113,7 +113,7 @@
     (runtime/register! handle)
     (deliver p raw)
     (is (= expected
-           (runtime/run-root-box handle p (runtime/make-awake-fn handle inbox-fn) inbox-fn))
+           (runtime/run-root-box handle p (runtime/make-awake-fn handle inbox-fn true :pre-eval) inbox-fn))
         "evaluation should see the reopenable completion, not the ignored suffix")
     (is (= expected (:last-raw @(:execution (coordinator/agent handle))))
         "stored raw should drop ignored suffixes so later wakeups can reopen it")
@@ -139,7 +139,7 @@
     (runtime/register! handle)
     (runtime/-send! handle (append-forms-macro '(def injected :yes)))
     (deliver p raw)
-    (runtime/box handle p (runtime/make-awake-fn handle inbox-fn))
+    (runtime/box handle p (runtime/make-awake-fn handle inbox-fn true :pre-eval))
     (let [stored (:last-raw @(:execution (coordinator/agent handle)))
           forms (vec (parse/read-all stored))
           reopened-form (last forms)

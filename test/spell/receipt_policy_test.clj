@@ -274,3 +274,115 @@
   (rejection-case! :completion invalid-completions))
 (deftest invalid-self-call-options-fail-before-generation
   (rejection-case! :options invalid-options))
+(deftest minimum-cap-generated-receipt-evaluates-a-message-batch
+  (doseq [limit [128 180]]
+    (binding [context/*context* (context/new-context {:max-chars limit})
+              coordinator/*coordinator* (coordinator/new-coordinator)]
+      (try
+        (let [calls (atom []) marks (atom []) received (atom nil)
+              bodies (mapv #(hash-map :index % :detail (apply str (repeat 80 "message-detail-"))) [1 2])
+              proposed '(do (probe/mark :must-not-run) :proposed-result)
+              agent (make-agent
+                      (fn [prompt]
+                        (case (count (swap! calls conj prompt))
+                          1 (do (doseq [body bodies]
+                                  (coordinator/send! :main {:message {:from :observer :body body}}))
+                                (suffix proposed))
+                          2 (let [form (first (parse/read-all (parse/balance-parens prompt)))
+                                  forms (vec (rest (second (last form))))
+                                  positions (vec (keep-indexed
+                                                   #(when (= '(think "pre-eval: tail not run") %2) %1)
+                                                   forms))
+                                  message-defs (mapv #(nth forms (inc %)) positions)]
+                              (is (= 2 (count positions)) "Both factual annotations remain visible at the same cap")
+                              (is (some #{(quoted proposed)} forms) "Only the proposed tail becomes inert")
+                              (doseq [i positions]
+                                (let [contribution (subvec forms i (+ i 3))]
+                                  (is (= 'def (first (second contribution))))
+                                  (is (= '(quote (!extend completion)) (last contribution)))
+                                  (is (<= (count (str/join " " (map pr-str contribution))) limit)
+                                      "Annotation, message binding/reference and continuation share one unchanged cap")))
+                              (suffix (list 'do
+                                            (list* 'probe/received (map second message-defs))
+                                            '(probe/mark :continued)
+                                            :received-result)))
+                          (throw (ex-info "Unexpected generation" {:prompt prompt}))))
+                      {:mark #(do (swap! marks conj %) nil)
+                       :received (fn [& messages] (reset! received (vec messages)) nil)})
+              action (list 'do '(probe/mark :earlier-effect)
+                           (list '!llm-self prefix {:receive? true}))]
+          (is (= :received-result (agent (llm/direct-init (program action)) :main)))
+          (is (= [:earlier-effect :continued] @marks)
+              "The earlier effect executes exactly once; the replaced tail never executes")
+          (is (= (mapv #(hash-map :from :observer :body %) bodies) @received)
+              "The actual evaluator resolves both stored message values, losslessly and in order")
+          (is (= 2 (count @calls)))
+          (is (= limit (:max-chars context/*context*)))
+          (is (empty? (:mailbox (coordinator/agent :main)))))
+        (finally (coordinator/close!))))))
+
+(defn- assert-rendered-receipts [prompt site-text bodies original-action]
+  (let [form (first (parse/read-all (parse/balance-parens prompt)))
+        forms (vec (rest (second (last form))))
+        positions (keep-indexed #(when (and (seq? %2) (= 'think (first %2))) %1) forms)]
+    (is (= 'quine (first form)))
+    (is (= (count bodies) (count positions)))
+    (is (some #{(quoted original-action)} forms)
+        "The old proposed action remains visible as inert quoted source")
+    (doseq [[i body] (map vector positions bodies)]
+      (let [annotation (nth forms i)
+            message-def (nth forms (inc i))
+            message-value (nth message-def 2)]
+        (is (= 'def (first message-def)))
+        (is (= site-text (second annotation)))
+        (is (= body (:body (if (and (seq? message-value) (= 'quote (first message-value)))
+                            (second message-value) message-value))))
+        (is (= '(quote (!extend completion)) (nth forms (+ i 2))))))))
+
+(deftest startup-receipt-is-not-a-generated-proposal
+  (let [calls (atom []) marks (atom [])
+        action '(do (probe/mark :startup-tail) :not-run)
+        agent (make-agent (fn [prompt] (swap! calls conj prompt) (suffix :continued))
+                          {:mark #(swap! marks conj %)})]
+    (coordinator/register! :main)
+    (doseq [body [:startup-one :startup-two]]
+      (coordinator/send! :main {:message {:from :observer :body body}}))
+    (is (= :continued (agent (llm/direct-init (program action)) :main)))
+    (is (empty? @marks))
+    (is (= 1 (count @calls)))
+    (assert-rendered-receipts
+      (first @calls)
+      "startup: tail not run"
+      [:startup-one :startup-two] action)
+    (is (not (str/includes? (first @calls) "proposed trailing expression")))))
+
+(deftest generated-batch-receipt-replaces-only-the-proposed-tail
+  (let [calls (atom []) marks (atom []) generating (promise) release-generation (promise)
+        proposed '(do (probe/mark :must-not-run) :proposed-result)
+        action (list 'do '(probe/mark :earlier-effect)
+                     (list '!llm-self prefix {:receive? true}))
+        agent (make-agent
+                (fn [prompt]
+                  (case (count (swap! calls conj prompt))
+                    1 (do (deliver generating true)
+                          (await! release-generation "release generated receipt")
+                          (suffix proposed))
+                    2 (suffix '(do (probe/mark :continued) :received-result))
+                    (throw (ex-info "Unexpected generation" {:prompt prompt}))))
+                {:mark #(do (swap! marks conj %) nil)})
+        runner (launch agent action generating)]
+    (try
+      (is (= true (await! generating "generated receipt ready")))
+      (doseq [body [:generated-one :generated-two]]
+        (coordinator/send! :main {:message {:from :observer :body body}}))
+      (deliver release-generation true)
+      (is (= :received-result (await! runner "generated receipt result")))
+      (is (= [:earlier-effect :continued] @marks)
+          "Earlier effects ran once; only the new proposed tail did not execute")
+      (is (= 2 (count @calls)))
+      (is (empty? (:mailbox (coordinator/agent :main))))
+      (assert-rendered-receipts
+        (second @calls)
+        "pre-eval: tail not run"
+        [:generated-one :generated-two] proposed)
+      (finally (stop! runner release-generation)))))

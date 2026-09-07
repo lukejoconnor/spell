@@ -128,7 +128,7 @@
       (let [pa (promise)]
         (deliver pa agent-raw)
         (let [fa (future (runtime/box asking-agent pa
-                           (runtime/make-awake-fn asking-agent agent-eval-fn)))]
+                           (runtime/make-awake-fn asking-agent agent-eval-fn true :pre-eval)))]
           (deref agent-started 2000 :timeout)
 
           ;; The agent should get back the pre-typed line as its "answer"
@@ -195,7 +195,7 @@
       (let [pa (promise)]
         (deliver pa "(quine completion (eval (do )))")
         (future (runtime/box :agent-a pa
-                  (runtime/make-awake-fn :agent-a agent-a-eval-fn)))
+                  (runtime/make-awake-fn :agent-a agent-a-eval-fn true :pre-eval)))
 
         ;; Wait for agent-a to issue the ask
         (is (.await latch 3 TimeUnit/SECONDS) "agent-a should have started")
@@ -273,7 +273,7 @@
         (let [pa (promise)]
           (deliver pa agent-raw)
           (let [fa (future (runtime/box asking-agent pa
-                             (runtime/make-awake-fn asking-agent agent-eval-fn)))]
+                             (runtime/make-awake-fn asking-agent agent-eval-fn true :pre-eval)))]
             (deref agent-started 2000 :timeout)
 
             (let [result (deref fa 5000 :timeout)]
@@ -435,14 +435,14 @@
     (let [;; A completion with a trailing '(agents/send :main "hello")
           completion "(quine completion (eval (do )) (eval (do '(agents/send :main \"hello\") )))"
           ;; Apply create-msg (the preemption transform)
-          create-msg-macro (#'runtime/create-msg 'msg-99 {:from :intruder :body "interrupt"})
+          create-msg-macro (#'runtime/create-msg 'msg-99 {:from :intruder :body "interrupt"} :pre-eval)
           preempted (apply-inbox-macros completion [create-msg-macro])]
 
       ;; After preemption, the original send expression is still present
       ;; but NOT as the last expression in the do block
       (is (.contains ^String preempted "agents/send :main")
           "original send expression should still be in the string (as inert data)")
-      (is (.contains ^String preempted "preempted or awakened by msg-99")
+      (is (.contains ^String preempted "pre-eval: tail not run")
           "think annotation should be present")
       (is (.contains ^String preempted ":from :intruder")
           "incoming message def should be present")
@@ -517,13 +517,13 @@
 
       ;; Compose preemption transform
       (runtime/-send! :victim
-        (#'runtime/create-msg 'msg-preempt {:from :other :body "interruption"}))
+        (#'runtime/create-msg 'msg-preempt {:from :other :body "interruption"} :pre-eval))
 
       ;; Deliver completion
       (deliver completion victim-completion)
 
       ;; Run box — make-awake-fn drains inbox, inside-fn sees transformed raw
-      (runtime/box :victim completion (runtime/make-awake-fn :victim inside-fn))
+      (runtime/box :victim completion (runtime/make-awake-fn :victim inside-fn true :pre-eval))
 
       ;; Verify the transform was applied
       (is (some? @transformed-raw) "inside-fn should have been called")
@@ -590,7 +590,7 @@
       (deliver completion victim-completion)
 
       ;; Run box with full eval pipeline
-      (runtime/box :victim completion (runtime/make-awake-fn :victim inbox-fn))
+      (runtime/box :victim completion (runtime/make-awake-fn :victim inbox-fn true :pre-eval))
 
       ;; Give :target time to process messages
       (Thread/sleep 300)
@@ -644,7 +644,7 @@
       ;; completion and appends a new extension. The original trailing
       ;; '(agents/send :target "important") becomes dead code.
       (try
-        (runtime/box :victim completion (runtime/make-awake-fn :victim inbox-fn))
+        (runtime/box :victim completion (runtime/make-awake-fn :victim inbox-fn true :pre-eval))
         (catch Exception _
           ;; The !extend continuation in the preempted turn will fail because our mock
           ;; returns nil (not a valid completion). That's fine — the point is

@@ -165,13 +165,25 @@
   []
   (eval/compose-macros []))
 
+(defn- receipt-annotation [receipt-site]
+  ;; Labels associate with the following msg-N binding. Tail means only this
+  ;; entry's supplied/proposed trailing expression, not any earlier effects.
+  ;; Explicit receive transforms the supplied program without evaluating it.
+  ;; The label, binding and continuation share the same contribution budget;
+  ;; intrinsically oversized names or syntax can still exceed that budget.
+  (case receipt-site
+    :startup "startup: tail not run"
+    :pre-eval "pre-eval: tail not run"
+    :wait-resume "wait resumed"
+    :dormant-resume "dormant resumed"
+    :explicit-receive "receive: not evaluated"))
+
 (defn- create-msg
   "Create a Spell macro that reopens a parsed completion, appends (def name value),
    and appends an !extend continuation so the recipient continues thinking.
-   Injects a think annotation so the agent knows the message preempted its
-   trailing expression (if active) or awakened it (if sleeping).
+   Annotates the actual receipt site without inferring earlier execution.
   Internal plumbing for signaling (waiting-for, spawn-result)."
-  [name value]
+  [name value receipt-site]
   {:spell/macro true
    :expander
    {:spell/fn true
@@ -180,7 +192,7 @@
     ;; in the same contribution budget as the message and its annotation.
     :body [(list 'let
              ['forms (list 'context-forms
-                       [{:form (list 'quote (list 'think (str "[preempted or awakened by " name "]")))}
+                       [{:form (list 'quote (list 'think (receipt-annotation receipt-site)))}
                         {:name (list 'quote name) :value (list 'quote value)}
                         {:form '(list 'quote (list '!extend (second q)))}])]
              '(reopen q
@@ -189,15 +201,21 @@
                 (reopen-eval (nth forms 2))))]}})
 
 
-(defn- envelope-macro [{:keys [message macro]}]
-  (or macro (create-msg (symbol (gensym "msg-")) message)))
+(defn- envelope-macro [receipt-site {:keys [message macro]}]
+  ;; Low-level send-msg-fn envelopes are caller-authored transforms: preserve them
+  ;; unchanged. Only ordinary message envelopes synthesize a msg-N and annotation.
+  (or macro (create-msg (symbol (gensym "msg-")) message receipt-site)))
 
 (defn- drain-inbox-macros!
   "Atomically take exactly one mailbox batch for handle (coordinator/drain! removes the
    batch, rotates its signal, and claims pending request slots in one transition) and
    convert each envelope to an inbox macro, preserving mailbox order."
-  [handle]
-  (mapv envelope-macro (coordinator/drain! handle)))
+  [handle receipt-site]
+  ;; Reject bad caller metadata before accepting or claiming any message.
+  (when-not (#{:startup :pre-eval :wait-resume :dormant-resume :explicit-receive} receipt-site)
+    (throw (ex-info "Unknown receipt site"
+                    {:type :invalid-receipt-site :receipt-site receipt-site})))
+  (mapv #(envelope-macro receipt-site %) (coordinator/drain! handle)))
 
 (defn receive
   "Explicit nonblocking receipt. Validates that program is a canonical completed quine,
@@ -222,7 +240,7 @@
                             (assoc (ex-data e) :handle handle) e))))
      (when-not (symbol? (second program))
        (throw (ex-info "receive requires a quine with a symbol name" {:program program})))
-     (let [macros (drain-inbox-macros! handle)
+     (let [macros (drain-inbox-macros! handle :explicit-receive)
            transformed (if (seq macros)
                          (inbox/apply-inbox-macros program macros
                                                   {:env (select-keys eval/*spell-env* ['eval])
@@ -234,21 +252,21 @@
        transformed)))
 
 (defn make-awake-fn
-  ([handle eval-fn] (make-awake-fn handle eval-fn true))
-  ([handle eval-fn receive?]
+  "Build an evaluation entry with a caller-supplied factual receipt site."
+  [handle eval-fn receive? receipt-site]
   (fn [raw]
     (binding [*checkpoint?* receive?]
-     (let [before-awake (:spell/before-awake (meta eval-fn))
-          after-awake (:spell/after-awake (meta eval-fn))]
-      (when before-awake (before-awake))
-      (try
-        (let [macros (if receive? (drain-inbox-macros! handle) [])
-              transformed (if (and (seq macros) (not (inbox-aware-eval-fn? eval-fn)))
-                            (inbox/materialize-inbox-raw raw macros {:builtins eval/core-builtins}) raw)]
-          (record-last-raw! handle transformed)
-          (binding [*current-eval-fn* (or (:spell/wake-eval-fn (meta eval-fn)) eval-fn)]
-            (if (inbox-aware-eval-fn? eval-fn) (eval-fn raw macros) (eval-fn transformed))))
-        (finally (when after-awake (after-awake)))))))))
+      (let [before-awake (:spell/before-awake (meta eval-fn))
+            after-awake (:spell/after-awake (meta eval-fn))]
+        (when before-awake (before-awake))
+        (try
+          (let [macros (if receive? (drain-inbox-macros! handle receipt-site) [])
+                transformed (if (and (seq macros) (not (inbox-aware-eval-fn? eval-fn)))
+                              (inbox/materialize-inbox-raw raw macros {:builtins eval/core-builtins}) raw)]
+            (record-last-raw! handle transformed)
+            (binding [*current-eval-fn* (or (:spell/wake-eval-fn (meta eval-fn)) eval-fn)]
+              (if (inbox-aware-eval-fn? eval-fn) (eval-fn raw macros) (eval-fn transformed))))
+          (finally (when after-awake (after-awake))))))))
 
 (defn- await-message! [handle]
   ;; The signal is a notification adapter. Mailbox and run closure are authoritative.
@@ -260,7 +278,7 @@
 (defn- make-asleep-fn [handle eval-fn]
   (fn [raw]
     (await-message! handle)
-    (box handle raw (make-awake-fn handle eval-fn))))
+    (box handle raw (make-awake-fn handle eval-fn true :wait-resume))))
 
 (defn box
   ([handle completion-source inside-fn]
@@ -295,7 +313,7 @@
           (try
             ;; Wait outside the root box: the earlier lifecycle has unwound.
             (await-message! handle)
-            (run-root-box handle (or raw "") (make-awake-fn handle eval-fn) eval-fn completion)
+            (run-root-box handle (or raw "") (make-awake-fn handle eval-fn true :dormant-resume) eval-fn completion)
             (catch Throwable e
               (when-not (= :coordinator-closed (:type (ex-data e)))
                 (coordinator/retire! handle completion (child-failure handle :startup e))

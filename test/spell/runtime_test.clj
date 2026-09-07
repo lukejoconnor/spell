@@ -76,7 +76,7 @@
       (runtime/register! handle)
       (runtime/-send! handle (append-forms-macro '(def pre :loaded)))
       (deliver p raw)
-      (is (.contains ^String (runtime/box handle p (runtime/make-awake-fn handle eval-fn))
+      (is (.contains ^String (runtime/box handle p (runtime/make-awake-fn handle eval-fn true :pre-eval))
                      "(def pre :loaded)")))))
 
 (deftest box-no-transform-identity-test
@@ -90,7 +90,7 @@
       (runtime/register! handle)
       (deliver p raw)
       (is (= (pr-str (parse/read-first raw))
-             (runtime/box handle p (runtime/make-awake-fn handle eval-fn)))))))
+             (runtime/box handle p (runtime/make-awake-fn handle eval-fn true :pre-eval)))))))
 
 (deftest append-forms-macro-reopens-last-top-level-quine-test
   (testing "queued macros target the parsed completion form and leave earlier top-level forms inert"
@@ -122,7 +122,7 @@
       (runtime/register! handle)
       (runtime/send-msg-fn (append-forms-macro '(def pre :hello)) handle)
       (deliver p raw)
-      (is (.contains ^String (runtime/box handle p (runtime/make-awake-fn handle eval-fn))
+      (is (.contains ^String (runtime/box handle p (runtime/make-awake-fn handle eval-fn true :pre-eval))
                      "(def pre :hello)")))))
 
 (deftest multiple-sends-compose-test
@@ -137,7 +137,7 @@
       (runtime/send-msg-fn (append-forms-macro '(def a :first)) handle)
       (runtime/send-msg-fn (append-forms-macro '(def b :second)) handle)
       (deliver p raw)
-      (let [body-forms (drop 1 (second (last (runtime/box handle p (runtime/make-awake-fn handle eval-fn)))))]
+      (let [body-forms (drop 1 (second (last (runtime/box handle p (runtime/make-awake-fn handle eval-fn true :pre-eval)))))]
         (is (= '(def a :first) (nth body-forms 0)))
         (is (= '(def b :second) (nth body-forms 1)))))))
 
@@ -162,7 +162,7 @@
         (runtime/send h-target 42))
       ;; Process the message through box + awake-fn (which drains inbox)
       (deliver p "(quine completion (eval (do )))")
-      (runtime/box h-target p (runtime/make-awake-fn h-target eval-fn))
+      (runtime/box h-target p (runtime/make-awake-fn h-target eval-fn true :pre-eval))
       ;; Should contain def with :from and :body
       (is (.contains ^String @received ":from :test-sender"))
       (is (.contains ^String @received ":body 42"))
@@ -183,7 +183,7 @@
           (runtime/reply fake-msg "reply-value")))
       ;; Process the message at h-b (awake-fn drains inbox)
       (deliver p "(quine completion (eval (do )))")
-      (runtime/box h-b p (runtime/make-awake-fn h-b eval-fn))
+      (runtime/box h-b p (runtime/make-awake-fn h-b eval-fn true :pre-eval))
       (is (.contains ^String @b-received ":from :reply-a"))
       (is (.contains ^String @b-received ":body \"reply-value\"")))))
 
@@ -211,7 +211,7 @@
       (deliver p "raw")
       ;; Capture the completed promise before box runs
       (let [cp (:completed (coordinator/agent handle))
-            result (runtime/run-root-box handle p (runtime/make-awake-fn handle eval-fn) eval-fn)]
+            result (runtime/run-root-box handle p (runtime/make-awake-fn handle eval-fn true :pre-eval) eval-fn)]
         (is (= :result result))
         ;; Completed promise should have been delivered with result
         (is (= :result (deref cp 100 :timeout))))))
@@ -240,7 +240,7 @@
       (deliver p "outer-root-raw")
       ;; Capture :completed before run-root-box
       (let [cp (:completed (coordinator/agent handle))]
-        (runtime/run-root-box handle p (runtime/make-awake-fn handle eval-fn) eval-fn)
+        (runtime/run-root-box handle p (runtime/make-awake-fn handle eval-fn true :pre-eval) eval-fn)
         ;; Wait for orphan box to start and sleep
         (Thread/sleep 100)
         ;; Wake the orphan and confirm it reuses the innermost raw.
@@ -270,7 +270,7 @@
       (let [cp (:completed (coordinator/agent handle))]
         (deliver p (ex-info "boom" {}))
         (is (thrown-with-msg? Exception #"boom"
-              (runtime/run-root-box handle p (runtime/make-awake-fn handle eval-fn) eval-fn)))
+              (runtime/run-root-box handle p (runtime/make-awake-fn handle eval-fn true :pre-eval) eval-fn)))
         (is (:spell/child-failure (deref cp 100 :timeout)))
         ;; Pre-entry failure should still spawn the sleeping orphan for next turn.
         (Thread/sleep 100)
@@ -316,7 +316,7 @@
       (runtime/register! h-a)
       (runtime/register! h-b)
       (deliver p "(quine completion (eval (do )))")
-      (let [fa (future (runtime/box h-a p (runtime/make-awake-fn h-a a-eval-fn)))]
+      (let [fa (future (runtime/box h-a p (runtime/make-awake-fn h-a a-eval-fn true :pre-eval)))]
         ;; Wait for A to start
         (deref a-started 2000 :timeout)
         (Thread/sleep 50)
@@ -644,11 +644,13 @@
           p (promise)]
       (runtime/register! handle)
       (deliver p raw)
-      (let [result (deref (future (runtime/box handle p (runtime/make-awake-fn handle eval-fn)))
+      (let [result (deref (future (runtime/box handle p (runtime/make-awake-fn handle eval-fn true :pre-eval)))
                           5000 :timeout)]
         (is (string? result))
         (is (.contains ^String result ":from :future"))
-        (is (.contains ^String result ":body :ask-await-ok"))))))
+        (is (.contains ^String result ":body :ask-await-ok"))
+        (is (re-find #"\(think \"wait resumed\"\)" result))
+        (is (not (.contains ^String result "tail not run")))))))
 
 (deftest blocking-namespace-env-gated-test
   (testing "blocking/ is unavailable outside futures and available inside futures"
@@ -706,7 +708,7 @@
       (runtime/start-box h-b b-eval-fn b-raw)
       (Thread/sleep 50)
       (deliver pa a-raw)
-      (let [fa (future (runtime/box h-a pa (runtime/make-awake-fn h-a a-eval-fn)))]
+      (let [fa (future (runtime/box h-a pa (runtime/make-awake-fn h-a a-eval-fn true :pre-eval)))]
         (deref a-started 2000 :timeout)
         ;; A should unblock when B replies
         (let [result (deref fa 5000 :timeout)]
@@ -743,7 +745,7 @@
       (runtime/start-box h-b b-eval-fn b-raw)
       (Thread/sleep 50)
       (deliver pa a-raw)
-      (let [fa (future (runtime/box h-a pa (runtime/make-awake-fn h-a a-eval-fn)))]
+      (let [fa (future (runtime/box h-a pa (runtime/make-awake-fn h-a a-eval-fn true :pre-eval)))]
         (deref a-started 2000 :timeout)
         (let [result (deref fa 5000 :timeout)]
           (is (string? result))
@@ -793,12 +795,12 @@
           (Thread/sleep 50)
           ;; Only child A completes — parent should NOT wake yet
           (future (runtime/run-root-box h-a cp-a
-                    (runtime/make-awake-fn h-a eval-a) eval-a))
+                    (runtime/make-awake-fn h-a eval-a true :pre-eval) eval-a))
           (Thread/sleep 100)
           (is (not (realized? result-future)) "parent should still be blocked")
           ;; Now child B completes — parent should wake with combined results
           (runtime/run-root-box h-b cp-b
-            (runtime/make-awake-fn h-b eval-b) eval-b)
+            (runtime/make-awake-fn h-b eval-b true :pre-eval) eval-b)
           (let [result (deref result-future 5000 :timeout)]
             (is (string? result))
             (is (.contains ^String result ":result-a"))
@@ -823,7 +825,7 @@
                   (runtime/ask-builtin [h-child])))]
           (Thread/sleep 50)
           (runtime/run-root-box h-child cp
-            (runtime/make-awake-fn h-child child-eval-fn) child-eval-fn)
+            (runtime/make-awake-fn h-child child-eval-fn true :pre-eval) child-eval-fn)
           (let [result (deref result-future 5000 :timeout)]
             (is (string? result))
             (is (.contains ^String result ":child-done"))))))))
@@ -850,7 +852,7 @@
                         (deliver cp child-raw)
                         (future
                           (runtime/run-root-box t cp
-                            (runtime/make-awake-fn t (fn [_] (name t)))
+                            (runtime/make-awake-fn t (fn [_] (name t)) true :pre-eval)
                             (fn [_] (name t))))))
                     targets)]
           (doseq [bf box-futures] (deref bf 2000 :timeout)))
@@ -878,7 +880,7 @@
       ;; then eval-fn sees the transformed completion
       (deliver p raw)
       (is (.contains ^String
-                      (runtime/box handle p (runtime/make-awake-fn handle eval-fn))
+                      (runtime/box handle p (runtime/make-awake-fn handle eval-fn true :pre-eval))
                       "(def sent :hello)")
           "awake-fn should drain the preserved transform then call eval-fn")))
 
@@ -892,7 +894,7 @@
       (is (= [] (:mailbox (coordinator/agent handle))))
       ;; make-awake-fn drains empty inbox (identity macro), raw passes through
       (deliver p raw)
-      (is (= raw (runtime/box handle p (runtime/make-awake-fn handle eval-fn)))))))
+      (is (= raw (runtime/box handle p (runtime/make-awake-fn handle eval-fn true :pre-eval)))))))
 
 (deftest inbox-cas-seeds-when-empty-test
   (testing "inherited -llm seeds inbox when it's empty (no pending sends)"
@@ -1068,7 +1070,7 @@
       (deliver completion raw)
       ;; Start box in a future — it will drain inbox (picking up the message)
       ;; and call eval-fn, which calls block-for-message.
-      (future (runtime/box handle completion (runtime/make-awake-fn handle eval-fn)))
+      (future (runtime/box handle completion (runtime/make-awake-fn handle eval-fn true :pre-eval)))
       ;; Wait for agent to reach block-for-message
       (is (= true (deref reached-block 2000 :timeout))
           "agent should reach block-for-message")

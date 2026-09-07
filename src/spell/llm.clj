@@ -567,7 +567,7 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
                                             (build-init prompt-str)))
                            trace-data (atom nil)
                            inbox-fn (make-inbox-fn config' trace-data)
-                           awake-fn (runtime/make-awake-fn handle inbox-fn)]
+                           awake-fn (runtime/make-awake-fn handle inbox-fn true :startup)]
                        (when-not (runtime/handle? handle)
                          (runtime/register! handle))
                        (runtime/run-root-box handle init-program awake-fn inbox-fn)))
@@ -593,7 +593,7 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
                                            wake-eval-fn
                                            (let [f (make-inbox-fn (assoc config' :receive? false) trace-data)]
                                              (with-meta f (assoc (meta f) :spell/wake-eval-fn wake-eval-fn))))
-                                awake-fn (runtime/make-awake-fn runtime/*current-handle* inbox-fn receive?)]
+                                awake-fn (runtime/make-awake-fn runtime/*current-handle* inbox-fn receive? :pre-eval)]
                             (binding [runtime/*checkpoint?* receive?]
                               (-llm config' runtime/*current-handle* awake-fn nil prompt-str trace-data))))
         compiled-agent (with-meta start-root {:spell/compiled-agent true
