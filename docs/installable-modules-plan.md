@@ -32,7 +32,7 @@ Board state remains in `:mailing-list`; there is no private executable `:code` r
 - Bundle checks: six loadable definitions and documented exports, preserved orchestration behavior, shared-state separation, exact successful board transaction results, duplicate explicit init error, tracked onboarding/notifications, no private code table or removed wrappers.
 - Documentation checks: executable Spell syntax, one-indexed half-open `io/read-lines` examples with local zero-indexed `subvec`, no active old API instructions, preserved predecessor pruning-evidence antipattern, navigable before/after model-facing inventory.
 - Deterministic focused command: `clojure -M:test -n spell.installable-modules-test`. Broader aliases and actual test receipts belong to the validation worker; do not infer a pass from this command's presence.
-- Live acceptance: root [artifact and companion](../INSTALLABLE_MODULES_LIVE_ACCEPTANCE.md), prepared for a **fresh runtime** with two actual agents. No paid subprocess is authorized during preparation. Parse/static checks are not live acceptance.
+- Live acceptance: root artifact and companion (`INSTALLABLE_MODULES_LIVE_ACCEPTANCE.md`), prepared for a **fresh runtime** with two actual agents. No paid subprocess is authorized during preparation. Parse/static checks are not live acceptance.
 
 ## Review evidence
 

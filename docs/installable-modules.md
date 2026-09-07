@@ -25,6 +25,8 @@ These are successive quoted trailing expressions in the normal completion wrappe
 '(!call-now verdict (patterns/call :check-result :run "What is 6 * 9?" 54))
 ```
 
+Bundled definitions are classpath resources under `modules/`, sourced from `config/spl-lib` in a checkout and included in packaged builds. The same loader works from a JAR outside the checkout. Installation copies the selected definition into the run-local registry.
+
 `catalog` lists compact bundled/custom metadata; a module-specific catalog includes docs, derived `:params`, and `:requires`, never function bodies. Installed status distinguishes a bundled definition available for installation from one already in this run. Discovery and ordinary calls do not require inserting the executable body into the next model prefix.
 
 | Operation | Contract |
@@ -80,7 +82,7 @@ Every participant may safely install/reuse the module. Exactly one administrator
                   {:lists [:design :implementation] :from :earliest}))
 ```
 
-Lists must already have been created by the administrator. Replace `(patterns/mail operation args)` with `(patterns/call :mailing-list :call operation args)`. The board has no private `:code` registry. Inspect/edit its general module entries through `source`/`update`; do not put executable source back into board state. Duplicate explicit `:init` remains an error. See [mailing-list operations](./mailing-list.md) and the [skill](../resources/skills/mailing-list/SKILL.md).
+Lists must already have been created by the administrator. Replace `(patterns/mail operation args)` with `(patterns/call :mailing-list :call operation args)`. The board has no private `:code` registry. Inspect/edit its general module entries through `source`/`update`; do not put executable source back into board state. Duplicate explicit `:init` remains an error. See [mailing-list operations](./mailing-list.md) and the skill (`resources/skills/mailing-list/SKILL.md`).
 
 ## Evidence and bounded context
 
@@ -92,4 +94,4 @@ For model-facing recovery/continuation guidance, see the committed [recovery con
 
 ## Review and acceptance
 
-See the [model-facing change inventory](./installable-modules-change-inventory.md), [approved disposition/validation plan](./installable-modules-plan.md), and root [live acceptance companion](../INSTALLABLE_MODULES_LIVE_ACCEPTANCE.md). A running JVM compiled before the migration still exposes the old API; only a fresh runtime can validate the new implementation. Preparing or parsing the live artifact is not a paid-run success claim.
+See the [model-facing change inventory](./installable-modules-change-inventory.md), [approved disposition/validation plan](./installable-modules-plan.md), and root live acceptance companion (`INSTALLABLE_MODULES_LIVE_ACCEPTANCE.md`). A running JVM compiled before the migration still exposes the old API; only a fresh runtime can validate the new implementation. Preparing or parsing the live artifact is not a paid-run success claim.

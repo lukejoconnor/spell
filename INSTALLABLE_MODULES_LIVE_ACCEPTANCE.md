@@ -2,30 +2,31 @@
 
 ## Status and scope
 
-**Prepared, not paid-run accepted.** `INSTALLABLE_MODULES_LIVE_ACCEPTANCE.spl` is a complete, self-contained init program. It uses two actual agent lifecycles (root and `:module-peer`), deterministic setup/effects, and small real-model audits. It needs no project fixture or external helper. The existing coordination JVM has the old API; start a fresh runtime after the host/bundle migration is present.
+**Live acceptance passed on 2026-09-07.** `INSTALLABLE_MODULES_LIVE_ACCEPTANCE.spl` is a complete, self-contained init program. It uses two actual agent lifecycles (root and `:module-peer`), deterministic setup/effects, and small real-model audits. It needs no project fixture or external helper. The acceptance ran in a fresh runtime after the host/bundle migration and packaging fix.
 
-No paid subprocess was run to prepare this artifact. Static parsing/config inspection and a future live result are different evidence. Do not infer a pass from the expected receipts below.
+Run `2026-09-07-installable-pattern-modules-003` completed with 8 Codex/Astra xhigh calls, observed cost $0.83954, and exit 0. Independent trace inspection verified all eight actual model prefixes omit both executable-body sentinels; root 11 → 12, peer 11 → 12 → 12, preserved edits, and the actual peer result on edge 1. The peer arrived before a wait was needed. One unsupported `hash-map` call recovered using retained receipts without repeating effects. The explicit init program supplies the deterministic installation/edit; this demonstrates cross-agent execution and model auditing, not an independently invented edit.
 
 ## Preparation checks actually completed
 
 - Complete artifact parsed as one Spell form in a fresh JVM (exit 0).
 - The artifact's parsed program executed in a fresh isolated TestProvider run with root and peer lifecycles (exit 0; three scripted provider responses). Actual outputs: root 11 → 12; peer 11 → 12 → 12; reuse receipts `:installed? false`; complete entry keys `[:doc :requires :source]`; scripted peer audit and opaque-prefix checks true. This verifies deterministic execution, **not real-model acceptance**. The checker used non-prefill TestProvider responses so it could inspect each actual audit prefix; no source refetch was used for invocation.
-- Documentation source checker and `git diff --check` passed. Full documentation build could not run because `vitepress` was not installed (exit 127); no rendered-site success is claimed.
+- Documentation source checks and production VitePress build passed during Codex acceptance after installing locked dependencies and correcting source links. The preparation attempt had stopped at missing VitePress; that historical failure is preserved in the run report.
 
 ## Exact fresh-runtime command
 
-Run from the repository root, only when live spend is authorized and `OPENAI_API_KEY` is configured:
+Run from the repository root with local Codex authentication. The user authorized this acceptance within the shared $200 module-work budget; the following run ceiling is $8.
 
 ```bash
 bin/spell --init-file INSTALLABLE_MODULES_LIVE_ACCEPTANCE.spl \
   -a config/agent-profiles/io-tc.agent.edn \
-  -m openai-tc:gpt-6-astra -R medium \
-  -b 1.00 -d 8 -M 1600 --context-max-chars 10000
+  -m codex-tc:gpt-6-astra -R xhigh \
+  --budget 8 --context-max-chars 10000 \
+  --trace-dir /absolute/path/to/acceptance-bundle/trace
 ```
 
-No `-v`, `--log`, or trace flag is needed. Do not pass this complete program as a positional prompt file. Budget is $1.00 for the run (not a promise of successful completion); depth is 8 and response token cap is 1600. A budget/depth/provider failure is a failed/incomplete acceptance, not a pass.
+Pass the complete program with `--init-file`. Reasoning is xhigh; the default unlimited depth is retained. Trace output records execution for review; verbose model logging is disabled. Budget/provider failure means incomplete acceptance. The supervisor's durable run bundle contains the exact executed command and final usage.
 
-Configuration verified by reading the checked-out files and successful `bin/spell -h` (exit 0): `config/model-profiles/openai-tc.edn` selects OpenAI Responses, mandatory tool-call transport, `OPENAI_API_KEY`, GPT-6 Astra, and medium reasoning; the explicit CLI flags above pin model/reasoning/bounds. `config/agent-profiles/io-tc.agent.edn` inherits the tool-call base prompt and exposes `patterns`, `agents`, `globals`, and `io`; the peer inherits that compiled agent. Credential validity, provider availability, actual billing, and paid runtime success are **not verified** by these checks.
+The checked-out `config/model-profiles/codex-tc.edn` uses local Codex authentication and tool-call transport. `config/agent-profiles/io-tc.agent.edn` exposes `patterns`, `agents`, `globals`, and `io`; the peer inherits the compiled agent. Actual compiled provider/reasoning and execution receipts must be checked in the acceptance bundle.
 
 ## What the program does
 

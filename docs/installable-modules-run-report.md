@@ -4,7 +4,7 @@ Run: `2026-09-07-installable-pattern-modules-002` · branch: `codex/dogfood-reli
 
 ## Delivered design and scope
 
-Five effect verbs replace the always-loaded wrapper library: `patterns/install`, `catalog`, `source`, `update`, and `call`. Definitions live in the shared, run-local globals `:modules` store. Install is atomic if-absent and preserves edits/state on reuse. Catalog returns body-free metadata; source returns the complete executable definition or selected entry. Update evaluates a pure transform to the next definition and returns the exact committed definition (not a `[definition result]` protocol). Call uses ordinary evaluator semantics, fresh function/argument locals, dynamic scope, arity/recur and opaque values. An in-flight call retains its selected function; a nested call sees the latest module. Requirements are prechecks, not capability grants. This is not a sandbox, policy/cache/CAS framework, or wrapper compatibility layer.
+Five effect verbs replace the always-loaded wrapper library: `patterns/install`, `catalog`, `source`, `update`, and `call`. Definitions live in the shared, run-local globals `:modules` store. Install is atomic if-absent and preserves edits/state on reuse. Catalog returns body-free metadata; source returns the complete executable definition or selected entry. Update evaluates a pure transform to the next definition and returns a compact receipt from the exact committed snapshot (`{:module k :fns [...]}`). Call uses ordinary evaluator semantics, fresh function/argument locals, dynamic scope, arity/recur and opaque values. An in-flight call retains its selected function; a nested call sees the latest module. Requirements are prechecks, not capability grants. This is not a sandbox, policy/cache/CAS framework, or wrapper compatibility layer.
 
 Six editable bundles replace the deleted `config/spl-lib/patterns.spl`: check-result (explicit judging), ralph (persistent retry), team (editable decomposition/dependencies/review), fix-loop (test-feedback repair), relay (context-separated reasoning/verifier), and mailing-list (quiet coordination with evidence). The first five expose `:run`; mailing-list exposes `:init`, `:call`, `:change`, `:digest`, and `:deliver`. `clean-prompt` was deliberately removed: implicit cleanup/execution did not justify a separate retained bundle. These are opt-in source policies, not additional host rules.
 
@@ -12,10 +12,10 @@ Mailing-list state is separate from module definitions; duplicate board initiali
 
 ## Artifacts and model-facing inventory
 
-- Host: [patterns.clj](../src/spell/patterns.clj), [stdlib.clj](../src/spell/stdlib.clj); editable source: [six module files](../config/spl-lib/modules/).
+- Host: patterns.clj (`src/spell/patterns.clj`), stdlib.clj (`src/spell/stdlib.clj`); editable source: six module files (`config/spl-lib/modules/`).
 - [Design/API guide](installable-modules.md), [plan and disposition](installable-modules-plan.md), and [change inventory](installable-modules-change-inventory.md). The inventory supplies baseline/diff recipes and full editable-source links/locators for the before/after model-facing surface, including generated namespace prompts, catalog, onboarding, and recovery. It is navigation to complete source, not a claim that catalog contains bodies.
 - Public README, root/config AGENTS, API/capabilities/mailing-list docs, VitePress navigation, mailing-list skill and both repository spell-developer skill copies were migrated. Predecessor evidence/pruning guidance was preserved.
-- [Example program](../examples/installable-modules.spl) and [companion](../examples/installable-modules.md); [live acceptance program](../INSTALLABLE_MODULES_LIVE_ACCEPTANCE.spl) and [companion](../INSTALLABLE_MODULES_LIVE_ACCEPTANCE.md).
+- Example program (`examples/installable-modules.spl`) and companion (`examples/installable-modules.md`); live acceptance program (`INSTALLABLE_MODULES_LIVE_ACCEPTANCE.spl`) and companion (`INSTALLABLE_MODULES_LIVE_ACCEPTANCE.md`).
 - Tests cover the module host, loading, retained patterns, mailing-list, and maintained agent/LLM/workflow fixtures; aliases include the new namespace. Main coordinated/reviewed and wrote this report; implementation workers owned production and test edits. Main owns commits. No library git/shell automation was added; relevant tests use temporary repositories/mocks.
 
 ## Verification receipts
@@ -30,7 +30,12 @@ Mailing-list state is separate from module definitions; duplicate board initiali
 | Final fast alias | `clojure -M:test-fast`: 532 tests, 5,078 assertions, 0 failures/errors, exit 0. Log: `/tmp/installable-modules-final-fast.log`. |
 | Final slow alias | `clojure -M:test-slow`: 287 tests, 1,280 assertions, 0 failures/errors, exit 0. Log: `/tmp/installable-modules-final-slow.log`. Each previously failed alias was rerun once after corrections. |
 | Scripted live artifact | Fresh TestProvider execution, exit 0, three responses. Root values `[11 12]`; actual peer values `[11 12 12]`; repeat install false; source entry keys `[:doc :requires :source]`; peer audit and opaque-prefix guards true. Peer fetched source once to edit, not again merely to call. |
-| Docs/source checks | Worker receipts: source check, diff check, and CLI help exit 0. Docs build exit 127: VitePress missing; not a passing build. |
+| Initial docs checks | Worker source/diff/CLI-help checks passed. Initial build exit 127: VitePress missing. Codex installed locked dependencies, then found and corrected 32 invalid links outside the documentation root. |
+| Final documentation | Documentation source check and production VitePress build passed. |
+| Packaged source regression | After `68cf878`: focused loader/module 23 tests, 230 assertions, zero failures/errors. Actual child JVM loads modules from a JAR outside the checkout with filesystem classpaths and SPELL_ROOT removed. |
+| Post-packaging fast alias | 533 tests, 5,081 assertions, zero failures/errors, exit 0. The earlier slow pass applies to unchanged behavior outside this loader correction. |
+| Fresh real-agent pilot 003 | 8 Codex/Astra xhigh calls, exit 0, independent trace PASS. Root 11 → 12; peer 11 → 12 → 12; reuse preserves the edit. All eight model prefixes omit executable-body sentinels. Actual child result arrives on edge 1. No wait needed. |
+| Fresh Fable acceptance review 004 | One Fable 5.1 high call, APPROVE, no required defects. Supplied complete packaging patch/host/jar test reviewed; model did not execute tests. |
 
 Expanded focused tests positively cover invalid definition/install/update rollback; concurrent install/update receipts and state; missing functions/capabilities; fixed arity; selected executable source; opaque/lazy value identity; public API run isolation; overlapping in-flight frames with latest nested lookup; and actual-agent install/reuse/edit/call/catalog behavior. Earlier 10-test/31-assertion host checks and 15 independent probes were preliminary, not substitutes for final verification. Intermediate test-development failures (wrong prefix capture and an unsupported speculative variadic fixture) were corrected before the focused pass; retained coverage uses approved fixed-arity behavior.
 
@@ -46,12 +51,18 @@ Recovery change is separately committed as `cffd293`: blanket reread advice beca
 
 ## Cost and handoff
 
-Observed usage snapshot before final commits: run 002 **$162.183154** across 652 calls (Astra $143.848464; Fable $18.334690). This is a snapshot, not the final bill. Prior run 001: **$18.03084425**. Incurred aggregate at that snapshot: **$180.21399825**, leaving **$19.78600175** before further finalization. The originally separate **$20** Codex acceptance reserve is not incurred spend and no longer fits in full beneath $200: projected total with that reserve is **$200.21399825**. The nominal main cap of $171 is therefore insufficient to enforce the aggregate ceiling. Gate any later paid acceptance on final usage reconciliation and a reduced available budget; do not assume the full reserve remains. No paid acceptance was launched here.
+| Run | Calls | Observed cost |
+| --- | ---: | ---: |
+| 001, failed before implementation | 42 | $8.03084425 |
+| 002, implementation and delegated reviews | 661 | $164.47908 |
+| 003, fresh real-agent pilot | 8 | $0.83954 |
+| 004, fresh Fable packaging review | 1 | $0.46972 |
+| **Total** | **712** | **$173.81918425** |
 
-No paid subprocess Spell run, notebook/home/global-skill edit, branch/reset/push/merge/PR was performed by this finalization. Codex retains independent fresh-runtime/live acceptance, notebook reconciliation and the final user report. Proposed paid command (not executed here):
+The shared ceiling was $200. This corrects the implementation report's $10 overstatement of run 001; actual usage files are authoritative. No reserve is counted as incurred spend.
 
-```sh
-bin/spell --init-file INSTALLABLE_MODULES_LIVE_ACCEPTANCE.spl -a config/agent-profiles/io-tc.agent.edn -m openai-tc:gpt-6-astra -R medium -b 1.00 -d 8 -M 1600 --context-max-chars 10000
-```
+Codex accepted the implementation after independent source/trace review, packaging correction, documentation build and the live pilot. The fresh Fable review's inaccurate fast-alias comment finding was corrected; its optional resource-prefix suggestion and 30-second deterministic child-JVM timeout concern did not establish defects and were left unchanged. Bundles now use a single classpath resource route; no filesystem fallback remains.
 
-Provider credentials, billing, and real-provider acceptance remain unverified. Do not reuse the old coordination JVM to accept the new module API. Final migration receipts, commit IDs, and final observed usage follow in the completion handoff.
+The live pilot encountered one unsupported `hash-map` call and recovered from retained evidence without repeating effects. The explicit init program supplies installation and the peer edit; models audit real receipts. This bounded test proves shared execution and omitted bodies in those prefixes. It does not claim autonomous invention of the edit, test every orchestration policy live, or establish whole-agent performance gains. Recovery-depth accounting remains the open limitation described above.
+
+Changes remain committed locally on `codex/dogfood-reliability`. No push, merge or PR was performed. Codex acceptance artifacts, exact editable source copies, source hashes, trace receipts and the notebook entry are stored in the corresponding notebook run bundles.
