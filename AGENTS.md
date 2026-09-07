@@ -40,6 +40,7 @@ This repo includes Spell-specific skills under `.agents/skills/`. Use them as th
 | `config/` | Runtime agent, provider, prompt, web, and Spell library configuration. |
 | `examples/` | Runnable `.spl` examples plus short writeups for selected examples. |
 | `test/` | Unit and integration tests. |
+| `perf/` | Deterministic runtime and memory benchmarks, measured baselines, and optimization targets. See `perf/README.md`. |
 | `data/pricing.edn` | Model pricing table used for usage and cost reporting. |
 | `docs/` | Public documentation for the release. |
 | `docs/index.md` | Documentation home; preview the VitePress site with `npm ci` and `npm run docs:dev`. |
@@ -170,6 +171,8 @@ clojure -M:test-slow
 ```
 
 The fast suite covers parser, evaluator, provider, agent, web, API, trace, macro, and prompt-facing behavior. The slow suite covers concurrency, I/O, runtime, globals, and user-provider behavior. `deps.edn` is the authoritative list of test aliases and included namespaces.
+
+For performance work, read `perf/README.md` and `perf/findings-and-targets.md`. Use the optional `:perf` alias or `python3 perf/run.py`; give new measurements a distinct `--name` to preserve the checked-in baseline.
 
 Use `-T` to record an execution trace under the temporary Spell trace directory, or `--trace-dir DIR` to write it to an explicit durable location. Use `--dogfood` to expose the feedback namespace to the main agent and its workers. Use `--agents-md` to prepend the current working directory's `AGENTS.md`, capped at 32 KiB, to a natural-language task. The trace tool can inspect a trace directory directly, for example:
 

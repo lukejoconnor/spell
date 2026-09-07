@@ -1,0 +1,31 @@
+{
+  "measured_base": "67b7cf7ba919a9dca9c78a5b9e9e0ed5116d5c1f",
+  "baseline_sha256": "54754377fd62516b5971715bcd334237733b07370e24fc83fa514d98a08837ce",
+  "baseline_run": "2026-09-07-runtime-audit-002",
+  "baseline_status": "80/80 cases passed; outer Spell reporting failed afterwards",
+  "measurement_functions_unchanged_after_review": true,
+  "post_measurement_changes": [
+    {
+      "path": "perf/spell/perf/context.clj",
+      "measured_sha256": "c35ea823ba4ba28f973f8181382fc50b3bf1e450f2fec0a3662cabb1f646d250",
+      "current_sha256": "04f7e785c4c8a19d05a3ccc1ae83597c71dff3eb0d75fde7364e0d15c69b7951"
+    },
+    {
+      "path": "perf/spell/perf/core.clj",
+      "measured_sha256": "82b2a3536bec1ff909530c9dcee90a0bba9131e2c7e0fe834f7906ab81921c03",
+      "current_sha256": "8c251b876e552b3560084ddd61b32620be27a0d1b5f9543b0782c3c8d712f462"
+    },
+    {
+      "path": "perf/spell/perf/harness.clj",
+      "measured_sha256": "81a2185a1a55031f59fda3f614ed077d92d28481992ae83641cfd7bff7ee1bf7",
+      "current_sha256": "5bd0a0a9f93bad6c68e905989d3eb3539b215ba68f9196563d021dac9383b0c1"
+    },
+    {
+      "path": "perf/spell/perf/harness_test.clj",
+      "measured_sha256": "0b344197c49706ca6080a90e2cbdb578003afe784473dae15566b14cb3475ecf",
+      "current_sha256": "f54f31c2d724ef6bcde9c8a6b395abd96ef63179dc8c8bbc2f43839ddcb0ac3c"
+    }
+  ],
+  "explanation": "Post-measurement fixes add atomic per-case persistence and truthful runner receipts outside timed regions; workload changes only correct explanatory notes about retained file SubVectors and quiet fixture sends. Original baseline JSON/log/receipt are unchanged. Source hashes in baseline identify actual measured files; current code is not represented as the exact measured revision.",
+  "validation": "Updated persistence checks: 6 Clojure tests/34 assertions and 6 Python subprocess tests. No full baseline rerun."
+}
