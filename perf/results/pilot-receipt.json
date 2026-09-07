@@ -1,0 +1,21 @@
+{
+  "command": [
+    "clojure",
+    "-J-Dclojure.main.report=stderr",
+    "-M:perf",
+    "--params-index",
+    "0",
+    "--warmup",
+    "1",
+    "--reps",
+    "2",
+    "--memory-reps",
+    "1",
+    "--out",
+    "perf/results/pilot.json"
+  ],
+  "exit": 0,
+  "timed_out": false,
+  "elapsed_seconds": 26.036854028701782,
+  "log": "perf/results/pilot.log"
+}
