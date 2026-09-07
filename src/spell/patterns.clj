@@ -31,17 +31,9 @@
                       {:module module-key :function function-key}))))
   definition)
 
-(defn- bundle-file [module-key]
-  (let [path (str "config/spl-lib/modules/" (name module-key) ".spl")
-        resource (io/resource "spell/patterns.clj")
-        root (when (and resource (= "file" (.getProtocol resource)))
-               (-> resource io/file .getParentFile .getParentFile .getParentFile))
-        candidates (remove nil?
-                           [(io/file path)
-                            (when-let [root (System/getenv "SPELL_ROOT")]
-                              (io/file root path))
-                            (when root (io/file root path))])]
-    (or (first (filter #(.isFile ^java.io.File %) candidates))
+(defn- bundle-resource [module-key]
+  (let [path (str "modules/" (name module-key) ".spl")]
+    (or (io/resource path)
         (throw (ex-info "Module bundle not found" {:module module-key :path path})))))
 
 (defn- bundled-definition [module-key]
@@ -49,7 +41,7 @@
     (throw (ex-info "Unknown bundled module; supply a custom definition to install"
                     {:module module-key})))
   (let [forms (binding [*read-eval* false]
-                (parse/read-all (slurp (bundle-file module-key))))]
+                (parse/read-all (slurp (bundle-resource module-key))))]
     (when-not (= 1 (count forms))
       (throw (ex-info "Module bundle must contain one unquoted definition map"
                       {:module module-key})))
