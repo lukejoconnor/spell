@@ -2,7 +2,7 @@
 
 Self-programmed execution (SPE) is when a language model (LM) acts as a self-orchestrating agent by writing a program which the harness simply evaluates. Spell (self-programmed execution language for LMs) is a language designed for SPE. SPE and Spell are described in [this paper](https://arxiv.org/abs/2605.06898). The language is based upon and embedded within Clojure. It is currently a prototype intended for academic research.
 
-**[Documentation](docs/index.md)** · [API and configuration](docs/api.md) · [Multi-agent communication](docs/multi-agent.md) · [Changelog](docs/CHANGELOG.md)
+**[Documentation](https://lukejoconnor.github.io/spell/)** · [API and configuration](https://lukejoconnor.github.io/spell/api) · [Multi-agent communication](https://lukejoconnor.github.io/spell/multi-agent) · [Changelog](https://lukejoconnor.github.io/spell/CHANGELOG)
 
 ## Contents
 
@@ -64,7 +64,7 @@ To run `spell` directly instead of `bin/spell`, put this checkout's `bin/` direc
 
 - [Hello world](examples/hello-world.md) makes one minimal model self-call and composes its result.
 - [Coin flip](examples/coin-flip.md) uses recursive self-calls with a programmatic stopping condition.
-- [Chat](examples/chat.md) demonstrates an interactive conversation through agent communication. The [user communication guide](docs/multi-agent.md#communicating-with-the-user) covers terminal requests (`/ask`), pending collections (`/requests`), and cancellation (`/cancel`).
+- [Chat](examples/chat.md) demonstrates an interactive conversation through agent communication. The [user communication guide](https://lukejoconnor.github.io/spell/multi-agent#communicating-with-the-user) covers terminal requests (`/ask`), pending collections (`/requests`), and cancellation (`/cancel`).
 
 See the [examples guide](examples/README.md) for the complete runnable set, including sequential, game-loop, and MCP examples.
 
@@ -74,7 +74,7 @@ Spell programs choose when to launch agents, exchange messages, and wait. A sync
 
 Waiting agents can awaken to handle new messages while their requests remain pending. A per-run coordinator tracks requests and wakeups and enforces a waiting order that prevents communication deadlock, assuming fair scheduling and eventual progress of model calls, tools, and evaluator work. When terminal input is enabled, the user participates in the same communication system as `:user`. Agents can also share values through `globals/`.
 
-See [multi-agent communication](docs/multi-agent.md) for operations, examples, message receipt, and the scope of the non-deadlock guarantee.
+See [multi-agent communication](https://lukejoconnor.github.io/spell/multi-agent) for operations, examples, message receipt, and the scope of the non-deadlock guarantee.
 
 ## Spell language overview
 
@@ -155,7 +155,7 @@ A common pattern is that a Spell program produces an edited copy of itself as th
 
 ## Error recovery
 
-Spell first attempts deterministic repair, then either reopens a proven failing trailing expression in place or presents other evaluation and reader errors in a prunable inert recovery turn. See [Error recovery](docs/error-recovery.md) for the full mechanics and recovery prompt.
+Spell first attempts deterministic repair, then either reopens a proven failing trailing expression in place or presents other evaluation and reader errors in a prunable inert recovery turn. See [Error recovery](https://lukejoconnor.github.io/spell/error-recovery) for the full mechanics and recovery prompt.
 
 ## Namespaces
 
@@ -168,7 +168,7 @@ Default namespaces:
 - `builtins`: documentation-only namespace for functions available without a namespace prefix
 - `skills`: generated prompt-only namespace containing the discovered Agent Skills catalog. Explicit `$name` activation and implicit description matches use `(!describe skills :name)` to disclose the complete matching `SKILL.md`.
 
-Spell discovers standard `SKILL.md` files and progressively discloses their complete instructions when relevant. See [Agent Skills](docs/api.md#agent-skills) for discovery scopes, authoring, and permissions.
+Spell discovers standard `SKILL.md` files and progressively discloses their complete instructions when relevant. See [Agent Skills](https://lukejoconnor.github.io/spell/api#agent-skills) for discovery scopes, authoring, and permissions.
 
 Optional effect namespaces:
 
@@ -182,7 +182,7 @@ Optional effect namespaces:
 
 ### MCP server namespaces
 
-Spell can also turn a configured stateless MCP `2026-07-28` server into an effect namespace. Server profiles hold connection and environment-backed authentication settings, while agent profiles select the tools, resources, prompts, completion, and subscriptions exposed to the model. See [MCP server profiles](docs/api.md#mcp-server-profiles).
+Spell can also turn a configured stateless MCP `2026-07-28` server into an effect namespace. Server profiles hold connection and environment-backed authentication settings, while agent profiles select the tools, resources, prompts, completion, and subscriptions exposed to the model. See [MCP server profiles](https://lukejoconnor.github.io/spell/api#mcp-server-profiles).
 
 ## Contributing
 
