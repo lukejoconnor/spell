@@ -220,28 +220,63 @@
     (is (nil? (globals/get-val :mailing-list)) "API stores do not leak to enclosing run")))
 
 (deftest onboarding-failure-is-tracked-and-atomic
-  (init! {:max-subscribers 1})
+  (doseq [recovery? [true false]]
+    (testing (str "onboarding failure with recovery=" recovery?)
+      (th/with-test-run
+        (fn []
+          (init! {:max-subscribers 1})
+          (create!)
+          (mail :create {:list :second :description "Second list"})
+          (mail :subscribe {:list :second :agent :full})
+          (let [worker-calls (atom 0)
+                agent (th/make-test-agent
+                        {:response-fn
+                         (fn [p]
+                           (if (= :full-worker runtime/*current-handle*)
+                             (do (swap! worker-calls inc) "':should-not-generate)))")
+                             (str "'(audit/finish " (last (re-seq #"msg-[0-9]+" p)) ")))")))}
+                        :recover recovery? :prefill? false
+                        :namespaces {'patterns stdlib/patterns
+                                     'globals globals/globals-namespace
+                                     'agents runtime/agents-namespace
+                                     'audit {:finish (fn [v] (coordinator/close!) v)}})
+                value (th/run-agent-init agent
+                        "(quine completion (eval (do '(do
+                           (patterns/mail :spawn {:task \"No capacity\" :handle :full-worker
+                                                  :lists [:research :second]})
+                           (agents/!wait)))))")]
+            (is (true? (get-in value [:body :spell/child-failure])))
+            (is (= :onboarding (get-in value [:body :phase])))
+            (is (= :full-worker (get-in value [:body :handle])))
+            (is (re-find #"subscriber limit reached" (get-in value [:body :error])))
+            (is (zero? @worker-calls))
+            (is (nil? (get-in (globals/get-val :mailing-list)
+                             [:lists :research :subscriptions :full-worker])))))))))
+
+(deftest task-recovery-remains-enabled-after-onboarding
+  (init!)
   (create!)
-  (mail :create {:list :second :description "Second list"})
-  (mail :subscribe {:list :second :agent :full})
   (let [worker-calls (atom 0)
         agent (th/make-test-agent
                 {:response-fn
                  (fn [p]
-                   (if (= :full-worker runtime/*current-handle*)
-                     (do (swap! worker-calls inc) "':should-not-generate)))")
+                   (if (= :recovering-worker runtime/*current-handle*)
+                     (do
+                       (is (some? (get-in (globals/get-val :mailing-list)
+                                         [:lists :research :subscriptions :recovering-worker])))
+                       (if (= 1 (swap! worker-calls inc))
+                         "'(throw \"Task error after successful onboarding\")))"
+                         "':task-recovered)))"))
                      (str "'(audit/finish " (last (re-seq #"msg-[0-9]+" p)) ")))")))}
-                :recover false :prefill? false
+                :prefill? false
                 :namespaces {'patterns stdlib/patterns
                              'globals globals/globals-namespace
                              'agents runtime/agents-namespace
                              'audit {:finish (fn [v] (coordinator/close!) v)}})
         value (th/run-agent-init agent
                 "(quine completion (eval (do '(do
-                   (patterns/mail :spawn {:task \"No capacity\" :handle :full-worker
-                                          :lists [:research :second]})
+                   (patterns/mail :spawn {:task \"Recover from a task error\"
+                                          :handle :recovering-worker :lists [:research]})
                    (agents/!wait)))))")]
-    (is (true? (get-in value [:body :spell/child-failure])))
-    (is (zero? @worker-calls))
-    (is (nil? (get-in (globals/get-val :mailing-list)
-                     [:lists :research :subscriptions :full-worker])))))
+    (is (= :task-recovered (:body value)))
+    (is (= 2 @worker-calls))))

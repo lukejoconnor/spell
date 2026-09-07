@@ -5,7 +5,8 @@
          '[spell.stdlib :as stdlib])
 
 ;; Deterministic provider; all board calls, bootstrap, edges and receipt are real.
-;; Run from repository root with the command in implementation-report.md.
+;; Run from repository root:
+;; clojure -Sdeps '{:paths ["src" "resources" "config" "test"]}' -M dev/mailing-list/demo.clj
 (def evidence (atom []))
 (defn observe [kind value]
   (swap! evidence conj {:kind kind :handle runtime/*current-handle* :value value})

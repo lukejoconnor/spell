@@ -94,12 +94,14 @@ For example, change what every agent's next digest produces, without changing th
 
 ```clojure
 '(!call-now customized
-  (globals/update :mailing-list
-    (fn [b]
-      (assoc-in b [:code :digest]
-        '(fn [board args]
-           {:notice "Use the experiment index for this task"
-            :list (:list args) :owner (:owner board)})))))
+  (do
+    (globals/update :mailing-list
+      (fn [b]
+        (assoc-in b [:code :digest]
+          '(fn [board args]
+             {:notice "Use the experiment index for this task"
+              :list (:list args) :owner (:owner board)}))))
+    {:customized :digest}))
 '(!call-now result (patterns/mail :digest {:list :research}))
 ```
 

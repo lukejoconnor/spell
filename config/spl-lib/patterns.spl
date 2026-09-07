@@ -1545,17 +1545,34 @@
                                                 (list
                                                   'quote
                                                   (list
-                                                    'do
+                                                    'let
+                                                    ['ml-onboarding-failure
+                                                     (list
+                                                       'try
+                                                       (list
+                                                         'do
+                                                         (list
+                                                           'patterns/mail
+                                                           :subscribe-many
+                                                           {:agent handle,
+                                                            :lists lists,
+                                                            :from (get ml-args :from :earliest)})
+                                                         nil)
+                                                       (list
+                                                         'catch
+                                                         'ml-onboarding-error
+                                                         {:spell/child-failure true,
+                                                          :handle handle,
+                                                          :phase :onboarding,
+                                                          :error (list 'str 'ml-onboarding-error)}))]
                                                     (list
-                                                      'patterns/mail
-                                                      :subscribe-many
-                                                      {:agent handle,
-                                                       :lists lists,
-                                                       :from (get ml-args :from :earliest)})
-                                                    (list
-                                                      '!llm-self
-                                                      (wrap-cat teaching)
-                                                      {:receive? true}))))))]
+                                                      'if
+                                                      'ml-onboarding-failure
+                                                      'ml-onboarding-failure
+                                                      (list
+                                                        '!llm-self
+                                                        (wrap-cat teaching)
+                                                        {:receive? true})))))))]
                             {:handle handle,
                              :onboarding :pending,
                              :edge (agents/spawn-ask (pr-str bootstrap) handle)}))
