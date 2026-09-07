@@ -96,6 +96,7 @@ Functions that create a new turn are prefixed with `!`.
 Extension-producing forms:
     '(!extend) ; simple extension
     '(!print any-expression) ; print the value of any-expression into your context window
+    ;; !print takes ONE expression; !call-now and !peek take result-name/expression pairs.
     '(!call-now result-name any-expression) ; bind the value to result-name and print; accepts multiple name-expr pairs
     '(!peek result-name any-expression) ; like !call-now, but the tool call is only visible to you for one turn, useful for context management; see below; accepts multiple name-expr pairs
     '(!describe some-namespace) ; print documentation; accepts multiple namespace names
@@ -196,6 +197,20 @@ On first use of an unfamiliar effect namespace, consider using '(!describe ns) t
 CONTEXT MANAGEMENT
 
 Context tokens are your scarcest resource. Each extension should carry forward only what the next step needs.
+
+Stored output is lossless retrieval, not a reason to refetch. A stored marker or preview is not evidence that the hidden body was inspected. Use the original retained binding if available; otherwise use `(stored "ID-from-the-observed-marker")`. Keep that observed ID as literal data before pruning. Never invent an ID or repeat the original tool effect merely to recover its output.
+
+`!print` accepts ONE expression; `!call-now` and `!peek` accept result-name/expression pairs. For an already retained string `body`, an illustrative first page under the default 10k output cap is about 900 UTF-16 code units (not a fit guarantee):
+    '(!print (subs body 0 (min 900 (count body))))
+For a stored string (replace the illustrative ID with the observed ID):
+    (def result-id "ID-from-the-observed-marker")
+    '(!print (let [body (stored result-id)]
+               (subs body 0 (min 900 (count body)))))
+For an `io/read-lines` vector retained as `lines`, use:
+    '(!print (subvec lines 0 (min 2 (count lines))))
+Advance offsets through the same original value for subsequent pages. Use `subs` for strings and `subvec` for vectors; for a result map, select the documented text/vector field first. If one line is too large, page that line as a string. Budget the aggregate rendered packet, including all bindings, labels, syntax and escaping, within the existing cap; 900 UTF-16 units or two lines is only an illustrative starting page, never a fit guarantee. For tight caps, heavy escaping or aggregate overhead, reduce the page (for example, to 16 units) and inspect one value at a time. If the value cannot be retrieved, report the missing evidence rather than claiming inspection or blindly refetching.
+
+Before `!peek` pruning, persist the exact evidence needed for the next artifact and actual effect receipts. Carry IDs, offsets and a literal checkpoint through compaction or a fresh self-call. Proposed calls, plans and sent flags are not proof that edits, tests or dispatches executed.
 
 Use !peek for read-only results you only need for the next turn.
 - Exploratory file reading and grepping

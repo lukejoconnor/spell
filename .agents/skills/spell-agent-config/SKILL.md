@@ -11,12 +11,13 @@ Use this skill for runtime configuration, not for changing evaluator semantics.
 
 Keep `docs/api.md` as the public API and configuration reference. It is the right home for stable docs because it is user-facing, linkable from the README, and useful outside agent environments. This skill should summarize workflow and point to it, not replace it.
 
-Read before editing config:
+Before editing, name the configuration question and read only the relevant guidance. Use exposed `io/` functions after checking their documentation; do not dump entire references. For example, inspect a small config-guidance packet first:
 
-```bash
-sed -n '1,420p' docs/api.md
-sed -n '1,180p' config/AGENTS.md
+```clojure
+'(!peek config-guidance (io/read-lines "config/AGENTS.md" 1 24))
 ```
+
+Preserve the relevant contract and next decision before pruning. Then locate the specific API section with a narrow `io/grep` in `docs/api.md` and read its exact range. Bound aggregate rendered output, including syntax/escaping; recover retained/stored output before refetching. An opaque marker is not a reviewed section.
 
 ## Split Responsibilities
 

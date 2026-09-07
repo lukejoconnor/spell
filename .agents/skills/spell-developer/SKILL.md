@@ -9,7 +9,7 @@ Use this skill when working inside the Spell implementation. Prefer the checked-
 
 ## Current Release State
 
-`v0.3.0` is unreleased. Public API and configuration details live in `docs/api.md`.
+Check `AGENTS.md` and `CHANGELOG.md` for the checked-out release state; do not assume an older release is still unreleased. Public API and configuration details live in `docs/api.md`.
 
 ## GitHub Issues and Pull Requests
 
