@@ -4,6 +4,7 @@
             [clojure.string :as str]
             [clojure.java.io :as io]
             [spell.api :as api]
+            [spell.context :as context]
             [spell.mcp.cli :as mcp-cli]
             [spell.model-spec :as model-spec]
             [spell.provider :as provider]
@@ -115,6 +116,10 @@
    ["-M" "--max-tokens TOKENS" "Max tokens per LLM response (default: 16384)"
     :parse-fn #(Integer/parseInt %)
     :validate [pos? "Must be positive"]]
+   [nil "--context-max-chars CHARS" "Max chars per context contribution (default: 10000, minimum: 128)"
+    :default context/default-max-chars
+    :parse-fn #(Integer/parseInt %)
+    :validate [#(>= % context/min-max-chars) "Must be at least 128"]]
    ["-K" "--thinking TOKENS" "Enable Anthropic thinking (token budget for extended thinking; adaptive for supported models)"
     :parse-fn #(Integer/parseInt %)
     :validate [pos? "Must be positive"]]
@@ -299,7 +304,7 @@
 (defn run-input
   [{:keys [prompt init]}
    {:keys [depth verbose log budget trace trace-dir dogfood agent-profile model thinking reasoning-effort verbosity test
-           suffix-grammar grammar-max-chars]
+           suffix-grammar grammar-max-chars context-max-chars]
     :as opts}
    usage-atom]
   (let [max-depth (cond
@@ -331,6 +336,7 @@
                                  :verbosity verbosity
                                  :suffix-grammar? suffix-grammar
                                  :grammar-max-chars grammar-max-chars
+                                 :context-max-chars context-max-chars
                                  :usage-tracker usage-atom}
                           prompt (assoc :prompt prompt)
                           init (assoc :init init)

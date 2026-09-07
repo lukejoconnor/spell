@@ -54,7 +54,11 @@ These options are scoped to one invocation of `run`.
 
 Startup, receiving continuations, and explicit receipt establish the context used for later resumption. A raw helper's context is temporary, even if it is a quine. Returning from it preserves any newer context established by a receiving descendant. Explicit waits and dormant wakeups resume the latest such context and receive normally. Receipt atomically claims incoming requests; wait admission continues to consider every pending incoming obligation, including unread requests.
 
+Receipt annotations are associated with the following message binding: `startup: tail not run`, `pre-eval: tail not run`, `wait resumed`, `dormant resumed`, and `receive: not evaluated`. A skipped tail refers only to that entry's trailing expression, not earlier effects. Explicit `receive` returns transformed code without evaluating it. Wait and dormant labels identify the resume pathway; they do not prove which prior effects ran. Use captured dispatches, received edges, and effect receipts for that evidence.
+
 ## Context Contributions
+
+Set `:context-max-chars` in `spell.api/run` to an integer of at least 128 (default: 10000). The public CLI forwards `--context-max-chars CHARS` to this run option, for example `bin/spell --context-max-chars 50000 "Inspect the project"`. This limits context contribution characters, not model output tokens; `--max-tokens` remains a separate response-token limit.
 
 `!call-now`, `!peek`, `!print`, and incoming agent messages use the same lossless rendering policy. Fitting results are inserted directly, including small siblings of oversized results. Oversized results remain complete in storage owned by this run and appear as `(stored "id")`; the resulting binding still holds the original value. Read a slice or select fields, then use `!peek` or `!print` to display that smaller value. Lists and symbols are quoted as data. Numbered source vectors retain their starting-line metadata, with line comments restored when rendered in a model prefix. Values with other metadata, including nested source vectors, use storage to preserve that metadata.
 
