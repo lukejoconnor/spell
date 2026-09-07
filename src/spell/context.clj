@@ -185,13 +185,46 @@
                                            (when (and stored? inline)
                                              [i (- (count inline) (count text))])))
                            (sort-by second))
-           [chosen _]
+           [chosen remaining]
            (reduce (fn [[chosen remaining] [i extra]]
                      (if (<= extra remaining)
                        [(update chosen i #(assoc % :text (:inline %) :stored? false))
                         (- remaining extra)]
                        [chosen remaining]))
                    [candidates (- limit minimum-size)] restorable)
+           [chosen _]
+           (reduce
+             (fn [[chosen remaining] [i {:keys [stored? value id text]}]]
+               ;; Only strings receive disclosure: do not inspect arbitrary values.
+               (if (and stored? (string? value))
+                 (let [n (.length ^String value)
+                       preview (fn [size]
+                                 (let [end (min size n)
+                                       end (if (and (pos? end) (< end n)
+                                                    (Character/isHighSurrogate (.charAt ^String value (dec end)))
+                                                    (Character/isLowSurrogate (.charAt ^String value end)))
+                                             (dec end) end)]
+                                   (subs value 0 end)))
+                       ;; A UTF-16 unit needs at most six printed characters.
+                       ;; Leave room for literal syntax and the receiving prefix;
+                       ;; the suggested first page must not become another reference.
+                       page-end (count (preview (min 900 (quot (- limit 32) 6))))
+                       recipe (str "Inspect: (!print (subs (stored " (pr-str id)
+                                   ") 0 " page-end ")); page with subs.")
+                       header (str "Stored string; UTF-16 length=" n ". ")
+                       budget (+ (count text) remaining)
+                       rendered (some (fn [description]
+                                        (render-descriptors [(nth descriptors i)]
+                                          {0 (list 'do description (list 'stored id))} budget))
+                                      [(str header "Preview: " (preview 160) "\n" recipe)
+                                       (str header "Preview: " (preview 40) "\n" recipe)
+                                       (str header recipe)])]
+                   (if rendered
+                     [(assoc-in chosen [i :text] rendered)
+                      (- remaining (- (count rendered) (count text)))]
+                     [chosen remaining]))
+                 [chosen remaining]))
+             [chosen remaining] (map-indexed vector chosen))
            retained (keep #(when (:stored? %) [(:id %) (:value %)]) chosen)]
        (when (seq retained)
          (swap! (:values (current-context)) into retained))

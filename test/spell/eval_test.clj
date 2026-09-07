@@ -1978,13 +1978,24 @@
           result (eval/serialize-for-continuation medium-string)]
       (is (.startsWith ^String result "\""))
       (is (not (.contains ^String result "truncated")))))
-
   (testing "serialize-for-continuation preserves large strings"
     (let [big-string (apply str (repeat 15000 "x"))
-          result (eval/serialize-for-continuation big-string)]
-      (is (.startsWith ^String result "(stored "))
-      (is (= big-string (run-spell (first (spell.parse/read-all result)))))
-      (is (<= (count result) 10000)))) ;; roughly at the limit
+          result (eval/serialize-for-continuation big-string)
+          forms (spell.parse/read-all result)
+          form (first forms)
+          descriptor (second form)
+          evaluated (spell-eval form {})]
+      (is (= 1 (count forms)) "descriptor and stored reference share one form")
+      (is (= 'do (first form)))
+      (is (string? descriptor) "the stored string has visible inspection guidance")
+      (is (and (string? descriptor)
+               (str/includes? descriptor "15000")
+               (str/includes? descriptor "!print")
+               (str/includes? descriptor "subs")))
+      (is (= 'stored (first (last form))))
+      (is (eval/ok? evaluated))
+      (is (identical? big-string (:ok evaluated)) "evaluation recovers the exact stored object")
+      (is (<= (count result) context/default-max-chars))))
 
   (testing "serialize-for-continuation stores large non-strings"
     (let [big-vec (vec (range 5000))
