@@ -60,10 +60,9 @@ brew install clojure/tools/clojure
 
 Provider setup:
 
-- OpenAI API, the GPT-6 Astra CLI default: set `OPENAI_API_KEY`.
-- Codex tool-call provider: install the OpenAI Codex CLI and run `codex` once so `~/.codex/auth.json` exists. This path is experimental and must be selected explicitly.
+- Codex tool-call provider, the GPT-6 Astra CLI default: install the OpenAI Codex CLI and sign in so `~/.codex/auth.json` exists.
 - Anthropic API: set `ANTHROPIC_API_KEY`.
-- OpenAI API: set `OPENAI_API_KEY`.
+- OpenAI API: set `OPENAI_API_KEY` and select `-m openai-tc:gpt-6-astra`.
 - Fireworks API: set `FIREWORKS_API_KEY`.
 - Ollama: run a local Ollama server and pass an `ollama:<model>` model spec.
 
