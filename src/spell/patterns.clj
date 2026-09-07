@@ -11,7 +11,7 @@
   "config/spl-lib/patterns.spl")
 
 (def ^:private patterns-docs
-  {:short-docs "Reusable orchestration patterns: check-result, clean-prompt, ralph, team, fix-loop, relay."
+  {:short-docs "Reusable orchestration patterns: check-result, clean-prompt, ralph, team, fix-loop, relay, mailing-list, mail."
    :docs {:guide "PATTERNS - Reusable orchestration patterns (effect namespace).
 
   (patterns/check-result prompt answer)  - verify answer with leaf-llm
@@ -20,6 +20,9 @@
   (patterns/team goal-or-opts)           - planner + parallel worktree team orchestrator
   (patterns/fix-loop issue)              - test-driven code fixing loop (reflector + worker agents)
   (patterns/relay opts)                  - fresh-worker reasoning rounds with fresh verification
+
+  (patterns/mailing-list opts)           - initialize shared in-run message board once
+  (patterns/mail operation args)         - invoke its shared executable API
 
 Use (!describe patterns :fn-name) for detailed docs on any function.
 
@@ -139,6 +142,8 @@ Uses core strings/ plus future-only blocking/ helpers internally.
 Example:
   '(!call-now result (patterns/fix-loop
     issue-description))"
+    :mailing-list "(patterns/mailing-list options) - initialize once, atomically. Requires globals and agents. Designate exactly one administrator. Bounds: retention 200 (max 2000), page-size 20 (max 100), max-lists 32 (max 128), max-subscribers 32 (max 64), max-message-chars 16000 (max 65536). State AND executable :code live in globals :mailing-list for this API run, not across restarts. Duplicate loads error preserving existing state. See skills/mailing-list and docs/mailing-list.md."
+    :mail "(patterns/mail operation args) - invoke stored executable board source. Operations: :info {}, :lists {}, :create {:list k :description text}, :subscribe/:unsubscribe {:list k :agent optional-handle :from :earliest|:latest}, :subscribe-many {:lists [k ...]}, :post/:post! {:list k :summary text :body value :thread text :reply-to id :provenance value :tags value}, :digest {:list k :limit n}, :ack {:token actual-page-token}, :message {:list k :id n}, :notify {:list k :id optional-watermark}, :spawn {:task text :handle h :lists [k ...]}. Quiet post never wakes agents. post! and notify report partial deliveries; sends are outside pure atomic changes. Digests are read-only, bounded, show retention gaps, and require explicit epoch-bound monotone ack. spawn returns a tracked lifecycle :edge with :onboarding :pending, not readiness. Shared :code contains :dispatch, :change, :digest, :deliver; customization is live across agents. Keep :change pure and pass explicit arguments. See docs/mailing-list.md."
     :relay "(patterns/relay opts) - fresh-worker reasoning rounds with fresh verification.
 opts:
   string                   - problem statement
@@ -168,7 +173,9 @@ helpers."
    :ralph ['agents 'blocking]
    :team ['strings 'io 'agents 'blocking]
    :fix-loop ['strings 'io 'agents 'blocking]
-   :relay ['agents 'blocking]})
+   :relay ['agents 'blocking]
+   :mailing-list ['globals 'agents]
+   :mail ['globals 'agents]})
 
 (defn- defn-form?
   [form]
