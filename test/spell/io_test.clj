@@ -96,6 +96,47 @@
       (is (= ["line2" "line3" "line4"] result))
       (is (= 2 (:spell/first-line (meta result)))))))
 
+(deftest read-lines-range-detaches-selection
+  (let [path (str test-dir "/read-lines-detached.txt")
+        lines (mapv #(str "line" %) (range 1 4097))]
+    (spit path (apply str (interpose "\n" lines)))
+    (let [result (io/read-lines path 2001 2101)]
+      (is (vector? result))
+      (is (= (subvec lines 2000 2100) result))
+      (is (= {:spell/first-line 2001} (meta result)))
+      ;; A SubVector keeps its entire parent alive, even for a narrow range.
+      (is (not (instance? clojure.lang.APersistentVector$SubVector result))))))
+
+(deftest read-lines-range-boundary-shape
+  (let [path (str test-dir "/read-lines-boundaries.txt")]
+    (spit path "line1\r\nline2\r\nline3\r\n")
+    (doseq [[start end expected first-line]
+            [[-2 3 ["line1" "line2"] 1]
+             [2 100 ["line2" "line3"] 2]
+             [100 110 ["line3"] 3]
+             [3 2 [] 3]
+             [2 2 [] 2]]]
+      (testing (str "range " [start end])
+        (let [result (io/read-lines path start end)]
+          (is (vector? result))
+          (is (= expected result))
+          (is (= {:spell/first-line first-line} (meta result)))
+          (is (not (instance? clojure.lang.APersistentVector$SubVector result))))))
+    (spit path "")
+    (doseq [start [0 8]]
+      (let [result (io/read-lines path start 20)]
+        (is (= [] result))
+        (is (= {:spell/first-line (max 1 start)} (meta result)))))))
+
+(deftest read-lines-range-errors
+  (let [path (str test-dir "/missing-selected-lines.txt")]
+    (is (= {:error (str "File not found: " path)}
+           (io/read-lines path 1 5))))
+  (with-redefs [clojure.core/slurp
+                (fn [& _] (throw (java.io.IOException. "selected read failed")))]
+    (is (= {:error "Error reading file: selected read failed"}
+           (io/read-lines "unused" 1 5)))))
+
 (deftest read-lines-empty
   (let [path (str test-dir "/read-lines-empty.txt")]
     (spit path "")

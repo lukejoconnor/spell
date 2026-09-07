@@ -1,0 +1,24 @@
+{
+  "probe": "perf/selected_lines_probe.clj",
+  "control_checkout": "/private/tmp/spell-optimization-control-4abaa1d",
+  "control_revision": "4abaa1d",
+  "candidate_checkout": "/private/tmp/spell-dogfood-reliability",
+  "file_lines": 200000,
+  "file_bytes": 20688895,
+  "line_contents": "1-based decimal index + colon + 96 x characters + newline",
+  "range_half_open": [
+    100001,
+    100101
+  ],
+  "warmup_reads": 3,
+  "measured_reads_per_process": 1,
+  "fresh_processes_per_version": 3,
+  "heap_flags": [
+    "-Xms256m",
+    "-Xmx256m"
+  ],
+  "java_version": "11.0.23",
+  "clojure_version": "1.12.4",
+  "claim": "Selected-vector detachment removes whole-file retention; not an allocation or latency improvement.",
+  "limitations": "Post-GC tiny candidate delta is subject to noise; structural backing observation is deterministic. Both versions still slurp/split all lines."
+}

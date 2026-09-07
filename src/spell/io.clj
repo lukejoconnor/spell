@@ -131,7 +131,8 @@
                n (count lines)
                start (max 1 (min start n))
                end (max start (min end (inc n)))]
-           (with-meta (subvec (vec lines) (dec start) (dec end))
+           ;; Copy the selection so retained results do not retain unselected lines.
+           (with-meta (into [] (subvec (vec lines) (dec start) (dec end)))
                       {:spell/first-line start}))))
      (catch java.io.FileNotFoundException _
        {:error (str "File not found: " path)})
