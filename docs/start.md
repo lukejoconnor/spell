@@ -36,10 +36,9 @@ The test provider verifies Java, Clojure dependencies, argument parsing, and eva
 
 ## Run a model-backed task
 
-The CLI default uses OpenAI and requires `OPENAI_API_KEY`:
+The CLI default uses GPT-6 Astra through `codex-tc`, with medium reasoning. It reads local Codex authentication from `~/.codex/auth.json`; sign in with Codex before running:
 
 ```bash
-export OPENAI_API_KEY=...
 bin/spell "Inspect the examples directory and suggest one program to run."
 ```
 

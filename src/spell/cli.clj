@@ -10,7 +10,7 @@
             [spell.trace :as spell-trace])
   (:gen-class))
 
-(def ^:private default-model-spec "openai-tc:gpt-6-astra")
+(def ^:private default-model-spec "codex-tc:gpt-6-astra")
 (def ^:private default-reasoning-effort "medium")
 (def ^:private agents-md-max-bytes (* 32 1024))
 (def ^:private max-utf8-code-point-bytes 4)
@@ -105,7 +105,7 @@
    ["-i" "--init PROGRAM" "Run a complete Spell program string directly instead of wrapping a natural-language prompt"]
    ["-I" "--init-file FILE" "Run a complete Spell program file directly instead of wrapping it as a natural-language prompt"]
    ["-a" "--agent-profile FILE" "Use agent profile from .agent.edn file"]
-   ["-m" "--model MODEL" "Model/provider spec: codex-tc:<model>, openai-tc:<model>, anthropic-pf:<model>, anthropic-tc:<model>, fireworks:<model>, fireworks-tc:<model>, ollama:<model>, user (default: openai-tc:gpt-6-astra)"]
+   ["-m" "--model MODEL" "Model/provider spec: codex-tc:<model>, openai-tc:<model>, anthropic-pf:<model>, anthropic-tc:<model>, fireworks:<model>, fireworks-tc:<model>, ollama:<model>, user (default: codex-tc:gpt-6-astra)"]
    ["-d" "--depth DEPTH" "Max recursion depth (default: unlimited, 0 = unlimited)"
     :parse-fn #(Integer/parseInt %)
     :validate [#(>= % 0) "Must be non-negative"]]

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Changed the CLI default provider to `codex-tc`, using local Codex authentication. The default model remains GPT-6 Astra with medium reasoning.
+
 ## v0.4.0 - 2026-09-06
 
 ### Communication and context
