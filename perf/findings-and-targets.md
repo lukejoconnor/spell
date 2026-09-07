@@ -205,3 +205,15 @@ At 60 posts, capturing full returned boards retains about **8.02×** the live he
 - **Attribution:** generation, assertions, cleanup, local cache and setup are timed. Profiling can identify mechanisms, but changing workload boundaries requires a new separately labelled baseline. Explicit GC and small sample evidence are imperfect isolation.
 
 Retain coordinator non-deadlock, dynamic scope, non-tail returns, recovery, explicit receipt/resumable-context semantics, ordered messages, context retrieval and per-run isolation throughout any optimization. These are constraints, not optional trade-offs for the targets.
+
+## Completed optimization run — 2026-09-07 addendum
+
+This section updates priorities using new evidence; all historical measurements and targets above remain intact. See [runtime-optimization-report.md](runtime-optimization-report.md) and the root `OPTIMIZATION_CHANGELOG.md` for controls, per-change commits, tradeoffs, review and rollback.
+
+- **Completed:** selected-line backing detachment (`3e2cc1b`): three fresh pairs, 29,884,320 → 15,136 B held-minus-released heap with a structural 200,000 → 100-line backing change; caller allocation +976 B. Retention-only.
+- **Completed:** streamed trace export (`0405fb6`): three fresh pairs, median9,463.012 →168.512 ms and ~21.203 GB →130.145 MB caller allocation on a generated fixture. Accepted compact formatting and partial diagnostic output on printer failure; no private-trace extrapolation.
+- **Accepted asymmetric improvement:** lazy sanitizers (`89a6347`): unchanged read-first caller allocation −38.2–38.5%; rewritten +3.6–3.8% and some rewrite timing regressions. Measure real input frequency before further tuning. Existing multiline-string normalization bug is a separate correctness follow-up.
+- **Completed presentation-wait removal:** `9209365` removes only two verbose-only sleeps. Three deterministic offline pairs remove1,000 ms of intentional waits; this is not CPU speedup. Provider retry/backoff is unchanged.
+- **Convergence:** one full80/80 suite completed in343.270 s, exit0, under `results/optimization-final-80cases-001.json`; fast513/4564, slow246/960, trace-tool23/104 all pass with positive counts. 18/80 final wall CVs exceed0.2. Do not compare the total to608.930953 s as an aggregate speedup: historical HEAD, pacing and setup differ.
+- **Next P1:** bounded attribution of the final core-evaluator10,000iterations/20evals case (mean3,477.479 ms, CV0.008, ~1.400 GB caller allocation), not a speculative rewrite. Preserve dynamic scope, fresh locals and replay safety.
+- **Deferred pending attribution:** coordinator/lifecycle, API setup, globals worker allocation and board interpreter costs. Intentionally retained retrievable context is not an eviction target. No full-memory or long-run-reliability conclusion follows from these probes.

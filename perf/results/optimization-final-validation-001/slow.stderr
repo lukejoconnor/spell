@@ -1,0 +1,22 @@
+event-send error for :es-io-ex: boom
+> > > > > > > > > > > > > > [agent :asker is waiting for input]
+> [agent :asker is waiting for input]
+>   :user — human user — interactive terminal
+> [agent :target is waiting for input]
+> > > > > > >   :user — human user — interactive terminal
+> [agent :ff-sender] goodbye!
+  :user — human user — interactive terminal
+> [agent :asker is waiting for input]
+> > > > > > > > > >   :user — human user — interactive terminal
+> [agent :post-eof-asker] still there?
+  :user — human user — interactive terminal
+> > [agent :test-agent] What is your name?
+  :user — human user — interactive terminal
+> [agent :asker is waiting for input]
+> [agent :asker is waiting for input]
+> [agent :asker is waiting for input]
+> [agent :asker is waiting for input]
+> > > > > > > > [agent :asker is waiting for input]
+>   :user — human user — interactive terminal
+> > > > [agent :main is waiting for input]
+> 

@@ -7,7 +7,7 @@ Run: `2026-09-07-runtime-optimization-001`; base `4abaa1d696413503ee4dd9a296e1e3
 | Detach selected lines | `3e2cc1b` | Three fresh pairs: 200,000-line backing becomes an independent 100-line selection; held-minus-released heap 29,884,320 → 15,136 B. Caller allocation +976 B. Retention-only claim; small GC delta is noise-sensitive. |
 | Stream trace output | `0405fb6` | Three fresh pairs: median export 9,463.012 → 168.512 ms; caller allocation ~21.203 GB → 130.145 MB. Compact formatting; explicitly accepted partial/truncated diagnostic output on printer failure. Full records/program bytes/tree and real consumer checked. |
 | Lazy sanitizer output | `89a6347` | Unchanged read-first caller allocation −38.2–38.5%. Rewritten read-first +3.6–3.8%; some rewrite timings regress. An asymmetric allocation tradeoff, NOT an unconditional speedup. State machines and existing behavior preserved. |
-| Remove verbose presentation waits | Commit accompanying this record | Exactly two verbose-only sleeps removed; logging/order/lifecycle/retries unchanged. Three offline pairs remove four fixed 250 ms waits; observed elapsed reduction 1,016.34–1,022.81 ms. WAIT reduction only, not CPU acceleration. |
+| Remove verbose presentation waits | `9209365` | Exactly two verbose-only sleeps removed; logging/order/lifecycle/retries unchanged. Three offline pairs remove four fixed 250 ms waits; observed elapsed reduction 1,016.34–1,022.81 ms. WAIT reduction only, not CPU acceleration. |
 
 ## Validation actually completed
 
@@ -28,4 +28,4 @@ No hidden orchestration policy, compatibility path, context eviction, replay ded
 
 ## Remaining work and known issues
 
-Final report and review closure accompany the documentation commit. The pre-existing multiline-string comment normalization bug remains a separate correctness follow-up; changing it would invalidate the behavior-preserving parser comparison. Evaluator allocation remains the largest measured local bottleneck. Further broad runtime work is deferred pending a bounded attribution hypothesis; hitting old targets was not used as the stopping rule.
+Final report: `perf/runtime-optimization-report.md`; actual fresh review: `perf/runtime-optimization-review.edn`. Integrated receipts and the full 80-case result are preserved with the documentation commit. The pre-existing multiline-string comment normalization bug remains a separate correctness follow-up; changing it would invalidate the behavior-preserving parser comparison. Evaluator allocation remains the largest measured local bottleneck. Further broad runtime work is deferred pending a bounded attribution hypothesis; hitting old targets was not used as the stopping rule.

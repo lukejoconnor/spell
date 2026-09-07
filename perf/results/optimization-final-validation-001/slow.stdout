@@ -1,0 +1,23 @@
+
+Running tests in #{"test"}
+
+Testing spell.composable-waits-test
+
+Testing spell.core-test
+
+Testing spell.globals-test
+
+Testing spell.io-test
+
+Testing spell.mailing-list-test
+
+Testing spell.reliability-workflow-test
+
+Testing spell.runtime-test
+
+Testing spell.trace-export-test
+
+Testing spell.user-test
+
+Ran 246 tests containing 960 assertions.
+0 failures, 0 errors.
