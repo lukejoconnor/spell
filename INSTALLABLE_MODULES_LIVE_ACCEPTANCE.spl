@@ -1,0 +1,45 @@
+; Complete program: run with --init-file, not as a prompt file.
+; Two actual agent lifecycles: root and :module-peer. No external fixture.
+(quine completion
+  (eval
+    (do
+      (def initial-module
+        '{:doc "Live acceptance arithmetic."
+          :functions
+          {:run {:doc "Increment the input." :requires []
+                 :source (fn [n] (do "MODULE_BODY_V1" (+ n 1)))}}})
+      (def peer-program
+        '(quine completion
+           (eval
+             (do
+               '(let [reuse (patterns/install :live-acceptance)
+                      before (patterns/call :live-acceptance :run 10)
+                      entry (patterns/source :live-acceptance :run)
+                      edit (patterns/update :live-acceptance assoc-in
+                             [:functions :run :source]
+                             '(fn [n] (do "MODULE_BODY_V2" (+ n 2))))
+                      after (patterns/call :live-acceptance :run 10)
+                      again (patterns/install :live-acceptance)
+                      preserved (patterns/call :live-acceptance :run 10)
+                      evidence {:reuse reuse :before before :edit edit
+                                :after after :reinstall again :preserved preserved
+                                :entry-keys (vec (sort (keys entry)))
+                                :source-inspected-for-edit? (seq? (:source entry))}
+                      instructions "Audit the captured peer evidence, not proposed actions. Expected: reuse/reinstall installed? false; before 11; after/preserved 12; edit fns [:run]; complete entry keys [:doc :requires :source]; source-inspected-for-edit? true. Do not fetch source or use tools; the deterministic setup already inspected source for editing. Return a quoted compact map {:peer-ok? boolean}. Preserve the predecessor antipattern: do not prune evidence then rediscover it; retain exact receipts/observed IDs before pruning. A preview is not evidence of hidden-body inspection."
+                      audit (!llm-self (wrap-cat instructions
+                                        (list 'def 'evidence (list 'quote evidence)))
+                                       {:receive? true})]
+                  (assoc evidence :audit audit))))))
+      '(let [installed (patterns/install :live-acceptance initial-module)
+             catalog (patterns/catalog :live-acceptance)
+             before (patterns/call :live-acceptance :run 10)
+             edge (agents/spawn-ask (pr-str peer-program) :module-peer)
+             receipts {:install installed :catalog catalog :before before :edge edge}
+             instructions "Live acceptance root: deterministic setup installed the module, called it, and dispatched :module-peer. You are the second real-model audit, not a simulator. Inspect receipts and actual incoming peer result for this edge; wait with a quoted (agents/!wait) only while that collection remains pending. Peer edits the shared function and returns reuse/before/edit/after/reinstall/preserved plus its audit. After its actual result, capture (patterns/call :live-acceptance :run 10) and (patterns/install :live-acceptance) with !call-now; expect 12 and installed? false. Never refetch source merely to call it. Inspect your actual completion prefix: catalog/receipts should contain no executable entry body. Return a concise map with :pass? derived from all checks, :root-before, :root-after, :root-reuse, :peer, and :opaque-prefix?. Check install true; root-before 11; peer before 11, after/preserved 12, reuse/reinstall false and peer audit true; complete entry keys [:doc :requires :source]. Do not fabricate receipts or claim a live result from this instruction. Preserve predecessor pruning-evidence antipattern: never prune supporting evidence then rediscover it. Persist exact receipts, observed stored IDs/offsets and checkpoints before pruning; source/plans/sent flags do not prove effects executed. If interrupted, inspect pending edges before retrying."
+             prefix (wrap-cat instructions
+                      (list 'def 'receipts (list 'quote receipts)))
+             body-free? (and (not (strings/includes? prefix "MODULE_BODY_V1"))
+                             (not (strings/includes? prefix "MODULE_BODY_V2")))]
+         (if body-free?
+           (!llm-self prefix {:receive? true})
+           {:pass? false :reason :source-leaked-into-audit-prefix})))))

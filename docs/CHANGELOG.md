@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Installable pattern modules
+
+- **Previous behavior:** Named host entry points exposed individual orchestration patterns, and mailing-list executable source lived alongside board state in a private registry. **Why it was a problem:** Discovering, sharing, and editing real policy used inconsistent interfaces; initializing code and state were conflated. **What changed:** Exactly five public verbs (`patterns/install`, `catalog`, `source`, `update`, `call`) manage opt-in run-local definitions separately from state. Catalogs omit bodies; source returns complete editable entries; install preserves edits/state; update atomically transforms whole definitions. See the [migration guide](./installable-modules.md) and [model-facing inventory](./installable-modules-change-inventory.md).
+- **Previous behavior:** `check-result`, `ralph`, `team`, `fix-loop`, `relay`, and mailing-list/mail were named wrappers; `clean-prompt` implicitly cleaned and executed text. **Why it was a problem:** The public surface privileged individual policies and obscured deliberate execution. **What changed:** All six retained families are installable bundles (team/fix-loop are retained); only clean-prompt is deleted. There are no compatibility wrappers. Mailing-list initialization remains explicit and duplicate initialization remains an error.
+
 - Changed the CLI default provider to `codex-tc`, using local Codex authentication. The default model remains GPT-6 Astra with medium reasoning.
 
 ## v0.4.0 - 2026-09-06

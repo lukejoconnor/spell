@@ -28,7 +28,8 @@ This repo includes Spell-specific skills under `.agents/skills/`. Use them as th
 - MCP server profile: a reusable `.mcp.edn` connection and environment-backed authentication definition.
 - Server alias: the agent-profile name that identifies an MCP server and becomes its generated Spell namespace.
 
-- Mailing-list board: per-run shared executable pattern code and bounded message state in globals; quiet posts are distinct from coordinator inbox notifications. See `docs/mailing-list.md` and the bundled `mailing-list` skill.
+- Installable pattern module: opt-in editable Spell definitions under run-local globals `:modules`, accessed only through `patterns/install`, `catalog`, `source`, `update`, and `call`. See `docs/installable-modules.md`.
+- Mailing-list board: bounded per-run message state under `:mailing-list`, separate from module definitions. Install/reuse `:mailing-list` on each participant; exactly one administrator calls its explicit `:init`. Quiet posts are distinct from inbox notifications. See `docs/mailing-list.md` and the bundled `mailing-list` skill.
 
 ## Top-Level Layout
 
@@ -118,7 +119,7 @@ The public API/configuration reference is `docs/api.md`. `spell.api/run` require
 | `src/spell/io.clj` | Filesystem and shell helpers exposed as `io/*` when the selected agent enables I/O. |
 | `src/spell/web.clj` | Search and fetch helpers exposed as `web/*`. |
 | `src/spell/globals.clj` | Shared global store exposed as `globals/*`. |
-| `src/spell/patterns.clj` | Loader for reusable Spell patterns. |
+| `src/spell/patterns.clj` | Five-verb host API for installable modules: install, catalog, source, update, call. |
 | `src/spell/user.clj` | Manual user-provider implementation for `-m user`. |
 | `src/spell/inbox.clj` | Message inbox helpers. |
 
@@ -139,7 +140,7 @@ See `config/AGENTS.md` for a directory-specific guide.
 | `config/prompts/sysprompt-message.txt` | System prompt for message-style providers. |
 | `config/prompts/sysprompt-toolcall.txt` | System prompt for mandatory tool-call providers. |
 | `config/model-profiles/*.edn` | Declarative model provider defaults and routing metadata. |
-| `config/spl-lib/patterns.spl` | Reusable Spell pattern library. |
+| `config/spl-lib/modules/*.spl` | Six opt-in editable Spell module definitions; install explicitly, separately from application-state initialization. |
 | `config/web.edn` | Web/search configuration. |
 
 First-class public provider paths are OpenAI, Anthropic, Fireworks, and Codex CLI. The Codex CLI path uses local Codex authentication and should be treated as experimental.

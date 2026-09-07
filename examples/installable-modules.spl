@@ -1,0 +1,9 @@
+Exercise the installable pattern-module API with a tiny custom module, using actual receipts.
+
+First describe patterns. Define quoted source data with schema {:doc string :functions {:run {:doc string :requires [] :source (fn [n] (+ n 1))}}}. Install it as :example-counter using patterns/install; capture its receipt. Use patterns/catalog :example-counter for compact docs/params/requires, not executable bodies. Call :run with 10 through patterns/call and capture 11.
+
+Fetch the complete :run entry once with patterns/source because you are about to edit it. Use patterns/update with the evaluated builtin assoc-in and path [:functions :run :source] to replace source with quoted (fn [n] (+ n 2)). The transform returns the next whole definition, not [definition result]. Call again and capture 12. Reinstall :example-counter without a definition, then call again; expect installed? false and 12, proving reuse preserved the edit. Do not refetch source merely to invoke it. Do not use removed named pattern wrappers or initialize a mailing-list board.
+
+Return one compact map containing actual install/catalog/before/edit/after/reinstall/preserved receipts and a derived :pass? boolean. Missing effects are not success. Keep effects in quoted trailing expressions, using !call-now when another turn must inspect their results. Functions have dynamic scope, not lexical closures.
+
+Preserve the predecessor pruning-evidence antipattern: never prune supporting evidence then rediscover it. Before !peek removes evidence, persist exact needed snippets, observed stored IDs/offsets, a checkpoint, and actual receipts. Retrieve retained output before replaying its effect. A preview is not proof of hidden-body inspection; plans/source/sent flags do not prove execution. io/read-lines ranges are one-indexed half-open; subvec uses local zero-indexed half-open offsets.

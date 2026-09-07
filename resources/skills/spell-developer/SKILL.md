@@ -59,7 +59,7 @@ Configuration:
 - `config/agent-profiles/*.agent.edn`: runtime agent profiles.
 - `config/model-profiles/*.edn`: provider/model-call profiles.
 - `config/prompts/sysprompt-*.txt`: transport-specific system prompts.
-- `config/spl-lib/patterns.spl`: reusable Spell programs.
+- `config/spl-lib/modules/*.spl`: six opt-in module definitions; install/catalog/source/update/call are the only host entry points. Definitions live separately from application state. See `docs/installable-modules.md`.
 - `data/pricing.edn`: shared model pricing table.
 
 ## Reading Order

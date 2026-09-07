@@ -33,3 +33,7 @@ Spell accepts provider-prefixed model specs such as `codex-tc:<model>`, `openai-
 | [`mcp-everything.spl`](mcp-everything.md) | Real-model discovery and use of every supported MCP capability. | `bin/spell -e mcp-everything -a examples/mcp-everything.agent.edn -m openai-tc:gpt-5.6-sol -R medium` |
 
 Each example has a companion `.md` file with a short explanation and expected behavior.
+
+## Installable modules
+
+[installable-modules.spl](installable-modules.spl) is a small natural-language task exercising the five-verb module API; its [companion](installable-modules.md) gives an explicit bounded command. For a self-contained, source-driven two-agent acceptance program, use the root [live artifact/command](../INSTALLABLE_MODULES_LIVE_ACCEPTANCE.md) with `--init-file`, not as a positional prompt. Preparing/parsing that artifact is not paid-run acceptance.

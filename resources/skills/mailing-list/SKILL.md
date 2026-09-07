@@ -5,41 +5,52 @@ description: Coordinate research agents through a shared in-run Spell message bo
 
 # Mailing-list board
 
-Use for multi-agent research or experiments where every intermediate result should not wake every agent. Designate **exactly one loader/administrator**. Require `patterns`, `globals`, and `agents` on every participant. The board is per API run, not durable storage.
+Use for multi-agent research where every intermediate result should not wake every agent. Require `patterns`, `globals`, and `agents` on every participant. Definitions live in run-local `:modules`; board state lives separately in `:mailing-list`. The board is not durable storage.
 
 ## Start small
 
-Successive quoted trailing actions:
+These are successive quoted trailing actions:
 
 ```clojure
-'(!call-now board (patterns/mailing-list {:retention 200 :page-size 20}))
-'(!call-now created (patterns/mail :create {:list :research :description "Evidence and experiments"}))
-'(!call-now subscribed (patterns/mail :subscribe {:list :research :from :earliest}))
-'(!call-now posted (patterns/mail :post {:list :research :summary "E7 refutes H2" :thread "H2" :provenance {:path "experiments/E7.md"}}))
-'(!call-now page (patterns/mail :digest {:list :research :limit 10}))
+'(!call-now installed (patterns/install :mailing-list))
+;; Exactly one administrator initializes state. Existing workers skip this:
+'(!call-now board (patterns/call :mailing-list :init {:retention 200 :page-size 20}))
+'(!call-now created (patterns/call :mailing-list :call :create {:list :research :description "Evidence and experiments"}))
+'(!call-now subscribed (patterns/call :mailing-list :call :subscribe {:list :research :from :earliest}))
+'(!call-now posted (patterns/call :mailing-list :call :post {:list :research :summary "E7 refutes H2" :thread "H2" :provenance {:path "experiments/E7.md"}}))
+'(!call-now page (patterns/call :mailing-list :call :digest {:list :research :limit 10}))
 ;; Process summaries and explicitly account for :gap before acknowledging:
-'(!call-now ack (patterns/mail :ack {:token (:token page)}))
+'(!call-now ack (patterns/call :mailing-list :call :ack {:token (:token page)}))
 ```
 
-Existing workers **never initialize again**. `:info` and `:lists` discover the board. Duplicate loads, including concurrent ones, error without replacing it. `:subscribe` defaults to the current handle and `:latest`; `:earliest` reads retained history and reports earlier loss. Repeat subscription preserves the cursor. `:unsubscribe` removes it.
+Every participant can safely install/reuse the module; repeat/concurrent install preserves edits and state. Existing workers **never initialize the board again**. Duplicate explicit `:init`, including concurrent attempts, errors without replacing it. `:info` and `:lists` discover the board. `:subscribe` defaults to the current handle and `:latest`; `:earliest` reads retained history and reports earlier loss. Repeat subscription preserves the cursor. `:subscribe-many` atomically subscribes to existing lists; `:unsubscribe` removes a subscription.
 
 ## Research workflow
 
-- Post one claim/result per short summary. Use `:thread`, same-list `:reply-to`, `:tags`, and `:provenance` for experiment IDs, file/revision links and source locations. Fetch full `:body`/provenance with `:message {:list k :id n}` only when needed. Expired evidence is explicitly reported.
-- Digests are read-only pages. Retain conclusions/tokens before pruning large results. Acknowledge the actual token, never a guessed head ID. Older acknowledgements cannot regress a cursor; unsubscribe/resubscribe invalidates old tokens. Coordinate overlapping readers sharing a handle.
-- Retention is bounded and may evict unread messages. Treat `:gap` as evidence loss to investigate or explicitly accept, not success. Keep source evidence/checkpoints in durable task files.
-- Ordinary `:post` does not notify. Reserve `:post!` for urgent findings; it awakens every subscriber. Check each `:deliveries` entry. Accepted send is not proof of processing. `:notify` explicitly re-notifies without creating another post; no automatic retries or deduplication are promised.
+- Post one claim/result per short summary. Use `:thread`, same-list `:reply-to`, `:tags`, and `:provenance` for experiment IDs, file/revision links and source locations. Fetch full evidence only when needed with `(patterns/call :mailing-list :call :message {:list k :id n})`; expired evidence is explicit.
+- Digests are read-only pages. Retain conclusions and actual tokens before pruning. Acknowledge the observed token, never a guessed head ID. Older acknowledgements cannot regress a cursor; unsubscribe/resubscribe invalidates old tokens. Coordinate overlapping readers sharing a handle.
+- Retention may evict unread messages. Treat `:gap` as evidence loss to investigate or explicitly accept, not success. Keep durable source evidence/checkpoints in task files.
+- Ordinary `:post` does not notify. Reserve `:post!` for urgent findings; it awakens every subscriber. Inspect each `:deliveries` entry. Accepted send is not proof of processing. `:notify` explicitly re-notifies without another post; no automatic retries or deduplication are promised.
 
 ## Launch workers
 
 ```clojure
-'(!call-now launched (patterns/mail :spawn {:task "Investigate H2 and return evidence" :handle :h2-worker :lists [:research]}))
-;; A real tracked lifecycle edge was created; wait later only if work remains.
+'(!call-now launched
+   (patterns/call :mailing-list :call :spawn
+                  {:task "Investigate H2 and return evidence"
+                   :handle :h2-worker :lists [:research]}))
+;; A real tracked lifecycle edge was created; wait only if work remains.
 '(agents/!wait)
 ```
 
-Bootstrap subscribes atomically before ordinary task generation and teaches the worker this API. `:onboarding :pending` is not a readiness claim; inspect the actual received result/failure. Preserve normal receipt semantics: incoming messages may supersede actions. Establish captures/subscriptions before dependent work. Use supported agents requests/futures, not polling or untracked waits. Administer unused subscriptions explicitly; normal return does not retire a handle.
+Bootstrap installs/reuses the module and subscribes atomically before ordinary task generation. `:onboarding :pending` is not readiness; inspect the received result/failure. Incoming messages may supersede proposed actions: establish actual captures/subscriptions before dependent work. Use supported requests/futures, not polling or untracked waits. Administer unused subscriptions explicitly; normal return does not retire a handle.
 
 ## Customize progressively
 
-See `(!describe patterns :mailing-list)` and `(!describe patterns :mail)` for the compact API; `docs/mailing-list.md` explains races, bounds and source contracts. Shared executable functions are under `(get-in (globals/get :mailing-list) [:code operation])`: `:dispatch`, `:change`, `:digest`, `:deliver`. Read one entry, not the entire board. They actually govern subsequent operations for fresh agents. Replace source using pure `globals/update`; explicit parameters only, no assumed lexical closures. `:change` runs inside a retryable transaction and MUST remain pure. Put sends/spawns outside it. All agents trust each other; owner is a coordination convention, not security. Coordinate schema changes, keep summaries compact, and record concrete dogfood failures with feedback/log when available.
+Use `(patterns/catalog :mailing-list)` for compact docs/parameters/requirements without bodies. Inspect a complete editable entry only when necessary: `(patterns/source :mailing-list :digest)`. General module functions are `:init`, `:call`, `:change`, `:digest`, `:deliver`; there is **no private board code registry**. Use pure `(patterns/update :mailing-list transform & args)` to change the whole definition atomically; use `assoc-in` to replace an entry/source while preserving the rest. The transform returns the next definition, not `[definition result]`.
+
+Spell functions have dynamic scope, not lexical closures. Selected calls retain their entry snapshot; nested `patterns/call` resolves latest source. The board's separate pure `:change` returns `[next-board result]` and must remain effect-free; sends/spawns happen outside retryable state transactions. All agents trust each other; owner is a coordination convention, not security. Coordinate incompatible schema changes. See `docs/installable-modules.md` and `docs/mailing-list.md` for complete contracts.
+
+## Preserve evidence before pruning
+
+**Antipattern: prune supporting evidence, then rediscover it.** Before a `!peek` result disappears, `persist` exact needed snippets, observed stored IDs/offsets, a compact checkpoint, and actual operation receipts. A proposed action or sent flag is not execution evidence. Retrieve retained/stored output before repeating its original effect; an opaque preview is not proof that the hidden body was inspected. `io/read-lines` uses one-indexed half-open ranges; `subvec` uses local zero-indexed half-open offsets. Record concrete dogfood failures with `feedback/log` when available.

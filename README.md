@@ -174,7 +174,7 @@ Optional effect namespaces:
 
 - `io` (also `io-read`, `io-write`, and `io-exec`; these form a partition of `io`)
 - `web`
-- `patterns`: library of orchestration patterns written in Spell
+- `patterns`: [installable orchestration modules](docs/installable-modules.md) written in editable Spell source; discover/install/source/update/call explicitly, without loading bodies just to use them
 - `agents`: asynchronous agents and [communication](#communication-model)
 - `globals`: shared bindings across agents
 - `workers`: named child-agent entry points, when the selected agent defines them
