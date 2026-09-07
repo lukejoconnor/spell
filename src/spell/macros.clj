@@ -334,6 +334,15 @@
 ;; Expands to (!print ...) so the child LLM sees the docs as a literal.
 (defspellmacro '!describe
   (fn [& args]
+    (loop [remaining (seq args)]
+      (when remaining
+        (when (keyword? (first remaining))
+          (throw (ex-info
+                  "!describe: a keyword cannot be a namespace; repeat the namespace for each key, e.g. (!describe skills :coding skills :spell-developer)"
+                  {:namespace (first remaining)})))
+        (recur (if (keyword? (second remaining))
+                 (nnext remaining)
+                 (next remaining)))))
     (cond
       ;; (!describe ns)
       (= 1 (count args))
