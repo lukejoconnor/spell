@@ -5,6 +5,10 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
+import signal
+import sys
+import time
 from pathlib import Path
 import subprocess
 import tempfile
@@ -39,6 +43,7 @@ class RunnerTests(unittest.TestCase):
         redirect = contextlib.redirect_stdout(self.stdout)
         redirect.__enter__()
         self.addCleanup(redirect.__exit__, None, None, None)
+        self.real_popen = subprocess.Popen
         self.popen = mock.patch.object(runner.subprocess, 'Popen').start()
         self.addCleanup(mock.patch.stopall)
         self.popen.side_effect = self.launch
@@ -98,7 +103,8 @@ class RunnerTests(unittest.TestCase):
         with mock.patch.object(Path, 'unlink', interrupt):
             with self.assertRaises(KeyboardInterrupt):
                 runner.main()
-        self.assertEqual('running', self.receipt()['status'])
+        self.assertEqual('failed', self.receipt()['status'])
+        self.assertTrue(self.receipt()['interrupted'])
         self.assertNotIn('old', self.receipt())
         for name in ('workflow.edn', 'tests.edn'):
             self.assertEqual('old-' + name, (self.out / name).read_text())
@@ -109,7 +115,7 @@ class RunnerTests(unittest.TestCase):
         self.popen.side_effect = KeyboardInterrupt()
         with self.assertRaises(KeyboardInterrupt):
             runner.main()
-        self.assertEqual('running', self.receipt()['status'])
+        self.assertEqual('failed', self.receipt()['status'])
         for name in ('workflow.edn', 'tests.edn'):
             self.assertFalse((self.out / name).exists())
         self.assert_no_temporary_files()
@@ -268,15 +274,14 @@ class RunnerTests(unittest.TestCase):
         self.assertNotIn(str(self.root), self.stdout.getvalue())
         self.assert_no_temporary_files()
 
-    def test_timeout_kills_and_collects_process(self):
+    def test_timeout_terminates_and_reaps_process(self):
         process = None
 
         def launch(*args, **kwargs):
             nonlocal process
             process = self.launch(*args, **kwargs)
             process.returncode = -9
-            process.communicate.side_effect = [subprocess.TimeoutExpired(runner.command, 90),
-                                               ('Ran 2 tests containing 4 assertions.\n0 failures, 0 errors.', None)]
+            process.communicate.side_effect = subprocess.TimeoutExpired(runner.command, 90)
             return process
 
         self.popen.side_effect = launch
@@ -286,9 +291,123 @@ class RunnerTests(unittest.TestCase):
             killpg.assert_called_once_with(12345, runner.signal.SIGKILL)
         else:
             process.kill.assert_called_once_with()
-        self.assertEqual([mock.call(timeout=90), mock.call()], process.communicate.call_args_list)
+        process.communicate.assert_called_once_with(timeout=90)
+        process.wait.assert_called_once_with(timeout=5)
+        process.stdout.close.assert_called_once_with()
+        process.stderr.close.assert_called_once_with()
         self.assertTrue(self.receipt()['timeout'])
         self.assertEqual('failed', self.receipt()['status'])
+
+
+    def test_post_launch_failures_kill_reap_publish_and_preserve_exception(self):
+        for exc in (KeyboardInterrupt(), OSError(errno.EIO, str(self.root)),
+                    ValueError(str(self.root)), SystemExit(7)):
+            with self.subTest(exception=type(exc).__name__):
+                process = mock.Mock(returncode=-9, pid=12345)
+                process.communicate.side_effect = exc
+                self.popen.side_effect = None
+                self.popen.return_value = process
+                with mock.patch.object(runner.os, 'killpg', create=True) as killpg:
+                    if isinstance(exc, OSError):
+                        self.assertEqual(1, runner.main())
+                    else:
+                        with self.assertRaises(type(exc)) as caught:
+                            runner.main()
+                        self.assertIs(exc, caught.exception)
+                if runner.os.name == 'posix':
+                    killpg.assert_called_once_with(process.pid, runner.signal.SIGKILL)
+                else:
+                    process.kill.assert_called_once_with()
+                process.wait.assert_called_once_with(timeout=5)
+                process.communicate.assert_called_once_with(timeout=90)
+                process.stdout.close.assert_called_once_with()
+                process.stderr.close.assert_called_once_with()
+                report = self.receipt()
+                self.assertEqual('failed', report['status'])
+                self.assertEqual(type(exc).__name__, report['error']['type'])
+                self.assertEqual(-9, report['exit_code'])
+                self.assertNotIn(str(self.root), self.stdout.getvalue())
+                self.assert_no_temporary_files()
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX process-group race')
+    def test_exited_process_group_is_still_reaped(self):
+        process = mock.Mock(returncode=-9, pid=12345)
+        process.communicate.side_effect = OSError(errno.EIO, 'read failed')
+        self.popen.side_effect = None
+        self.popen.return_value = process
+        with mock.patch.object(runner.os, 'killpg', side_effect=ProcessLookupError()):
+            self.assertEqual(1, runner.main())
+        process.wait.assert_called_once_with(timeout=5)
+        self.assertNotIn('cleanup_error', self.receipt())
+
+    def test_cleanup_failure_is_reported_without_masking_original_exception(self):
+        exc = KeyboardInterrupt()
+        process = mock.Mock(returncode=None, pid=12345)
+        process.communicate.side_effect = exc
+        process.wait.side_effect = subprocess.TimeoutExpired('child', 5)
+        self.popen.side_effect = None
+        self.popen.return_value = process
+        with mock.patch.object(runner.os, 'killpg', create=True):
+            with self.assertRaises(KeyboardInterrupt) as caught:
+                runner.main()
+        self.assertIs(exc, caught.exception)
+        report = self.receipt()
+        self.assertEqual('failed', report['status'])
+        self.assertEqual('KeyboardInterrupt', report['error']['type'])
+        self.assertEqual('TimeoutExpired', report['cleanup_error']['type'])
+        process.stdout.close.assert_called_once_with()
+        process.stderr.close.assert_called_once_with()
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX isolated group lifecycle')
+    def test_real_interrupted_child_and_descendant_stop_before_failed_receipt(self):
+        # setUp patched the shared module; recover the actual class for this test.
+        real_popen = self.real_popen
+        process = None
+        descendant_pid = None
+        ready = self.root / 'child-ready.json'
+        script = ("import json,os,subprocess,sys,time; "
+                  "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
+                  "open(sys.argv[1]+'.tmp','w').write(json.dumps({'child':os.getpid(),'descendant':p.pid})); os.replace(sys.argv[1]+'.tmp',sys.argv[1]); "
+                  "time.sleep(30)")
+        interruption = KeyboardInterrupt()
+
+        def launch(*args, **kwargs):
+            nonlocal process, descendant_pid
+            process = real_popen([sys.executable, '-c', script, str(ready)],
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                 text=True, start_new_session=True)
+            deadline = time.monotonic() + 5
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(ready.exists(), 'Child must reach its ready milestone')
+            descendant_pid = json.loads(ready.read_text())['descendant']
+            process.communicate = mock.Mock(side_effect=interruption)
+            return process
+
+        self.popen.side_effect = launch
+        try:
+            with self.assertRaises(KeyboardInterrupt) as caught:
+                runner.main()
+            self.assertIs(interruption, caught.exception)
+            self.assertEqual(-signal.SIGKILL, process.returncode)
+            self.assertTrue(process.stdout.closed)
+            # Grandchildren can briefly remain zombies after their parent dies;
+            # a zombie is terminated. Inspect state, not just PID existence.
+            with mock.patch.object(subprocess, 'Popen', real_popen):
+                state = subprocess.run(['ps', '-p', str(descendant_pid), '-o', 'stat='],
+                                       capture_output=True, text=True, timeout=2).stdout.strip()
+            self.assertTrue(not state or state.startswith('Z'), state)
+            self.assertEqual('failed', self.receipt()['status'])
+            self.assertTrue(self.receipt()['interrupted'])
+        finally:
+            if process is not None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait(timeout=5)
+                if process.stdout is not None:
+                    process.stdout.close()
 
 
 if __name__ == '__main__':

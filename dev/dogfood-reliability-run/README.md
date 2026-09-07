@@ -41,9 +41,14 @@ make no performance claim; no profiler or baseline benchmark is run.
 ## Bounds and failures
 
 One fresh JVM runs only `spell.reliability-workflow-test`. Output collection has
-a 90-second timeout; on timeout the runner kills the process group on POSIX (the
-process on other platforms), reaps it, records failure and exits nonzero. Launch
-and cleanup overhead can make measured wall time exceed 90 seconds. Provider
+a 90-second timeout. Timeout, interruption, or output-collection failure kills the
+isolated process group on POSIX (the process on other platforms), waits up to
+five seconds to reap the child, and closes its output streams. The runner writes
+a failed terminal receipt where possible; interruption and unexpected exceptions
+are then re-raised. A cleanup failure is recorded separately without hiding the
+original error. A second Ctrl-C during bounded cleanup is recorded as
+`cleanup_error`; the original interruption still propagates. Launch and cleanup
+overhead can exceed the 90-second limit. Provider
 scripts allow at most six calls per handle per test; the successful workflow
 expects two calls each for main and the two children. The design digest limit
 is three. Coverage includes quiet posts and actual-token acknowledgements,

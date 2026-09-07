@@ -37,13 +37,34 @@ def publish_report(report):
 
 def record_error(report, phase, exc):
     report['status'] = 'failed'
-    report['error'] = {'phase': phase, 'type': type(exc).__name__, 'errno': exc.errno}
+    report.setdefault('error', {'phase': phase, 'type': type(exc).__name__,
+                                'errno': getattr(exc, 'errno', None)})
+
+
+def terminate_and_reap(proc):
+    """Stop the isolated process group and reap its direct child, even if reads failed."""
+    try:
+        try:
+            if os.name == 'posix':
+                os.killpg(proc.pid, signal.SIGKILL)
+            else:
+                proc.kill()
+        except ProcessLookupError:
+            pass  # The child/group may have exited before termination.
+    finally:
+        try:
+            proc.wait(timeout=5)
+        finally:
+            for stream in (proc.stdout, proc.stderr):
+                if stream is not None:
+                    stream.close()
 
 
 def main():
     report = {'status': 'running', 'command': command, 'cwd': '.',
               'path_base': 'repository root derived from run.py at execution time',
-              'limits': {'wall_seconds': 90, 'provider_calls_per_handle': 6,
+              'limits': {'wall_seconds': 90, 'cleanup_wait_seconds': 5,
+                         'provider_calls_per_handle': 6,
                          'design_digest_limit': 3, 'paid_calls': 0},
               'elapsed_seconds': None,
               'elapsed_seconds_scope': 'subprocess launch through exit/termination and output collection; includes JVM startup, tests, receipt writes and shutdown; not internal test time or CPU time',
@@ -65,6 +86,7 @@ def main():
     before = None
     started = None
     phase = 'receipt-cleanup'
+    pending_exception = None
     try:
         for name in ['workflow.edn', 'tests.edn']:
             (OUT / name).unlink(missing_ok=True)
@@ -78,13 +100,15 @@ def main():
                                 start_new_session=(os.name == 'posix'))
         try:
             output, _ = proc.communicate(timeout=90)
-        except subprocess.TimeoutExpired:
-            report['timeout'] = True
-            if os.name == 'posix':
-                os.killpg(proc.pid, signal.SIGKILL)
-            else:
-                proc.kill()
-            output, _ = proc.communicate()
+        except BaseException:
+            # All failures after launch own the same child cleanup obligation.
+            try:
+                terminate_and_reap(proc)
+            except BaseException as cleanup_error:
+                report['cleanup_error'] = {'type': type(cleanup_error).__name__,
+                                           'errno': getattr(cleanup_error, 'errno', None)}
+            report['exit_code'] = proc.returncode
+            raise
         finally:
             report['elapsed_seconds'] = round(time.monotonic() - started, 3)
         report['exit_code'] = proc.returncode
@@ -92,10 +116,18 @@ def main():
         if summary:
             report['test_counts'] = dict(zip(['tests', 'assertions', 'failures', 'errors'],
                                             map(int, summary.groups())))
+    except subprocess.TimeoutExpired as exc:
+        report['timeout'] = True
+        record_error(report, phase, exc)
     except OSError as exc:
         if started is not None and report['elapsed_seconds'] is None:
             report['elapsed_seconds'] = round(time.monotonic() - started, 3)
         record_error(report, phase, exc)
+    except BaseException as exc:
+        record_error(report, phase, exc)
+        pending_exception = exc
+        if isinstance(exc, KeyboardInterrupt):
+            report['interrupted'] = True
     if before is not None:
         try:
             after = BASELINE.read_bytes()
@@ -117,6 +149,8 @@ def main():
         # The on-disk receipt stays running if terminal replacement fails.
         record_error(report, 'terminal-publication', exc)
     print(json.dumps(report, indent=2))
+    if pending_exception is not None:
+        raise pending_exception
     return 0 if report['status'] == 'completed' else 1
 
 
