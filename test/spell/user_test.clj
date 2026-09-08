@@ -80,6 +80,10 @@
 (defn- pty-test-host? []
   (boolean (re-find #"Mac|Linux" (System/getProperty "os.name"))))
 
+;; Cold namespace loading can exceed 15 seconds on a busy host. This allowance
+;; covers process startup; the shorter post-input responsiveness checks remain.
+(def ^:private pty-startup-timeout-ms 60000)
+
 (defn- run-pty-fixture!
   [mode chunks]
   (let [builder (doto (ProcessBuilder. ^java.util.List (pty-command mode))
@@ -101,7 +105,7 @@
                   #(or (not (.isAlive process))
                        (locking output-buffer
                          (str/includes? (.toString output-buffer) "SPELL_READY")))
-                  15000)
+                  pty-startup-timeout-ms)
         (.destroyForcibly process)
         (throw (ex-info "PTY fixture did not become ready" {:mode mode})))
       (when-not (.isAlive process)
@@ -121,7 +125,9 @@
           (.destroyForcibly process)
           (throw (ex-info "PTY redisplay fixture did not preserve the buffer"
                           {:output (locking output-buffer (.toString output-buffer))})))))
-    (when-not (.waitFor process 30 TimeUnit/SECONDS)
+    (when-not (.waitFor process
+                       (if (seq chunks) 30 (+ 30 (quot pty-startup-timeout-ms 1000)))
+                       TimeUnit/SECONDS)
       (.destroyForcibly process)
       (throw (ex-info "PTY fixture timed out"
                       {:mode mode
@@ -693,7 +699,7 @@
                 #(or (not (.isAlive process))
                      (locking output-buffer
                        (str/includes? (.toString output-buffer) "SPELL_READY")))
-                15000)
+                pty-startup-timeout-ms)
               "full-flow PTY fixture should become ready")
           (is (.isAlive process)
               (str "fixture exited before input: "
