@@ -31,7 +31,7 @@
     receipt
     (try
       (let [{:keys [path run-id]} feedback/*dogfood*
-            entry (cond-> (merge (select-keys receipt [:module :owner :editor :explicit-owner? :revision :sequence])
+            entry (cond-> (merge (select-keys receipt [:module :owner :editor :explicit-owner? :revision :sequence :origin])
                                 {:kind :module-edit :operation operation :run-id run-id
                                  :timestamp (str (java.time.Instant/now))
                                  :functions (function-changes before after)

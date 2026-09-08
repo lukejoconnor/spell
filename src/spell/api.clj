@@ -7,6 +7,7 @@
             [spell.eval :as eval]
             [spell.context :as context]
             [spell.globals :as globals]
+            [spell.patterns :as patterns]
             [spell.feedback :as feedback]
             [spell.llm :as llm]
             [spell.provider :as provider]
@@ -47,7 +48,7 @@
 (defn- execute-run*
   [{:keys [prompt init model-profile agent-profile model reasoning-effort budget depth trace-dir
            usage-tracker user-reader interactive-user? log-writer agent-namespace-overrides]
-    :as opts}]
+    :as opts} module-discovery]
   (validate-required-run-opts! opts)
   (let [agent-namespace-overrides (cond-> agent-namespace-overrides
                                     (:dogfood opts) (assoc 'feedback 'stdlib/feedback))
@@ -119,6 +120,7 @@
                               (catch Exception _)))))]
     (user/reset-state!)
     (globals/reset-globals!)
+    (globals/set-val :module-discovery module-discovery)
     (globals/set-val :roles {:main {}})
     (let [result
           (try
@@ -194,7 +196,7 @@
             feedback/*dogfood* (when (:dogfood opts) (feedback/new-dogfood-context))]
     (user/call-with-session
       (fn []
-        (try (execute-run* opts)
+        (try (execute-run* opts (patterns/discovery-context))
              (finally (coordinator/close!)))))))
 
 (defn run
