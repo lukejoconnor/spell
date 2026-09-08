@@ -310,14 +310,17 @@
           raw (:last-raw @(:execution a))]
       (try
         (future
-          (try
-            ;; Wait outside the root box: the earlier lifecycle has unwound.
-            (await-message! handle)
-            (run-root-box handle (or raw "") (make-awake-fn handle eval-fn true :dormant-resume) eval-fn completion)
-            (catch Throwable e
-              (when-not (= :coordinator-closed (:type (ex-data e)))
-                (coordinator/retire! handle completion (child-failure handle :startup e))
-                (throw e)))))
+          ;; Registration may come from a computation, but this thread owns an
+          ;; independent agent lifecycle, just as a spawned agent does.
+          (binding [*computation-future?* false *computation-owner* nil]
+            (try
+              ;; Wait outside the root box: the earlier lifecycle has unwound.
+              (await-message! handle)
+              (run-root-box handle (or raw "") (make-awake-fn handle eval-fn true :dormant-resume) eval-fn completion)
+              (catch Throwable e
+                (when-not (= :coordinator-closed (:type (ex-data e)))
+                  (coordinator/retire! handle completion (child-failure handle :startup e))
+                  (throw e))))))
         (catch Throwable e
           ;; Submission can fail after the preceding lifecycle rotated its
           ;; completion. Retire the unstarted next lifecycle, not the old one.

@@ -1,5 +1,6 @@
 (ns spell.runtime-test
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
+            [clojure.string :as str]
             [spell.parse :as parse]
             [spell.inbox :as inbox]
             [spell.runtime :as runtime]
@@ -1095,3 +1096,92 @@
                                    :recover false)]
       (is (thrown-with-msg? Exception #"not inside an agent context|not registered"
             (llm "(eval (do '"))))))
+
+(defn- dormant-test-program [action]
+  (pr-str (list 'quine 'completion (list 'eval (list 'do (list 'quote action))))))
+
+(defn- run-dormant-script [init child-response]
+  (let [calls (atom [])
+        agent (th/make-test-agent
+                {:response-fn
+                 (fn [prefix]
+                   (let [handle runtime/*current-handle*
+                         message (some-> (last (re-seq #"msg-[0-9]+" prefix)) symbol)]
+                     (swap! calls conj {:handle handle
+                                        :generation (:generation (coordinator/agent handle))
+                                        :computation? runtime/*computation-future?*
+                                        :computation-owner runtime/*computation-owner*})
+                     (when (> (count @calls) 8)
+                       (throw (ex-info "Dormant regression exceeded scripted call bound"
+                                       {:type :test-call-bound})))
+                     (let [action (if (= :main handle)
+                                    (or message '(agents/!wait))
+                                    (child-response handle message))]
+                       (str (pr-str (list 'quote action)) ")))"))))}
+                :prefill? false :recover false)
+        task (future (th/run-agent-init agent init))]
+    (try
+      {:result (deref task 15000 ::timeout) :calls @calls}
+      (finally
+        (coordinator/close!)
+        (future-cancel task)))))
+
+(deftest registration-from-computation-supports-requests-and-dormant-revival
+  (let [init (dormant-test-program
+               '(!ask-await
+                  (future
+                    (do
+                      (agents/register :revived "(quine completion (eval (do '(!extend))))")
+                      (let [first-request (blocking/request :revived :first)
+                            first-result (blocking/await first-request)
+                            second-request (blocking/request :revived :second)
+                            second-result (blocking/await second-request)]
+                        {:values [first-result second-result]
+                         :edges [(:edge-id first-request) (:edge-id second-request)]})))))
+        {:keys [result calls]} (run-dormant-script init (fn [_ message] message))
+        child-calls (filterv #(= :revived (:handle %)) calls)
+        values (get-in result [:body :values])
+        edges (get-in result [:body :edges])]
+    (is (= :future (:from result)))
+    (is (= [:first :second] (mapv :body values)))
+    (is (= [:main :main] (mapv :from values)))
+    (is (= 2 (count (set edges))) "Each request has its own collected edge")
+    (is (= edges (mapv :edge-id values)))
+    (is (= [2 3] (mapv :generation child-calls)) "Each request wakes a distinct dormant lifecycle")
+    (is (= [:revived :revived :main] (mapv :handle calls)))
+    (is (every? #(and (false? (:computation? %)) (nil? (:computation-owner %))) child-calls))))
+
+(deftest retained-relay-startup-generates-worker-and-verifier
+  ;; Keep this packaged-module scenario independent of personal/project overrides.
+  (globals/set-val :module-discovery {:project-root nil :user-root nil})
+  (let [{:keys [result calls]}
+        (run-dormant-script
+          (slurp "examples/relay.spl")
+          (fn [handle _]
+            (cond
+              (str/starts-with? (name handle) "relay-worker-")
+              '{:status :solved :report "Scripted derivation: 2^3 * 3^2 * 5 * 7" :answer 2520}
+              (str/starts-with? (name handle) "relay-verifier-")
+              '{:confirmed true :feedback "Scripted verification fixture"}
+              :else (throw (ex-info "Unexpected relay agent" {:handle handle})))))
+        worker-handles (mapv :handle (filter #(str/starts-with? (name (:handle %)) "relay-worker-") calls))
+        verifier-handles (mapv :handle (filter #(str/starts-with? (name (:handle %)) "relay-verifier-") calls))]
+    (is (= :future (:from result)))
+    (is (true? (get-in result [:body :solved])))
+    (is (= 2520 (get-in result [:body :answer])))
+    (is (= [:solved] (mapv :status (get-in result [:body :rounds]))))
+    (is (= 1 (count worker-handles)))
+    (is (= 1 (count verifier-handles)))
+    (is (= (first worker-handles) (get-in result [:body :rounds 0 :worker-handle])))
+    (is (= 1 (count (filter #(= :main (:handle %)) calls))) "Parent collects the report once")
+    (is (every? #(false? (:computation? %)) calls))))
+
+(deftest actual-computation-self-call-remains-prohibited
+  (let [{:keys [result calls]}
+        (run-dormant-script
+          (dormant-test-program '(!ask-await (future (!llm-self "(do "))))
+          (fn [handle _] (throw (ex-info "No child expected" {:handle handle}))))]
+    (is (= :future (:from result)))
+    (is (str/includes? (or (get-in result [:body :future-await/error]) "")
+                       ":agent-in-computation-future"))
+    (is (= [:main] (mapv :handle calls)) "The forbidden self-call never dispatches to the provider")))
