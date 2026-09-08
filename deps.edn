@@ -31,6 +31,7 @@
                                    "-n" "spell.prefill-policy-test"
                                    "-n" "spell.agent-test"
                                    "-n" "spell.agents-prompt-test"
+                                   "-n" "spell.bounded-guidance-test"
                                    "-n" "spell.sleep-refusal-recovery-test"
                                    "-n" "spell.recovery-continuation-test"
                                    "-n" "spell.recovery-lifecycle-test"
