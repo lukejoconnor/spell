@@ -102,7 +102,7 @@ Use a caller-selected configured compiled agent, here `workers/researcher` (the 
 ;; A :spell/child-failure/:phase :onboarding report is visible failure.
 ```
 
-This startup ordering is ordinary caller convention, not runtime-enforced onboarding. A complete [caller-configured startup program](../examples/mailing-list-startup.md) is available; it creates no profiles. Author attribution is cooperative and unauthenticated; subscriptions are cursor/delivery configuration, not a privacy or access-control boundary.
+This startup ordering is ordinary caller convention, not runtime-enforced onboarding. A complete [caller-configured startup program](https://github.com/lukejoconnor/spell/blob/main/examples/mailing-list-startup.md) is available; it creates no profiles. Author attribution is cooperative and unauthenticated; subscriptions are cursor/delivery configuration, not a privacy or access-control boundary.
 
 Only install/subscription is inside the setup catch. It precedes the child's first model generation; task generation/recovery remains outside that catch. The board must already exist and selected lists must have capacity. Atomic multi-list failure leaves no partial subscriptions. Normal tracked lifecycle returns, including nil and tagged failures, are collected through the coordinator; a handle or proposed dispatch is not proof of onboarding/completion. Do not reuse an existing handle.
 

@@ -81,7 +81,9 @@
                       (.directory dir)
                       (.redirectErrorStream true)
                       (.redirectOutput output))
-            _ (.remove (.environment builder) "SPELL_ROOT")
+            _ (doto (.environment builder)
+                (.remove "SPELL_ROOT")
+                (.put "HOME" (.getAbsolutePath (io/file dir "home"))))
             process (.start builder)]
         (try
           (let [finished? (.waitFor process 30 TimeUnit/SECONDS)]

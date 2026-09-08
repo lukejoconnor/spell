@@ -228,11 +228,11 @@ Access functions with qualified symbols.
 Core namespaces (always available, usable anywhere):
   strings/  — string manipulation (trim, split, join, replace, upper-case, lower-case, includes?, starts-with?, ...)
   math/     — math functions (sqrt, pow, abs, floor, ceil, rand, factorial, PI, ...)
-  patterns/ — run-local editable modules (install, catalog, source, update, call)
   builtins/ — reference for core builtins by category (docs only; includes subs, re-find, re-matches, re-seq, rand-int, ...)
 
 Effect namespaces are configurable and only usable in the quoted trailing expression.
 These are listed below if available to you. They include things like io and inter-agent communication.
+When configured, patterns/ provides run-local editable modules: install, catalog, source, update, call.
 For IO, prefer dedicated io/ functions like io/read-lines over io/sh with shell equivalents.
 
 On first use of an unfamiliar effect namespace, consider using '(!describe ns) to check available functions. '(!describe ns1 ns2) also works. '(!describe ns :function-name) describes one function within a namespace.

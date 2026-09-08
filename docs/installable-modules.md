@@ -6,7 +6,7 @@ Pattern policy is editable Spell source, installed explicitly into the current r
 
 The bundled library contains **relay** and **mailing-list**. `check-result`, `ralph`, `fix-loop`, and `team` are retired, not aliases or hidden compatibility modules. Their policy-specific tests and generated teaching are removed; independent evaluator/runtime, shell-test, ownership/journal, and reliability regressions remain. `clean-prompt` remains deleted.
 
-Relay provides fresh-context reasoning rounds, structured handoffs, and a separate verifier; it is not a correctness guarantee. See [the runnable example](../examples/relay.md). For repository work, compose ordinary shell steps and configured tracked agents explicitly; see [caller-owned work](../examples/caller-owned-work.md). There is no replacement generic git framework or automatic cleanup.
+Relay provides fresh-context reasoning rounds, structured handoffs, and a separate verifier; it is not a correctness guarantee. See [the runnable example](https://github.com/lukejoconnor/spell/blob/main/examples/relay.md). For repository work, compose ordinary shell steps and configured tracked agents explicitly; see [caller-owned work](https://github.com/lukejoconnor/spell/blob/main/examples/caller-owned-work.md). There is no replacement generic git framework or automatic cleanup.
 
 ## Discover, install, call
 
@@ -32,7 +32,7 @@ To keep an edit across runs, deliberately save the complete installed definition
                     (str (pr-str (patterns/source :greeting)) "\n")))
 ```
 
-A **fresh run** discovers/installs the saved file. Saving code does not persist board state, coordinator identities, pending requests, module ownership metadata, or a live journal; the next run has a new installer/owner and install baseline. See [user-module source and reload](../examples/user-modules.md).
+A **fresh run** discovers/installs the saved file. Saving code does not persist board state, coordinator identities, pending requests, module ownership metadata, or a live journal; the next run has a new installer/owner and install baseline. See [user-module source and reload](https://github.com/lukejoconnor/spell/blob/main/examples/user-modules.md).
 
 `catalog` lists compact discovered/installed metadata, including selected `:origin`; a module-specific catalog includes docs, derived `:params`, and `:requires`, never function bodies. Installed status distinguishes a bundled definition available for installation from one already in this run. Discovery and ordinary calls do not require inserting the executable body into the next model prefix.
 
@@ -129,4 +129,4 @@ For model-facing recovery/continuation guidance, see the committed [recovery con
 
 ## Review and acceptance
 
-Current disposition and exact editable before/after teaching snapshots are described in [MODULE_LIBRARY_CHANGELOG.md](../MODULE_LIBRARY_CHANGELOG.md). Earlier installable-modules plans, run reports, inventories, and live artifacts describe their historical accepted run, not the current API. New offline acceptance scripts and receipts live under `.spell/module-library-001`. A running JVM compiled before the migration still exposes the old API; only a fresh runtime can validate the new implementation. Preparing or parsing the live artifact is not a paid-run success claim.
+The [module-library changelog](https://github.com/lukejoconnor/spell/blob/main/MODULE_LIBRARY_CHANGELOG.md) records the changes and validation. Earlier plans and run reports describe their historical revision. A running JVM retains the implementation loaded at startup; use a fresh runtime to exercise repository source changes.

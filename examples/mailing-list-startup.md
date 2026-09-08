@@ -6,7 +6,7 @@
 bin/spell --init-file examples/mailing-list-startup.spl -a /path/to/your-existing-parent.agent.edn -b 1 -d 12
 ```
 
-Replace the illustrative compiled symbol and unique handle in the source to match your existing configuration; this example does not create or modify profiles. This command can make paid calls using the caller's configured provider; it was **not** run as a paid pilot. The offline acceptance artifacts exercise the same startup using scripted, explicitly compiled test agents, not autonomous model decisions.
+Replace the illustrative compiled symbol and unique handle in the source to match your existing configuration; this example does not create or modify profiles. The command uses the caller's configured provider and budget.
 
 The parent installs and initializes `[:research]`, posts explicit evidence, then captures an ordinary `agents/spawn-ask` edge. The complete child startup installs the already-shared definition and atomically subscribes before its first model generation. Only setup is caught; a tagged `:spell/child-failure true`, `:phase :onboarding` result is collected normally if setup fails. Task generation/recovery is outside that catch. The parent must establish the actual dispatched edge and collect its corresponding report rather than interpreting a handle, plan, unrelated message or empty outgoing set as proof.
 
