@@ -418,18 +418,21 @@
                 {:response-fn
                  (fn [p]
                    (swap! seen conj p)
-                   (coordinator/send! :notice-raw
-                     {:message {:from :observer :body :still-queued}})
+                   (when (= 1 (count @seen))
+                     (coordinator/send! :notice-raw
+                       {:message {:from :observer :body :still-queued}}))
                    (suffix '(audit/queued)))}
                 :namespaces (assoc spell/all-namespaces 'audit
-                              {:queued #(-> (coordinator/agent :notice-raw) :mailbox)})
+                              ;; Snapshot before lifecycle completion: a later turn
+                              ;; may legitimately receive the queued message.
+                              {:queued #(hash-map :calls (count @seen)
+                                                 :mailbox (:mailbox (coordinator/agent :notice-raw)))})
                 :prefill? false :recover false)]
-    (is (= [{:message {:from :observer :body :still-queued}}]
+    (is (= {:calls 1 :mailbox [{:message {:from :observer :body :still-queued}}]}
            (binding [runtime/*current-handle* nil]
              (agent (program '(do (patterns/install :relay)
                                   (!llm-self "(quine completion (eval (do ")))
                     :notice-raw))))
-    (is (= 1 (count @seen)))
     (is (str/includes? (first @seen) "MODULE NOTICE"))))
 
 (deftest provider-failure-does-not-requeue-consumed-notice
