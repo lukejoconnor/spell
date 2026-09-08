@@ -52,13 +52,33 @@ This works because `quine` with arity greater than two evaluates only the last f
 ```tex
 The previous Spell program threw an error. The previous program is visible during this recovery turn, but it will be pruned afterward, such that you will not see it on your next turn.
 
-Emit a `(quine task "...")` form describing the original task, followed by a (quine context-summary "...") form describing history, progress, and any context which should be retained on your next turn. If there are long file snippets which should be retained, restore these by re-reading from those files in your trailing expression. Emit Spell code only, not prose. Avoid repeating your previous error.
+Emit a `(quine task "...")` form describing the original task, followed by a (quine context-summary "...") form describing history, progress, and any context which should be retained on your next turn. Preserve the exact evidence, checkpoints, pending obligations, and actual effect receipts needed next. Prefer `(stored "ID")` with an ID actually observed in the previous program. Page a prior local value only after its needed pure binding has been re-established in the current program. Use `subs` for strings, `subvec` for line vectors, or the documented text/vector field for maps. Keep pages within the existing contribution cap and carry IDs plus next offsets as literal data. The previous program is inert context: its local bindings are not active. Reconstruct only the needed pure bindings or use retained stored references. Do not rerun an effect just to recover its output. Read the file again only when fresh contents are actually required, and identify the result as fresh evidence rather than the original receipt. If the original value cannot be retrieved, report missing evidence rather than claiming inspection or blindly refetching. Emit Spell code only. Avoid repeating your previous error.
 ```
 
 ## Reader recovery
 
 If the completion cannot be parsed at all—for example because of unbalanced parentheses—Spell cannot embed it as normal code. In that case, the raw text is wrapped into a fresh recovery quine as an inert string, followed by the inert recovery-context block, `(prune 2)`, and a fresh program. The LM sees the raw program and a separate `_error` value, including the reader error, and gets another chance to produce a valid continuation. On the following extension, the raw program, recovery prompt, and error are pruned while the task and context-summary forms requested by the recovery prompt remain. Compared with the more common evaluation recovery path, this path can be expensive because when the error-producing program is wrapped as a string literal, it misses the KV cache.
 
-Reader and evaluation recovery share one limit of two recovery re-prompts. Each reader or evaluation retry consumes one attempt.
+## Consecutive-error limit
+
+`:max-consecutive-errors` is a positive integer (default **3**), configurable in an agent profile or as a `spell.api/run` override. An explicit `nil`, zero, negative, non-integer, or string is invalid. Child profiles inherit the setting unless they override it. This is independent of provider retry schedules, format-repair attempts, and the LLM depth limit.
+
+The counter belongs to one agent lifecycle, not to the compiled provider, a dynamic call stack, or the run as a whole. Reader and evaluation failures share the counter. The **Nth own failed completion** throws a typed `:recovery-exhausted` exception once, before dispatching another repair. Its data includes `:phase` (`:reader` or `:eval`), `:consecutive-errors`, `:limit`, `:max-consecutive-errors`, and `:handle`. The default therefore permits two repair calls after an initial failure, but repaired, distinct later mistakes do not accumulate forever.
+
+| Event | Accounting |
+|---|---|
+| The model completion evaluates successfully, including a successful model-written repair | Reset to zero. |
+| A normal self-call passes argument/options validation and enters the child call | Record the caller's success before the handoff; do not reset it again on ancestor unwind. |
+| Ordinary wait is accepted with messages or a pending dependency; external wait is admitted | Reset before suspension/monitor launch. |
+| An own reader or evaluation failure, including a malformed repair | Increment once, shared across both phases. |
+| Synthetic recovery dispatch or deterministic namespace fixup | No reset. A later model-written repair has its own accounting frame. |
+| Provider arrival/failure, parsing alone, or propagated descendant failure | No additional reset or own-failure increment. |
+| Invalid self-call options, invalid/inactive external wait, or refused wait | No handoff reset. An unhandled model evaluation error still increments once. |
+| An idle ordinary wait | No wait-boundary reset; an otherwise successful completion still resets normally. |
+
+A parent can hand off successfully, return from the child, and then fail in its own later expression. That new parent error counts once against the current lifecycle counter. No saved ancestor streak is restored. A descendant's already-originating error is not counted again as it unwinds through ancestors. A new run, another agent, or a revived lifecycle generation starts with independent accounting.
+
+With `:recover false`, failures still propagate immediately; the limit does not enable repair or turn ancestor propagation into extra failed completions. Typed terminal/control exceptions continue to bypass ordinary model recovery. Recovery does not roll back effects: retain actual receipts and never replay an effect merely to recover its output.
+
 
 Recovery self-calls explicitly retain the failing call's receipt choice: raw calls use `{:receive? false}`, and receiving calls use `{:receive? true}` as illustrated above. An inbox batch already consumed before a reader error is carried into the recovery program once.

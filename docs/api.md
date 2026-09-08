@@ -38,6 +38,7 @@ These options are scoped to one invocation of `run`.
 | `:reasoning-effort` | model profile `:default-reasoning-effort` | Reasoning-effort override for this run. |
 | `:budget` | agent profile `:default-budget` or runtime default | Maximum spend in dollars for the run. `nil` means the configured default. `0` means unlimited. |
 | `:depth` | unlimited | Maximum recursive LLM depth for this run. |
+| `:max-consecutive-errors` | agent profile value or 3 | Positive-integer lifecycle-local reader/evaluation failure limit. Overrides the root agent profile for this run; see [Error recovery](error-recovery.md). |
 | `:coordinator` | `{:max-edges 10000}` | Per-run coordination capacity. `:max-edges` must be a positive integer and counts pending hyperedges, regardless of target count. Admission rejects atomically before sending requests or launching children. |
 | `:context-max-chars` | 10000 | Maximum characters inserted by one tool-result or message contribution, including binding syntax. Integer of at least 128; `nil` uses the default. |
 | `:trace-dir` | none | When non-nil, record a Spell execution trace in this directory. |
@@ -240,6 +241,7 @@ Agent profile files live under `config/agent-profiles/` and use EDN maps.
 | `:default-model-profile` | Default model profile. `spell.api/run :model-profile` may override it for one run. |
 | `:default-budget` | Default maximum spend in dollars. `spell.api/run :budget` may override it for one run. |
 | `:recover` | Recovery behavior used when evaluating model output fails. See [Error recovery](error-recovery.md). |
+| `:max-consecutive-errors` | Positive integer, default 3. Inherited unless overridden. The Nth consecutive own reader/evaluation failure is terminal; successful completions and accepted handoffs reset. See [Error recovery](error-recovery.md). |
 | `:format` | Structured output contract used to validate and repair model output. |
 | `:format-retries` | Maximum format-repair attempts when `:format` is configured. |
 | `:available-agents` | Explicit sub-agent set exposed through the `workers/` namespace. Omit it to inherit the base profile's workers; use `[]` to disable them. |
