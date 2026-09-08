@@ -202,7 +202,12 @@
 
 (defn- external-result? [v]
   (and (map? v) (boolean? (:ok v))
-       (every? #(contains? v %) [:out :err :truncated])))
+       (boolean? (:truncated v))
+       (every? #(contains? v %) [:out :err])
+       (every? #(or (nil? (get v %)) (integer? (get v %))) [:exit :status])))
+
+(def ^:private result-control-keys [:ok :exit :status :truncated])
+(def ^:private result-envelope-keys (into result-control-keys [:out :err]))
 
 (defn- gap-string [v start end]
   (str "... [omitted " (- end start) " rows; source "
@@ -276,9 +281,11 @@
     (external-result? v)
     (let [local-changed (volatile! false)
           out (normalize-payload (:out v) fuel (inc depth) local-changed)
-          err (normalize-payload (:err v) fuel (inc depth) local-changed)]
+          err (normalize-payload (:err v) fuel (inc depth) local-changed)
+          extras (normalize-map (apply dissoc v result-envelope-keys)
+                   fuel depth local-changed)]
       (when @local-changed (vreset! changed true))
-      (cond-> (assoc v :out out :err err)
+      (cond-> (assoc (merge extras (select-keys v result-control-keys)) :out out :err err)
         @local-changed (assoc :truncated true)))
     (map? v) (normalize-map v fuel depth changed)
     (or (set? v) (sequential? v))
@@ -346,12 +353,17 @@
       (if (pos? omitted-count) (add-map-marker result omitted-count) result))))
 
 (defn- short-result [v budget]
-  (let [fixed (dissoc v :out :err)
+  (let [controls (select-keys v result-control-keys)
+        extras (apply dissoc v result-envelope-keys)
+        base-overhead (count (render-form (value-form (assoc controls :out nil :err nil :truncated true))))
+        extras (if (seq extras)
+                 (short-map extras (max 32 (quot (- budget base-overhead) 4))) {})
+        fixed (merge extras controls)
         overhead (count (render-form (value-form (assoc fixed :out nil :err nil :truncated true))))
         available (max 8 (- budget overhead))
         err (shorten (:err v) (max 8 (quot available 4)))
         out (shorten (:out v) (max 8 (- available (count (render-form (value-form err))))))]
-    (assoc v :out out :err err :truncated true)))
+    (assoc fixed :out out :err err :truncated true)))
 
 (defn- shorten [v budget]
   (let [budget (max 0 budget)]

@@ -268,3 +268,74 @@
     (is (every? string? normalized))
     (is (= 10 (context/line-position normalized 0)))
     (is (= 509 (context/line-position normalized (dec (count normalized)))))))
+
+(defn- envelope-roundtrip [value limit]
+  (let [snapshot (context/snapshot value limit)
+        text (context/render-form (:form snapshot))
+        result (eval/spell-eval (parse/read-first text) {})]
+    {:snapshot snapshot :text text :result result :value (:ok result)}))
+
+(deftest envelope-extras-use-the-snapshot-budget
+  (let [seen (atom 0)
+        original {:ok false :exit 17 :status 503 :out "payload" :err nil :truncated false
+                  :metadata (map (fn [n] (swap! seen inc) n) (range 10000))}
+        {:keys [text result value]} (envelope-roundtrip original 512)]
+    (is (< @seen 2000) (str "realized " @seen " elements"))
+    (is (<= (count text) 614) (str "rendered " (count text) " chars"))
+    (is (eval/ok? result))
+    (is (= {:ok false :exit 17 :status 503} (select-keys value [:ok :exit :status])))
+    (is (= "payload" (:out value)))
+    (is (nil? (:err value)))
+    (is (true? (:truncated value)))))
+
+(deftest opaque-extra-cannot-replace-the-result-envelope
+  (let [original {:ok false :exit 17 :status 503 :out "payload" :err "diagnostic"
+                  :truncated false :metadata (Object.)}
+        {:keys [result value]} (envelope-roundtrip original 10000)]
+    (is (eval/ok? result))
+    (is (= (select-keys original [:ok :exit :status :out :err])
+           (select-keys value [:ok :exit :status :out :err])))
+    (is (true? (:truncated value)))
+    (is (true? (get-in value [:metadata :spell/representation-unavailable])))))
+
+(deftest extra-keys-preserve-collision-and-unsupported-key-rules
+  (let [original (array-map :ok true :out "ok" :err nil :truncated false
+                           (Object.) :unsupported :spell/omitted "USER" :good 7)
+        {:keys [result value]} (envelope-roundtrip original 10000)]
+    (is (eval/ok? result))
+    (is (= "USER" (:spell/omitted value)))
+    (is (= 7 (:good value)))
+    (is (= :unknown (:spell/omitted-1 value)))
+    (is (true? (:truncated value)))))
+
+(deftest nested-third-party-envelope-shape-is-bounded
+  (let [seen (atom 0)
+        third-party {:ok true :out "inner" :err nil :truncated false
+                     :metadata (map (fn [n] (swap! seen inc) n) (range 10000))}
+        outer {:ok true :out third-party :err nil :truncated false}
+        {:keys [text result value]} (envelope-roundtrip outer 512)]
+    (is (< @seen 2000))
+    (is (<= (count text) 614))
+    (is (eval/ok? result))
+    (is (true? (:ok value)))
+    (is (map? (:out value)))
+    (is (true? (get-in value [:out :ok])))))
+
+(deftest reserved-key-names-do-not-exempt-arbitrary-control-values
+  (doseq [control [:exit :status :truncated]]
+    (let [seen (atom 0)
+          third-party (assoc {:ok true :out "inner" :err nil :truncated false}
+                        control (map (fn [n] (swap! seen inc) n) (range 10000)))
+          outer {:ok true :out third-party :err nil :truncated false}
+          {:keys [text result value]} (envelope-roundtrip outer 512)]
+      (is (< @seen 2000) (str control " realized " @seen))
+      (is (<= (count text) 614))
+      (is (eval/ok? result))
+      (is (true? (:ok value)))
+      (is (map? (:out value)))))
+  (let [third-party {:ok true :out "inner" :err nil :truncated false :status (Object.)}
+        outer {:ok true :out third-party :err nil :truncated false}
+        {:keys [result value]} (envelope-roundtrip outer 10000)]
+    (is (eval/ok? result))
+    (is (true? (:ok value)))
+    (is (true? (get-in value [:out :status :spell/representation-unavailable])))))
