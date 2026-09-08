@@ -228,7 +228,7 @@ Access functions with qualified symbols.
 Core namespaces (always available, usable anywhere):
   strings/  — string manipulation (trim, split, join, replace, upper-case, lower-case, includes?, starts-with?, ...)
   math/     — math functions (sqrt, pow, abs, floor, ceil, rand, factorial, PI, ...)
-  patterns/ — orchestration patterns (check-result, clean-prompt, ralph, team, fix-loop)
+  patterns/ — run-local editable modules (install, catalog, source, update, call)
   builtins/ — reference for core builtins by category (docs only; includes subs, re-find, re-matches, re-seq, rand-int, ...)
 
 Effect namespaces are configurable and only usable in the quoted trailing expression.

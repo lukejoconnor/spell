@@ -715,7 +715,7 @@
   (io/replace-lines path [[s e c] ...])      — multi-edit (line numbers refer to original file)
   (io/sh command)                            — execute shell command, returns {:exit :out :err}
   (io/sh command {:timeout 10})
-  (io/sh-test command)                       — build a zero-arg shell-backed fix-loop test thunk
+  (io/sh-test command)                       — build a zero-arg shell-backed test thunk
   (io/exec [cmd arg1 ...])                   — execute command directly (no shell)
   (io/watch-send path handle)                — watch directory, send events as message to handle
 
@@ -944,7 +944,7 @@ Timeout returns {:exit -1 :err \"...timed out...\"}."
 Returns a Spell fn that yields:
   {:pass bool :output string}
 
-Useful for fix-loop reflector tests that should run a shell command without
+Useful for explicit checks that should run a shell command without
 relying on closure capture semantics."
 
     :exec

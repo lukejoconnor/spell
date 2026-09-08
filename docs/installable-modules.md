@@ -4,15 +4,9 @@ Pattern policy is editable Spell source, installed explicitly into the current r
 
 ## Disposition
 
-| Previous entry point | Disposition | Installed module / function |
-| --- | --- | --- |
-| `patterns/check-result` | Retained as an opt-in bundle | `:check-result :run` |
-| `patterns/ralph` | Retained as an opt-in bundle | `:ralph :run` |
-| `patterns/team` | Retained as an opt-in bundle | `:team :run` |
-| `patterns/fix-loop` | Retained as an opt-in bundle | `:fix-loop :run` |
-| `patterns/relay` | Retained as an opt-in bundle | `:relay :run` |
-| `patterns/mailing-list`, `patterns/mail` | Retained as one opt-in bundle | `:mailing-list` exports `:init`, `:call`, `:change`, `:digest`, `:deliver` |
-| `patterns/clean-prompt` | Deleted, not renamed or shimmed | Write deliberate cleanup/execution steps if needed |
+The bundled library contains **relay** and **mailing-list**. `check-result`, `ralph`, `fix-loop`, and `team` are retired, not aliases or hidden compatibility modules. Their policy-specific tests and generated teaching are removed; independent evaluator/runtime, shell-test, ownership/journal, and reliability regressions remain. `clean-prompt` remains deleted.
+
+Relay provides fresh-context reasoning rounds, structured handoffs, and a separate verifier; it is not a correctness guarantee. See [the runnable example](../examples/relay.md). For repository work, compose ordinary shell steps and configured tracked agents explicitly; see [caller-owned work](../examples/caller-owned-work.md). There is no replacement generic git framework or automatic cleanup.
 
 ## Discover, install, call
 
@@ -20,18 +14,31 @@ These are successive quoted trailing expressions in the normal completion wrappe
 
 ```clojure
 '(!call-now available (patterns/catalog))
-'(!call-now installed (patterns/install :check-result))
-'(!call-now contract (patterns/catalog :check-result))
-'(!call-now verdict (patterns/call :check-result :run "What is 6 * 9?" 54))
+'(!call-now installed (patterns/install :relay))
+'(!call-now contract (patterns/catalog :relay))
+'(!call-now verdict (patterns/call :relay :run {:problem "What is 6 * 9? Explain and check." :max-rounds 2}))
 ```
 
-Bundled definitions are classpath resources under `modules/`, sourced from `config/spl-lib` in a checkout and included in packaged builds. The same loader works from a JAR outside the checkout. Installation copies the selected definition into the run-local registry.
+Discovery selects `<worktree-root>/.spell/modules/<name>.spl`, then `$HOME/.spell/modules/<name>.spl`, then the bundle. The worktree root (including linked worktrees) is captured once per run; outside git it is the startup cwd. Children share that root. File names are flat lowercase-kebab names; programmatic keyword IDs are not restricted to that filename grammar. The selected origin is `{:kind :project|:user|:bundle :path canonical-path-or-resource-URL}`; explicit custom definitions have nil origin. An invalid selected file reports that path and errors **without fallback**.
 
-`catalog` lists compact bundled/custom metadata; a module-specific catalog includes docs, derived `:params`, and `:requires`, never function bodies. Installed status distinguishes a bundled definition available for installation from one already in this run. Discovery and ordinary calls do not require inserting the executable body into the next model prefix.
+Bundled definitions are classpath resources under `modules/`, sourced from `config/spl-lib` and included in packaged builds. Each file contains one ordinary unquoted definition map with inert `(fn ...)` source data. Loading/cataloging/installing does not execute its function bodies. Installation copies the selected definition into the run-local registry; repeat install preserves that source, its immutable owner/origin, revisions, and separate state, rather than reloading disk.
+
+To keep an edit across runs, deliberately save the complete installed definition as ordinary source; there is no autosave or watched reload. Enable `io` and choose the destination yourself:
+
+```clojure
+;; Successive actions; use an absolute path if cwd is not the selected worktree root.
+'(!call-now directory (io/mkdirs ".spell/modules"))
+'(!call-now saved (io/write-file ".spell/modules/greeting.spl"
+                    (str (pr-str (patterns/source :greeting)) "\n")))
+```
+
+A **fresh run** discovers/installs the saved file. Saving code does not persist board state, coordinator identities, pending requests, module ownership metadata, or a live journal; the next run has a new installer/owner and install baseline. See [user-module source and reload](../examples/user-modules.md).
+
+`catalog` lists compact discovered/installed metadata, including selected `:origin`; a module-specific catalog includes docs, derived `:params`, and `:requires`, never function bodies. Installed status distinguishes a bundled definition available for installation from one already in this run. Discovery and ordinary calls do not require inserting the executable body into the next model prefix.
 
 | Operation | Contract |
 | --- | --- |
-| `(patterns/install module-key)` | Install bundled definition only if absent. |
+| `(patterns/install module-key)` | Install selected project/user/bundle definition only if absent. |
 | `(patterns/install module-key definition)` | Install a custom definition only if absent. |
 | `(patterns/catalog)` / `(patterns/catalog module-key)` | Compact discovery; unknown module-specific lookup returns nil. |
 | `(patterns/source module-key)` | Complete installed module definition, or nil. |
@@ -93,21 +100,24 @@ The schema is `{:doc string :functions {:key {:doc string :requires [namespace-s
 
 Functions retain Spell's **dynamic scope**, not lexical closures. An in-flight call snapshots its selected body; a nested `patterns/call` independently selects the latest entry. `:requires` prechecks listed namespace availability; it neither grants capabilities nor proves that the list contains every dependency. Enable needed namespaces in each participating agent profile; `patterns` itself never grants `io`, `agents`, or other permissions.
 
-## Mailing-list migration
+## Mailing-list consumers
 
-Every participant may safely install/reuse the module. Exactly one administrator explicitly initializes the board:
+Every participant installs/reuses code. Exactly one administrator initializes state; omitted `:lists` creates `[:general]`, while an explicit nonempty distinct keyword vector replaces that default. The initializer is subscribed to all initial lists atomically. `:create` atomically creates a list and subscribes its creator, returning the actual `:subscription`.
 
 ```clojure
 '(!call-now installed (patterns/install :mailing-list))
 ;; Administrator only, once per run:
-'(!call-now board (patterns/call :mailing-list :init {:retention 200 :page-size 20}))
+'(!call-now board (patterns/call :mailing-list :init
+                    {:lists [:design :implementation] :retention 200 :page-size 20}))
 ;; Existing workers never initialize again:
-'(!call-now subscribed
-   (patterns/call :mailing-list :call :subscribe-many
-                  {:lists [:design :implementation] :from :earliest}))
+'(!call-now subscribed (patterns/call :mailing-list :subscribe-many
+                         {:lists [:design :implementation] :from :earliest}))
+'(!call-now page (patterns/call :mailing-list :digest {:list :design}))
+;; Fetch needed :message bodies, process evidence and :gap, retain the token, then:
+'(!call-now ack (patterns/call :mailing-list :ack {:token (:token page)}))
 ```
 
-Lists must already have been created by the administrator. Replace `(patterns/mail operation args)` with `(patterns/call :mailing-list :call operation args)`. The board has no private `:code` registry. Inspect/edit its general module entries through `source`/`update`; do not put executable source back into board state. Duplicate explicit `:init` remains an error. See [mailing-list operations](./mailing-list.md) and the skill (`resources/skills/mailing-list/SKILL.md`).
+Direct consumers are `:init`, `:info`, `:lists`, `:create`, `:subscribe`, `:subscribe-many`, `:unsubscribe`, `:post`, `:post!`, `:notify`, `:message`, `:digest`, and `:ack`. There is no `:call` dispatcher or board-specialized `:spawn`. Internal editable entries are `:transact`, `:change`, `:digest-page`, and `:deliver`; the board has no private code registry. Duplicate init errors without replacing state. Configured `agents/spawn-ask` plus a child startup program installs/subscribes **before first generation**; see [complete onboarding and receipt guidance](./mailing-list.md).
 
 ## Evidence and bounded context
 
@@ -119,4 +129,4 @@ For model-facing recovery/continuation guidance, see the committed [recovery con
 
 ## Review and acceptance
 
-See the [model-facing change inventory](./installable-modules-change-inventory.md), [approved disposition/validation plan](./installable-modules-plan.md), and root live acceptance companion (`INSTALLABLE_MODULES_LIVE_ACCEPTANCE.md`). A running JVM compiled before the migration still exposes the old API; only a fresh runtime can validate the new implementation. Preparing or parsing the live artifact is not a paid-run success claim.
+Current disposition and exact editable before/after teaching snapshots are described in [MODULE_LIBRARY_CHANGELOG.md](../MODULE_LIBRARY_CHANGELOG.md). Earlier installable-modules plans, run reports, inventories, and live artifacts describe their historical accepted run, not the current API. New offline acceptance scripts and receipts live under `.spell/module-library-001`. A running JVM compiled before the migration still exposes the old API; only a fresh runtime can validate the new implementation. Preparing or parsing the live artifact is not a paid-run success claim.

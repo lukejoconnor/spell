@@ -1,6 +1,6 @@
 # Spell Examples
 
-This directory contains the public examples for the v0.3 Spell release. Each `.spl` file is a natural-language prompt that asks the model to write and run a Spell program.
+This directory contains the public examples for the v0.3 Spell release. Most `.spl` files are natural-language prompts that ask the model to write and run a Spell program. The installable-module section explicitly identifies complete startup programs (use `--init-file`) and inert module definitions (save/discover them; do not run as prompts).
 
 ## Running Examples
 
@@ -35,5 +35,8 @@ Spell accepts provider-prefixed model specs such as `codex-tc:<model>`, `openai-
 Each example has a companion `.md` file with a short explanation and expected behavior.
 
 ## Installable modules
+
+Current examples: [caller-configured board startup](mailing-list-startup.md) installs/subscribes before the child's first generation using an existing compiled agent; [relay](relay.md) supplies a complete runnable startup program with fresh-context structured handoffs and a separate verifier (not a correctness guarantee); [user modules](user-modules.md) shows project/HOME discovery and explicit save/fresh-run reload; [caller-owned shell work](caller-owned-work.md) composes configured tracked agents without a generic git framework or automatic cleanup.
+
 
 [installable-modules.spl](installable-modules.spl) is a small natural-language task exercising the five-verb module API; its [companion](installable-modules.md) gives an explicit bounded command. For a self-contained, source-driven two-agent acceptance program, use the root [live artifact/command](../INSTALLABLE_MODULES_LIVE_ACCEPTANCE.md) with `--init-file`, not as a positional prompt. Preparing/parsing that artifact is not paid-run acceptance.

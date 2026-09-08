@@ -1,0 +1,27 @@
+(quine completion
+  (eval
+    (do
+      (quine task "Caller-configured board startup example. workers/researcher must already be exposed by your selected parent profile and the compiled child must expose patterns, globals and agents. This is ordinary caller composition, not enforced onboarding or a security boundary. Inspect the captured launched-edge receipt before waiting for that exact edge. On waking preserve its actual :edge-id, :from and :body; unrelated messages are not completion. Return the collected report, including tagged onboarding failure or successful nil; do not recreate dispatch. No cleanup is automatic.")
+      (def child-program
+        '(quine completion
+           (eval
+             (do
+               '(let [failure
+                      (try
+                        (do (patterns/install :mailing-list)
+                            (patterns/call :mailing-list :subscribe-many
+                              {:lists [:research] :from :earliest})
+                            nil)
+                        (catch e {:spell/child-failure true :phase :onboarding
+                                  :handle :researcher-1 :error (str e)}))]
+                  (if failure failure
+                    (!llm-self
+                      (wrap-cat "Subscriptions installed. Never reinitialize the board. Read the :research digest, fetch the needed :message body, process the supplied evidence and any retention gap, then ack the EXACT observed token. Post a quiet summary <=500 chars and return the evidence plus actual read/ack/post receipts. Delivery, acknowledgement and author attribution are not comprehension, authentication or privacy. No source fetch is needed merely to call the installed module.")
+                      {:receive? true})))))))
+      '(!call-now installed (patterns/install :mailing-list)
+                  initialized (patterns/call :mailing-list :init {:lists [:research]})
+                  evidence (patterns/call :mailing-list :post
+                             {:list :research :summary "Example evidence: six times seven"
+                              :body {:expression "6 * 7" :value 42}})
+                  launched-edge (agents/spawn-ask workers/researcher
+                                  (pr-str child-program) :researcher-1)))))

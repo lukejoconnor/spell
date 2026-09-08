@@ -91,7 +91,7 @@ The main system prompt is intentionally single-track. Variation should be transp
 
 ## Installable Pattern Modules
 
-`spl-lib/modules/*.spl` contains six opt-in editable Spell module definitions. Namespace wiring exposes only `patterns/install`, `catalog`, `source`, `update`, and `call`; it does not install every bundle or initialize application state at startup. Install a bundle explicitly before calling its functions. Repeated installation preserves existing edits and state.
+`spl-lib/modules/*.spl` contains two bundled editable Spell module definitions (relay and mailing-list), plus project/HOME `.spell/modules` discovery. Namespace wiring exposes only `patterns/install`, `catalog`, `source`, `update`, and `call`; it does not install every bundle or initialize application state at startup. Install a bundle explicitly before calling its functions. Repeated installation preserves existing edits and state.
 
 Definitions live in run-local globals `:modules`, separate from application state. For `:mailing-list`, every participant may install/reuse the module, but exactly one administrator explicitly calls `:init` to create board state. Existing workers never initialize it again.
 

@@ -29,7 +29,7 @@ This repo includes Spell-specific skills under `.agents/skills/`. Use them as th
 - Server alias: the agent-profile name that identifies an MCP server and becomes its generated Spell namespace.
 
 - Installable pattern module: opt-in editable Spell definitions under run-local globals `:modules`, accessed only through `patterns/install`, `catalog`, `source`, `update`, and `call`. See `docs/installable-modules.md`.
-- Mailing-list board: bounded per-run message state under `:mailing-list`, separate from module definitions. Install/reuse `:mailing-list` on each participant; exactly one administrator calls its explicit `:init`. Quiet posts are distinct from inbox notifications. See `docs/mailing-list.md` and the bundled `mailing-list` skill.
+- Mailing-list board: bounded per-run message state under `:mailing-list`, separate from module definitions. Install/reuse `:mailing-list` on each participant; exactly one administrator calls explicit `:init` (default `[:general]`, or an explicit named `:lists` vector). Initializer and list creators are subscribed atomically; consumers call direct module entries with explicit `:list`. Quiet posts are distinct from inbox notifications. See `docs/mailing-list.md` and the bundled `mailing-list` skill.
 
 ## Top-Level Layout
 
@@ -140,7 +140,7 @@ See `config/AGENTS.md` for a directory-specific guide.
 | `config/prompts/sysprompt-message.txt` | System prompt for message-style providers. |
 | `config/prompts/sysprompt-toolcall.txt` | System prompt for mandatory tool-call providers. |
 | `config/model-profiles/*.edn` | Declarative model provider defaults and routing metadata. |
-| `config/spl-lib/modules/*.spl` | Six opt-in editable Spell module definitions; install explicitly, separately from application-state initialization. |
+| `config/spl-lib/modules/*.spl` | Two bundled editable Spell modules (relay and mailing-list), plus project/HOME .spell/modules discovery; install explicitly, separately from state initialization. |
 | `config/web.edn` | Web/search configuration. |
 
 First-class public provider paths are OpenAI, Anthropic, Fireworks, and Codex CLI. The Codex CLI path uses local Codex authentication and should be treated as experimental.
