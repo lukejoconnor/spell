@@ -58,9 +58,12 @@
             classpath (str/join java.io.File/pathSeparator
                                 (cons (.getAbsolutePath jar) jars))
             code (str
-                   "(require 'spell.patterns 'spell.globals 'clojure.java.io)\n"
+                   "(require 'spell.patterns 'spell.globals 'spell.coordinator 'spell.runtime 'clojure.java.io)\n"
                    (pr-str
-                     '(binding [spell.globals/*store* (spell.globals/new-store)]
+                     '(binding [spell.globals/*store* (spell.globals/new-store)
+                                spell.coordinator/*coordinator* (spell.coordinator/new-coordinator)
+                                spell.runtime/*current-handle* :packaged-installer]
+                        (spell.coordinator/register! :packaged-installer)
                         (let [catalog (spell.patterns/catalog)
                               installs (mapv #(spell.patterns/install (:module %)) catalog)]
                           (spell.patterns/update :check-result assoc :doc "packaged edit")

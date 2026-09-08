@@ -13,13 +13,17 @@
 (def stub-ask-await (fn [fut] (deref (:ref fut) 5000 :timeout)))
 
 (defn- invoke-module [module opts]
-  (let [env (assoc eval/*spell-env* 'patterns stdlib/patterns)
-        result (eval/spell-eval
-                 (list 'do (list 'patterns/install module)
-                       (list 'patterns/call module :run (list 'quote opts)))
-                 env)]
-    (if (eval/ok? result) (:ok result)
-      (throw (ex-info (:err result) {:result result})))))
+  (binding [runtime/*current-handle* (or runtime/*current-handle* :pattern-test)]
+    (locking coordinator/*coordinator*
+      (when-not (coordinator/agent runtime/*current-handle*)
+        (coordinator/register! runtime/*current-handle*)))
+    (let [env (assoc eval/*spell-env* 'patterns stdlib/patterns)
+          result (eval/spell-eval
+                   (list 'do (list 'patterns/install module)
+                         (list 'patterns/call module :run (list 'quote opts)))
+                   env)]
+      (if (eval/ok? result) (:ok result)
+        (throw (ex-info (:err result) {:result result}))))))
 
 (defn- run-fix-loop [opts env]
   (binding [eval/*builtins* (assoc eval/*builtins* '!ask-await stub-ask-await)

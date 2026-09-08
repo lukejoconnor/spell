@@ -7,6 +7,7 @@
             [spell.eval :as eval]
             [spell.context :as context]
             [spell.globals :as globals]
+            [spell.feedback :as feedback]
             [spell.llm :as llm]
             [spell.provider :as provider]
             [spell.trace :as trace]
@@ -14,7 +15,7 @@
 
 (def ^:private public-run-keys
   #{:prompt :init :model-profile :agent-profile :model :reasoning-effort
-    :budget :depth :context-max-chars :trace-dir :usage-tracker :user-reader :log-writer :coordinator})
+    :budget :depth :context-max-chars :trace-dir :usage-tracker :user-reader :log-writer :coordinator :dogfood})
 
 (def ^:private removed-run-keys
   #{:provider :agent :lm-profile :trace :usage :user? :verbose :thinking :prefill? :format :retries
@@ -48,7 +49,9 @@
            usage-tracker user-reader interactive-user? log-writer agent-namespace-overrides]
     :as opts}]
   (validate-required-run-opts! opts)
-  (let [profile (provider/resolve-model-profile model-profile)
+  (let [agent-namespace-overrides (cond-> agent-namespace-overrides
+                                    (:dogfood opts) (assoc 'feedback 'stdlib/feedback))
+        profile (provider/resolve-model-profile model-profile)
         resolved-provider (:provider profile)
         agent-spec (cond-> (agent/load-agent-spec agent-profile)
                      true (assoc :provider resolved-provider)
@@ -140,14 +143,16 @@
                                              context/default-max-chars
                                              (:context-max-chars opts))})
             coordinator/*coordinator* (coordinator/new-coordinator (get opts :coordinator {}))
-            globals/*store* (globals/new-store)]
+            globals/*store* (globals/new-store)
+            feedback/*dogfood* (when (:dogfood opts) (feedback/new-dogfood-context))]
     (user/call-with-session
       (fn []
         (try (execute-run* opts)
              (finally (coordinator/close!)))))))
 
 (defn run
-  "Run a Spell agent with the public API.
+  "Run a Spell agent with the public API. :dogfood true enables feedback and
+   automatic exact module-edit journals at the feedback destination for this run.
 
    Required:
      :model-profile — model profile path, inline profile map, or provider instance

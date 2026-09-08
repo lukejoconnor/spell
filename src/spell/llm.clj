@@ -6,6 +6,7 @@
             [spell.eval :as eval]
             [spell.grammar :as grammar]
             [spell.inbox :as inbox]
+            [spell.module-notices :as module-notices]
             [spell.parse :as parse]
             [spell.prompt :as prompt]
             [spell.provider :as provider]
@@ -341,7 +342,8 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
   (when (and eval/*max-llm-depth* (>= eval/*llm-depth* eval/*max-llm-depth*))
     (throw (ex-info "LLM recursion limit exceeded"
                     {:type :depth-exceeded :depth eval/*llm-depth* :limit eval/*max-llm-depth*})))
-  (let [indent         (apply str (repeat eval/*llm-depth* "  "))
+  (let [prompt-str     (module-notices/prepend-pending handle prompt-str)
+        indent         (apply str (repeat eval/*llm-depth* "  "))
         node-id        (when trace/*trace*
                          (trace/begin-node! trace/*trace-node-id*
                                             eval/*llm-depth* :default prompt-str))

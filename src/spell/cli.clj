@@ -133,7 +133,7 @@
     :parse-fn #(Integer/parseInt %)
     :validate [pos? "Must be positive"]]
    [nil "--responses-api" "Force OpenAI Responses API instead of Chat Completions"]
-   [nil "--dogfood" "Enable Spell developer dogfooding feedback for this run"]
+   [nil "--dogfood" "Enable feedback and automatic module-edit journals for this run"]
    [nil "--agents-md" "Include cwd AGENTS.md (up to 32 KiB) in the task prompt"]
    ["-T" "--trace" "Record execution trace to a temp dir under java.io.tmpdir/spell-traces/"]
    [nil "--trace-dir DIR" "Record execution trace to DIR"
@@ -340,8 +340,7 @@
                                  :usage-tracker usage-atom}
                           prompt (assoc :prompt prompt)
                           init (assoc :init init)
-                          dogfood (assoc :agent-namespace-overrides
-                                         {'feedback 'stdlib/feedback})
+                          dogfood (assoc :dogfood true)
                           (or trace trace-dir)
                           (assoc :trace-dir (or trace-dir (spell-trace/default-trace-dir)))
                           (and (some? (. System console)) (not= model "user"))

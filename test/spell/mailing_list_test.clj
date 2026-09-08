@@ -19,7 +19,10 @@
       (:ok r)
       (throw (ex-info (str (:err r)) r)))))
 (defn eval-pattern [form]
-  (binding [eval/*spell-env* {'eval eval-source
+  (locking coordinator/*coordinator*
+    (when-not (coordinator/agent *handle*) (coordinator/register! *handle*)))
+  (binding [runtime/*current-handle* *handle*
+            eval/*spell-env* {'eval eval-source
                             'globals globals/globals-namespace
                             'patterns stdlib/patterns
                             'agents {:current-handle (fn [] *handle*)

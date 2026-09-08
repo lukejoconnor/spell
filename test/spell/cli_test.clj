@@ -258,8 +258,7 @@
                                              :agent-profile profile}
                                             (atom {:by-model {}})))))
         (is (= profile (:agent-profile @seen-opts)))
-        (is (= {'feedback 'stdlib/feedback}
-               (:agent-namespace-overrides @seen-opts))))))
+        (is (true? (:dogfood @seen-opts))))))
 
   (testing "ordinary runs do not receive the feedback override"
     (let [seen-opts (atom nil)]

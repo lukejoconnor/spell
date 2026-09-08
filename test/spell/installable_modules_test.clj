@@ -21,6 +21,9 @@
                          :namespaces namespaces :recover false)
      (program form))))
 
+(defn- core-receipt [r]
+  (select-keys r [:module :installed? :fns]))
+
 (def sample
   '{:doc "A small editable module"
     :functions {:run {:doc "Add caller offset" :requires []
@@ -57,8 +60,8 @@
              (vector first-receipt (patterns/install :check-result)
                      (patterns/source :check-result)
                      (globals/get :module-user-state))))]
-    (is (= {:module :check-result :installed? true :fns [:run]} first-receipt))
-    (is (= {:module :check-result :installed? false :fns [:run]} second-receipt))
+    (is (= {:module :check-result :installed? true :fns [:run]} (core-receipt first-receipt)))
+    (is (= {:module :check-result :installed? false :fns [:run]} (core-receipt second-receipt)))
     (is (= "edited documentation" (:doc source)))
     (is (= {:counter 17} state))))
 
@@ -66,12 +69,12 @@
   (let [[receipt source entry result]
         (run-form
           '(do
-             (def receipt (patterns/update :custom (fn [_] '{:doc "A small editable module" :functions {:run {:doc "Add caller offset" :requires [] :source (fn [x] (+ offset x))}}})))
+             (def receipt (do (patterns/install :custom '{:doc "bootstrap" :functions {}}) (patterns/update :custom (fn [_] '{:doc "A small editable module" :functions {:run {:doc "Add caller offset" :requires [] :source (fn [x] (+ offset x))}}}))))
              (def offset 20)
              (vector receipt (patterns/source :custom)
                      (patterns/source :custom :run)
                      (patterns/call :custom :run 22))))]
-    (is (= {:module :custom :fns [:run]} receipt))
+    (is (= {:module :custom :fns [:run]} (core-receipt receipt)))
     (is (= sample source))
     (is (= (get-in sample [:functions :run]) entry))
     (is (= '(fn [x] (+ offset x)) (:source entry)))
@@ -82,17 +85,17 @@
         (run-form
           '(do
              (def added
-               (patterns/update :scratch
+               (do (patterns/install :scratch '{:doc "bootstrap" :functions {}}) (patterns/update :scratch
                  (fn [_] '{:doc "scratch"
                            :functions {:value {:doc "constant" :requires []
-                                               :source (fn [] 11)}}})))
+                                               :source (fn [] 11)}}}))))
              (def value (patterns/call :scratch :value))
              (def removed (patterns/update :scratch assoc :functions {}))
              (vector added value removed (patterns/source :scratch :value)
                      (patterns/source :not-installed))))]
-    (is (= {:module :scratch :fns [:value]} added))
+    (is (= {:module :scratch :fns [:value]} (core-receipt added)))
     (is (= 11 value))
-    (is (= {:module :scratch :fns []} removed))
+    (is (= {:module :scratch :fns []} (core-receipt removed)))
     (is (nil? entry))
     (is (nil? absent))))
 
@@ -100,7 +103,7 @@
   (is (= [42 55]
          (run-form
            '(do
-              (patterns/update :dynamic
+              (do (patterns/install :dynamic '{:doc "bootstrap" :functions {}}) (patterns/update :dynamic
                 (fn [_] '{:doc "dynamic"
                           :functions
                           {:add {:doc "caller binding" :requires []
@@ -108,7 +111,7 @@
                            :sum {:doc "tail recursion" :requires []
                                  :source (fn [n acc]
                                            (if (zero? n) acc
-                                             (recur (dec n) (+ n acc))))}}}))
+                                             (recur (dec n) (+ n acc))))}}})))
               (let [offset 40]
                 [(patterns/call :dynamic :add 2)
                  (patterns/call :dynamic :sum 10 0)]))))))
@@ -118,11 +121,11 @@
         opaque (map (fn [x] (swap! forced inc) x) (range 10000))
         result (run-form
                  '(do
-                    (patterns/update :opaque
+                    (do (patterns/install :opaque '{:doc "bootstrap" :functions {}}) (patterns/update :opaque
                       (fn [_] '{:doc "opaque"
                                 :functions {:ignore {:doc "Never inspect argument"
                                                      :requires []
-                                                     :source (fn [x] :untouched)}}}))
+                                                     :source (fn [x] :untouched)}}})))
                     (patterns/call :opaque :ignore (audit/value)))
                  (assoc spell/all-namespaces 'audit {:value (fn [] opaque)}))]
     (is (= :untouched result))
@@ -132,7 +135,7 @@
   (is (= [:old-frame :new]
          (run-form
            '(do
-              (patterns/update :live
+              (do (patterns/install :live '{:doc "bootstrap" :functions {}}) (patterns/update :live
                 (fn [_] '{:doc "live"
                           :functions
                           {:outer {:doc "Running frame stays old" :requires [patterns]
@@ -144,7 +147,7 @@
                                        [:functions :inner :source] '(fn [] :new))
                                      [:old-frame (patterns/call :live :inner)])}
                            :inner {:doc "Nested lookup" :requires []
-                                   :source (fn [] :old)}}}))
+                                   :source (fn [] :old)}}})))
               (patterns/call :live :outer))))))
 
 (deftest concurrent-install-one-winner-and-preserved-state
@@ -164,7 +167,7 @@
       (is (not= ::timeout rb))
       (is (= #{{:module :check-result :installed? true :fns [:run]}
                {:module :check-result :installed? false :fns [:run]}}
-             (set [ra rb])))
+             (set (map core-receipt [ra rb]))))
       (is (= [{:sentinel :board} {:counter 17}]
              (run-form '[(globals/get :mailing-list) (globals/get :user-state)]))))))
 
@@ -184,13 +187,13 @@
                                        :source (fn [] (audit/tick))}}}
         namespaces (assoc spell/all-namespaces 'audit {:tick #(swap! executions inc)})
         install (run-form (list 'patterns/install :custom (list 'quote definition)) namespaces)]
-    (is (= {:module :custom :installed? true :fns [:run]} install))
+    (is (= {:module :custom :installed? true :fns [:run]} (core-receipt install)))
     (is (zero? @executions) "Installing source must not execute it")
     (is (= definition (run-form '(patterns/source :custom) namespaces)))
     (is (= 1 (run-form '(patterns/call :custom :run) namespaces)))
     (run-form '(patterns/update :custom assoc :doc "customized") namespaces)
     (is (= {:module :custom :installed? false :fns [:run]}
-           (run-form (list 'patterns/install :custom (list 'quote definition)) namespaces)))
+           (core-receipt (run-form (list 'patterns/install :custom (list 'quote definition)) namespaces))))
     (is (= "customized" (:doc (run-form '(patterns/source :custom) namespaces))))
     (is (= 1 @executions))))
 
@@ -221,7 +224,7 @@
                             (runtime/spawn editor
                               (program
                                 '(audit/edited
-                                   (patterns/update :shared assoc-in
+                                   (patterns/update :shared {:owner :main} assoc-in
                                      [:functions :run :source]
                                      '(fn [] (let [hidden "EDITED_BODY_SENTINEL"] :edited)))))
                               :module-editor))
@@ -234,9 +237,9 @@
         result (caller
                  "(quine completion (eval (do '(!call-now install-receipt (patterns/install :shared) before (patterns/call :shared :run)))))"
                  :module-caller)]
-    (is (= {:module :shared :installed? true :fns [:private :run]} installed))
+    (is (= {:module :shared :installed? true :fns [:private :run]} (core-receipt installed)))
     (is (= [:module-editor] @dispatches))
-    (is (= {:module :shared :fns [:private :run]} (deref edited 0 ::missing)))
+    (is (= {:module :shared :fns [:private :run]} (core-receipt (deref edited 0 ::missing))))
     (is (= [:original :edited] result)
         "A supported spawned editor changes the definition between caller turns")
     (is (= 2 (count @prefixes)))
@@ -296,7 +299,7 @@
     (is (not (contains? second-run :error)) (pr-str (:error second-run)))
     (is (= [:first :first] (:result first-run)))
     (is (= [nil nil {:module :isolated :installed? true :fns [:run]} :second]
-           (:result second-run)))))
+           (update (:result second-run) 2 core-receipt)))))
 
 (deftest concurrent-edit-keeps-selected-frame-but-nested-call-is-latest
   (let [started (promise)
@@ -319,13 +322,13 @@
       (try
         (is (= true (deref started 10000 ::timeout)) "The old frame is running before update")
         (is (= {:module :in-flight :fns [:inner :outer]}
-               (run-form
+               (core-receipt (run-form
                  '(patterns/update :in-flight
                     (fn [definition]
                       (-> definition
                           (assoc-in [:functions :outer :source] '(fn [] :replacement))
                           (assoc-in [:functions :inner :source] '(fn [] :new)))))
-                 namespaces)))
+                 namespaces))))
         (finally (deliver release true)))
       (is (= [:old-frame :new] (deref running 10000 ::timeout)))
       (is (= :replacement (run-form '(patterns/call :in-flight :outer) namespaces))))))
@@ -424,7 +427,7 @@
          '{:doc "race" :functions {:run {:doc "base" :requires [] :source (fn [] :base)}}})))
   (let [gate (promise)
         update-form (fn [key]
-                      (list 'patterns/update :race
+                      (list 'patterns/update :race {:owner :main}
                         '(fn [definition key]
                            (assoc-in definition [:functions key]
                              '{:doc "added" :requires [] :source (fn [] :added)}))
@@ -439,7 +442,7 @@
       (is (contains?
             #{[{:module :race :fns [:a :run]} {:module :race :fns [:a :b :run]}]
               [{:module :race :fns [:a :b :run]} {:module :race :fns [:b :run]}]}
-            [ra rb])
+            (mapv core-receipt [ra rb]))
           "Receipts describe each atomic commit, not a later registry read")
       (is (= [:a :b :run]
              (sort (keys (:functions (run-form '(patterns/source :race)))))))
