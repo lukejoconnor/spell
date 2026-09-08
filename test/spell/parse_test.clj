@@ -216,7 +216,7 @@
 ;; =============================================================================
 
 ;; Eager-output references retain the allocation strategy from 0405fb6, with
-;; only the intended string/comment/character-literal state correction applied.
+;; only the intended string/comment/character/regex state corrections applied.
 ;; The original behavior-preserving oracle and measured probe remain immutable
 ;; in commit 89a6347 and perf/results/optimization-parse-sanitizer-matched-vyqze266/.
 (def ^:private reference-valid-escape?
@@ -317,7 +317,7 @@
                        (not (or (= c \newline) (= c \return))) nil))
 
             escape
-            (if (or (not in-string) (reference-valid-escape? c))
+            (if (or (not in-string) (= in-string :regex) (reference-valid-escape? c))
               (do (.append sb c) (recur (inc i) in-string false false (when-not in-string :token)))
               ;; Eager output already contains the original backslash.
               (do
@@ -327,9 +327,9 @@
 
             in-string
             (cond
-              (= c \\) (do (.append sb c) (recur (inc i) true true false nil))
+              (= c \\) (do (.append sb c) (recur (inc i) in-string true false nil))
               (= c \") (do (.append sb c) (recur (inc i) false false false nil))
-              :else    (do (.append sb c) (recur (inc i) true false false nil)))
+              :else    (do (.append sb c) (recur (inc i) in-string false false nil)))
 
             (= c \\)
             ;; Outside a string, this introduces a character, not an escape.
@@ -342,7 +342,8 @@
 
             :else
             (do (.append sb c)
-                (recur (inc i) (= c \") false false
+                (recur (inc i) (when (= c \")
+                                 (if (= token-state :dispatch) :regex true)) false false
                        (reference-reader-token-state token-state c)))))))))
 
 (defn- reader-outcome [reader input]
@@ -484,3 +485,66 @@
   (testing "markers inside strings are unchanged"
     (is (= ['(def s "// keep me") '(def t "/* keep */")]
            (read-all "(def s \"// keep me\") (def t \"/* keep */\")")))))
+
+
+;; Independent reader-oracle regressions for deferred release parser failures.
+(deftest release-character-and-comment-balancing
+  (doseq [token ["\\(" "\\)" "\\\"" "\\;" "\\\\" "\\newline"
+                 "\\space" "\\return" "\\tab" "\\backspace" "\\formfeed"]]
+    (let [source (str "(list " token ")")
+          expected (clojure.core/read-string source)
+          partial (subs source 0 (dec (count source)))]
+      (testing token
+        (is (= 0 (paren-balance source)))
+        (is (identical? source (balance-parens source)))
+        (is (= [expected] (read-all source)))
+        (is (= expected (read-first source)))
+        (is (= 1 (paren-balance partial)))
+        (is (= [expected] (read-all (balance-parens partial))))))))
+
+(deftest release-comment-boundary-balancing
+  (doseq [eol ["\n" "\r" "\r\n"]
+          marker [";" "#!"]]
+    (let [source (str "(list 1 " marker " ignored )) \"" eol "2)")
+          expected (clojure.core/read-string source)]
+      (is (= 0 (paren-balance source)))
+      (is (= [expected] (read-all (balance-parens source))))
+      (is (= expected (read-first source)))))
+  (doseq [token ["foo#!" "foo'#!" "foo%#!" "%#!" ":foo#!"]]
+    (let [source (str "(" token " (x))")]
+      (is (= 0 (paren-balance source)))
+      (is (= [(clojure.core/read-string source)] (read-all source)))))
+  (doseq [prefix ["" "'" "#_" "#_#_"]]
+    (let [source (str "(" prefix "#! ignored ))) \"\n1 2)")]
+      (is (= 0 (paren-balance source)))
+      (is (= [(clojure.core/read-string source)] (read-all (balance-parens source)))))))
+
+(deftest release-regex-preservation-and-string-repair
+  (doseq [[pattern sample] [["\\d+" "123"] ["\\s+" " \t"] ["\\w+" "abc_9"]
+                            ["\\Q(a)\\E" "(a)"] ["a\\\"b" "a\"b"]
+                            ["\\\\" "\\"]]]
+    (let [source (str "#\"" pattern "\"")
+          oracle (clojure.core/read-string source)]
+      (testing source
+        (is (identical? source (sanitize-string-escapes source)))
+        (is (= 0 (paren-balance source)))
+        (doseq [actual [(read-first source) (first (read-all source))]]
+          (is (= (.pattern oracle) (.pattern actual)))
+          (is (= sample (re-matches actual sample)))
+          (is (nil? (re-matches actual "!no-match!")))))))
+  (let [source "[#\"\\d+\" \"x\\q\"]"
+        [pattern text] (read-first source)]
+    (is (= "123" (re-matches pattern "123")))
+    (is (= "x\\q" text))
+    (is (= text (second (first (read-all source)))))))
+
+
+(deftest release-whitespace-character-adjacent-dispatch-is-invalid
+  ;; The Clojure character reader consumes the adjacent # as token text;
+  ;; a literal whitespace character does not itself terminate that token.
+  (doseq [ch [\space \tab \newline \return]
+          suffix ["#\"\\d+\"" "#! ignored\n1"]]
+    (let [source (str "[" \\ ch suffix "]")]
+      (is (thrown? RuntimeException (clojure.core/read-string source)))
+      (is (thrown? RuntimeException (read-first source)))
+      (is (thrown? RuntimeException (read-all source))))))

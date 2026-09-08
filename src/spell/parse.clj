@@ -2,36 +2,55 @@
   "Parsing and string utilities for Spell."
   (:require [clojure.string :as str]))
 
+(defn- reader-token-state
+  "Track token boundaries outside strings/comments so #! is a reader dispatch
+   only at a form boundary. Clojure keeps #, ' and % inside existing tokens."
+  [state c]
+  (cond
+    (= state :dispatch)
+    (when-not (#{\_ \' \( \{ \" \= \^ \? \:} c) :token)
+
+    (or (Character/isWhitespace (char c)) (= c \,)
+        (#{\( \) \[ \] \{ \} \" \; \\ \@ \^ \` \~} c))
+    nil
+
+    (= state :token) :token
+    (= c \#) :dispatch
+    (= c \') nil
+    :else :token))
+
 (defn paren-balance
-  "Count open parens minus close parens in a string, respecting string literals
-   and ;-comments. Parens inside \"...\" or after ; are not counted."
+  "Count open minus close parens outside strings, characters and reader comments.
+   Semicolon and form-boundary #! comments end at either CR or LF."
   [s]
   (let [len (count s)]
-    (loop [i 0, n 0, in-string false, escape false]
+    (loop [i 0, n 0, in-string false, escape false, in-comment false, token-state nil]
       (if (>= i len)
         n
         (let [c (.charAt ^String s i)]
           (cond
-            ;; Previous char was backslash inside a string — skip this char
-            escape
-            (recur (inc i) n in-string false)
+            in-comment
+            (recur (inc i) n false false
+                   (not (or (= c \newline) (= c \return))) nil)
 
-            ;; Inside a string literal
+            escape
+            (recur (inc i) n in-string false false (when-not in-string :token))
+
             in-string
             (cond
-              (= c \\) (recur (inc i) n true true)     ; backslash — next char escaped
-              (= c \") (recur (inc i) n false false)    ; closing quote
-              :else     (recur (inc i) n true false))
+              (= c \\) (recur (inc i) n true true false nil)
+              (= c \") (recur (inc i) n false false false nil)
+              :else (recur (inc i) n true false false nil))
 
-            ;; Outside a string literal
+            (= c \\)
+            (recur (inc i) n false true false nil)
+
+            (or (= c \;) (and (= token-state :dispatch) (= c \!)))
+            (recur (inc i) n false false true nil)
+
             :else
-            (case c
-              \; (let [nl (.indexOf ^String s "\n" i)]  ; comment — skip to EOL
-                   (recur (if (neg? nl) len (inc nl)) n false false))
-              \" (recur (inc i) n true false)           ; opening quote
-              \( (recur (inc i) (inc n) false false)
-              \) (recur (inc i) (dec n) false false)
-              (recur (inc i) n false false))))))))
+            (recur (inc i) (case c \( (inc n) \) (dec n) n)
+                   (= c \") false false (reader-token-state token-state c))))))))
 
 (defn balance-parens
   "Append closing parens to balance the string if needed."
@@ -60,23 +79,6 @@
       (when (and (pos? n)
                  (= delim-char (.charAt ^String trimmed (dec n))))
         (subs trimmed 0 (dec n))))))
-
-(defn- reader-token-state
-  "Track token boundaries outside strings/comments so #! is a reader dispatch
-   only at a form boundary. Clojure keeps #, ' and % inside existing tokens."
-  [state c]
-  (cond
-    (= state :dispatch)
-    (when-not (#{\_ \' \( \{ \" \= \^ \? \:} c) :token)
-
-    (or (Character/isWhitespace (char c)) (= c \,)
-        (#{\( \) \[ \] \{ \} \" \; \\ \@ \^ \` \~} c))
-    nil
-
-    (= state :token) :token
-    (= c \#) :dispatch
-    (= c \') nil
-    :else :token))
 
 (defn sanitize-nonspell-comment-markers
   "Normalize common non-Spell comment tokens at line start when outside strings.
@@ -144,7 +146,8 @@
   "Fix invalid escape sequences inside string literals.
    LLMs often write LaTeX-like \\equiv, \\frac etc. in strings.
    Clojure's reader rejects \\e, \\f is formfeed, etc.
-   This doubles the backslash for unknown escapes so they read as literal text."
+   This doubles the backslash for unknown escapes so they read as literal text.
+   Regex literals retain their reader-level escapes verbatim."
   [s]
   (let [len (count s)]
     (loop [i 0, in-string false, escape false, in-comment false, token-state nil, ^StringBuilder sb nil]
@@ -158,7 +161,7 @@
                        (not (or (= c \newline) (= c \return))) nil sb))
 
             escape
-            (if (or (not in-string) (valid-escape? c))
+            (if (or (not in-string) (= in-string :regex) (valid-escape? c))
               (do (when sb (.append sb c)) (recur (inc i) in-string false false (when-not in-string :token) sb))
               ;; The copied prefix already contains the original backslash.
               (let [^StringBuilder sb (or sb (doto (StringBuilder. len)
@@ -169,9 +172,9 @@
 
             in-string
             (cond
-              (= c \\) (do (when sb (.append sb c)) (recur (inc i) true true false nil sb))
+              (= c \\) (do (when sb (.append sb c)) (recur (inc i) in-string true false nil sb))
               (= c \") (do (when sb (.append sb c)) (recur (inc i) false false false nil sb))
-              :else    (do (when sb (.append sb c)) (recur (inc i) true false false nil sb)))
+              :else    (do (when sb (.append sb c)) (recur (inc i) in-string false false nil sb)))
 
             (= c \\)
             ;; Outside a string, this introduces a character, not an escape.
@@ -184,7 +187,8 @@
 
             :else
             (do (when sb (.append sb c))
-                (recur (inc i) (= c \") false false
+                (recur (inc i) (when (= c \")
+                                 (if (= token-state :dispatch) :regex true)) false false
                        (reader-token-state token-state c) sb))))))))
 
 (defn- read-all-internal
