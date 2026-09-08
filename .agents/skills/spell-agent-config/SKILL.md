@@ -17,7 +17,7 @@ Before editing, name the configuration question and read only the relevant guida
 '(!peek config-guidance (io/read-lines "config/AGENTS.md" 1 24))
 ```
 
-Preserve the relevant contract and next decision before pruning. Then locate the specific API section with a narrow `io/grep` in `docs/api.md` and read its exact range. Bound aggregate rendered output, including syntax/escaping; recover retained/stored output before refetching. An opaque marker is not a reviewed section.
+Preserve the relevant contract and next decision before pruning. Then locate the specific API section with a narrow `io/grep` in `docs/api.md` and read its exact range. Bound aggregate rendered output, including syntax/escaping; reuse explicitly retained evidence before refetching. An opaque marker is not a reviewed section.
 
 ## Split Responsibilities
 

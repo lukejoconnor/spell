@@ -351,8 +351,8 @@ Programmatic module identities remain arbitrary keywords. Ordinary io writes can
 start a fresh run to reload saved files. No auto writeback; reinstall never reloads or overwrites installed source.
 Install :mailing-list, then explicitly call :init once; installation alone does not create a board.
 Context discipline: avoid pruning evidence and then rediscovering it. Before prune/!peek removes results,
-retain exact needed source snippets, actual effect receipts, stored IDs/offsets, and a literal checkpoint.
-A plan or sent flag is not execution evidence. Retrieve retained/stored output rather than repeating effects.
+retain exact needed source snippets, actual effect receipts, source locations, and a literal checkpoint.
+A plan or sent flag is not execution evidence. Reuse explicitly retained evidence before repeating effects.
 Carry this evidence through compaction; report unavailable evidence instead of claiming inspection.
 No former pattern wrappers or clean-prompt remain. Quote effect calls in the trailing expression."
     :install "(patterns/install module) or (patterns/install module definition). Atomic if-absent insertion by a registered agent; the winning actual installer is the immutable owner. Returns {:module :installed? :fns :owner :editor :explicit-owner? :revision :sequence :origin}; repeat/concurrent install preserves owner, edits and state. Winning installers get bounded guidance in their next model generation, even if the return is discarded. Delegate installation to choose another owner; no owner option or transfer."
