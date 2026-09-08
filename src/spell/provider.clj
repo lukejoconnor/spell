@@ -1384,7 +1384,14 @@
   [response-body]
   (parse-codex-tc-response (parse-codex-completed-stream response-body)))
 
-(defrecord CodexMsgProvider [api-key account-id base-url model max-tokens http-client costs]
+(def default-codex-request-timeout-sec 300)
+
+(defn- validate-codex-request-timeout! [seconds]
+  (when-not (and (integer? seconds) (<= 1 seconds Long/MAX_VALUE))
+    (throw (ex-info "Codex :request-timeout-sec must be a positive integer"
+                    {:type :invalid-request-timeout :request-timeout-sec seconds}))))
+
+(defrecord CodexMsgProvider [api-key account-id base-url model max-tokens http-client costs request-timeout-sec]
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt opts]
@@ -1394,7 +1401,8 @@
           verbosity (:verbosity opts)
           request (codex-msg-request api-key account-id base-url effective-model prompt
                                     (:system opts) max-tokens reasoning-effort verbosity grammar-format)
-          response (.send http-client request (HttpResponse$BodyHandlers/ofString))
+          response (send-http-request http-client request (HttpResponse$BodyHandlers/ofString)
+                                      request-timeout-sec)
           status (.statusCode response)]
       (if (<= 200 status 299)
         (let [{:keys [text usage]} (parse-codex-msg-stream (.body response))]
@@ -1405,7 +1413,7 @@
   (plain-text-provider [this] this)
   (supports-prefill [_ _] false))
 
-(defrecord CodexTcProvider [api-key account-id base-url model max-tokens prompt-cache-key http-client costs]
+(defrecord CodexTcProvider [api-key account-id base-url model max-tokens prompt-cache-key http-client costs request-timeout-sec]
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt opts]
@@ -1418,7 +1426,8 @@
                                     (:system opts)
                                     (when cache-prefix prompt-cache-key)
                                     max-tokens reasoning-effort verbosity grammar-format)
-          response (.send http-client request (HttpResponse$BodyHandlers/ofString))
+          response (send-http-request http-client request (HttpResponse$BodyHandlers/ofString)
+                                      request-timeout-sec)
           status (.statusCode response)]
       (if (<= 200 status 299)
         (let [{:keys [text usage]} (parse-codex-tc-stream (.body response))]
@@ -1427,7 +1436,7 @@
         (throw (ex-info "ChatGPT Codex mandatory tool-call request failed"
                         {:status status :body (.body response)})))))
   (plain-text-provider [_]
-    (->CodexMsgProvider api-key account-id base-url model max-tokens http-client costs))
+    (->CodexMsgProvider api-key account-id base-url model max-tokens http-client costs request-timeout-sec))
   (supports-prefill [_ _] false))
 
 (defn codex-msg-provider
@@ -1440,12 +1449,15 @@
    - :base-url    - API base URL (default: https://chatgpt.com/backend-api/codex)
    - :model       - Model name (default: gpt-6-astra)
    - :max-tokens  - Max output tokens
+   - :request-timeout-sec - Complete HTTP exchange deadline in seconds (default: 300)
    - :costs       - Cost table {model-prefix [input-per-M output-per-M]}"
   ([] (codex-msg-provider {}))
-  ([{:keys [api-key account-id auth-file base-url model max-tokens costs]
+  ([{:keys [api-key account-id auth-file base-url model max-tokens costs request-timeout-sec]
      :or {auth-file "~/.codex/auth.json"
           base-url "https://chatgpt.com/backend-api/codex"
-          model "gpt-6-astra"}}]
+          model "gpt-6-astra"
+          request-timeout-sec default-codex-request-timeout-sec}}]
+   (validate-codex-request-timeout! request-timeout-sec)
    (let [{file-token :token file-account-id :account-id}
          (when (str/blank? api-key)
            (load-chatgpt-auth auth-file))
@@ -1455,7 +1467,7 @@
      (when (str/blank? token)
        (throw (ex-info "No ChatGPT token available. Log in with codex or pass :api-key"
                        {:auth-file (expand-home auth-file)})))
-     (->CodexMsgProvider token effective-account-id url model max-tokens (make-http-client) costs))))
+     (->CodexMsgProvider token effective-account-id url model max-tokens (make-http-client) costs request-timeout-sec))))
 
 (defn codex-tc-provider
   "Create a ChatGPT subscription-backed Codex provider with mandatory custom tool output.
@@ -1467,12 +1479,15 @@
    - :base-url    - API base URL (default: https://chatgpt.com/backend-api/codex)
    - :model       - Model name (default: gpt-6-astra)
    - :max-tokens  - Max output tokens
+   - :request-timeout-sec - Complete HTTP exchange deadline in seconds (default: 300)
    - :costs       - Cost table {model-prefix [input-per-M output-per-M]}"
   ([] (codex-tc-provider {}))
-  ([{:keys [api-key account-id auth-file base-url model max-tokens costs]
+  ([{:keys [api-key account-id auth-file base-url model max-tokens costs request-timeout-sec]
      :or {auth-file "~/.codex/auth.json"
           base-url "https://chatgpt.com/backend-api/codex"
-          model "gpt-6-astra"}}]
+          model "gpt-6-astra"
+          request-timeout-sec default-codex-request-timeout-sec}}]
+   (validate-codex-request-timeout! request-timeout-sec)
    (let [{file-token :token file-account-id :account-id}
          (when (str/blank? api-key)
            (load-chatgpt-auth auth-file))
@@ -1484,7 +1499,7 @@
                        {:auth-file (expand-home auth-file)})))
      (->CodexTcProvider token effective-account-id url model max-tokens
                         (str (java.util.UUID/randomUUID))
-                        (make-http-client) costs))))
+                        (make-http-client) costs request-timeout-sec))))
 
 ;; ---------------------------------------------------------------------------
 ;; Fireworks Provider (Completions API with true prefill)

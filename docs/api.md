@@ -169,7 +169,7 @@ Model profile files live under `config/model-profiles/` and use EDN maps.
 | `:default-reasoning-effort` | `:openai`, `:codex-tc`, `:anthropic-pf`, `:anthropic-tc`, `:fireworks`, `:fireworks-tc` | Provider-neutral reasoning setting. `spell.api/run :reasoning-effort` may override it for one run. |
 | `:max-tokens` | all hosted model providers | Maximum response tokens requested from the provider. |
 | `:retries` | all hosted model providers | Retry schedule for transient provider failures, expressed as sleep durations in seconds. |
-| `:request-timeout-sec` | `:openai`, `:anthropic-pf`, `:anthropic-tc`, `:fireworks`, `:fireworks-tc` | Per-request timeout in seconds. |
+| `:request-timeout-sec` | `:openai`, `:codex-tc`, `:anthropic-pf`, `:anthropic-tc`, `:fireworks`, `:fireworks-tc` | Per-request timeout in seconds. Codex defaults to 300 seconds for the complete HTTP exchange, including the streamed response body; use a positive integer to override. Its plain-text calls inherit this deadline. Expiry raises a non-retryable HTTP timeout. |
 | `:sse-idle-timeout-sec` | `:anthropic-pf`, `:anthropic-tc`, `:fireworks`, `:fireworks-tc` | Streaming timeout in seconds with no received bytes. |
 | `:sse-completion-timeout-sec` | `:anthropic-pf`, `:anthropic-tc`, `:fireworks`, `:fireworks-tc` | Total streaming response timeout in seconds. |
 | `:costs` | all | Pricing overrides merged into `data/pricing.edn`. |

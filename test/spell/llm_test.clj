@@ -819,12 +819,13 @@
       (is (= {"claude" [1 1]} (:costs leaf)))))
 
   (testing "codex tool-call resolves to message sibling with same model"
-    (let [prov (provider/->CodexTcProvider "tok" "acct" "https://chatgpt.com/backend-api/codex" "gpt-5.3-codex" 4096 "cache-key" nil nil)
+    (let [prov (provider/->CodexTcProvider "tok" "acct" "https://chatgpt.com/backend-api/codex" "gpt-5.3-codex" 4096 "cache-key" nil nil 37)
           leaf (provider/plain-text-provider prov)]
       (is (instance? spell.provider.CodexMsgProvider leaf))
       (is (= "gpt-5.3-codex" (:model leaf)))
       (is (= "acct" (:account-id leaf)))
-      (is (= 4096 (:max-tokens leaf)))))
+      (is (= 4096 (:max-tokens leaf)))
+      (is (= 37 (:request-timeout-sec leaf)))))
 
   (testing "openai tool-call resolves to non-toolcall sibling with same routing fields"
     (let [prov (provider/->OpenAIProvider "sk" "https://api.openai.com/v1" "gpt-5.4" 8192 nil true true
