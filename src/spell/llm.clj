@@ -351,15 +351,18 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
                          (eval/vlog (str indent "=== LLM Call (depth " eval/*llm-depth* ") ==="))
                          (eval/vlog (str indent "Prompt: " (pr-str prompt-str))))
         response-atom  (atom nil)
-        completion     (promise)]
-    (future
-      (try
-        (let [response (call-fn prompt-str)]
-          (reset! response-atom response)
-          (eval/vlog (str indent "Response: " response))
-          (deliver completion (str prompt-str response)))
-        (catch Throwable e
-          (deliver completion e))))
+        completion     (promise)
+        provider-finished (promise)
+        provider-task (future
+                        (try
+                          (let [response (call-fn prompt-str)]
+                            (reset! response-atom response)
+                            (eval/vlog (str indent "Response: " response))
+                            (deliver completion (str prompt-str response)))
+                          (catch Throwable e
+                            (deliver completion e))
+                          (finally
+                            (deliver provider-finished true))))]
     (try
       (let [result (binding [trace/*trace-node-id* node-id]
                      (if eval-fn
@@ -373,13 +376,21 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
                    @trace-data-atom)))
         result)
       (catch Throwable e
-        (when node-id
-          (trace/complete-node! node-id
-            (merge {:response (or @response-atom "")
-                    :raw-text (try @completion (catch Exception _ ""))
-                    :error e}
-                   @trace-data-atom)))
-        (throw e)))))
+        (let [interrupt (some-> eval/*interactive-interrupt* deref)]
+          (when interrupt
+            ;; Cancel the existing request, not just its waiting box. A cancelled
+            ;; future is done before its body unwinds, hence the separate receipt.
+            (Thread/interrupted)
+            (future-cancel provider-task)
+            (deref provider-finished 1000 nil))
+          (when node-id
+            (trace/complete-node! node-id
+              (merge {:response (or @response-atom "")
+                      ;; The interrupted request may never deliver a completion.
+                      :raw-text (try (deref completion 0 "") (catch Exception _ ""))
+                      :error (or interrupt e)}
+                     @trace-data-atom)))
+          (throw (or interrupt e)))))))
 
 (defn make-eval
   "Create an eval builtin (inner/dangerous evaluator) from effect-builtins.

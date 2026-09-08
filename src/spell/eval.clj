@@ -22,6 +22,10 @@
 ;; Dynamic vars
 ;; =============================================================================
 
+(def ^:dynamic *interactive-interrupt*
+  "Nil outside interactive CLI runs; otherwise the run's typed interrupt marker."
+  nil)
+
 (def ^:dynamic *verbose*
   "When true, print LLM prompts and responses."
   false)
@@ -1059,6 +1063,9 @@
    - Success: {:ok value :env env'}
    - Error: {:err msg :env env :expr failing-expr}"
   [expr env]
+  ;; Cooperative exit also covers pure loop/fn recur, which never blocks or throws.
+  (when-let [interrupt (some-> *interactive-interrupt* deref)]
+    (throw interrupt))
   (cond
     ;; Self-evaluating: nil, strings, numbers, booleans, keywords, regex patterns, sets
     (or (nil? expr) (string? expr) (number? expr) (boolean? expr) (keyword? expr)
@@ -1365,6 +1372,9 @@
               (try
                 (ok (binding [*spell-env* e] (apply f args)) e)
                 (catch Exception ex
+                  ;; Interactive cancellation is control flow, never model recovery.
+                  (when-let [interrupt (some-> *interactive-interrupt* deref)]
+                    (throw interrupt))
                   (let [thrown (get (ex-data ex) :spell/thrown)
                         ex-type (get (ex-data ex) :type)
                         inner-result (get (ex-data ex) :result)

@@ -459,8 +459,11 @@
                          usage)
                 (print-usage usage))
               (binding [*out* *err*]
-                (println "Error:" error))
-              (System/exit 1))
+                (println "Error:" error)
+                (doseq [{:keys [stage error error-data]} (:cleanup-errors error-data)]
+                  (println (str "Cleanup failure (" (name stage) "): " error)
+                           (pr-str error-data))))
+              (System/exit (if (= :interactive-interrupt (:type error-data)) 130 1)))
             (do
               (println result)
               (System/exit 0)))))))))

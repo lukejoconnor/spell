@@ -60,7 +60,8 @@
                                    "-n" "spell.patterns-test"
                                    "-n" "spell.reliability-workflow-test"
                                    "-n" "spell.trace-export-test"
-                                   "-n" "spell.user-test"]}
+                                   "-n" "spell.user-test"
+                                   "-n" "spell.terminal-interrupt-test"]}
            ;; Optional official-SDK oracle. Requires uv; Python is not a Spell runtime dependency.
            :test-mcp-interop {:extra-paths ["test-interop"]
                               :extra-deps {io.github.cognitect-labs/test-runner

@@ -84,6 +84,30 @@
                      (compare-and-set! trace-written? false true))
             (trace/write-trace! @trace-atom trace-dir)))
         user-session (atom nil)
+        interrupt-error (when interactive-user? (atom nil))
+        cleanup-errors (atom [])
+        run-cleanup! (fn [stage cleanup!]
+                       (try (cleanup!)
+                            (catch Exception e
+                              ;; An interrupted run keeps its primary error, but
+                              ;; restoration failures must remain visible to callers.
+                              (if (some-> interrupt-error deref)
+                                (swap! cleanup-errors conj
+                                       {:stage stage :error (.getMessage e)
+                                        :error-data (ex-data e)})
+                                (throw e)))))
+        interrupt-lock (Object.)
+        interrupt-armed? (atom interactive-user?)
+        owner-thread (Thread/currentThread)
+        on-interrupt (fn []
+                       ;; Disarm under the same lock before cleanup: a reader
+                       ;; callback must never interrupt terminal restoration.
+                       (locking interrupt-lock
+                         (when (and @interrupt-armed? (nil? @interrupt-error))
+                           (reset! interrupt-error
+                                   (ex-info "Interactive run interrupted"
+                                            {:type :interactive-interrupt}))
+                           (.interrupt owner-thread))))
         shutdown-hook (when trace-atom
                         (Thread.
                           ^Runnable
@@ -94,16 +118,18 @@
     (user/reset-state!)
     (globals/reset-globals!)
     (globals/set-val :roles {:main {}})
-    (try
+    (let [result
+          (try
       (cond
-        interactive-user? (reset! user-session (user/register-interactive-user-agent!))
+        interactive-user? (reset! user-session (user/register-interactive-user-agent! on-interrupt))
         user-reader (user/register-user-agent!
                       (if (instance? java.io.BufferedReader user-reader)
                         user-reader
                         (java.io.BufferedReader. user-reader))))
       (when shutdown-hook
         (.addShutdownHook (Runtime/getRuntime) shutdown-hook))
-      (binding [eval/*verbose* effective-verbose
+      (binding [eval/*interactive-interrupt* interrupt-error
+                eval/*verbose* effective-verbose
                 eval/*log-writer* log-writer
                 eval/*max-llm-depth* depth
                 provider/*usage* usage-atom
@@ -111,31 +137,50 @@
                 provider/*retries* (or (:retries opts) (:retries profile) (:retries agent-spec) provider/*retries*)
                 trace/*trace* trace-atom]
         (let [result (try
-                       {:result (agent-fn run-input :main)
-                        :usage-tracker usage-atom}
+                       (let [value (agent-fn run-input :main)]
+                         (locking interrupt-lock
+                           (reset! interrupt-armed? false)
+                           (when-let [interrupt (some-> interrupt-error deref)]
+                             (throw interrupt)))
+                         {:result value :usage-tracker usage-atom})
                        (catch Exception e
-                         {:error (.getMessage e)
-                          :error-data (ex-data e)
-                          :usage-tracker usage-atom}))]
+                         (locking interrupt-lock
+                           (reset! interrupt-armed? false)
+                           (let [interrupt (some-> interrupt-error deref)
+                                 error (or interrupt e)]
+                             (when interrupt (Thread/interrupted))
+                             {:error (.getMessage error)
+                              :error-data (ex-data error)
+                              :usage-tracker usage-atom}))))]
           (when trace-atom
             (write-trace-once! true))
           (cond-> result
             trace-dir (assoc :trace-dir trace-dir))))
       (finally
+        (locking interrupt-lock
+          (reset! interrupt-armed? false)
+          (when (some-> interrupt-error deref) (Thread/interrupted)))
         (try
-          (when-let [^java.io.Closeable session @user-session]
-            (.close session))
+          (run-cleanup! :user-session
+                        #(when-let [^java.io.Closeable session @user-session]
+                           (.close session)))
           (finally
             (try
-              (user/reset-state!)
+              (run-cleanup! :user-state user/reset-state!)
               (finally
-                (when shutdown-hook
-                  (try
-                    (.removeShutdownHook (Runtime/getRuntime) shutdown-hook)
-                    (catch IllegalStateException _)))
-                (when log-writer
-                  (.flush ^java.io.Writer log-writer))
-                (agent/close-compiled-agent! agent-fn)))))))))
+                (run-cleanup! :shutdown-hook
+                              #(when shutdown-hook
+                                 (try
+                                   (.removeShutdownHook (Runtime/getRuntime) shutdown-hook)
+                                   (catch IllegalStateException _))))
+                (run-cleanup! :log-writer
+                              #(when log-writer
+                                 (.flush ^java.io.Writer log-writer)))
+                (run-cleanup! :compiled-agent
+                              #(agent/close-compiled-agent! agent-fn))))))))]
+      (cond-> result
+        (seq @cleanup-errors)
+        (assoc-in [:error-data :cleanup-errors] @cleanup-errors)))))
 
 (defn- execute-run [opts]
   (binding [context/*context* (context/new-context

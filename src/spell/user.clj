@@ -202,9 +202,10 @@
    (start-jline-reader! reader (atom false)))
   ([^LineReader reader stopping?]
    (start-jline-reader! reader stopping? {}))
-  ([^LineReader reader stopping? {:keys [state finished on-stop]
+  ([^LineReader reader stopping? {:keys [state finished on-stop on-interrupt]
                                 :or {state (atom :pending) finished (promise)
-                                     on-stop (fn [])}}]
+                                     on-stop (fn [])
+                                     on-interrupt #(queue-interactive-submission! ::eof)}}]
    (let [generation @reader-generation
          active? #(and (not @stopping?) (= generation @reader-generation))]
      (future
@@ -218,8 +219,8 @@
                          (when (active?) (queue-interactive-submission! submission))
                          :continue)
                        (catch UserInterruptException _
-                         (when (active?) (queue-interactive-submission! ::cancel))
-                         :continue)
+                         (when (active?) (on-interrupt))
+                         :stop)
                        (catch EndOfFileException _
                          (when (active?) (queue-interactive-submission! ::eof))
                          :stop)
@@ -904,17 +905,57 @@
 (defn- open-terminal! []
   (-> (TerminalBuilder/builder) (.system true) (.build)))
 
+(defn- open-line-reader! [^Terminal terminal]
+  (-> (LineReaderBuilder/builder) (.terminal terminal) (.build)))
+
+(defn- native-terminal-restorer
+  "Preserve native settings omitted by JLine Attributes (speeds and unused cc).
+   The system JNI input fd is stdin, which JLine leaves open on terminal close.
+   Other backends retain their existing Attributes restoration."
+  [^Terminal terminal]
+  (when (instance? org.jline.terminal.impl.AbstractPosixTerminal terminal)
+    (let [pty (.getPty ^org.jline.terminal.impl.AbstractPosixTerminal terminal)]
+      (when (and (instance? org.jline.terminal.impl.jni.JniNativePty pty)
+                 (zero? (.getSlave ^org.jline.terminal.impl.jni.JniNativePty pty)))
+        (let [saved (org.jline.nativ.CLibrary$Termios.)]
+          (when-not (zero? (org.jline.nativ.CLibrary/tcgetattr 0 saved))
+            (throw (ex-info "Cannot snapshot interactive terminal settings"
+                            {:type :user-terminal-snapshot-failed})))
+          (fn []
+            (when-not (zero? (org.jline.nativ.CLibrary/tcsetattr
+                              0 org.jline.nativ.CLibrary/TCSANOW saved))
+              (throw (ex-info "Cannot restore interactive terminal settings"
+                              {:type :user-terminal-restore-failed})))))))))
+
 (defn register-interactive-user-agent!
-  "Register :user with JLine for CLI TTY input. Returns a Closeable session."
-  []
+  "Register :user with JLine for CLI TTY input. Returns a Closeable session.
+   Ctrl+C stops the reader and invokes on-interrupt once; the API owns run shutdown."
+  ([] (register-interactive-user-agent! #(queue-interactive-submission! ::eof)))
+  ([on-interrupt]
   (if (runtime/handle? :user)
     (or (:closeable @interactive-session)
         (throw (ex-info "The :user agent is already registered without a JLine session"
                         {:type :user-agent-already-registered})))
     (let [^Terminal terminal (open-terminal!)
-        saved-attributes (Attributes. (.getAttributes terminal))
+        restore-native! (try (native-terminal-restorer terminal)
+                             (catch Throwable e
+                               (try (.close terminal)
+                                    (catch Throwable cleanup-error
+                                      (.addSuppressed e cleanup-error)))
+                               (throw e)))
+        [saved-attributes ^LineReader reader]
+        (try
+          (let [saved (Attributes. (.getAttributes terminal))]
+            [saved (open-line-reader! terminal)])
+          (catch Throwable e
+            ;; No session exists yet to own cleanup if attribute/reader setup fails.
+            (try (.close terminal)
+                 (catch Throwable cleanup-error (.addSuppressed e cleanup-error)))
+            (when restore-native!
+              (try (restore-native!)
+                   (catch Throwable cleanup-error (.addSuppressed e cleanup-error))))
+            (throw e)))
         original-attributes (str saved-attributes)
-        ^LineReader reader (-> (LineReaderBuilder/builder) (.terminal terminal) (.build))
         lock (Object.)
         session-id (Object.)
         reader-task (atom nil)
@@ -939,9 +980,12 @@
                         (finally
                           (try (.close terminal)
                                (finally
-                                 (.setAttributes terminal saved-attributes)
-                                 (when-let [task @reader-task]
-                                   (swap! reader-tasks disj task)))))))))]
+                                 (try
+                                   (try (.setAttributes terminal saved-attributes)
+                                        (finally (when restore-native! (restore-native!))))
+                                   (finally
+                                     (when-let [task @reader-task]
+                                       (swap! reader-tasks disj task)))))))))))]
     (try
       (install-newline-bindings! reader)
       (reset! interactive-session {:id session-id
@@ -954,6 +998,7 @@
       (register-user-agent-core!
         #(let [task (start-jline-reader! reader stopping?
                                              {:state reader-state
+                                              :on-interrupt on-interrupt
                                               :finished reader-finished
                                               :on-stop (fn []
                                                          (let [interrupted? (Thread/interrupted)]
@@ -965,6 +1010,7 @@
            task))
       session
       (catch Throwable e
-        (reset! interactive-session nil)
-        (.close terminal)
-        (throw e))))))
+        (try (.close ^Closeable session)
+             (catch Throwable cleanup-error
+               (.addSuppressed e cleanup-error)))
+        (throw e)))))))
