@@ -1,0 +1,15 @@
+$ clojure -J-Xmx512m -M:test -n spell.trace-test -n spell.trace-export-test -n spell.trace-tool-test
+
+Running tests in #{"test"}
+
+Testing spell.trace-export-test
+
+Testing spell.trace-test
+
+Testing spell.trace-tool-test
+
+Ran 42 tests containing 214 assertions.
+0 failures, 0 errors.
+
+The enclosing orchestration lost the exit-code capture after the test ran.
+Completed test output was recovered and no matching JVM remained; no exit code is inferred.

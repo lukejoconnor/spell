@@ -355,8 +355,8 @@
                            (assoc m k (get child k))
                            m))
                        parent
-                       [:name :doc :system :model :budget :recover :format :max-retries :retries
-                        :thinking :reasoning-effort :verbosity :suffix-grammar? :grammar-max-chars
+                       [:name :doc :system :model :budget :recover :max-consecutive-errors :format :max-retries :retries
+                        :thinking :prefill? :reasoning-effort :verbosity :suffix-grammar? :grammar-max-chars
                         :api :workers :provider])
         ;; Merge namespaces
         merged (if (or (:namespaces parent) (:namespaces child))
@@ -469,6 +469,8 @@
                       system (assoc :system system)
                       provider (assoc :provider provider)
                       (some? (:recover spec)) (assoc :recover (:recover spec))
+                      (contains? spec :max-consecutive-errors)
+                      (assoc :max-consecutive-errors (:max-consecutive-errors spec))
                       (:format spec) (assoc :format (:format spec))
                       (some? (:prefill? spec)) (assoc :prefill? (:prefill? spec))
                       (some? (:thinking spec)) (assoc :thinking (:thinking spec))

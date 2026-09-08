@@ -1,0 +1,23 @@
+{
+  "command": [
+    "clojure",
+    "-J-Dclojure.main.report=stderr",
+    "-M:perf",
+    "--warmup",
+    "2",
+    "--reps",
+    "5",
+    "--memory-reps",
+    "3",
+    "--out",
+    "perf/results/optimization-final-80cases-001.json"
+  ],
+  "status": "ok",
+  "exit": 0,
+  "timed_out": false,
+  "elapsed_seconds": 343.27030383376405,
+  "log": "perf/results/optimization-final-80cases-001.log",
+  "result": "perf/results/optimization-final-80cases-001.json",
+  "result_status": "complete",
+  "runner_exit": 0
+}

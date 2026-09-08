@@ -67,9 +67,9 @@
 
 (deftest call-now-expansion-test
   (testing "one renderer receives all evaluated bindings and any local limit"
-    (let [single (expand1 '(!call-now result value 100))
+    (let [single (expand1 '(!call-now {:max-chars 128} result value))
           multiple (expand1 '(!call-now a expr-a b expr-b))]
-      (is (= 100 (last (last (second single)))))
+      (is (= 128 (last (last (second single)))))
       (is (= 'context-forms (first (last (second multiple)))))
       (is (= 2 (count (second (last (second multiple))))))))
   (testing "!call-now rejects odd arg counts"
@@ -101,6 +101,22 @@
                          "\n\n"))
            (expand1 '(!describe io web :search math))))))
 
+(deftest describe-keyword-namespace-validation-test
+  (testing "a second skill key reports the supported repeated-namespace syntax"
+    (doseq [form ['(!describe skills :coding :spell-developer)
+                  '(!describe :coding)
+                  '(!describe :coding :spell-developer)
+                  '(!describe io skills :coding :spell-developer)]]
+      (is (ex-info-with-message?
+            #"repeat the namespace for each key, e.g\. \(!describe skills :coding skills :spell-developer\)"
+            #(expand1 form))
+          (pr-str form))))
+  (testing "namespace expressions and map literals remain supported"
+    (is (= '(!print (describe-fn (get namespaces :tools) :run))
+           (expand1 '(!describe (get namespaces :tools) :run))))
+    (is (= '(!print (describe-fn {:docs {:guide "guide"}}))
+           (expand1 '(!describe {:docs {:guide "guide"}}))))))
+
 (deftest simple-macro-expansion-test
   (testing "!extend defaults to completion and accepts an explicit continuation"
     (is (= '(!llm-self (edit-reopen completion) {:receive? true})
@@ -116,7 +132,7 @@
                    (list 'str
                          (list 'serialize-prefix (list 'edit-reopen 'saved))
                          suffix)
-                   {:receive? true})
+                   {:receive? false})
              (expand1 '(!compact saved))))))
 
   (testing "first-line wraps vector literals with metadata and rejects non-vectors"

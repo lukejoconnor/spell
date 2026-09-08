@@ -1,0 +1,45 @@
+{
+  "status": "completed",
+  "command": [
+    "python3",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "dev/dogfood-reliability-run",
+    "-p",
+    "test_run*.py",
+    "-v"
+  ],
+  "cwd": ".",
+  "exit_code": 0,
+  "tests_run": 17,
+  "failures": 0,
+  "errors": 0,
+  "test_names": [
+    "test_baseline_after_read_failure_is_portable_and_terminal",
+    "test_baseline_before_read_failure_is_portable_and_does_not_launch",
+    "test_baseline_mutation_is_failed",
+    "test_missing_artifact_is_failed",
+    "test_missing_or_nonpositive_or_failing_counts_are_failed",
+    "test_nonzero_process_exit_is_failed",
+    "test_prior_success_interruption_after_cleanup",
+    "test_prior_success_interruption_before_old_edn_cleanup",
+    "test_running_replace_failure_does_no_destructive_work",
+    "test_running_tempfile_failure_does_no_destructive_work",
+    "test_running_write_failure_does_no_destructive_work",
+    "test_spawn_error_is_portable_and_terminal",
+    "test_success_publishes_running_then_completed_atomically",
+    "test_terminal_replace_failure_leaves_running_receipt",
+    "test_timeout_kills_and_collects_process",
+    "test_existing_test_receipt_blocks_tests",
+    "test_existing_workflow_receipt_blocks_tests"
+  ],
+  "baseline_sha256_before": "54754377fd62516b5971715bcd334237733b07370e24fc83fa514d98a08837ce",
+  "baseline_sha256_after": "54754377fd62516b5971715bcd334237733b07370e24fc83fa514d98a08837ce",
+  "baseline_unchanged": true,
+  "limitations": [
+    "15 focused Python runner tests mock JVM subprocesses; 2 standalone guard tests launch fresh JVMs. The completed deterministic workflow is recorded separately in report.json, tests.edn and workflow.edn.",
+    "Raw test output omitted for portable paths; full clojure -M:test not run by this worker. Non-POSIX process cleanup is unverified."
+  ]
+}

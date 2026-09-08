@@ -1,0 +1,19 @@
+{
+  "name": "fast",
+  "command": [
+    "clojure",
+    "-J-Dclojure.main.report=stderr",
+    "-M:test-fast"
+  ],
+  "exit": 0,
+  "timed-out": false,
+  "child-reaped": true,
+  "wall-seconds": 21.90786537481472,
+  "counts": [
+    513,
+    4564,
+    0,
+    0
+  ],
+  "passed": true
+}

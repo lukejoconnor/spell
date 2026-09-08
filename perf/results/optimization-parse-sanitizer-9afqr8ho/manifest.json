@@ -1,0 +1,21 @@
+{
+  "cwd": "/private/tmp/spell-dogfood-reliability",
+  "script_sha256": "9cb77f1ddeab42f6d69c9abc3b8904dbb11e6a51f4951ad3685fa567e869bba7",
+  "parser_sha256": "0d405871977f833646e86a1a7285eb62eabfdcbbc0a3daa2245cc091d6eaa695",
+  "runs": [
+    {
+      "label": "attribution-1",
+      "command": [
+        "clojure",
+        "-J-Xms256m",
+        "-J-Xmx256m",
+        "-M",
+        "/private/tmp/spell-dogfood-reliability/perf/parse_sanitizer_probe.clj",
+        "attribution-1"
+      ],
+      "exit": 1,
+      "seconds": 1.686,
+      "metrics": []
+    }
+  ]
+}

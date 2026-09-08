@@ -39,6 +39,16 @@
         s (pr-str out)]
     (is (not= program-with-trap out))
     (is (= 'quine (first out)))
+    (let [forms (vec (rest (second (last out))))
+          positions (keep-indexed #(when (and (seq? %2) (= 'think (first %2))) %1) forms)]
+      (is (= 2 (count positions)))
+      (doseq [[i body] (map vector positions ["hello from b" "second message"])]
+        (is (= '(think "receive: not evaluated") (nth forms i)))
+        (let [message-def (nth forms (inc i))]
+          (is (= 'def (first message-def)))
+          (is (= body (:body (second (nth message-def 2))))
+              "Each identical label associates with its own following message binding")
+          (is (= '(quote (!extend completion)) (nth forms (+ i 2)))))))
     (is (str/includes? s "hello from b"))
     (is (str/includes? s "second message"))
     (is (< (str/index-of s "hello from b") (str/index-of s "second message")) "message order preserved")
@@ -67,6 +77,30 @@
                      (runtime/receive program)))))
     (is (= mailbox (:mailbox (c/agent :a))) "queue not drained")
     (is (identical? signal (signal-of :a)) "signal not rotated")))
+
+(deftest invalid-receipt-site-preserves-mailbox-signal-and-request-claim
+  (c/register! :a)
+  (c/register! :b)
+  (c/send! :b {:message {:from :a :body :first-message}})
+  (let [edge (c/request! :a [:b] true :pending-question)
+        before (c/snapshot)
+        signal (signal-of :b)
+        evaluated (atom false)]
+    (doseq [site [nil :unknown "pre-eval"]]
+      (let [e (try
+                ((runtime/make-awake-fn :b (fn [_] (reset! evaluated true)) true site)
+                 (pr-str program))
+                nil
+                (catch clojure.lang.ExceptionInfo e e))]
+        (is (= :invalid-receipt-site (:type (ex-data e))))
+        (is (= site (:receipt-site (ex-data e))))
+        (is (= before (c/snapshot)) "invalid site must not mutate coordinator state")
+        (is (identical? signal (signal-of :b)))
+        (is (nil? (get-in (c/snapshot) [:edges edge :slots :b :generation])))
+        (is (false? @evaluated))))
+    (is (= 2 (count (:mailbox (c/agent :b)))))
+    (is (not= program (receive-as :b program)))
+    (is (empty? (:mailbox (c/agent :b))))))
 
 (deftest tracked-request-receipt-claims-slot-exactly-once
   (c/register! :a)

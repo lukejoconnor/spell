@@ -1,4 +1,4 @@
-{:paths ["src" "resources"]
+{:paths ["src" "resources" "config/spl-lib"]
  :deps {org.clojure/data.json {:mvn/version "2.5.0"}
         org.clojure/tools.cli {:mvn/version "1.1.230"}
         org.jsoup/jsoup {:mvn/version "1.18.1"}
@@ -6,13 +6,16 @@
         com.networknt/json-schema-validator {:mvn/version "2.0.4"}
         org.slf4j/slf4j-nop {:mvn/version "2.0.17"}
         org.yaml/snakeyaml {:mvn/version "2.3"}}
- :aliases {:dev {:extra-paths ["dev"]}
+ :aliases {:perf {:extra-paths ["perf" "test"]
+                  :jvm-opts ["-Xms256m" "-Xmx1g" "-XX:+UseG1GC"]
+                  :main-opts ["-m" "spell.perf.harness"]}
+           :dev {:extra-paths ["dev"]}
            :test {:extra-paths ["test"]
                   :extra-deps {io.github.cognitect-labs/test-runner
                                {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
                   :main-opts ["-m" "cognitect.test-runner"
                               "-e" "known-bug"]}
-           ;; Fast tests only — pure/unit tests, no concurrency or I/O (~1s)
+           ;; Focused/unit suite, including bounded I/O and packaged-resource subprocess checks.
            :test-fast {:extra-paths ["test"]
                        :extra-deps {io.github.cognitect-labs/test-runner
                                     {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
@@ -22,11 +25,19 @@
                                    "-n" "spell.stdlib-test"
                                    "-n" "spell.skills-test"
                                    "-n" "spell.eval-test"
+                                   "-n" "spell.callable-arity-test"
                                    "-n" "spell.context-test"
                                    "-n" "spell.llm-test"
+                                   "-n" "spell.prefill-policy-test"
                                    "-n" "spell.agent-test"
                                    "-n" "spell.agents-prompt-test"
+                                   "-n" "spell.coordinator-test"
+                                   "-n" "spell.bounded-guidance-test"
                                    "-n" "spell.sleep-refusal-recovery-test"
+                                   "-n" "spell.recovery-continuation-test"
+                                   "-n" "spell.recovery-lifecycle-test"
+                                   "-n" "spell.patterns-loader-test"
+                                   "-n" "spell.module-discovery-test"
                                    "-n" "spell.web-test"
                                    "-n" "spell.api-test"
                                    "-n" "spell.trace-test"
@@ -47,7 +58,14 @@
                                    "-n" "spell.runtime-test"
                                    "-n" "spell.composable-waits-test"
                                    "-n" "spell.globals-test"
-                                   "-n" "spell.user-test"]}
+                                   "-n" "spell.mailing-list-test"
+                                   "-n" "spell.installable-modules-test"
+                                   "-n" "spell.module-ownership-test"
+                                   "-n" "spell.patterns-test"
+                                   "-n" "spell.reliability-workflow-test"
+                                   "-n" "spell.trace-export-test"
+                                   "-n" "spell.user-test"
+                                   "-n" "spell.terminal-interrupt-test"]}
            ;; Optional official-SDK oracle. Requires uv; Python is not a Spell runtime dependency.
            :test-mcp-interop {:extra-paths ["test-interop"]
                               :extra-deps {io.github.cognitect-labs/test-runner

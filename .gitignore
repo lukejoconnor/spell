@@ -100,3 +100,33 @@ docs/.vitepress/cache/
 skills-lock.json
 .codex/skills/run-benchmark/
 .claude/skills/run-benchmark/
+
+# Mailing-list documentation and reproducible demonstration.
+!docs/mailing-list.md
+!dev/
+dev/*
+!dev/mailing-list/
+dev/mailing-list/*
+!dev/mailing-list/demo.clj
+!dev/mailing-list/dogfood-evidence.edn
+
+# Runtime benchmark run inputs and generated measurements.
+/perf/input-*.md
+/perf/worker-*.txt
+/perf/assignment.txt
+/perf/progress.md
+/perf/board-customization.spl
+/perf/.core-fixture-*/
+/perf/clojure-*.edn
+!/perf/results/
+/perf/results/*
+!/perf/results/baseline.json
+!/perf/results/baseline-receipt.json
+!/perf/results/baseline-provenance.json
+!/perf/results/board-evidence.json
+!/perf/results/worker-receipts.edn
+!/perf/results/context-worker-receipt.edn
+!/perf/results/baseline.log
+!/perf/results/pilot.json
+!/perf/results/pilot-receipt.json
+!/perf/results/pilot.log

@@ -1,0 +1,21 @@
+{
+  "command": [
+    "clojure",
+    "-J-Xms512m",
+    "-J-Xmx512m",
+    "-Sdeps",
+    "{:paths [\"/private/tmp/spell-dogfood-reliability/src\" \"/private/tmp/spell-dogfood-reliability/perf\"]}",
+    "-M",
+    "-m",
+    "trace-export-probe",
+    "{:nodes 144 :forms 48 :warmup 1 :runs 1}"
+  ],
+  "status": "ok",
+  "exit": 0,
+  "timed_out": false,
+  "elapsed_seconds": 2.306063916068524,
+  "log": "/private/tmp/spell-dogfood-reliability/perf/results/trace-export-matched-002/candidate-1.log",
+  "result": null,
+  "result_status": "not_expected",
+  "runner_exit": 0
+}

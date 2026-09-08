@@ -4,6 +4,7 @@
             [clojure.test :refer [deftest is testing]]
             [spell.coordinator :as coordinator]
             [spell.io :as spell-io]
+            [spell.globals :as globals]
             [spell.llm :as llm]
             [spell.provider :as provider]
             [spell.runtime :as runtime]
@@ -47,7 +48,7 @@
                                   (swap! requests conj {:text text :opts opts})
                                   (provider/call-llm delegate text opts))
                                 (plain-text-provider [this] this)
-                                (supports-prefill [_] false))
+                                (supports-prefill [_ _] false))
                     agent (llm/compile-agent
                             {:provider capturing :prefill? false :recover false :system "SCOPE-BASE"
                              :namespaces (cond-> (array-map 'io spell-io/io-namespace)
@@ -228,8 +229,8 @@
                           (when (= [:main [:worker]] (vec (take 2 args))) (swap! worker-requests inc))
                           (apply original-request args))
                         coordinator/begin-external-wait!
-                        (fn [handle]
-                          (let [token (original-begin handle)]
+                        (fn [handle ref]
+                          (let [token (original-begin handle ref)]
                             (when (= 1 (swap! joins inc))
                               (coordinator/request! :peer [:main] true :status))
                             token))]
@@ -243,20 +244,21 @@
                         (do (reset! last-prefix prefix)
                             (case (swap! calls inc)
                               1 (response '(quote (!call-now worker-handle (agents/spawn "Return an integer for arithmetic requests." :worker))))
-                              2 (response '(quote (!call-now task-future (future (blocking/await (blocking/request worker-handle "Multiply 23 by 41."))))))
-                              3 (response '(quote (do (audit/record task-future) (!ask-await task-future))))
+                              2 (response '(quote (do (globals/set :task-future (future (blocking/await (blocking/request worker-handle "Multiply 23 by 41.")))) (!extend))))
+                              3 (response '(quote (do (audit/record (globals/get :task-future)) (!ask-await (globals/get :task-future)))))
                               4 (response (list 'quote (list '!call-now 'status-reply (list 'agents/reply (message-symbol prefix) :working))))
-                              5 (response '(quote (do (audit/record task-future) (audit/release) (!ask-await task-future))))
+                              5 (response '(quote (do (audit/record (globals/get :task-future)) (audit/release) (!ask-await (globals/get :task-future)))))
                               6 (response (list 'quote (list :body (message-symbol prefix))))))))
-                    {'audit {:record (fn [f] (swap! observed conj f) nil)
+                    {'globals globals/globals-namespace
+                     'audit {:record (fn [f] (swap! observed conj f) nil)
                              :release (fn [] (deliver release-worker true) nil)}})]
               (is (= 943 result))
               (is (= 1 @worker-requests))
               (is (= 2 @joins))
               (is (= 2 (count @observed)))
-              (is (apply identical? @observed) "Capture preserves the same future identity across the wake")
+              (is (apply identical? @observed) "Explicit global preserves the same future identity across the wake")
               (is (= [:working] (bodies :peer)))
-              (is (str/includes? @last-prefix ":from :future, :body 943"))))
+              (is (re-find #":from :future,?\s+:body 943" @last-prefix))))
           (finally (deliver release-worker true)))))))
 
 ;; Retained from the delegated Fable implementation; this namespace scopes

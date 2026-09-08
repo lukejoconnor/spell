@@ -1,7 +1,28 @@
 # Changelog
 
-## Unreleased
+## v0.5.0 - 2026-09-08
 
+### Modules and coordination
+
+- Added five public module operations: `patterns/install`, `catalog`, `source`, `update`, and `call`. Modules are editable run-local definitions, discovered from project files, user files, or packaged resources. Explicitly saved definitions can be loaded in a fresh run. See the [migration guide](./installable-modules.md).
+- **Breaking change:** Removed the previous named pattern wrappers. The bundled library now contains `relay` and `mailing-list`; `check-result`, `ralph`, `fix-loop`, `team`, and `clean-prompt` are retired. Callers compose shell work and configured agents explicitly.
+- Added immutable module installer ownership, explicit acknowledgment for another agent's edits, and dogfood journals for successful module installations and updates.
+- Exposed direct mailing-list operations for subscriptions, posting, notification, message retrieval, digest, and acknowledgment. Initialization and list creation subscribe their caller atomically; child onboarding examples establish subscriptions before generation.
+
+### Tool results and context
+
+- **Breaking change:** External tools return raw `{:ok … :out … :err …}` envelopes, with applicable process/HTTP status. Automatic shortening and the `:truncated` flag belong to serialization. Requested line ranges, character windows, and pagination select the result. See [bounded results](./bounded-results.md).
+- Replaced stored-output representations with ordinary bounded snapshots. Complete raw values remain available to computation; retain needed evidence explicitly before pruning context. Updated recovery and context guidance explains ephemeral bindings and durable observations.
+
+### Runtime and performance
+
+- Prevented duplicate completion notifications when rejoining a retained future after an unrelated wake. One subscription remains active through receipt; explicitly awaiting again after receipt delivers the completed value without repeating the computation.
+
+- Preserved queued messages through context compaction, corrected dormant-agent startup from computations, and reset consecutive-error limits after successful model turns.
+- Made Ctrl+C exit interactive runs and restore terminal state. Development workflow runners clean up their child processes on interruption and output failures.
+- Added a configurable five-minute deadline for complete Codex HTTP responses, including stalled response bodies. Timeout does not automatically retry the request.
+- Reduced trace-export allocation, removed verbose-only presentation delays, detached selected file lines from full-file backing storage, and avoided unnecessary parser sanitizer allocation. Added reproducible runtime benchmark workloads and measurements.
+- Fixed multiline-string corruption during comment normalization, character-literal and reader-comment balancing, and regex escape preservation.
 - Changed the CLI default provider to `codex-tc`, using local Codex authentication. The default model remains GPT-6 Astra with medium reasoning.
 
 ## v0.4.0 - 2026-09-06

@@ -63,6 +63,10 @@
       (is (= (.getCanonicalPath root-a) (:root (first (:skills snapshot))))
           "the nearest root wins over later roots")
       (is (str/includes? detail "FIRST COMPLETE SKILL"))
+      (is (str/starts-with? detail (:content (first (:skills snapshot))))
+          "the complete instructions precede provenance")
+      (is (< (str/index-of detail "FIRST COMPLETE SKILL")
+             (str/index-of detail "SKILL PROVENANCE")))
       (is (not (str/includes? detail "SECOND COMPLETE SKILL")))
       (is (not (str/includes? detail "CANDIDATE")))
       (is (str/includes? detail "relative-resource base"))
@@ -223,9 +227,9 @@
       (is (= "near repo root" (:description shared)))
       (is (str/includes? (:content shared) "NEAR BODY")))))
 
-(deftest filesystem-skill-content-truncation-test
+(deftest filesystem-skill-content-is-lossless-test
   (let [root (temp-dir)
-        body (apply str (repeat 70000 "x"))]
+        body (str (apply str (repeat 70000 "x")) "😀TAIL-AFTER-64K")]
     (write-skill! root "big-skill"
                   "name: big-skill\ndescription: a very large skill body"
                   body)
@@ -233,28 +237,11 @@
           skill (first skills)
           content (:content skill)]
       (is (empty? diagnostics))
-      (is (= "big-skill" (:name skill)) "metadata is validated before truncation")
+      (is (= "big-skill" (:name skill)))
       (is (= "a very large skill body" (:description skill)))
-      (is (re-find #"\.\.\. \[truncated, \d+ chars total\]$" content))
-      (is (<= (count content) (+ skills/max-skill-content-chars 64)))
-      (is (str/starts-with? content "---") "the truncated prefix is preserved"))))
-
-(deftest truncate-skill-content-boundary-test
-  (let [short "tiny"
-        exact (apply str (repeat skills/max-skill-content-chars "a"))
-        long-text (str exact "overflow")]
-    (is (identical? short (skills/truncate-skill-content short)))
-    (is (identical? exact (skills/truncate-skill-content exact)))
-    (let [truncated (skills/truncate-skill-content long-text)]
-      (is (str/includes? truncated (str "[truncated, " (count long-text) " chars total]")))
-      (is (str/starts-with? truncated (subs exact 0 100))))
-    (let [surrogate (str (apply str (repeat (dec skills/max-skill-content-chars) "a"))
-                         "\ud83d\ude00tail")
-          truncated (skills/truncate-skill-content surrogate)
-          cut (subs truncated 0 (str/index-of truncated "\n... [truncated"))]
-      (is (not (Character/isHighSurrogate (last cut)))
-          "truncation never splits a surrogate pair"))))
-
+      (is (> (count content) 65536))
+      (is (str/includes? content body))
+      (is (not (str/includes? content "[truncated,"))))))
 (deftest bundled-entry-skill-name-inclusion-and-exclusion-test
   (is (= "good-skill" (skills/bundled-entry-skill-name "skills/good-skill/SKILL.md")))
   (is (nil? (skills/bundled-entry-skill-name "unrelated/SKILL.md"))
@@ -289,10 +276,11 @@
       (is (= ["good-skill"] (mapv :name skills))
           "only skills/<valid-name>/SKILL.md entries are accepted")
       (is (empty? diagnostics))
-      (is (str/includes? (:content (first skills)) "[truncated, ")
-          "bundled skill content is capped after validation")
+      (is (= skill-md (:content (first skills)))
+          "packaged skill bodies remain lossless beyond 64KiB")
+      (is (> (count (:content (first skills))) 65536))
       (is (= "bundled winner" (:description (first skills)))
-          "metadata is parsed before truncation"))))
+          "metadata is validated without changing the body"))))
 
 (deftest bundled-loses-to-filesystem-duplicate-test
   (let [root (temp-dir)]

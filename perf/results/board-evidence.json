@@ -1,0 +1,1786 @@
+{
+  "schema": 1,
+  "run_id": "2026-09-07-runtime-audit-002",
+  "evidence_kind": "recovered_trace_derived_observations",
+  "is_live_board_dump": false,
+  "final_board_state": null,
+  "method": "Safely read Clojure trace data with *read-eval* false. Parse recorded prompt source as data; extract injected result maps and received envelopes. No source evaluated and no agent resumed. Worker reports remain attributed claims.",
+  "source_files": {
+    "trace": {
+      "path": "/Users/loconnor/Dropbox/GitHub/spell/notebook/results/spell-runs/2026-09-07-runtime-audit-002/trace/trace.edn",
+      "sha256": "61050961d755206e4b46efe5448920d75208ef59e7f7f742d8016bbb763852d1"
+    },
+    "verbose_log": {
+      "path": "/Users/loconnor/Dropbox/GitHub/spell/notebook/results/spell-runs/2026-09-07-runtime-audit-002/verbose.log",
+      "sha256": "2318e682f680006638ed0166fe4965543cf3c09685deaeea8da49ce28bb04671"
+    },
+    "worker_receipts": {
+      "path": "/private/tmp/spell-runtime-audit/perf/results/worker-receipts.edn",
+      "sha256": "3dea15552a88efd94cc1523558b037d759173950b880501665a0eef1d591309a"
+    },
+    "context_worker_receipt": {
+      "path": "/private/tmp/spell-runtime-audit/perf/results/context-worker-receipt.edn",
+      "sha256": "f2eda6d310431066c888e2928304e44df29d401a10740647bdb717e3b205ba13"
+    }
+  },
+  "trace_nodes": 105,
+  "completed_trace_nodes": 105,
+  "summary": {
+    "board_owner_observed": "main",
+    "list": "audit",
+    "participating_agents": [
+      "context-bench",
+      "core-bench",
+      "lifecycle-bench",
+      "main"
+    ],
+    "message_ids_observed": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13
+    ],
+    "maximum_observed_high_water": 13,
+    "maximum_ack_receipt_cursor_by_agent": {
+      "main": 11,
+      "core-bench": 9,
+      "context-bench": 11,
+      "lifecycle-bench": 8
+    },
+    "no_gap_in_observed_pages": true,
+    "digest_page_observations": 19,
+    "post_receipt_observations": 13,
+    "substantive_four_agent_use_supported": true
+  },
+  "setup_receipts": [
+    {
+      "value": {
+        "owner": "main",
+        "global": "mailing-list",
+        "ready": true
+      },
+      "source": {
+        "trace_node": 6,
+        "prompt_binding": "board-init"
+      }
+    }
+  ],
+  "launch_receipts": [
+    {
+      "value": {
+        "handle": "core-bench",
+        "onboarding": "pending",
+        "edge": 1
+      },
+      "source": {
+        "trace_node": 6,
+        "prompt_binding": "core-launch"
+      }
+    },
+    {
+      "value": {
+        "handle": "lifecycle-bench",
+        "onboarding": "pending",
+        "edge": 2
+      },
+      "source": {
+        "trace_node": 6,
+        "prompt_binding": "lifecycle-launch"
+      }
+    },
+    {
+      "value": {
+        "handle": "context-bench",
+        "onboarding": "pending",
+        "edge": 3
+      },
+      "source": {
+        "trace_node": 6,
+        "prompt_binding": "context-launch"
+      }
+    }
+  ],
+  "post_receipts": [
+    {
+      "observer_agent": "main",
+      "value": {
+        "list": "audit",
+        "id": 1,
+        "targets": [
+          "main",
+          "core-bench",
+          "lifecycle-bench",
+          "context-bench"
+        ]
+      },
+      "source": {
+        "trace_node": 15,
+        "prompt_binding": "methodology-post"
+      }
+    },
+    {
+      "observer_agent": "core-bench",
+      "value": {
+        "list": "audit",
+        "id": 2,
+        "targets": [
+          "main",
+          "core-bench",
+          "lifecycle-bench",
+          "context-bench"
+        ]
+      },
+      "source": {
+        "trace_node": 20,
+        "prompt_binding": "progress-post"
+      }
+    },
+    {
+      "observer_agent": "context-bench",
+      "value": {
+        "list": "audit",
+        "id": 3,
+        "targets": [
+          "main",
+          "core-bench",
+          "lifecycle-bench",
+          "context-bench"
+        ]
+      },
+      "source": {
+        "trace_node": 27,
+        "prompt_binding": "draft-post"
+      }
+    },
+    {
+      "observer_agent": "lifecycle-bench",
+      "value": {
+        "list": "audit",
+        "id": 4,
+        "targets": [
+          "main",
+          "core-bench",
+          "lifecycle-bench",
+          "context-bench"
+        ]
+      },
+      "source": {
+        "trace_node": 38,
+        "prompt_binding": "lifecycle-progress"
+      }
+    },
+    {
+      "observer_agent": "context-bench",
+      "value": {
+        "list": "audit",
+        "id": 5,
+        "targets": [
+          "main",
+          "core-bench",
+          "lifecycle-bench",
+          "context-bench"
+        ]
+      },
+      "source": {
+        "trace_node": 41,
+        "prompt_binding": "receipt-post"
+      }
+    },
+    {
+      "observer_agent": "core-bench",
+      "value": {
+        "list": "audit",
+        "id": 6,
+        "targets": [
+          "main",
+          "core-bench",
+          "lifecycle-bench",
+          "context-bench"
+        ]
+      },
+      "source": {
+        "trace_node": 51,
+        "prompt_binding": "correctness-post"
+      }
+    },
+    {
+      "observer_agent": "lifecycle-bench",
+      "value": {
+        "list": "audit",
+        "id": 7,
+        "targets": [
+          "main",
+          "core-bench",
+          "lifecycle-bench",
+          "context-bench"
+        ],
+        "deliveries": [
+          {
+            "agent": "main",
+            "sent": true
+          },
+          {
+            "agent": "core-bench",
+            "sent": true
+          },
+          {
+            "agent": "lifecycle-bench",
+            "sent": true
+          },
+          {
+            "agent": "context-bench",
+            "sent": true
+          }
+        ]
+      },
+      "source": {
+        "trace_node": 52,
+        "prompt_binding": "lifecycle-completion-post"
+      }
+    },
+    {
+      "observer_agent": "core-bench",
+      "value": {
+        "list": "audit",
+        "id": 8,
+        "targets": [
+          "main",
+          "core-bench",
+          "lifecycle-bench",
+          "context-bench"
+        ],
+        "deliveries": [
+          {
+            "agent": "main",
+            "sent": true
+          },
+          {
+            "agent": "core-bench",
+            "sent": true
+          },
+          {
+            "agent": "lifecycle-bench",
+            "sent": true
+          },
+          {
+            "agent": "context-bench",
+            "sent": true
+          }
+        ]
+      },
+      "source": {
+        "trace_node": 61,
+        "prompt_binding": "dependency-blocker-receipt"
+      }
+    },
+    {
+      "observer_agent": "context-bench",
+      "value": {
+        "list": "audit",
+        "id": 9,
+        "targets": [
+          "main",
+          "core-bench",
+          "lifecycle-bench",
+          "context-bench"
+        ],
+        "deliveries": [
+          {
+            "agent": "main",
+            "sent": true
+          },
+          {
+            "agent": "core-bench",
+            "sent": true
+          },
+          {
+            "agent": "lifecycle-bench",
+            "sent": true
+          },
+          {
+            "agent": "context-bench",
+            "sent": true
+          }
+        ]
+      },
+      "source": {
+        "trace_node": 76,
+        "prompt_binding": "context-blocker-post"
+      }
+    },
+    {
+      "observer_agent": "context-bench",
+      "value": {
+        "list": "audit",
+        "id": 10,
+        "targets": [
+          "main",
+          "core-bench",
+          "lifecycle-bench",
+          "context-bench"
+        ]
+      },
+      "source": {
+        "trace_node": 86,
+        "prompt_binding": "completion-post"
+      }
+    },
+    {
+      "observer_agent": "core-bench",
+      "value": {
+        "list": "audit",
+        "id": 11,
+        "targets": [
+          "main",
+          "core-bench",
+          "lifecycle-bench",
+          "context-bench"
+        ],
+        "deliveries": [
+          {
+            "agent": "main",
+            "sent": true
+          },
+          {
+            "agent": "core-bench",
+            "sent": true
+          },
+          {
+            "agent": "lifecycle-bench",
+            "sent": true
+          },
+          {
+            "agent": "context-bench",
+            "sent": true
+          }
+        ]
+      },
+      "source": {
+        "trace_node": 87,
+        "prompt_binding": "core-completion-post"
+      }
+    },
+    {
+      "observer_agent": "main",
+      "value": {
+        "list": "audit",
+        "id": 12,
+        "targets": [
+          "main",
+          "core-bench",
+          "lifecycle-bench",
+          "context-bench"
+        ]
+      },
+      "source": {
+        "trace_node": 96,
+        "prompt_binding": "pilot-evidence-post"
+      }
+    },
+    {
+      "observer_agent": "context-bench",
+      "value": {
+        "list": "audit",
+        "id": 13,
+        "targets": [
+          "main",
+          "core-bench",
+          "lifecycle-bench",
+          "context-bench"
+        ]
+      },
+      "source": {
+        "trace_node": 98,
+        "prompt_binding": "resolved-completion-post"
+      }
+    }
+  ],
+  "message_catalog": [
+    {
+      "message": {
+        "id": 1,
+        "author": "main",
+        "summary": "Root integrating harness: timed region includes setup/checks/cleanup; separate retained-live and post-cleanup GC probes. Fixtures must clear ALL strong retained references in :cleanup; return small evidence only. Caller-thread allocations exclude spawned workers.",
+        "thread": "methodology"
+      },
+      "observed_in": [
+        {
+          "reader_agent": "main",
+          "trace_node": 17,
+          "prompt_binding": "audit-page"
+        },
+        {
+          "reader_agent": "core-bench",
+          "trace_node": 20,
+          "prompt_binding": "page"
+        },
+        {
+          "reader_agent": "context-bench",
+          "trace_node": 27,
+          "prompt_binding": "page"
+        },
+        {
+          "reader_agent": "lifecycle-bench",
+          "trace_node": 38,
+          "prompt_binding": "audit-page"
+        }
+      ]
+    },
+    {
+      "message": {
+        "id": 2,
+        "author": "core-bench",
+        "summary": "Core runnable first draft written: five bounded scenario families, non-tail +1 self-call return, trace/log and clearable held fixtures, exact provider outputs. No exploratory source reads. Namespace-only correctness probe next; no harness/paid calls."
+      },
+      "observed_in": [
+        {
+          "reader_agent": "core-bench",
+          "trace_node": 20,
+          "prompt_binding": "page"
+        },
+        {
+          "reader_agent": "context-bench",
+          "trace_node": 27,
+          "prompt_binding": "page"
+        },
+        {
+          "reader_agent": "lifecycle-bench",
+          "trace_node": 38,
+          "prompt_binding": "audit-page"
+        },
+        {
+          "reader_agent": "main",
+          "trace_node": 44,
+          "prompt_binding": "audit-page"
+        }
+      ]
+    },
+    {
+      "message": {
+        "id": 3,
+        "author": "context-bench",
+        "summary": "Context first draft exists: five bounded scenarios, isolated host stores, scalar evidence and clearable fixtures. Paired board/receipt capture deliberately measures old snapshot anti-pattern; contention uses equal total work, excludes future-thread allocation. Compiling namespace only; no harness/pilots."
+      },
+      "observed_in": [
+        {
+          "reader_agent": "context-bench",
+          "trace_node": 27,
+          "prompt_binding": "page"
+        },
+        {
+          "reader_agent": "lifecycle-bench",
+          "trace_node": 38,
+          "prompt_binding": "audit-page"
+        },
+        {
+          "reader_agent": "main",
+          "trace_node": 44,
+          "prompt_binding": "audit-page"
+        },
+        {
+          "reader_agent": "core-bench",
+          "trace_node": 48,
+          "prompt_binding": "board-after"
+        }
+      ]
+    },
+    {
+      "message": {
+        "id": 4,
+        "author": "lifecycle-bench",
+        "summary": "Lifecycle first draft written; all four smallest-case namespace-only correctness probes PASS (exit 0, no stderr), including cleanup called twice. Scenarios separate coordinator-only fanout/FIFO, real runtime host-child spawn/retire, live dormant wake fixture, and deterministic public api/run cleanup. No harness or measurements run. Adding bounded repeated-cycle correctness coverage; report records non-join/thread-allocation limits."
+      },
+      "observed_in": [
+        {
+          "reader_agent": "main",
+          "trace_node": 44,
+          "prompt_binding": "audit-page"
+        },
+        {
+          "reader_agent": "core-bench",
+          "trace_node": 48,
+          "prompt_binding": "board-after"
+        },
+        {
+          "reader_agent": "lifecycle-bench",
+          "trace_node": 50,
+          "prompt_binding": "lifecycle-final-page"
+        },
+        {
+          "reader_agent": "context-bench",
+          "trace_node": 60,
+          "prompt_binding": "audit-page"
+        },
+        {
+          "reader_agent": "context-bench",
+          "trace_node": 67,
+          "prompt_binding": "final-audit-page"
+        }
+      ]
+    },
+    {
+      "message": {
+        "id": 5,
+        "author": "context-bench",
+        "summary": "Context compile succeeds; tiny probes exposed one assertion assumption: serialize-value of a map emits (quote {...}), so parse alone is not its value. Receipt assertion now uses spell-eval; probe confirmed compact receipt adds zero stored entries. Other seven tiny cases passed. No harness loaded."
+      },
+      "observed_in": [
+        {
+          "reader_agent": "main",
+          "trace_node": 44,
+          "prompt_binding": "audit-page"
+        },
+        {
+          "reader_agent": "core-bench",
+          "trace_node": 48,
+          "prompt_binding": "board-after"
+        },
+        {
+          "reader_agent": "lifecycle-bench",
+          "trace_node": 50,
+          "prompt_binding": "lifecycle-final-page"
+        },
+        {
+          "reader_agent": "context-bench",
+          "trace_node": 60,
+          "prompt_binding": "audit-page"
+        },
+        {
+          "reader_agent": "context-bench",
+          "trace_node": 67,
+          "prompt_binding": "final-audit-page"
+        }
+      ]
+    },
+    {
+      "message": {
+        "id": 6,
+        "author": "core-bench",
+        "summary": "Core's earlier unmatched delimiter is fixed; namespace compiles and all 11 tiny correctness probes PASS, including 4-call non-tail return 43, every trace/log mode, JSON/SSE and local lines. Confirmed trace nodes are a vector. Now checking 20 calls and injected-failure cleanup; no harness/measurements."
+      },
+      "observed_in": [
+        {
+          "reader_agent": "main",
+          "trace_node": 54,
+          "prompt_binding": "audit-page-next"
+        },
+        {
+          "reader_agent": "core-bench",
+          "trace_node": 57,
+          "prompt_binding": "page-after-wake"
+        },
+        {
+          "reader_agent": "context-bench",
+          "trace_node": 60,
+          "prompt_binding": "audit-page"
+        },
+        {
+          "reader_agent": "lifecycle-bench",
+          "trace_node": 64,
+          "prompt_binding": "lifecycle-terminal-page"
+        },
+        {
+          "reader_agent": "context-bench",
+          "trace_node": 67,
+          "prompt_binding": "final-audit-page"
+        }
+      ]
+    },
+    {
+      "message": {
+        "id": 7,
+        "author": "lifecycle-bench",
+        "summary": "Lifecycle COMPLETE: perf/spell/perf/lifecycle.clj exports four finite scenarios; perf/audit-lifecycle.md records exact successful command, results, source anchors and limitations. Namespace-only correctness: 11 cases PASS, exit 0/empty stderr, 4/20 agents, repeated cycles, dormant generation checks, API isolation, twice-called cleanup and cleared fixtures. No harness/performance measurements. Parent may integrate; close! is not a thread join and caller allocation excludes workers."
+      },
+      "observed_in": [
+        {
+          "reader_agent": "main",
+          "trace_node": 54,
+          "prompt_binding": "audit-page-next"
+        },
+        {
+          "reader_agent": "core-bench",
+          "trace_node": 57,
+          "prompt_binding": "page-after-wake"
+        },
+        {
+          "reader_agent": "context-bench",
+          "trace_node": 60,
+          "prompt_binding": "audit-page"
+        },
+        {
+          "reader_agent": "lifecycle-bench",
+          "trace_node": 64,
+          "prompt_binding": "lifecycle-terminal-page"
+        },
+        {
+          "reader_agent": "context-bench",
+          "trace_node": 67,
+          "prompt_binding": "final-audit-page"
+        }
+      ]
+    },
+    {
+      "message": {
+        "id": 8,
+        "author": "core-bench",
+        "summary": "URGENT core verification blocked by literal line-number prefixes in deps.edn: io/read-lines confirms first line is ` 1: {:paths ...`, next ` 2: :deps ...`; clojure exits classpath EDN parsing with Invalid number: 1:. I have not edited this non-owned file. Root please restore valid EDN. Earlier 11 tiny core checks passed; final 20-call/cleanup probe has not run."
+      },
+      "observed_in": [
+        {
+          "reader_agent": "lifecycle-bench",
+          "trace_node": 64,
+          "prompt_binding": "lifecycle-terminal-page"
+        },
+        {
+          "reader_agent": "context-bench",
+          "trace_node": 67,
+          "prompt_binding": "final-audit-page"
+        },
+        {
+          "reader_agent": "main",
+          "trace_node": 69,
+          "prompt_binding": "page-eight"
+        },
+        {
+          "reader_agent": "core-bench",
+          "trace_node": 84,
+          "prompt_binding": "final-page"
+        }
+      ]
+    },
+    {
+      "message": {
+        "id": 9,
+        "author": "context-bench",
+        "summary": "Context final verification BLOCKED before namespace load: deps.edn Invalid number: 1: (exit 1). Eight tiny cases + cleanup previously passed. Final contention completion-barrier refinement is written but unverified; root must fix non-owned deps.edn and rerun exact command in perf/audit-context.md. No harness/measurements."
+      },
+      "observed_in": [
+        {
+          "reader_agent": "context-bench",
+          "trace_node": 83,
+          "prompt_binding": "handoff-page"
+        },
+        {
+          "reader_agent": "core-bench",
+          "trace_node": 84,
+          "prompt_binding": "final-page"
+        },
+        {
+          "reader_agent": "main",
+          "trace_node": 85,
+          "prompt_binding": "audit-page-nine"
+        },
+        {
+          "reader_agent": "main",
+          "trace_node": 91,
+          "prompt_binding": "audit-page-current"
+        }
+      ]
+    },
+    {
+      "message": {
+        "id": 10,
+        "author": "context-bench",
+        "summary": "Context implementation handoff: five scenarios in perf/spell/perf/context.clj; exact commands/results and limitations in perf/audit-context.md. Eight tiny cases passed before final completion-barrier refinement. Final check blocked by malformed deps.edn; root must repair and rerun. Returning tracked lifecycle result; no harness/measurements."
+      },
+      "observed_in": [
+        {
+          "reader_agent": "main",
+          "trace_node": 91,
+          "prompt_binding": "audit-page-current"
+        },
+        {
+          "reader_agent": "context-bench",
+          "trace_node": 93,
+          "prompt_binding": "final-update"
+        }
+      ]
+    },
+    {
+      "message": {
+        "id": 11,
+        "author": "core-bench",
+        "summary": "Core COMPLETE: perf/spell/perf/core.clj exports exactly five bounded scenario families; perf/audit-core.md records exact commands/output and limitations. Namespace-only checks PASS: 11 tiny cases, exact 20-call non-tail return 43, padded trace/log exact node checks, injected-failure cleanup and twice-called cleanup clearing all fixture references. Final rerun exit 0/empty stderr after root repaired deps.edn; blocker resolved. No harness/pilots/full measurements, paid calls or 100-call probe."
+      },
+      "observed_in": [
+        {
+          "reader_agent": "main",
+          "trace_node": 91,
+          "prompt_binding": "audit-page-current"
+        },
+        {
+          "reader_agent": "context-bench",
+          "trace_node": 93,
+          "prompt_binding": "final-update"
+        }
+      ]
+    },
+    {
+      "message": {
+        "id": 12,
+        "author": "main",
+        "summary": "E:main:pilot All 14 smallest-parameter scenario families PASS; deterministic pilot process exit0, 26.04s. Root deps.edn presentation-prefix mistake repaired; baseline next after final integration checks.",
+        "thread": "measurement"
+      },
+      "observed_in": [
+        {
+          "reader_agent": "main",
+          "trace_node": 103,
+          "prompt_binding": "board-final-page"
+        }
+      ]
+    },
+    {
+      "message": {
+        "id": 13,
+        "author": "context-bench",
+        "summary": "Context COMPLETE; deps blocker resolved. FINAL source passes namespace-only compile + eight tiny cases + injected-contention-failure cleanup (exit 0, empty stderr), including completion-barrier refinement. Five scenarios in perf/spell/perf/context.clj; exact command/output and limits in perf/audit-context.md. No harness/measurements. Prior blocked handoff superseded."
+      },
+      "observed_in": [
+        {
+          "reader_agent": "main",
+          "trace_node": 103,
+          "prompt_binding": "board-final-page"
+        }
+      ]
+    }
+  ],
+  "digest_observations": [
+    {
+      "agent": "main",
+      "cursor": 0,
+      "high-water": 1,
+      "gap": null,
+      "remaining": 0,
+      "token": {
+        "list": "audit",
+        "agent": "main",
+        "epoch": 1,
+        "through": 1
+      },
+      "message_ids": [
+        1
+      ],
+      "source": {
+        "trace_node": 17,
+        "prompt_binding": "audit-page"
+      }
+    },
+    {
+      "agent": "core-bench",
+      "cursor": 0,
+      "high-water": 2,
+      "gap": null,
+      "remaining": 0,
+      "token": {
+        "list": "audit",
+        "agent": "core-bench",
+        "epoch": 2,
+        "through": 2
+      },
+      "message_ids": [
+        1,
+        2
+      ],
+      "source": {
+        "trace_node": 20,
+        "prompt_binding": "page"
+      }
+    },
+    {
+      "agent": "context-bench",
+      "cursor": 0,
+      "high-water": 3,
+      "gap": null,
+      "remaining": 0,
+      "token": {
+        "list": "audit",
+        "agent": "context-bench",
+        "epoch": 4,
+        "through": 3
+      },
+      "message_ids": [
+        1,
+        2,
+        3
+      ],
+      "source": {
+        "trace_node": 27,
+        "prompt_binding": "page"
+      }
+    },
+    {
+      "agent": "lifecycle-bench",
+      "cursor": 0,
+      "high-water": 3,
+      "gap": null,
+      "remaining": 0,
+      "token": {
+        "list": "audit",
+        "agent": "lifecycle-bench",
+        "epoch": 3,
+        "through": 3
+      },
+      "message_ids": [
+        1,
+        2,
+        3
+      ],
+      "source": {
+        "trace_node": 38,
+        "prompt_binding": "audit-page"
+      }
+    },
+    {
+      "agent": "main",
+      "cursor": 1,
+      "high-water": 5,
+      "gap": null,
+      "remaining": 0,
+      "token": {
+        "list": "audit",
+        "agent": "main",
+        "epoch": 1,
+        "through": 5
+      },
+      "message_ids": [
+        2,
+        3,
+        4,
+        5
+      ],
+      "source": {
+        "trace_node": 44,
+        "prompt_binding": "audit-page"
+      }
+    },
+    {
+      "agent": "core-bench",
+      "cursor": 2,
+      "high-water": 5,
+      "gap": null,
+      "remaining": 0,
+      "token": {
+        "list": "audit",
+        "agent": "core-bench",
+        "epoch": 2,
+        "through": 5
+      },
+      "message_ids": [
+        3,
+        4,
+        5
+      ],
+      "source": {
+        "trace_node": 48,
+        "prompt_binding": "board-after"
+      }
+    },
+    {
+      "agent": "lifecycle-bench",
+      "cursor": 3,
+      "high-water": 5,
+      "gap": null,
+      "remaining": 0,
+      "token": {
+        "list": "audit",
+        "agent": "lifecycle-bench",
+        "epoch": 3,
+        "through": 5
+      },
+      "message_ids": [
+        4,
+        5
+      ],
+      "source": {
+        "trace_node": 50,
+        "prompt_binding": "lifecycle-final-page"
+      }
+    },
+    {
+      "agent": "main",
+      "cursor": 5,
+      "high-water": 7,
+      "gap": null,
+      "remaining": 0,
+      "token": {
+        "list": "audit",
+        "agent": "main",
+        "epoch": 1,
+        "through": 7
+      },
+      "message_ids": [
+        6,
+        7
+      ],
+      "source": {
+        "trace_node": 54,
+        "prompt_binding": "audit-page-next"
+      }
+    },
+    {
+      "agent": "core-bench",
+      "cursor": 5,
+      "high-water": 7,
+      "gap": null,
+      "remaining": 0,
+      "token": {
+        "list": "audit",
+        "agent": "core-bench",
+        "epoch": 2,
+        "through": 7
+      },
+      "message_ids": [
+        6,
+        7
+      ],
+      "source": {
+        "trace_node": 57,
+        "prompt_binding": "page-after-wake"
+      }
+    },
+    {
+      "agent": "context-bench",
+      "cursor": 3,
+      "high-water": 7,
+      "gap": null,
+      "remaining": 0,
+      "token": {
+        "list": "audit",
+        "agent": "context-bench",
+        "epoch": 4,
+        "through": 7
+      },
+      "message_ids": [
+        4,
+        5,
+        6,
+        7
+      ],
+      "source": {
+        "trace_node": 60,
+        "prompt_binding": "audit-page"
+      }
+    },
+    {
+      "agent": "lifecycle-bench",
+      "cursor": 5,
+      "high-water": 8,
+      "gap": null,
+      "remaining": 0,
+      "token": {
+        "list": "audit",
+        "agent": "lifecycle-bench",
+        "epoch": 3,
+        "through": 8
+      },
+      "message_ids": [
+        6,
+        7,
+        8
+      ],
+      "source": {
+        "trace_node": 64,
+        "prompt_binding": "lifecycle-terminal-page"
+      }
+    },
+    {
+      "agent": "context-bench",
+      "cursor": 3,
+      "high-water": 8,
+      "gap": null,
+      "remaining": 0,
+      "token": {
+        "list": "audit",
+        "agent": "context-bench",
+        "epoch": 4,
+        "through": 8
+      },
+      "message_ids": [
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "source": {
+        "trace_node": 67,
+        "prompt_binding": "final-audit-page"
+      }
+    },
+    {
+      "agent": "main",
+      "cursor": 7,
+      "high-water": 8,
+      "gap": null,
+      "remaining": 0,
+      "token": {
+        "list": "audit",
+        "agent": "main",
+        "epoch": 1,
+        "through": 8
+      },
+      "message_ids": [
+        8
+      ],
+      "source": {
+        "trace_node": 69,
+        "prompt_binding": "page-eight"
+      }
+    },
+    {
+      "agent": "context-bench",
+      "cursor": 8,
+      "high-water": 9,
+      "gap": null,
+      "remaining": 0,
+      "token": {
+        "list": "audit",
+        "agent": "context-bench",
+        "epoch": 4,
+        "through": 9
+      },
+      "message_ids": [
+        9
+      ],
+      "source": {
+        "trace_node": 83,
+        "prompt_binding": "handoff-page"
+      }
+    },
+    {
+      "agent": "core-bench",
+      "cursor": 7,
+      "high-water": 9,
+      "gap": null,
+      "remaining": 0,
+      "token": {
+        "list": "audit",
+        "agent": "core-bench",
+        "epoch": 2,
+        "through": 9
+      },
+      "message_ids": [
+        8,
+        9
+      ],
+      "source": {
+        "trace_node": 84,
+        "prompt_binding": "final-page"
+      }
+    },
+    {
+      "agent": "main",
+      "cursor": 8,
+      "high-water": 9,
+      "gap": null,
+      "remaining": 0,
+      "token": {
+        "list": "audit",
+        "agent": "main",
+        "epoch": 1,
+        "through": 9
+      },
+      "message_ids": [
+        9
+      ],
+      "source": {
+        "trace_node": 85,
+        "prompt_binding": "audit-page-nine"
+      }
+    },
+    {
+      "agent": "main",
+      "cursor": 8,
+      "high-water": 11,
+      "gap": null,
+      "remaining": 0,
+      "token": {
+        "list": "audit",
+        "agent": "main",
+        "epoch": 1,
+        "through": 11
+      },
+      "message_ids": [
+        9,
+        10,
+        11
+      ],
+      "source": {
+        "trace_node": 91,
+        "prompt_binding": "audit-page-current"
+      }
+    },
+    {
+      "agent": "context-bench",
+      "cursor": 9,
+      "high-water": 11,
+      "gap": null,
+      "remaining": 0,
+      "token": {
+        "list": "audit",
+        "agent": "context-bench",
+        "epoch": 4,
+        "through": 11
+      },
+      "message_ids": [
+        10,
+        11
+      ],
+      "source": {
+        "trace_node": 93,
+        "prompt_binding": "final-update"
+      }
+    },
+    {
+      "agent": "main",
+      "cursor": 11,
+      "high-water": 13,
+      "gap": null,
+      "remaining": 0,
+      "token": {
+        "list": "audit",
+        "agent": "main",
+        "epoch": 1,
+        "through": 13
+      },
+      "message_ids": [
+        12,
+        13
+      ],
+      "source": {
+        "trace_node": 103,
+        "prompt_binding": "board-final-page"
+      }
+    }
+  ],
+  "acknowledgement_receipts": [
+    {
+      "value": {
+        "epoch": 1,
+        "cursor": 0,
+        "list": "audit",
+        "agent": "main"
+      },
+      "source": {
+        "trace_node": 6,
+        "prompt_binding": "root-subscribed"
+      }
+    },
+    {
+      "value": {
+        "list": "audit",
+        "agent": "core-bench",
+        "cursor": 2
+      },
+      "source": {
+        "trace_node": 26,
+        "prompt_binding": "ack-core-start"
+      }
+    },
+    {
+      "value": {
+        "list": "audit",
+        "agent": "context-bench",
+        "cursor": 3
+      },
+      "source": {
+        "trace_node": 32,
+        "prompt_binding": "audit-ack"
+      }
+    },
+    {
+      "value": {
+        "list": "audit",
+        "agent": "lifecycle-bench",
+        "cursor": 3
+      },
+      "source": {
+        "trace_node": 42,
+        "prompt_binding": "audit-ack"
+      }
+    },
+    {
+      "value": {
+        "list": "audit",
+        "agent": "main",
+        "cursor": 5
+      },
+      "source": {
+        "trace_node": 47,
+        "prompt_binding": "audit-ack-5"
+      }
+    },
+    {
+      "value": {
+        "list": "audit",
+        "agent": "core-bench",
+        "cursor": 5
+      },
+      "source": {
+        "trace_node": 51,
+        "prompt_binding": "ack-peer-progress"
+      }
+    },
+    {
+      "value": {
+        "list": "audit",
+        "agent": "lifecycle-bench",
+        "cursor": 5
+      },
+      "source": {
+        "trace_node": 52,
+        "prompt_binding": "lifecycle-final-ack"
+      }
+    },
+    {
+      "value": {
+        "list": "audit",
+        "agent": "main",
+        "cursor": 7
+      },
+      "source": {
+        "trace_node": 58,
+        "prompt_binding": "ack-seven"
+      }
+    },
+    {
+      "value": {
+        "list": "audit",
+        "agent": "core-bench",
+        "cursor": 7
+      },
+      "source": {
+        "trace_node": 61,
+        "prompt_binding": "ack-lifecycle-completion"
+      }
+    },
+    {
+      "value": {
+        "list": "audit",
+        "agent": "lifecycle-bench",
+        "cursor": 8
+      },
+      "source": {
+        "trace_node": 68,
+        "prompt_binding": "lifecycle-terminal-ack"
+      }
+    },
+    {
+      "value": {
+        "list": "audit",
+        "agent": "main",
+        "cursor": 8
+      },
+      "source": {
+        "trace_node": 71,
+        "prompt_binding": "ack-eight"
+      }
+    },
+    {
+      "value": {
+        "list": "audit",
+        "agent": "context-bench",
+        "cursor": 7
+      },
+      "source": {
+        "trace_node": 72,
+        "prompt_binding": "ack-processed-7"
+      }
+    },
+    {
+      "value": {
+        "list": "audit",
+        "agent": "context-bench",
+        "cursor": 8
+      },
+      "source": {
+        "trace_node": 72,
+        "prompt_binding": "ack-processed-8"
+      }
+    },
+    {
+      "value": {
+        "list": "audit",
+        "agent": "context-bench",
+        "cursor": 9
+      },
+      "source": {
+        "trace_node": 86,
+        "prompt_binding": "handoff-ack"
+      }
+    },
+    {
+      "value": {
+        "list": "audit",
+        "agent": "core-bench",
+        "cursor": 9
+      },
+      "source": {
+        "trace_node": 87,
+        "prompt_binding": "final-page-ack"
+      }
+    },
+    {
+      "value": {
+        "list": "audit",
+        "agent": "context-bench",
+        "cursor": 11
+      },
+      "source": {
+        "trace_node": 94,
+        "prompt_binding": "final-update-ack"
+      }
+    },
+    {
+      "value": {
+        "list": "audit",
+        "agent": "main",
+        "cursor": 11
+      },
+      "source": {
+        "trace_node": 96,
+        "prompt_binding": "ack-eleven"
+      }
+    }
+  ],
+  "received_board_notification_envelopes": [
+    {
+      "recipient": "main",
+      "envelope": {
+        "from": "lifecycle-bench",
+        "body": {
+          "kind": "mailing-list",
+          "list": "audit",
+          "through": 7
+        }
+      },
+      "first_source": {
+        "trace_node": 53,
+        "prompt_binding": "msg-6643"
+      }
+    },
+    {
+      "recipient": "core-bench",
+      "envelope": {
+        "from": "lifecycle-bench",
+        "body": {
+          "kind": "mailing-list",
+          "list": "audit",
+          "through": 7
+        }
+      },
+      "first_source": {
+        "trace_node": 55,
+        "prompt_binding": "msg-6650"
+      }
+    },
+    {
+      "recipient": "context-bench",
+      "envelope": {
+        "from": "lifecycle-bench",
+        "body": {
+          "kind": "mailing-list",
+          "list": "audit",
+          "through": 7
+        }
+      },
+      "first_source": {
+        "trace_node": 56,
+        "prompt_binding": "msg-6651"
+      }
+    },
+    {
+      "recipient": "lifecycle-bench",
+      "envelope": {
+        "from": "lifecycle-bench",
+        "body": {
+          "kind": "mailing-list",
+          "list": "audit",
+          "through": 7
+        }
+      },
+      "first_source": {
+        "trace_node": 59,
+        "prompt_binding": "msg-6666"
+      }
+    },
+    {
+      "recipient": "lifecycle-bench",
+      "envelope": {
+        "from": "core-bench",
+        "body": {
+          "kind": "mailing-list",
+          "list": "audit",
+          "through": 8
+        }
+      },
+      "first_source": {
+        "trace_node": 62,
+        "prompt_binding": "msg-6688"
+      }
+    },
+    {
+      "recipient": "context-bench",
+      "envelope": {
+        "from": "core-bench",
+        "body": {
+          "kind": "mailing-list",
+          "list": "audit",
+          "through": 8
+        }
+      },
+      "first_source": {
+        "trace_node": 63,
+        "prompt_binding": "msg-6689"
+      }
+    },
+    {
+      "recipient": "main",
+      "envelope": {
+        "from": "core-bench",
+        "body": {
+          "kind": "mailing-list",
+          "list": "audit",
+          "through": 8
+        }
+      },
+      "first_source": {
+        "trace_node": 65,
+        "prompt_binding": "msg-6694"
+      }
+    },
+    {
+      "recipient": "core-bench",
+      "envelope": {
+        "from": "core-bench",
+        "body": {
+          "kind": "mailing-list",
+          "list": "audit",
+          "through": 8
+        }
+      },
+      "first_source": {
+        "trace_node": 66,
+        "prompt_binding": "msg-6695"
+      }
+    },
+    {
+      "recipient": "main",
+      "envelope": {
+        "from": "lifecycle-bench",
+        "body": {
+          "kind": "mailing-list",
+          "list": "audit",
+          "through": 7
+        }
+      },
+      "first_source": {
+        "trace_node": 77,
+        "prompt_binding": "msg-6666"
+      }
+    },
+    {
+      "recipient": "main",
+      "envelope": {
+        "from": "core-bench",
+        "body": {
+          "kind": "mailing-list",
+          "list": "audit",
+          "through": 8
+        }
+      },
+      "first_source": {
+        "trace_node": 77,
+        "prompt_binding": "msg-6688"
+      }
+    },
+    {
+      "recipient": "main",
+      "envelope": {
+        "from": "context-bench",
+        "body": {
+          "kind": "mailing-list",
+          "list": "audit",
+          "through": 9
+        }
+      },
+      "first_source": {
+        "trace_node": 77,
+        "prompt_binding": "msg-6762"
+      }
+    },
+    {
+      "recipient": "main",
+      "envelope": {
+        "from": "context-bench",
+        "body": {
+          "kind": "mailing-list",
+          "list": "audit",
+          "through": 9
+        }
+      },
+      "first_source": {
+        "trace_node": 79,
+        "prompt_binding": "msg-6763"
+      }
+    },
+    {
+      "recipient": "context-bench",
+      "envelope": {
+        "from": "context-bench",
+        "body": {
+          "kind": "mailing-list",
+          "list": "audit",
+          "through": 9
+        }
+      },
+      "first_source": {
+        "trace_node": 80,
+        "prompt_binding": "msg-6764"
+      }
+    },
+    {
+      "recipient": "core-bench",
+      "envelope": {
+        "from": "context-bench",
+        "body": {
+          "kind": "mailing-list",
+          "list": "audit",
+          "through": 9
+        }
+      },
+      "first_source": {
+        "trace_node": 82,
+        "prompt_binding": "msg-6767"
+      }
+    },
+    {
+      "recipient": "main",
+      "envelope": {
+        "from": "core-bench",
+        "body": {
+          "kind": "mailing-list",
+          "list": "audit",
+          "through": 11
+        }
+      },
+      "first_source": {
+        "trace_node": 88,
+        "prompt_binding": "msg-6816"
+      }
+    },
+    {
+      "recipient": "main",
+      "envelope": {
+        "from": "core-bench",
+        "body": {
+          "kind": "mailing-list",
+          "list": "audit",
+          "through": 11
+        }
+      },
+      "first_source": {
+        "trace_node": 89,
+        "prompt_binding": "msg-6817"
+      }
+    },
+    {
+      "recipient": "context-bench",
+      "envelope": {
+        "from": "core-bench",
+        "body": {
+          "kind": "mailing-list",
+          "list": "audit",
+          "through": 11
+        }
+      },
+      "first_source": {
+        "trace_node": 90,
+        "prompt_binding": "msg-6818"
+      }
+    },
+    {
+      "recipient": "core-bench",
+      "envelope": {
+        "from": "core-bench",
+        "body": {
+          "kind": "mailing-list",
+          "list": "audit",
+          "through": 11
+        }
+      },
+      "first_source": {
+        "trace_node": 92,
+        "prompt_binding": "msg-6824"
+      }
+    }
+  ],
+  "saved_worker_reports": [
+    {
+      "agent": "core-bench",
+      "edge_id": 1,
+      "claimed_status": "complete",
+      "files": [
+        "perf/spell/perf/core.clj",
+        "perf/audit-core.md"
+      ],
+      "scenarios": [
+        "core-evaluator",
+        "core-parse-expand",
+        "core-serial-self-calls",
+        "core-trace-log",
+        "core-provider-local-boundaries"
+      ],
+      "claimed_verification": {
+        "exit": 0,
+        "summary": [
+          "Eleven tiny namespace-only correctness cases passed.",
+          "Twenty deterministic self-calls returned exactly 43 through the non-tail +1 continuation.",
+          "Padded four-call trace/log mode passed exact node-count and node-value checks.",
+          "Injected-failure cleanup passed for held trace, JSON, SSE and selected local lines.",
+          "Repeated cleanup cleared fixture and nested trace atoms and deleted owned directories."
+        ]
+      },
+      "communication_claims": {
+        "completion-post": {
+          "list": "audit",
+          "id": 11,
+          "main-delivery-confirmed": true
+        }
+      },
+      "source_file": "perf/results/worker-receipts.edn",
+      "evidence_kind": "saved_received_worker_report; claims are attributed to worker"
+    },
+    {
+      "agent": "lifecycle-bench",
+      "edge_id": 2,
+      "claimed_status": "complete",
+      "files": [
+        "perf/spell/perf/lifecycle.clj",
+        "perf/audit-lifecycle.md"
+      ],
+      "scenarios": [
+        "lifecycle-coordinator",
+        "lifecycle-spawn-return",
+        "lifecycle-dormant-wake",
+        "lifecycle-api-cleanup"
+      ],
+      "claimed_verification": {
+        "exit": 0,
+        "cases": 11,
+        "timeout-seconds": 120
+      },
+      "communication_claims": {
+        "communication": {
+          "completion-post": 7,
+          "main-delivery-accepted": true,
+          "acknowledged-through": 8,
+          "gap": null
+        }
+      },
+      "source_file": "perf/results/worker-receipts.edn",
+      "evidence_kind": "saved_received_worker_report; claims are attributed to worker"
+    },
+    {
+      "agent": "context-bench",
+      "edge_id": 3,
+      "claimed_status": "complete",
+      "files": [
+        "perf/spell/perf/context.clj",
+        "perf/audit-context.md"
+      ],
+      "scenarios": [
+        "context-render-edit",
+        "context-pruned-storage",
+        "globals-contention",
+        "board-post-digest",
+        "board-captured-snapshot"
+      ],
+      "claimed_verification": {
+        "exit": 0,
+        "scope": "Final source compiled; eight tiny correctness cases, fixture cleanup assertions, and injected-contention-failure cleanup passed.",
+        "timeout-seconds": 120
+      },
+      "communication_claims": {
+        "handoff": {
+          "completion-post-id": 13,
+          "report-write-confirmed": true,
+          "last-acknowledged-audit-cursor": 11,
+          "supersedes": "Earlier blocked verification handoff.",
+          "next-action": "Parent fresh review, then parent-owned pilot/full measurements."
+        }
+      },
+      "source_file": "perf/results/context-worker-receipt.edn",
+      "evidence_kind": "saved_received_worker_report; claims are attributed to worker"
+    }
+  ],
+  "baseline_artifact_check": {
+    "source": "perf/results/baseline.json",
+    "cases": 80,
+    "ok_cases": 80,
+    "process_receipt": {
+      "command": [
+        "clojure",
+        "-J-Dclojure.main.report=stderr",
+        "-M:perf",
+        "--warmup",
+        "2",
+        "--reps",
+        "5",
+        "--memory-reps",
+        "3",
+        "--out",
+        "perf/results/baseline.json"
+      ],
+      "exit": 0,
+      "timed_out": false,
+      "elapsed_seconds": 608.9309530258179,
+      "log": "perf/results/baseline.log"
+    }
+  },
+  "failure_chain": [
+    {
+      "source": "verbose.log:299 and trace node17",
+      "issue": "Missing second map argument to patterns/mail :info/:lists; exact isolated reproduction confirmed. Earlier digest succeeded.",
+      "classification": "caller API error; not dispatch collision"
+    },
+    {
+      "source": "feedback trace-node84 and board message8",
+      "issue": "Numbered io/read-file display was written to deps.edn; root repaired raw source and final worker probes passed.",
+      "classification": "write-back source/presentation confusion"
+    },
+    {
+      "source": "verbose.log:1327,1433",
+      "issue": "Worker lifecycle-return source called unavailable Spell hash-map; corrected map literals allowed complete saved receipts.",
+      "classification": "caller builtin assumption"
+    },
+    {
+      "source": "trace node103 response and verbose.log:1499",
+      "issue": "Malformed multi-binding continuation closes quoted !call-now before local-lines-source, leaving it unbound. Proposed ack13/baseline post/board export are not successful receipts.",
+      "classification": "caller source-shape error after completed baseline"
+    },
+    {
+      "source": "trace node104 response and verbose.log:1515",
+      "issue": "Recovery source calls unavailable Spell mapv; recovery limit exceeded 2 and root exits1.",
+      "classification": "caller builtin assumption during recovery"
+    }
+  ],
+  "limitations": [
+    "Observations are historical captured values, not the final live state. Maximum high-water/cursors are observed lower bounds.",
+    "Posting target lists and sent:true indicate dispatch/acceptance; digest pages independently establish delivery into agent context, and ack receipts establish cursor updates.",
+    "Worker claims of tests/findings are attributed; this export itself does not rerun their tests or validate each scientific/performance conclusion.",
+    "No successful final baseline board post or board dump was recovered; message catalog ends at observed ID13.",
+    "The trace is Clojure-readable data with quoted source forms; clojure.edn/read is the wrong reader. This is not evidence of trace corruption."
+  ]
+}

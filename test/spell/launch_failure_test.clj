@@ -87,7 +87,7 @@
   (let [failure (AssertionError. "fatal evaluation")
         evaluator (fn [_] (throw failure))
         thrown (try
-                 (runtime/run-root-box :child raw (runtime/make-awake-fn :child evaluator) evaluator)
+                 (runtime/run-root-box :child raw (runtime/make-awake-fn :child evaluator true :pre-eval) evaluator)
                  nil
                  (catch Error e e))]
     (is (identical? failure thrown))
@@ -105,7 +105,7 @@
                   (fn [_] (throw (java.util.concurrent.RejectedExecutionException. "rejected")))]
       (is (thrown? java.util.concurrent.RejectedExecutionException
                    (runtime/run-root-box :child raw
-                     (runtime/make-awake-fn :child evaluator) evaluator))))
+                     (runtime/make-awake-fn :child evaluator true :pre-eval) evaluator))))
     (is (nil? (coordinator/agent :child)))
     (is (empty? (:edges (coordinator/snapshot))))
     (is (= :first-result (:body (first (messages :parent)))))

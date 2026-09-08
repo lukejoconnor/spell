@@ -5,6 +5,7 @@
             [spell.runtime :as runtime]
             [spell.coordinator :as coordinator]
             [spell.context :as context]
+            [spell.parse :as parse]
             [spell.globals :as globals]
             [spell.user :as user])
   (:import [java.io BufferedReader PipedReader PipedWriter StringReader]
@@ -34,6 +35,33 @@
         (>= (System/currentTimeMillis) deadline) false
         :else (do (Thread/sleep 10) (recur))))))
 
+(deftest user-self-receipt-identifies-generated-completion-entry
+  ;; Exercise the real user-self caller, stubbing only terminal input. The
+  ;; evaluator returns the materialized source so its receipt structure is visible.
+  (coordinator/register! :receipt-user)
+  (let [prefix "(quine completion (eval (do "
+        evaluations (atom [])
+        result (with-redefs-fn
+                 {#'user/user-call-fn
+                  (fn [_ _]
+                    (coordinator/send! :receipt-user
+                      {:message {:from :observer :body :during-user-input}})
+                    "'(probe/must-not-run))))")}
+                 #(#'user/user-self
+                    (fn [raw] (swap! evaluations conj raw) raw)
+                    :receipt-user nil prefix @user/reader-generation true))
+        form (first (parse/read-all (parse/balance-parens result)))
+        forms (vec (rest (second (last form))))
+        annotation (first (filter #(and (seq? %) (= 'think (first %))) forms))
+        message-def (nth forms (inc (.indexOf forms annotation)))]
+    (is (= [result] @evaluations))
+    (is (= "pre-eval: tail not run"
+           (second annotation)))
+    (is (some #{'(quote (probe/must-not-run))} forms))
+    (is (= '(quote (!extend completion)) (last forms)))
+    (is (str/includes? result ":during-user-input"))
+    (is (empty? (:mailbox (coordinator/agent :receipt-user))))))
+
 (defn- pty-command [mode]
   (cond
     (str/includes? (System/getProperty "os.name") "Mac")
@@ -51,6 +79,10 @@
 
 (defn- pty-test-host? []
   (boolean (re-find #"Mac|Linux" (System/getProperty "os.name"))))
+
+;; Cold namespace loading can exceed 15 seconds on a busy host. This allowance
+;; covers process startup; the shorter post-input responsiveness checks remain.
+(def ^:private pty-startup-timeout-ms 60000)
 
 (defn- run-pty-fixture!
   [mode chunks]
@@ -73,7 +105,7 @@
                   #(or (not (.isAlive process))
                        (locking output-buffer
                          (str/includes? (.toString output-buffer) "SPELL_READY")))
-                  15000)
+                  pty-startup-timeout-ms)
         (.destroyForcibly process)
         (throw (ex-info "PTY fixture did not become ready" {:mode mode})))
       (when-not (.isAlive process)
@@ -93,7 +125,9 @@
           (.destroyForcibly process)
           (throw (ex-info "PTY redisplay fixture did not preserve the buffer"
                           {:output (locking output-buffer (.toString output-buffer))})))))
-    (when-not (.waitFor process 30 TimeUnit/SECONDS)
+    (when-not (.waitFor process
+                       (if (seq chunks) 30 (+ 30 (quot pty-startup-timeout-ms 1000)))
+                       TimeUnit/SECONDS)
       (.destroyForcibly process)
       (throw (ex-info "PTY fixture timed out"
                       {:mode mode
@@ -266,7 +300,7 @@
       (runtime/register! h-agent)
       (let [pa (promise)]
         (deliver pa agent-raw)
-        (let [fa (future (runtime/box h-agent pa (runtime/make-awake-fn h-agent agent-eval-fn)))]
+        (let [fa (future (runtime/box h-agent pa (runtime/make-awake-fn h-agent agent-eval-fn true :pre-eval)))]
           (deref agent-started 2000 :timeout)
           (let [result (deref fa 5000 :timeout)]
             (is (string? result))
@@ -292,7 +326,7 @@
           "send should happen immediately, not via trailing expression code")
       (is (.contains ^String suffix "(quine completion (eval (do "))
       (deliver p "(quine completion (eval (do )))")
-      (runtime/box :target p (runtime/make-awake-fn :target (fn [raw] (reset! received raw) raw)))
+      (runtime/box :target p (runtime/make-awake-fn :target (fn [raw] (reset! received raw) raw) true :pre-eval))
       (is (string? @received))
       (is (.contains ^String @received ":from :user"))
       (is (.contains ^String @received ":body \"immediate-reply\"")))))
@@ -311,7 +345,7 @@
           received (atom nil)
           p (promise)]
       (deliver p "(quine completion (eval (do )))")
-      (runtime/box :other p (runtime/make-awake-fn :other (fn [raw] (reset! received raw) raw)))
+      (runtime/box :other p (runtime/make-awake-fn :other (fn [raw] (reset! received raw) raw) true :pre-eval))
       (is (string? @received))
       (is (.contains ^String @received ":from :user"))
       (is (.contains ^String @received ":body \"hello from user\"")))))
@@ -332,8 +366,8 @@
           p-third (promise)]
       (deliver p-other "(quine completion (eval (do )))")
       (deliver p-third "(quine completion (eval (do )))")
-      (runtime/box :other p-other (runtime/make-awake-fn :other (fn [raw] (reset! received-other raw) raw)))
-      (runtime/box :third p-third (runtime/make-awake-fn :third (fn [raw] (reset! received-third raw) raw)))
+      (runtime/box :other p-other (runtime/make-awake-fn :other (fn [raw] (reset! received-other raw) raw) true :pre-eval))
+      (runtime/box :third p-third (runtime/make-awake-fn :third (fn [raw] (reset! received-third raw) raw) true :pre-eval))
       (is (.contains ^String @received-other ":body \"hello\""))
       (is (.contains ^String @received-third ":body \"world\"")))))
 
@@ -353,8 +387,8 @@
           p-b (promise)]
       (deliver p-a "(quine completion (eval (do )))")
       (deliver p-b "(quine completion (eval (do )))")
-      (runtime/box :a p-a (runtime/make-awake-fn :a (fn [raw] (reset! received-a raw) raw)))
-      (runtime/box :b p-b (runtime/make-awake-fn :b (fn [raw] (reset! received-b raw) raw)))
+      (runtime/box :a p-a (runtime/make-awake-fn :a (fn [raw] (reset! received-a raw) raw) true :pre-eval))
+      (runtime/box :b p-b (runtime/make-awake-fn :b (fn [raw] (reset! received-b raw) raw) true :pre-eval))
       (is (.contains ^String @received-a ":body \"shared\""))
       (is (.contains ^String @received-b ":body \"shared\"")))))
 
@@ -416,7 +450,7 @@
                   _ (deliver completion "(quine completion (eval (do )))")
                   result (future
                            (runtime/box :drain-race-asker completion
-                             (runtime/make-awake-fn :drain-race-asker asker-eval-fn)))]
+                             (runtime/make-awake-fn :drain-race-asker asker-eval-fn true :pre-eval)))]
               (is (= true (deref display-entered 3000 :timeout))
                   "the :user inbox has drained but prompt-and-read has not started")
               (is (pos? @@#'user/input-cycle-depth))
@@ -459,7 +493,7 @@
                   _ (deliver completion "(quine completion (eval (do )))")
                   result (future
                            (runtime/box :reset-race-asker completion
-                             (runtime/make-awake-fn :reset-race-asker asker-eval-fn)))]
+                             (runtime/make-awake-fn :reset-race-asker asker-eval-fn true :pre-eval)))]
               (is (= true (deref display-entered 3000 :timeout)))
               (is (pos? @@#'user/input-cycle-depth))
               (is (false? @@#'user/input-waiting?))
@@ -619,7 +653,7 @@
       (deliver completion "(quine completion (eval (do )))")
       (let [result (future
                      (runtime/box :post-eof-asker completion
-                       (runtime/make-awake-fn :post-eof-asker eval-fn)))]
+                       (runtime/make-awake-fn :post-eof-asker eval-fn true :pre-eval)))]
         (is (string? (deref result 3000 :timeout))
             "the post-EOF ask must not hang")))))
 
@@ -665,7 +699,7 @@
                 #(or (not (.isAlive process))
                      (locking output-buffer
                        (str/includes? (.toString output-buffer) "SPELL_READY")))
-                15000)
+                pty-startup-timeout-ms)
               "full-flow PTY fixture should become ready")
           (is (.isAlive process)
               (str "fixture exited before input: "
@@ -795,7 +829,7 @@
       (let [pa (promise)]
         (deliver pa "(quine completion (eval (do )))")
         (is (thrown? Exception
-              (runtime/box h-agent pa (runtime/make-awake-fn h-agent agent-eval-fn))))))))
+              (runtime/box h-agent pa (runtime/make-awake-fn h-agent agent-eval-fn true :pre-eval))))))))
 
 ;; User-originated requests exercise the actual generated-program lifecycle.
 (defn- with-command-terminal [f]

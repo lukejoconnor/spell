@@ -18,12 +18,14 @@
 
 (deftest sh-test
   (with-effects
-    (testing "io/sh returns a map with :exit :out :err"
+    (testing "io/sh returns a successful envelope with exact stdout"
       (let [result (run-spell '(io/sh "echo hello"))]
         (is (map? result))
         (is (= 0 (:exit result)))
-        (is (= "hello" (:out result)))
-        (is (= "" (:err result)))))
+        (is (= "hello\n" (:out result)))
+        (is (nil? (:err result)))
+        (is (true? (:ok result)))
+        (is (not (contains? result :truncated)))))
 
     (testing "io/sh captures exit code on failure"
       (let [result (run-spell '(io/sh "exit 42"))]
@@ -32,17 +34,17 @@
     (testing "io/sh captures stderr"
       (let [result (run-spell '(io/sh "echo oops >&2; exit 1"))]
         (is (= 1 (:exit result)))
-        (is (= "oops" (:err result)))))
+        (is (= "oops\n" (:err result)))))
 
     (testing "io/sh output accessible with keywords"
-      (is (= "hi" (run-spell '(:out (io/sh "echo hi")))))
+      (is (= "hi\n" (run-spell '(:out (io/sh "echo hi")))))
       (is (= 0 (run-spell '(:exit (io/sh "true"))))))
 
     (testing "io/sh output usable with get"
-      (is (= "world" (run-spell '(get (io/sh "echo world") :out)))))
+      (is (= "world\n" (run-spell '(get (io/sh "echo world") :out)))))
 
     (testing "io/sh output usable in expressions"
-      (is (= "result: ok"
+      (is (= "result: ok\n"
              (run-spell '(cat "result: " (:out (io/sh "echo ok")))))))
 
     (testing "io/sh timeout"
@@ -60,9 +62,9 @@
     (testing "io/write-file and io/read-file roundtrip"
       (let [test-file "/tmp/spell-test-file.txt"]
         (try
-          (is (= {:ok test-file}
+          (is (= {:ok true :out test-file :err nil}
                  (run-spell (list 'io/write-file test-file "line1\nline2\nline3"))))
-          (is (= "1: line1\n2: line2\n3: line3"
+          (is (= {:ok true :out "line1\nline2\nline3" :err nil}
                  (run-spell (list 'io/read-file test-file))))
           (finally
             (jio/delete-file test-file true)))))
@@ -71,7 +73,7 @@
       (let [test-file "/tmp/spell-test-range.txt"]
         (try
           (run-spell (list 'io/write-file test-file "a\nb\nc\nd\ne"))
-          (is (= "2: b\n3: c"
+          (is (= {:ok true :out "b\nc\n" :err nil}
                  (run-spell (list 'io/read-file test-file 2 4))))
           (finally
             (jio/delete-file test-file true)))))
@@ -79,9 +81,9 @@
     (testing "io/slurp and io/spit"
       (let [test-file "/tmp/spell-test-slurp.txt"]
         (try
-          (is (= {:ok test-file}
+          (is (= {:ok true :out test-file :err nil}
                  (run-spell (list 'io/spit test-file "hello world"))))
-          (is (= {:ok "hello world"}
+          (is (= {:ok true :out "hello world" :err nil}
                  (run-spell (list 'io/slurp test-file))))
           (finally
             (jio/delete-file test-file true)))))))

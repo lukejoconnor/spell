@@ -1,0 +1,556 @@
+{
+  "cwd": "/private/tmp/spell-dogfood-reliability",
+  "script_sha256": "a4ecb6cbb307b730b56a76091e00646495700e601db6b5c3c392c1028454d856",
+  "parser_sha256": "0d405871977f833646e86a1a7285eb62eabfdcbbc0a3daa2245cc091d6eaa695",
+  "runs": [
+    {
+      "label": "attribution-1",
+      "command": [
+        "clojure",
+        "-J-Xms256m",
+        "-J-Xmx256m",
+        "-M",
+        "/private/tmp/spell-dogfood-reliability/perf/parse_sanitizer_probe.clj",
+        "attribution-1"
+      ],
+      "exit": 0,
+      "seconds": 1.102,
+      "metrics": [
+        {
+          "fixture_index": 0,
+          "operation": ":comments",
+          "allocated_bytes_per_call": "41992.0",
+          "nanos_per_call": "667650.0"
+        },
+        {
+          "fixture_index": 0,
+          "operation": ":escapes-on-comment-output",
+          "allocated_bytes_per_call": "40970.4",
+          "nanos_per_call": "407150.0"
+        },
+        {
+          "fixture_index": 0,
+          "operation": ":ordered-sanitizers",
+          "allocated_bytes_per_call": "79622.4",
+          "nanos_per_call": "440112.5"
+        },
+        {
+          "fixture_index": 0,
+          "operation": ":raw-reader-first",
+          "allocated_bytes_per_call": "119231.2",
+          "nanos_per_call": "201291.7"
+        },
+        {
+          "fixture_index": 0,
+          "operation": ":read-first",
+          "allocated_bytes_per_call": "195519.2",
+          "nanos_per_call": "668629.2"
+        },
+        {
+          "fixture_index": 0,
+          "operation": ":raw-reader-all",
+          "allocated_bytes_per_call": "120359.2",
+          "nanos_per_call": "238020.8"
+        },
+        {
+          "fixture_index": 0,
+          "operation": ":read-all",
+          "allocated_bytes_per_call": "195719.2",
+          "nanos_per_call": "641220.8"
+        },
+        {
+          "fixture_index": 1,
+          "operation": ":comments",
+          "allocated_bytes_per_call": "18076.0",
+          "nanos_per_call": "162262.5"
+        },
+        {
+          "fixture_index": 1,
+          "operation": ":escapes-on-comment-output",
+          "allocated_bytes_per_call": "22836.0",
+          "nanos_per_call": "89341.7"
+        },
+        {
+          "fixture_index": 1,
+          "operation": ":ordered-sanitizers",
+          "allocated_bytes_per_call": "34148.0",
+          "nanos_per_call": "255720.9"
+        },
+        {
+          "fixture_index": 1,
+          "operation": ":raw-reader-first",
+          "allocated_bytes_per_call": "68540.0",
+          "nanos_per_call": "123533.4"
+        },
+        {
+          "fixture_index": 1,
+          "operation": ":read-first",
+          "allocated_bytes_per_call": "99396.0",
+          "nanos_per_call": "384575.0"
+        },
+        {
+          "fixture_index": 1,
+          "operation": ":raw-reader-all",
+          "allocated_bytes_per_call": "68740.0",
+          "nanos_per_call": "125070.8"
+        },
+        {
+          "fixture_index": 1,
+          "operation": ":read-all",
+          "allocated_bytes_per_call": "99596.0",
+          "nanos_per_call": "395100.0"
+        },
+        {
+          "fixture_index": 2,
+          "operation": ":comments",
+          "allocated_bytes_per_call": "156764.0",
+          "nanos_per_call": "1110712.5"
+        },
+        {
+          "fixture_index": 2,
+          "operation": ":escapes-on-comment-output",
+          "allocated_bytes_per_call": "152668.0",
+          "nanos_per_call": "437804.2"
+        },
+        {
+          "fixture_index": 2,
+          "operation": ":ordered-sanitizers",
+          "allocated_bytes_per_call": "306140.0",
+          "nanos_per_call": "1557575.0"
+        },
+        {
+          "fixture_index": 2,
+          "operation": ":raw-reader-first",
+          "allocated_bytes_per_call": "457676.0",
+          "nanos_per_call": "1047650.0"
+        },
+        {
+          "fixture_index": 2,
+          "operation": ":read-first",
+          "allocated_bytes_per_call": "760530.4",
+          "nanos_per_call": "2503175.0"
+        },
+        {
+          "fixture_index": 2,
+          "operation": ":raw-reader-all",
+          "allocated_bytes_per_call": "457899.2",
+          "nanos_per_call": "966537.5"
+        },
+        {
+          "fixture_index": 2,
+          "operation": ":read-all",
+          "allocated_bytes_per_call": "760724.0",
+          "nanos_per_call": "2450950.0"
+        },
+        {
+          "fixture_index": 3,
+          "operation": ":comments",
+          "allocated_bytes_per_call": "48012.0",
+          "nanos_per_call": "667387.5"
+        },
+        {
+          "fixture_index": 3,
+          "operation": ":escapes-on-comment-output",
+          "allocated_bytes_per_call": "77580.0",
+          "nanos_per_call": "340320.8"
+        },
+        {
+          "fixture_index": 3,
+          "operation": ":ordered-sanitizers",
+          "allocated_bytes_per_call": "122300.0",
+          "nanos_per_call": "1002125.0"
+        },
+        {
+          "fixture_index": 3,
+          "operation": ":raw-reader-first",
+          "allocated_bytes_per_call": "248780.0",
+          "nanos_per_call": "272316.7"
+        },
+        {
+          "fixture_index": 3,
+          "operation": ":read-first",
+          "allocated_bytes_per_call": "367113.6",
+          "nanos_per_call": "1271145.8"
+        },
+        {
+          "fixture_index": 3,
+          "operation": ":raw-reader-all",
+          "allocated_bytes_per_call": "248980.0",
+          "nanos_per_call": "254275.0"
+        },
+        {
+          "fixture_index": 3,
+          "operation": ":read-all",
+          "allocated_bytes_per_call": "364964.0",
+          "nanos_per_call": "1211362.5"
+        }
+      ]
+    },
+    {
+      "label": "attribution-2",
+      "command": [
+        "clojure",
+        "-J-Xms256m",
+        "-J-Xmx256m",
+        "-M",
+        "/private/tmp/spell-dogfood-reliability/perf/parse_sanitizer_probe.clj",
+        "attribution-2"
+      ],
+      "exit": 0,
+      "seconds": 1.05,
+      "metrics": [
+        {
+          "fixture_index": 0,
+          "operation": ":comments",
+          "allocated_bytes_per_call": "41997.6",
+          "nanos_per_call": "726900.0"
+        },
+        {
+          "fixture_index": 0,
+          "operation": ":escapes-on-comment-output",
+          "allocated_bytes_per_call": "40970.4",
+          "nanos_per_call": "396204.2"
+        },
+        {
+          "fixture_index": 0,
+          "operation": ":ordered-sanitizers",
+          "allocated_bytes_per_call": "79661.6",
+          "nanos_per_call": "446541.7"
+        },
+        {
+          "fixture_index": 0,
+          "operation": ":raw-reader-first",
+          "allocated_bytes_per_call": "119231.2",
+          "nanos_per_call": "208187.5"
+        },
+        {
+          "fixture_index": 0,
+          "operation": ":read-first",
+          "allocated_bytes_per_call": "195519.2",
+          "nanos_per_call": "666883.3"
+        },
+        {
+          "fixture_index": 0,
+          "operation": ":raw-reader-all",
+          "allocated_bytes_per_call": "119431.2",
+          "nanos_per_call": "217175.0"
+        },
+        {
+          "fixture_index": 0,
+          "operation": ":read-all",
+          "allocated_bytes_per_call": "195725.6",
+          "nanos_per_call": "708266.7"
+        },
+        {
+          "fixture_index": 1,
+          "operation": ":comments",
+          "allocated_bytes_per_call": "18076.0",
+          "nanos_per_call": "243545.8"
+        },
+        {
+          "fixture_index": 1,
+          "operation": ":escapes-on-comment-output",
+          "allocated_bytes_per_call": "22836.0",
+          "nanos_per_call": "91629.2"
+        },
+        {
+          "fixture_index": 1,
+          "operation": ":ordered-sanitizers",
+          "allocated_bytes_per_call": "34148.0",
+          "nanos_per_call": "297258.3"
+        },
+        {
+          "fixture_index": 1,
+          "operation": ":raw-reader-first",
+          "allocated_bytes_per_call": "68540.0",
+          "nanos_per_call": "129616.6"
+        },
+        {
+          "fixture_index": 1,
+          "operation": ":read-first",
+          "allocated_bytes_per_call": "99396.0",
+          "nanos_per_call": "474091.6"
+        },
+        {
+          "fixture_index": 1,
+          "operation": ":raw-reader-all",
+          "allocated_bytes_per_call": "68740.0",
+          "nanos_per_call": "128412.5"
+        },
+        {
+          "fixture_index": 1,
+          "operation": ":read-all",
+          "allocated_bytes_per_call": "98981.6",
+          "nanos_per_call": "373658.3"
+        },
+        {
+          "fixture_index": 2,
+          "operation": ":comments",
+          "allocated_bytes_per_call": "156764.0",
+          "nanos_per_call": "1108120.8"
+        },
+        {
+          "fixture_index": 2,
+          "operation": ":escapes-on-comment-output",
+          "allocated_bytes_per_call": "152668.0",
+          "nanos_per_call": "637241.7"
+        },
+        {
+          "fixture_index": 2,
+          "operation": ":ordered-sanitizers",
+          "allocated_bytes_per_call": "306140.0",
+          "nanos_per_call": "1828512.5"
+        },
+        {
+          "fixture_index": 2,
+          "operation": ":raw-reader-first",
+          "allocated_bytes_per_call": "451532.0",
+          "nanos_per_call": "680608.3"
+        },
+        {
+          "fixture_index": 2,
+          "operation": ":read-first",
+          "allocated_bytes_per_call": "754386.4",
+          "nanos_per_call": "2460341.6"
+        },
+        {
+          "fixture_index": 2,
+          "operation": ":raw-reader-all",
+          "allocated_bytes_per_call": "451732.0",
+          "nanos_per_call": "693966.6"
+        },
+        {
+          "fixture_index": 2,
+          "operation": ":read-all",
+          "allocated_bytes_per_call": "754580.0",
+          "nanos_per_call": "2143337.5"
+        },
+        {
+          "fixture_index": 3,
+          "operation": ":comments",
+          "allocated_bytes_per_call": "48012.0",
+          "nanos_per_call": "656858.4"
+        },
+        {
+          "fixture_index": 3,
+          "operation": ":escapes-on-comment-output",
+          "allocated_bytes_per_call": "80628.0",
+          "nanos_per_call": "443683.3"
+        },
+        {
+          "fixture_index": 3,
+          "operation": ":ordered-sanitizers",
+          "allocated_bytes_per_call": "125348.0",
+          "nanos_per_call": "1043979.2"
+        },
+        {
+          "fixture_index": 3,
+          "operation": ":raw-reader-first",
+          "allocated_bytes_per_call": "248780.0",
+          "nanos_per_call": "261283.4"
+        },
+        {
+          "fixture_index": 3,
+          "operation": ":read-first",
+          "allocated_bytes_per_call": "364692.0",
+          "nanos_per_call": "669691.6"
+        },
+        {
+          "fixture_index": 3,
+          "operation": ":raw-reader-all",
+          "allocated_bytes_per_call": "248980.0",
+          "nanos_per_call": "237925.0"
+        },
+        {
+          "fixture_index": 3,
+          "operation": ":read-all",
+          "allocated_bytes_per_call": "364892.0",
+          "nanos_per_call": "668362.5"
+        }
+      ]
+    },
+    {
+      "label": "attribution-3",
+      "command": [
+        "clojure",
+        "-J-Xms256m",
+        "-J-Xmx256m",
+        "-M",
+        "/private/tmp/spell-dogfood-reliability/perf/parse_sanitizer_probe.clj",
+        "attribution-3"
+      ],
+      "exit": 0,
+      "seconds": 1.069,
+      "metrics": [
+        {
+          "fixture_index": 0,
+          "operation": ":comments",
+          "allocated_bytes_per_call": "42036.8",
+          "nanos_per_call": "707154.1"
+        },
+        {
+          "fixture_index": 0,
+          "operation": ":escapes-on-comment-output",
+          "allocated_bytes_per_call": "40966.4",
+          "nanos_per_call": "430433.3"
+        },
+        {
+          "fixture_index": 0,
+          "operation": ":ordered-sanitizers",
+          "allocated_bytes_per_call": "79583.2",
+          "nanos_per_call": "479812.5"
+        },
+        {
+          "fixture_index": 0,
+          "operation": ":raw-reader-first",
+          "allocated_bytes_per_call": "119231.2",
+          "nanos_per_call": "209795.8"
+        },
+        {
+          "fixture_index": 0,
+          "operation": ":read-first",
+          "allocated_bytes_per_call": "195519.2",
+          "nanos_per_call": "641466.6"
+        },
+        {
+          "fixture_index": 0,
+          "operation": ":raw-reader-all",
+          "allocated_bytes_per_call": "119437.6",
+          "nanos_per_call": "214237.5"
+        },
+        {
+          "fixture_index": 0,
+          "operation": ":read-all",
+          "allocated_bytes_per_call": "195719.2",
+          "nanos_per_call": "687683.4"
+        },
+        {
+          "fixture_index": 1,
+          "operation": ":comments",
+          "allocated_bytes_per_call": "18076.0",
+          "nanos_per_call": "164429.2"
+        },
+        {
+          "fixture_index": 1,
+          "operation": ":escapes-on-comment-output",
+          "allocated_bytes_per_call": "22836.0",
+          "nanos_per_call": "82520.9"
+        },
+        {
+          "fixture_index": 1,
+          "operation": ":ordered-sanitizers",
+          "allocated_bytes_per_call": "34148.0",
+          "nanos_per_call": "247920.8"
+        },
+        {
+          "fixture_index": 1,
+          "operation": ":raw-reader-first",
+          "allocated_bytes_per_call": "68540.0",
+          "nanos_per_call": "138225.0"
+        },
+        {
+          "fixture_index": 1,
+          "operation": ":read-first",
+          "allocated_bytes_per_call": "99396.0",
+          "nanos_per_call": "467791.6"
+        },
+        {
+          "fixture_index": 1,
+          "operation": ":raw-reader-all",
+          "allocated_bytes_per_call": "68740.0",
+          "nanos_per_call": "135570.8"
+        },
+        {
+          "fixture_index": 1,
+          "operation": ":read-all",
+          "allocated_bytes_per_call": "99596.0",
+          "nanos_per_call": "410645.9"
+        },
+        {
+          "fixture_index": 2,
+          "operation": ":comments",
+          "allocated_bytes_per_call": "156764.0",
+          "nanos_per_call": "1044787.5"
+        },
+        {
+          "fixture_index": 2,
+          "operation": ":escapes-on-comment-output",
+          "allocated_bytes_per_call": "152668.0",
+          "nanos_per_call": "590558.3"
+        },
+        {
+          "fixture_index": 2,
+          "operation": ":ordered-sanitizers",
+          "allocated_bytes_per_call": "306140.0",
+          "nanos_per_call": "1602237.5"
+        },
+        {
+          "fixture_index": 2,
+          "operation": ":raw-reader-first",
+          "allocated_bytes_per_call": "457676.0",
+          "nanos_per_call": "824425.0"
+        },
+        {
+          "fixture_index": 2,
+          "operation": ":read-first",
+          "allocated_bytes_per_call": "760530.4",
+          "nanos_per_call": "2453545.8"
+        },
+        {
+          "fixture_index": 2,
+          "operation": ":raw-reader-all",
+          "allocated_bytes_per_call": "457876.0",
+          "nanos_per_call": "810533.3"
+        },
+        {
+          "fixture_index": 2,
+          "operation": ":read-all",
+          "allocated_bytes_per_call": "760724.0",
+          "nanos_per_call": "2424516.7"
+        },
+        {
+          "fixture_index": 3,
+          "operation": ":comments",
+          "allocated_bytes_per_call": "48012.0",
+          "nanos_per_call": "640729.2"
+        },
+        {
+          "fixture_index": 3,
+          "operation": ":escapes-on-comment-output",
+          "allocated_bytes_per_call": "80628.0",
+          "nanos_per_call": "332150.0"
+        },
+        {
+          "fixture_index": 3,
+          "operation": ":ordered-sanitizers",
+          "allocated_bytes_per_call": "125348.0",
+          "nanos_per_call": "971129.2"
+        },
+        {
+          "fixture_index": 3,
+          "operation": ":raw-reader-first",
+          "allocated_bytes_per_call": "254924.0",
+          "nanos_per_call": "294704.2"
+        },
+        {
+          "fixture_index": 3,
+          "operation": ":read-first",
+          "allocated_bytes_per_call": "376980.0",
+          "nanos_per_call": "1261966.6"
+        },
+        {
+          "fixture_index": 3,
+          "operation": ":raw-reader-all",
+          "allocated_bytes_per_call": "255124.0",
+          "nanos_per_call": "290166.7"
+        },
+        {
+          "fixture_index": 3,
+          "operation": ":read-all",
+          "allocated_bytes_per_call": "371036.0",
+          "nanos_per_call": "995404.1"
+        }
+      ]
+    }
+  ]
+}

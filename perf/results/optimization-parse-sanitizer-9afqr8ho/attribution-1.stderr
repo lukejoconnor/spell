@@ -1,0 +1,5 @@
+Execution error (ExceptionInfo) at parse-sanitizer-probe/check= (parse_sanitizer_probe.clj:14).
+Probe semantic assertion failed
+
+Full report at:
+/var/folders/p3/_p_jx7wj4y5c1b1cl563k9p40000gp/T/clojure-127028762054729127.edn

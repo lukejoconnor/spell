@@ -1,0 +1,39 @@
+{
+  "status": "completed",
+  "command": [
+    "clojure",
+    "-Sdeps",
+    "{:paths [\"src\" \"resources\" \"test\"]}",
+    "-M",
+    "dev/dogfood-reliability-run/run.clj",
+    "dev/dogfood-reliability-run/workflow.edn",
+    "dev/dogfood-reliability-run/tests.edn"
+  ],
+  "cwd": ".",
+  "path_base": "repository root derived from run.py at execution time",
+  "limits": {
+    "wall_seconds": 90,
+    "cleanup_wait_seconds": 5,
+    "provider_calls_per_handle": 6,
+    "design_digest_limit": 3,
+    "paid_calls": 0
+  },
+  "elapsed_seconds": 1.953,
+  "elapsed_seconds_scope": "subprocess launch through exit/termination and output collection; includes JVM startup, tests, receipt writes and shutdown; not internal test time or CPU time",
+  "baseline_sha256_before": "54754377fd62516b5971715bcd334237733b07370e24fc83fa514d98a08837ce",
+  "baseline_sha256_after": "54754377fd62516b5971715bcd334237733b07370e24fc83fa514d98a08837ce",
+  "baseline_unchanged": true,
+  "diagnostics_policy": "Raw subprocess output and exception text are omitted for path portability; only parsed numeric test counters are retained.",
+  "artifacts": {
+    "workflow.edn": "dev/dogfood-reliability-run/workflow.edn",
+    "tests.edn": "dev/dogfood-reliability-run/tests.edn"
+  },
+  "exit_code": 0,
+  "test_counts": {
+    "tests": 3,
+    "assertions": 40,
+    "failures": 0,
+    "errors": 0
+  },
+  "artifacts_present": true
+}

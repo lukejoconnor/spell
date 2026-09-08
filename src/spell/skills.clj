@@ -10,11 +10,6 @@
 (def ^:private max-diagnostics 20)
 (def ^:private max-diagnostic-chars 300)
 (def ^:private max-catalog-chars 8000)
-(def max-skill-content-chars
-  "Upper bound on on-demand SKILL.md content disclosed into model context.
-  64 KiB of characters keeps a single disclosure well under typical context
-  budgets while leaving room for genuinely long skill bodies."
-  65536)
 (def ^:private skill-name-pattern #"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 (def ^:private bundled-marker-resource "skills/.spell-skills-root")
 
@@ -93,19 +88,6 @@
       (throw (ex-info (str "SKILL.md frontmatter requires non-blank " key-name) {})))
     (str/trim value)))
 
-(defn truncate-skill-content
-  "Cap disclosed SKILL.md content at max-skill-content-chars, applied uniformly to
-  filesystem and bundled sources after metadata parsing/validation. The cut point
-  never splits a surrogate pair, and a visible truncation notice is appended."
-  [^String text]
-  (let [total (count text)]
-    (if (<= total max-skill-content-chars)
-      text
-      (let [cut (if (Character/isHighSurrogate (.charAt text (dec max-skill-content-chars)))
-                  (dec max-skill-content-chars)
-                  max-skill-content-chars)]
-        (str (subs text 0 cut)
-             "\n... [truncated, " total " chars total]")))))
 
 (defn- load-skill-text [dirname path directory root text]
   (let [metadata (parse-yaml (frontmatter text))
@@ -128,7 +110,7 @@
      :path path
      :directory directory
      :root root
-     :content (truncate-skill-content text)}))
+     :content text}))
 
 (defn- load-skill [^File source-root ^File dir]
   (let [file (io/file dir "SKILL.md")]
@@ -309,14 +291,12 @@
                     (bounded-message message))))))
 
 (defn- skill-detail [name {:keys [path directory root content]}]
-  (str "SKILL DETAIL — " name "\n\n"
-       "Duplicate skill names are resolved at discovery time; this is the winning candidate (nearest repository-local root, then more distant repository roots, then user root, then bundled).\n"
-       "Relative resource references must be resolved from this skill's directory; its discovery root is also listed for provenance.\n"
-       "Skill disclosure provides instructions only and grants no new tools, permissions, namespaces, or capability escalation.\n\n"
+  (str content
+       "\n\nSKILL PROVENANCE — " name "\n"
        "SKILL.md: " path "\n"
        "Skill directory (relative-resource base): " directory "\n"
-       "Source root: " root "\n\n"
-       content))
+       "Source root: " root "\n"
+       "Winning discovery candidate; instructions only, no new tools, permissions, namespaces, or capability escalation.\n"))
 
 (defn skills-namespace
   "Generate the always-available prompt-only skills namespace from a discovery snapshot."

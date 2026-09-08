@@ -7,14 +7,16 @@
             [spell.eval :as eval]
             [spell.context :as context]
             [spell.globals :as globals]
+            [spell.patterns :as patterns]
+            [spell.feedback :as feedback]
             [spell.llm :as llm]
             [spell.provider :as provider]
             [spell.trace :as trace]
             [spell.user :as user]))
 
 (def ^:private public-run-keys
-  #{:prompt :init :model-profile :agent-profile :model :reasoning-effort
-    :budget :depth :context-max-chars :trace-dir :usage-tracker :user-reader :log-writer :coordinator})
+  #{:prompt :init :model-profile :agent-profile :model :reasoning-effort :max-consecutive-errors
+    :budget :depth :context-max-chars :trace-dir :usage-tracker :user-reader :log-writer :coordinator :dogfood})
 
 (def ^:private removed-run-keys
   #{:provider :agent :lm-profile :trace :usage :user? :verbose :thinking :prefill? :format :retries
@@ -46,9 +48,11 @@
 (defn- execute-run*
   [{:keys [prompt init model-profile agent-profile model reasoning-effort budget depth trace-dir
            usage-tracker user-reader interactive-user? log-writer agent-namespace-overrides]
-    :as opts}]
+    :as opts} module-discovery]
   (validate-required-run-opts! opts)
-  (let [profile (provider/resolve-model-profile model-profile)
+  (let [agent-namespace-overrides (cond-> agent-namespace-overrides
+                                    (:dogfood opts) (assoc 'feedback 'stdlib/feedback))
+        profile (provider/resolve-model-profile model-profile)
         resolved-provider (:provider profile)
         agent-spec (cond-> (agent/load-agent-spec agent-profile)
                      true (assoc :provider resolved-provider)
@@ -57,6 +61,8 @@
                      (or model (:default-model profile)) (assoc :model (or model (:default-model profile)))
                      (or reasoning-effort (:default-reasoning-effort profile))
                      (assoc :reasoning-effort (or reasoning-effort (:default-reasoning-effort profile)))
+                     (contains? opts :max-consecutive-errors)
+                     (assoc :max-consecutive-errors (:max-consecutive-errors opts))
                      (contains? opts :prefill?) (assoc :prefill? (:prefill? opts))
                      (:thinking opts) (assoc :thinking (:thinking opts))
                      (:verbosity opts) (assoc :verbosity (:verbosity opts))
@@ -81,6 +87,30 @@
                      (compare-and-set! trace-written? false true))
             (trace/write-trace! @trace-atom trace-dir)))
         user-session (atom nil)
+        interrupt-error (when interactive-user? (atom nil))
+        cleanup-errors (atom [])
+        run-cleanup! (fn [stage cleanup!]
+                       (try (cleanup!)
+                            (catch Exception e
+                              ;; An interrupted run keeps its primary error, but
+                              ;; restoration failures must remain visible to callers.
+                              (if (some-> interrupt-error deref)
+                                (swap! cleanup-errors conj
+                                       {:stage stage :error (.getMessage e)
+                                        :error-data (ex-data e)})
+                                (throw e)))))
+        interrupt-lock (Object.)
+        interrupt-armed? (atom interactive-user?)
+        owner-thread (Thread/currentThread)
+        on-interrupt (fn []
+                       ;; Disarm under the same lock before cleanup: a reader
+                       ;; callback must never interrupt terminal restoration.
+                       (locking interrupt-lock
+                         (when (and @interrupt-armed? (nil? @interrupt-error))
+                           (reset! interrupt-error
+                                   (ex-info "Interactive run interrupted"
+                                            {:type :interactive-interrupt}))
+                           (.interrupt owner-thread))))
         shutdown-hook (when trace-atom
                         (Thread.
                           ^Runnable
@@ -90,17 +120,20 @@
                               (catch Exception _)))))]
     (user/reset-state!)
     (globals/reset-globals!)
+    (globals/set-val :module-discovery module-discovery)
     (globals/set-val :roles {:main {}})
-    (try
+    (let [result
+          (try
       (cond
-        interactive-user? (reset! user-session (user/register-interactive-user-agent!))
+        interactive-user? (reset! user-session (user/register-interactive-user-agent! on-interrupt))
         user-reader (user/register-user-agent!
                       (if (instance? java.io.BufferedReader user-reader)
                         user-reader
                         (java.io.BufferedReader. user-reader))))
       (when shutdown-hook
         (.addShutdownHook (Runtime/getRuntime) shutdown-hook))
-      (binding [eval/*verbose* effective-verbose
+      (binding [eval/*interactive-interrupt* interrupt-error
+                eval/*verbose* effective-verbose
                 eval/*log-writer* log-writer
                 eval/*max-llm-depth* depth
                 provider/*usage* usage-atom
@@ -108,31 +141,50 @@
                 provider/*retries* (or (:retries opts) (:retries profile) (:retries agent-spec) provider/*retries*)
                 trace/*trace* trace-atom]
         (let [result (try
-                       {:result (agent-fn run-input :main)
-                        :usage-tracker usage-atom}
+                       (let [value (agent-fn run-input :main)]
+                         (locking interrupt-lock
+                           (reset! interrupt-armed? false)
+                           (when-let [interrupt (some-> interrupt-error deref)]
+                             (throw interrupt)))
+                         {:result value :usage-tracker usage-atom})
                        (catch Exception e
-                         {:error (.getMessage e)
-                          :error-data (ex-data e)
-                          :usage-tracker usage-atom}))]
+                         (locking interrupt-lock
+                           (reset! interrupt-armed? false)
+                           (let [interrupt (some-> interrupt-error deref)
+                                 error (or interrupt e)]
+                             (when interrupt (Thread/interrupted))
+                             {:error (.getMessage error)
+                              :error-data (ex-data error)
+                              :usage-tracker usage-atom}))))]
           (when trace-atom
             (write-trace-once! true))
           (cond-> result
             trace-dir (assoc :trace-dir trace-dir))))
       (finally
+        (locking interrupt-lock
+          (reset! interrupt-armed? false)
+          (when (some-> interrupt-error deref) (Thread/interrupted)))
         (try
-          (when-let [^java.io.Closeable session @user-session]
-            (.close session))
+          (run-cleanup! :user-session
+                        #(when-let [^java.io.Closeable session @user-session]
+                           (.close session)))
           (finally
             (try
-              (user/reset-state!)
+              (run-cleanup! :user-state user/reset-state!)
               (finally
-                (when shutdown-hook
-                  (try
-                    (.removeShutdownHook (Runtime/getRuntime) shutdown-hook)
-                    (catch IllegalStateException _)))
-                (when log-writer
-                  (.flush ^java.io.Writer log-writer))
-                (agent/close-compiled-agent! agent-fn)))))))))
+                (run-cleanup! :shutdown-hook
+                              #(when shutdown-hook
+                                 (try
+                                   (.removeShutdownHook (Runtime/getRuntime) shutdown-hook)
+                                   (catch IllegalStateException _))))
+                (run-cleanup! :log-writer
+                              #(when log-writer
+                                 (.flush ^java.io.Writer log-writer)))
+                (run-cleanup! :compiled-agent
+                              #(agent/close-compiled-agent! agent-fn))))))))]
+      (cond-> result
+        (seq @cleanup-errors)
+        (assoc-in [:error-data :cleanup-errors] @cleanup-errors)))))
 
 (defn- execute-run [opts]
   (binding [context/*context* (context/new-context
@@ -140,14 +192,16 @@
                                              context/default-max-chars
                                              (:context-max-chars opts))})
             coordinator/*coordinator* (coordinator/new-coordinator (get opts :coordinator {}))
-            globals/*store* (globals/new-store)]
+            globals/*store* (globals/new-store)
+            feedback/*dogfood* (when (:dogfood opts) (feedback/new-dogfood-context))]
     (user/call-with-session
       (fn []
-        (try (execute-run* opts)
+        (try (execute-run* opts (patterns/discovery-context))
              (finally (coordinator/close!)))))))
 
 (defn run
-  "Run a Spell agent with the public API.
+  "Run a Spell agent with the public API. :dogfood true enables feedback and
+   automatic exact module-edit journals at the feedback destination for this run.
 
    Required:
      :model-profile — model profile path, inline profile map, or provider instance

@@ -36,8 +36,9 @@
   (plain-text-provider [this]
     "Return the provider instance that should back leaf-llm.
      Must be a genuine plain-text/no-tools transport.")
-  (supports-prefill [this]
-    "Returns true if this provider supports assistant prefill."))
+  (supports-prefill [this opts]
+    "Returns whether assistant prefill is supported for these request options.
+     :model overrides the provider's default model when supplied."))
 
 ;; ---------------------------------------------------------------------------
 ;; Token usage tracking
@@ -646,10 +647,11 @@
         (throw (ex-info "Anthropic API request failed"
                         {:status status :body (:body response)})))))
   (plain-text-provider [this] this)
-  (supports-prefill [_]
-    ;; Current Opus and Claude 5 models do not support assistant prefill.
-    (not (or (str/includes? (str model) "opus-4-6")
-             (anthropic-adaptive-thinking-model? model)))))
+  (supports-prefill [_ opts]
+    ;; Capability and call-llm must select the same effective model.
+    (let [effective-model (or (:model opts) model)]
+      (not (or (str/includes? (str effective-model) "opus-4-6")
+               (anthropic-adaptive-thinking-model? effective-model))))))
 
 (defn anthropic-pf-provider
   "Create an Anthropic provider.
@@ -865,7 +867,7 @@
   (plain-text-provider [_]
     (->AnthropicPfProvider api-key model max-tokens http-client request-timeout-sec
                            sse-idle-timeout-sec sse-completion-timeout-sec costs))
-  (supports-prefill [_] false))
+  (supports-prefill [_ _] false))
 
 (defn anthropic-tc-provider
   "Create an Anthropic provider with mandatory spell_suffix tool output.
@@ -939,7 +941,7 @@
         (throw (ex-info "Ollama API request failed"
                         {:status status :body (.body response)})))))
   (plain-text-provider [this] this)
-  (supports-prefill [_] true))
+  (supports-prefill [_ _] true))
 
 (defn ollama-provider
   "Create an Ollama provider for local models.
@@ -1144,7 +1146,7 @@
       (->OpenAIProvider api-key base-url model max-tokens http-client use-responses-api false
                         prompt-cache-key request-timeout-sec costs)
       this))
-  (supports-prefill [_] false))
+  (supports-prefill [_ _] false))
 
 (defn openai-provider
   "Create an OpenAI provider.
@@ -1382,7 +1384,14 @@
   [response-body]
   (parse-codex-tc-response (parse-codex-completed-stream response-body)))
 
-(defrecord CodexMsgProvider [api-key account-id base-url model max-tokens http-client costs]
+(def default-codex-request-timeout-sec 300)
+
+(defn- validate-codex-request-timeout! [seconds]
+  (when-not (and (integer? seconds) (<= 1 seconds Long/MAX_VALUE))
+    (throw (ex-info "Codex :request-timeout-sec must be a positive integer"
+                    {:type :invalid-request-timeout :request-timeout-sec seconds}))))
+
+(defrecord CodexMsgProvider [api-key account-id base-url model max-tokens http-client costs request-timeout-sec]
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt opts]
@@ -1392,7 +1401,8 @@
           verbosity (:verbosity opts)
           request (codex-msg-request api-key account-id base-url effective-model prompt
                                     (:system opts) max-tokens reasoning-effort verbosity grammar-format)
-          response (.send http-client request (HttpResponse$BodyHandlers/ofString))
+          response (send-http-request http-client request (HttpResponse$BodyHandlers/ofString)
+                                      request-timeout-sec)
           status (.statusCode response)]
       (if (<= 200 status 299)
         (let [{:keys [text usage]} (parse-codex-msg-stream (.body response))]
@@ -1401,9 +1411,9 @@
         (throw (ex-info "ChatGPT Codex Responses request failed"
                         {:status status :body (.body response)})))))
   (plain-text-provider [this] this)
-  (supports-prefill [_] false))
+  (supports-prefill [_ _] false))
 
-(defrecord CodexTcProvider [api-key account-id base-url model max-tokens prompt-cache-key http-client costs]
+(defrecord CodexTcProvider [api-key account-id base-url model max-tokens prompt-cache-key http-client costs request-timeout-sec]
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (call-llm [_ prompt opts]
@@ -1416,7 +1426,8 @@
                                     (:system opts)
                                     (when cache-prefix prompt-cache-key)
                                     max-tokens reasoning-effort verbosity grammar-format)
-          response (.send http-client request (HttpResponse$BodyHandlers/ofString))
+          response (send-http-request http-client request (HttpResponse$BodyHandlers/ofString)
+                                      request-timeout-sec)
           status (.statusCode response)]
       (if (<= 200 status 299)
         (let [{:keys [text usage]} (parse-codex-tc-stream (.body response))]
@@ -1425,8 +1436,8 @@
         (throw (ex-info "ChatGPT Codex mandatory tool-call request failed"
                         {:status status :body (.body response)})))))
   (plain-text-provider [_]
-    (->CodexMsgProvider api-key account-id base-url model max-tokens http-client costs))
-  (supports-prefill [_] false))
+    (->CodexMsgProvider api-key account-id base-url model max-tokens http-client costs request-timeout-sec))
+  (supports-prefill [_ _] false))
 
 (defn codex-msg-provider
   "Create a ChatGPT subscription-backed Codex provider (message transport).
@@ -1438,12 +1449,15 @@
    - :base-url    - API base URL (default: https://chatgpt.com/backend-api/codex)
    - :model       - Model name (default: gpt-6-astra)
    - :max-tokens  - Max output tokens
+   - :request-timeout-sec - Complete HTTP exchange deadline in seconds (default: 300)
    - :costs       - Cost table {model-prefix [input-per-M output-per-M]}"
   ([] (codex-msg-provider {}))
-  ([{:keys [api-key account-id auth-file base-url model max-tokens costs]
+  ([{:keys [api-key account-id auth-file base-url model max-tokens costs request-timeout-sec]
      :or {auth-file "~/.codex/auth.json"
           base-url "https://chatgpt.com/backend-api/codex"
-          model "gpt-6-astra"}}]
+          model "gpt-6-astra"
+          request-timeout-sec default-codex-request-timeout-sec}}]
+   (validate-codex-request-timeout! request-timeout-sec)
    (let [{file-token :token file-account-id :account-id}
          (when (str/blank? api-key)
            (load-chatgpt-auth auth-file))
@@ -1453,7 +1467,7 @@
      (when (str/blank? token)
        (throw (ex-info "No ChatGPT token available. Log in with codex or pass :api-key"
                        {:auth-file (expand-home auth-file)})))
-     (->CodexMsgProvider token effective-account-id url model max-tokens (make-http-client) costs))))
+     (->CodexMsgProvider token effective-account-id url model max-tokens (make-http-client) costs request-timeout-sec))))
 
 (defn codex-tc-provider
   "Create a ChatGPT subscription-backed Codex provider with mandatory custom tool output.
@@ -1465,12 +1479,15 @@
    - :base-url    - API base URL (default: https://chatgpt.com/backend-api/codex)
    - :model       - Model name (default: gpt-6-astra)
    - :max-tokens  - Max output tokens
+   - :request-timeout-sec - Complete HTTP exchange deadline in seconds (default: 300)
    - :costs       - Cost table {model-prefix [input-per-M output-per-M]}"
   ([] (codex-tc-provider {}))
-  ([{:keys [api-key account-id auth-file base-url model max-tokens costs]
+  ([{:keys [api-key account-id auth-file base-url model max-tokens costs request-timeout-sec]
      :or {auth-file "~/.codex/auth.json"
           base-url "https://chatgpt.com/backend-api/codex"
-          model "gpt-6-astra"}}]
+          model "gpt-6-astra"
+          request-timeout-sec default-codex-request-timeout-sec}}]
+   (validate-codex-request-timeout! request-timeout-sec)
    (let [{file-token :token file-account-id :account-id}
          (when (str/blank? api-key)
            (load-chatgpt-auth auth-file))
@@ -1482,7 +1499,7 @@
                        {:auth-file (expand-home auth-file)})))
      (->CodexTcProvider token effective-account-id url model max-tokens
                         (str (java.util.UUID/randomUUID))
-                        (make-http-client) costs))))
+                        (make-http-client) costs request-timeout-sec))))
 
 ;; ---------------------------------------------------------------------------
 ;; Fireworks Provider (Completions API with true prefill)
@@ -1655,7 +1672,7 @@
         (throw (ex-info "Fireworks completions request failed"
                         {:status status :body (:body response)})))))
   (plain-text-provider [this] this)
-  (supports-prefill [_] true))
+  (supports-prefill [_ _] true))
 
 (defn fireworks-provider
   "Create a Fireworks provider using the completions API for true prefill.
@@ -2025,7 +2042,7 @@
   (plain-text-provider [_]
     (->FireworksProvider api-key base-url model max-tokens http-client request-timeout-sec
                          sse-idle-timeout-sec sse-completion-timeout-sec costs nil false))
-  (supports-prefill [_] false))
+  (supports-prefill [_ _] false))
 
 (defn fireworks-tc-provider
   "Create a Fireworks provider using the Anthropic-compatible Messages API
@@ -2097,7 +2114,7 @@
           (Thread/sleep (long latency)))
         response)))
   (plain-text-provider [this] this)
-  (supports-prefill [_] (if (some? prefill?) prefill? true)))
+  (supports-prefill [_ _] (if (some? prefill?) prefill? true)))
 
 (defn test-provider
   "Create a declarative test provider.
@@ -2146,7 +2163,7 @@
   LLMProvider
   (call-llm [this prompt] (call-llm this prompt {}))
   (plain-text-provider [this] this)
-  (supports-prefill [_] true)
+  (supports-prefill [_ _] true)
   (call-llm [_ prompt opts]
     (let [system (:system opts)
           prefix (:prefix opts)]

@@ -1956,43 +1956,34 @@
 ;; Value store tests
 ;; =============================================================================
 
-(deftest value-store-test
-  (testing "store and retrieve round-trips"
-    (let [id (eval/store-value! "hello world")]
-      (is (= "hello world" (eval/stored id)))))
-
-  (testing "stored builtin works in spell-eval"
-    (let [id (eval/store-value! {:key "value"})]
-      (is (= {:key "value"} (run-spell (list 'stored id))))))
-
-  (testing "missing id throws"
-    (is (thrown-with-msg? Exception #"No stored value"
-          (eval/stored "nonexistent-id"))))
-
-  (testing "serialize-for-continuation inlines small values"
+(deftest snapshot-value-test
+  (testing "removed hidden storage has no evaluator builtin"
+    (is (not (contains? eval/core-builtins 'stored))))
+  (testing "small values remain whole"
     (is (= "42" (eval/serialize-for-continuation 42)))
     (is (= "\"short\"" (eval/serialize-for-continuation "short"))))
+  (testing "large strings bind ordinary partial strings, not hidden references"
+    (let [raw (str "HEAD" (apply str (repeat 15000 "x")) "TAIL")
+          text (eval/serialize-for-continuation raw)
+          forms (spell.parse/read-all text)
+          r (spell-eval (first forms) {})]
+      (is (= 1 (count forms)))
+      (is (string? (first forms)))
+      (is (eval/ok? r))
+      (is (str/includes? (:ok r) "omitted"))
+      (is (str/starts-with? (:ok r) "HEAD"))
+      (is (str/ends-with? (:ok r) "TAIL"))
+      (is (< (count (:ok r)) (count raw)))
+      (is (<= (count text) (* 1.2 context/default-max-chars)))))
+  (testing "large vectors remain ordinary partial vectors"
+    (let [raw (vec (range 5000))
+          text (eval/serialize-for-continuation raw)
+          r (spell-eval (first (spell.parse/read-all text)) {})]
+      (is (eval/ok? r))
+      (is (vector? (:ok r)))
+      (is (< (count (:ok r)) (count raw)))
+      (is (some map? (:ok r)))))
 
-  (testing "serialize-for-continuation inlines medium strings"
-    (let [medium-string (apply str (repeat 5000 "x"))
-          result (eval/serialize-for-continuation medium-string)]
-      (is (.startsWith ^String result "\""))
-      (is (not (.contains ^String result "truncated")))))
-
-  (testing "serialize-for-continuation preserves large strings"
-    (let [big-string (apply str (repeat 15000 "x"))
-          result (eval/serialize-for-continuation big-string)]
-      (is (.startsWith ^String result "(stored "))
-      (is (= big-string (run-spell (first (spell.parse/read-all result)))))
-      (is (<= (count result) 10000)))) ;; roughly at the limit
-
-  (testing "serialize-for-continuation stores large non-strings"
-    (let [big-vec (vec (range 5000))
-          result (eval/serialize-for-continuation big-vec)]
-      (is (.startsWith ^String result "(stored "))
-      (let [forms (spell.parse/read-all result)
-            id (second (first forms))]
-        (is (= big-vec (eval/stored id))))))
 
   (testing "serialize-for-continuation with first-line vector produces a first-line wrapper"
     (let [lines (with-meta ["line one" "line two" "line three"] {:spell/first-line 10})
@@ -2876,35 +2867,8 @@
 ;; deep-truncate builtin tests
 ;; =============================================================================
 
-(deftest deep-truncate-builtin-test
-  (testing "short strings unchanged"
-    (is (= "hello" (run-spell '(deep-truncate "hello" 100)))))
-
-  (testing "long strings are truncated"
-    (let [long-str (apply str (repeat 200 "x"))
-          result (run-spell (list 'deep-truncate long-str 50))]
-      (is (string? result))
-      (is (< (count result) (count long-str)))
-      (is (clojure.string/includes? result "truncated"))))
-
-  (testing "maps with long string values are deep-truncated"
-    (let [long-str (apply str (repeat 200 "x"))
-          input {:a long-str :b "short"}
-          result (run-spell (list 'deep-truncate input 50))]
-      (is (map? result))
-      (is (= "short" (:b result)))
-      (is (clojure.string/includes? (:a result) "truncated"))))
-
-  (testing "nested structures are recursively truncated"
-    (let [long-str (apply str (repeat 200 "x"))
-          input [{:a long-str}]
-          result (run-spell (list 'deep-truncate input 50))]
-      (is (vector? result))
-      (is (clojure.string/includes? (:a (first result)) "truncated"))))
-
-  (testing "non-string values unchanged"
-    (is (= 42 (run-spell '(deep-truncate 42 10))))
-    (is (= {:a 1 :b 2} (run-spell '(deep-truncate {:a 1 :b 2} 10))))))
+(deftest obsolete-truncator-removed
+  (is (not (contains? eval/core-builtins 'deep-truncate))))
 
 ;; =============================================================================
 ;; compact macro expansion tests
@@ -2926,7 +2890,7 @@
       (is (clojure.string/includes? suffix-str "=compact="))
       (is (clojure.string/includes? suffix-str "fresh env"))
       (is (clojure.string/includes? suffix-str "Do not use '(persist name)"))
-      (is (= {:receive? true} (nth expanded 2)))
+      (is (= {:receive? false} (nth expanded 2)))
       (is (clojure.string/includes? suffix-str
             "'((fn [next-context] (!llm-self next-context {:receive? true})) (wrap-cat ")))))
 

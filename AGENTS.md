@@ -2,7 +2,7 @@
 
 This file is a public orientation guide for agents, readers, and contributors working through the Spell source tree. Start with `README.md` for the human-facing project overview, CLI usage, and core language ideas, then use this file for installation checks, source-map lookup, tests, and implementation orientation.
 
-Current release: `v0.4.0`. See `docs/CHANGELOG.md` for release notes and `docs/api.md` for the public Clojure API and configuration surface.
+Current release: `v0.5.0`. See `docs/CHANGELOG.md` for release notes and `docs/api.md` for the public Clojure API and configuration surface.
 
 Spell is a Lisp dialect for LLM self-orchestration. A Spell completion is itself a program: the evaluator runs the program, and the program can call back into an LLM, spawn sub-agents, manage context, and use configured namespaces such as `io`, `web`, `agents`, `globals`, and `patterns`.
 
@@ -21,12 +21,15 @@ This repo includes Spell-specific skills under `.agents/skills/`. Use them as th
 
 - Coordinator: per-run owner of agent identities, mailboxes, lifecycle results, and outstanding collections.
 - Edge: one result collection with a source and one slot per target; it completes when every slot is filled.
-- Context contribution: values and generated binding syntax inserted by one tool-result or communication operation, sharing one run-configured character budget.
+- Bounded snapshot: the ordinary value inserted at a tool-result or communication-body boundary. Each output has its own run-configured UTF-16 target; no hidden full original or automatic result store backs the next-turn binding. Raw effects remain full computations. See docs/bounded-results.md.
 
 - Edit marker: a source form, such as `prune`, `rethink`, or `persist`, that affects how `apply-edits` rewrites a completion for a later turn.
 - Edit time: the phase when `apply-edits` applies edit markers to a completion before it is used as a model prefix.
 - MCP server profile: a reusable `.mcp.edn` connection and environment-backed authentication definition.
 - Server alias: the agent-profile name that identifies an MCP server and becomes its generated Spell namespace.
+
+- Installable pattern module: opt-in editable Spell definitions under run-local globals `:modules`, accessed only through `patterns/install`, `catalog`, `source`, `update`, and `call`. See `docs/installable-modules.md`.
+- Mailing-list board: bounded per-run message state under `:mailing-list`, separate from module definitions. Install/reuse `:mailing-list` on each participant; exactly one administrator calls explicit `:init` (default `[:general]`, or an explicit named `:lists` vector). Initializer and list creators are subscribed atomically; consumers call direct module entries with explicit `:list`. Quiet posts are distinct from inbox notifications. See `docs/mailing-list.md` and the bundled `mailing-list` skill.
 
 ## Top-Level Layout
 
@@ -38,10 +41,11 @@ This repo includes Spell-specific skills under `.agents/skills/`. Use them as th
 | `config/` | Runtime agent, provider, prompt, web, and Spell library configuration. |
 | `examples/` | Runnable `.spl` examples plus short writeups for selected examples. |
 | `test/` | Unit and integration tests. |
+| `perf/` | Deterministic runtime and memory benchmarks, measured baselines, and optimization targets. See `perf/README.md`. |
 | `data/pricing.edn` | Model pricing table used for usage and cost reporting. |
 | `docs/` | Public documentation for the release. |
 | `docs/index.md` | Documentation home; preview the VitePress site with `npm ci` and `npm run docs:dev`. |
-| `docs/CHANGELOG.md` | Release notes through `v0.4.0`. |
+| `docs/CHANGELOG.md` | Release notes through `v0.5.0`. |
 | `LICENSE` | MIT license text. |
 
 ## Agent Quick Start
@@ -115,7 +119,7 @@ The public API/configuration reference is `docs/api.md`. `spell.api/run` require
 | `src/spell/io.clj` | Filesystem and shell helpers exposed as `io/*` when the selected agent enables I/O. |
 | `src/spell/web.clj` | Search and fetch helpers exposed as `web/*`. |
 | `src/spell/globals.clj` | Shared global store exposed as `globals/*`. |
-| `src/spell/patterns.clj` | Loader for reusable Spell patterns. |
+| `src/spell/patterns.clj` | Five-verb host API for installable modules: install, catalog, source, update, call. |
 | `src/spell/user.clj` | Manual user-provider implementation for `-m user`. |
 | `src/spell/inbox.clj` | Message inbox helpers. |
 
@@ -136,7 +140,7 @@ See `config/AGENTS.md` for a directory-specific guide.
 | `config/prompts/sysprompt-message.txt` | System prompt for message-style providers. |
 | `config/prompts/sysprompt-toolcall.txt` | System prompt for mandatory tool-call providers. |
 | `config/model-profiles/*.edn` | Declarative model provider defaults and routing metadata. |
-| `config/spl-lib/patterns.spl` | Reusable Spell pattern library. |
+| `config/spl-lib/modules/*.spl` | Two bundled editable Spell modules (relay and mailing-list), plus project/HOME .spell/modules discovery; install explicitly, separately from state initialization. |
 | `config/web.edn` | Web/search configuration. |
 
 First-class public provider paths are OpenAI, Anthropic, Fireworks, and Codex CLI. The Codex CLI path uses local Codex authentication and should be treated as experimental.
@@ -169,7 +173,9 @@ clojure -M:test-slow
 
 The fast suite covers parser, evaluator, provider, agent, web, API, trace, macro, and prompt-facing behavior. The slow suite covers concurrency, I/O, runtime, globals, and user-provider behavior. `deps.edn` is the authoritative list of test aliases and included namespaces.
 
-Use `-T` to record an execution trace under the temporary Spell trace directory, or `--trace-dir DIR` to write it to an explicit durable location. Use `--dogfood` to expose the feedback namespace to the main agent and its workers. Use `--agents-md` to prepend the current working directory's `AGENTS.md`, capped at 32 KiB, to a natural-language task. The trace tool can inspect a trace directory directly, for example:
+For performance work, read `perf/README.md` and `perf/findings-and-targets.md`. Use the optional `:perf` alias or `python3 perf/run.py`; give new measurements a distinct `--name` to preserve the checked-in baseline.
+
+Use `-T` to record an execution trace under the temporary Spell trace directory, or `--trace-dir DIR` to write it to an explicit durable location. Use `--dogfood` to expose the feedback namespace to the main agent and its workers and automatically journal exact successful PATTERNS API install baselines and changed definitions at the existing feedback destination. Public API equivalent: `:dogfood true`. See `docs/installable-modules.md` for immutable module ownership, deliberate-owner update acknowledgment and `EDIT COMMITTED / RECORDING FAILED` receipts; never replay an already committed edit to repair recording. Use `--agents-md` to prepend the current working directory's `AGENTS.md`, capped at 32 KiB, to a natural-language task. The trace tool can inspect a trace directory directly, for example:
 
 ```bash
 clojure -M -m spell.trace-tool --trace-dir DIR --summary

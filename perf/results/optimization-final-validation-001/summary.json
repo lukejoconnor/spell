@@ -1,0 +1,61 @@
+[
+  {
+    "name": "fast",
+    "command": [
+      "clojure",
+      "-J-Dclojure.main.report=stderr",
+      "-M:test-fast"
+    ],
+    "exit": 0,
+    "timed-out": false,
+    "child-reaped": true,
+    "wall-seconds": 21.90786537481472,
+    "counts": [
+      513,
+      4564,
+      0,
+      0
+    ],
+    "passed": true
+  },
+  {
+    "name": "slow",
+    "command": [
+      "clojure",
+      "-J-Dclojure.main.report=stderr",
+      "-M:test-slow"
+    ],
+    "exit": 0,
+    "timed-out": false,
+    "child-reaped": true,
+    "wall-seconds": 39.026878874748945,
+    "counts": [
+      246,
+      960,
+      0,
+      0
+    ],
+    "passed": true
+  },
+  {
+    "name": "trace-tool",
+    "command": [
+      "clojure",
+      "-J-Dclojure.main.report=stderr",
+      "-M:test",
+      "-n",
+      "spell.trace-tool-test"
+    ],
+    "exit": 0,
+    "timed-out": false,
+    "child-reaped": true,
+    "wall-seconds": 1.619914417155087,
+    "counts": [
+      23,
+      104,
+      0,
+      0
+    ],
+    "passed": true
+  }
+]

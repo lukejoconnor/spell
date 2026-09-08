@@ -3,7 +3,9 @@
             [clojure.test :refer [deftest is testing]]
             [spell.agent :as agent]
             [spell.mcp.client :as client]
+            [spell.mcp.http :as mcp-http]
             [spell.mcp.namespace :as mcp-ns]
+            [spell.mcp.protocol :as protocol]
             [spell.prompt :as prompt]))
 
 (def ^:private dummy-server
@@ -126,8 +128,8 @@
              {:name "unsafe/tool"
                :type :invalid-mcp-tool-alias
                :message "MCP tool needs an explicit Spell-safe alias: unsafe/tool"}]
-             (get info "excludedTools")))
-      (is (= (get info "excludedTools") (:excluded-tools refresh))))))
+             (get-in info [:out "excludedTools"])))
+      (is (= (get-in info [:out "excludedTools"]) (get-in refresh [:out :excluded-tools]))))))
 
 (deftest explicit-unsafe-tool-selection-remains-strict-test
   (let [tools [{"name" "safe_tool" "inputSchema" {"type" "object"}}
@@ -156,3 +158,127 @@
                  (mcp-ns/tool-namespace :demo ::client {"unsafe/alias" "safe_tool"}))
                nil
                (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))))))
+
+(deftest attributed-tool-envelopes-retain-complete-content
+  (let [text (str (apply str (repeat 60000 "x")) " tail")
+        content [{"type" "text" "text" text}
+                 {"type" "image" "mimeType" "image/png" "data" text}]
+        structured {"large" text "nested" {"values" (vec (range 1000))}}]
+    (doseq [semantic? [false true]]
+      (let [result (protocol/model-value :demo "tools/call"
+                                        {"content" content "structuredContent" structured "isError" semantic?})]
+        (is (= (not semantic?) (:ok result)))
+        (is (not (contains? result :truncated)))
+        (is (= content (get-in result [:out "content"])))
+        (is (= structured (get-in result [:out "structuredContent"])))
+        (is (= "demo" (get-in result [:out "mcp/server"])))
+        (is (= "tools/call" (get-in result [:out "mcp/operation"])))
+        (is (= (when semantic? text) (:err result)))))
+    (is (= "MCP tool call failed" (:err (protocol/model-value :demo "empty" {"isError" true}))))
+    (is (= [] (get-in (protocol/model-value :demo "empty" {"content" []}) [:out "content"])))))
+
+(deftest generated-tools-retain-adversarial-results-through-real-client
+  ;; Only the HTTP transport is mocked: catalog discovery, schema validation,
+  ;; client/call-tool!, protocol projection, and generated functions stay real.
+  (let [text (str " \n" (apply str (repeat 60000 "x")) " 😀 tail\t\n")
+        content [{"type" "text" "text" text}
+                 {"type" "image" "mimeType" "image/png" "data" text}]
+        structured {"large" text "nested" {"values" (vec (range 1000))}}
+        tool {"name" "large_tool"
+              "inputSchema" {"type" "object"
+                             "properties" {"semantic" {"type" "boolean"}}
+                             "additionalProperties" false}
+              "outputSchema" {"type" "object"
+                              "properties" {"large" {"type" "string"}
+                                             "nested" {"type" "object"}}
+                              "required" ["large" "nested"]}}
+        calls (atom [])
+        complete (fn [fields]
+                   (merge {"resultType" "complete" "ttlMs" 60000
+                           "cacheScope" "private"} fields))]
+    (with-redefs [mcp-http/send-request!
+                  (fn [_ request active-tool]
+                    (swap! calls conj (get request "method"))
+                    (case (get request "method")
+                      "server/discover"
+                      (complete {"supportedVersions" [protocol/protocol-version]
+                                 "capabilities" {"tools" {}}})
+                      "tools/list" (complete {"tools" [tool]})
+                      "tools/call"
+                      (do
+                        (is (= tool active-tool))
+                        (is (= "large_tool" (get-in request ["params" "name"])))
+                        (complete {"content" content "structuredContent" structured
+                                   "isError" (true? (get-in request ["params" "arguments" "semantic"]))}))
+                      (throw (AssertionError. (str "Unexpected transport method: " request)))))]
+      (with-open [c (client/open-client
+                     :adversarial-generated
+                     {:transport {:http {:url (str "http://127.0.0.1:1/mock/" (random-uuid))}}})]
+        (let [generated (mcp-ns/tool-namespace :adversarial-generated c {'large_alias "large_tool"})]
+          (doseq [[arguments semantic?] [[[] false]
+                                        [[{"semantic" false}] false]
+                                        [[{"semantic" true}] true]]]
+            (let [result (apply (:large_alias generated) arguments)
+                  expected-out (cond-> {"mcp/server" "adversarial-generated"
+                                        "mcp/operation" "large_tool"
+                                        "content" content
+                                        "structuredContent" structured}
+                                 semantic? (assoc "isError" true "error" text))]
+              (is (= {:ok (not semantic?) :out expected-out
+                      :err (when semantic? text)}
+                     result))
+              (is (= content (get-in result [:out "content"])))
+              (is (= structured (get-in result [:out "structuredContent"])))
+              (is (not (contains? (:out result) :out)))
+              (is (not (contains? (:out result) :ok))))))
+        (is (= ["server/discover" "tools/list"
+                "tools/call" "tools/call" "tools/call"] @calls))))))
+
+(deftest namespace-boundaries-envelope-only-operational-failures
+  (let [tool {"name" "echo" "inputSchema" {"type" "object"}}
+        generated (with-redefs [client/tools (constantly [tool])]
+                    (mcp-ns/tool-namespace :demo ::client :all))
+        mcp (mcp-ns/mcp-namespace {:demo ::client}
+                                {:demo {:resources :all :prompts :all :completion true :tools :all}})]
+    (doseq [data [{:type :mcp-http-error :status 503 :result {"body" "full failure"}}
+                 {:type :mcp-timeout}
+                 {:type :mcp-stdio-error}]]
+      (let [fail (fn [& _] (throw (ex-info "transport failed" data)))]
+        (with-redefs [client/call-tool! fail client/read-resource! fail
+                      client/get-prompt! fail client/complete! fail client/info fail client/refresh! fail]
+          (doseq [result [((:echo generated) {})
+                          ((:read-resource mcp) :demo "memory://readme")
+                          ((:get-prompt mcp) :demo "review")
+                          ((:complete mcp) :demo {} {})
+                          ((:info mcp) :demo)
+                          ((:refresh mcp) :demo)]]
+            (is (false? (:ok result)))
+            (is (= "transport failed" (:err result)))
+            (is (not (contains? result :truncated)))
+            (is (= (:result data) (:out result)))
+            (is (= (contains? data :status) (contains? result :status)))
+            (is (= (:status data) (:status result)))))))
+    (doseq [data [{:type :schema-validation} {:type :invalid-mcp-arguments}
+                 {:type :mcp-permission-denied} {:type :programming-bug}]]
+      (with-redefs [client/call-tool! (fn [& _] (throw (ex-info "must throw" data)))]
+        (is (= data (try ((:echo generated) {}) nil
+                        (catch clojure.lang.ExceptionInfo e (ex-data e)))))))
+    (is (thrown? clojure.lang.ExceptionInfo ((:echo generated) "not-a-map")))
+    (with-redefs [client/call-tool! (fn [& _] (throw (IllegalArgumentException. "bad argument")))]
+      (is (thrown? IllegalArgumentException ((:echo generated) {}))))))
+
+(deftest operational-error-envelope-preserves-captured-stdio-diagnostics
+  (let [tool {"name" "echo" "inputSchema" {"type" "object"}}
+        generated (with-redefs [client/tools (constantly [tool])]
+                    (mcp-ns/tool-namespace :demo ::client :all))]
+    (doseq [stderr [["Fatal: unable to open database" "  detail with whitespace  "]
+                   [] nil]]
+      (with-redefs [client/call-tool!
+                    (fn [& _]
+                      (throw (ex-info "MCP stdio server closed stdout"
+                                      {:type :mcp-stdio-error :stderr stderr})))]
+        (is (= {:ok false :out nil
+                :err (if (seq stderr)
+                       "MCP stdio server closed stdout\nMCP stderr:\nFatal: unable to open database\n  detail with whitespace  "
+                       "MCP stdio server closed stdout")}
+               ((:echo generated) {})))))))

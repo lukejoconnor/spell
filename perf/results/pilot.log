@@ -1,0 +1,19 @@
+WARNING: An illegal reflective access operation has occurred
+WARNING: Illegal reflective access by clojure.lang.InjectedInvoker/0x00000008000ab840 (file:/Users/loconnor/.m2/repository/org/clojure/clojure/1.12.4/clojure-1.12.4.jar) to method sun.management.GarbageCollectorImpl.getCollectionCount()
+WARNING: Please consider reporting this to the maintainers of clojure.lang.InjectedInvoker/0x00000008000ab840
+WARNING: Use --illegal-access=warn to enable warnings of further illegal reflective access operations
+WARNING: All illegal access operations will be denied in a future release
+{:id :core-evaluator, :params {:iterations 100, :evals 4}, :status :ok, :wall-ms {:n 2, :mean 9.783395500000001, :median 9.783395500000001, :min 9.168333, :max 10.398458, :sd 0.8698297292071012, :cv 0.08890877704035384}}
+{:id :core-parse-expand, :params {:forms 4}, :status :ok, :wall-ms {:n 2, :mean 0.471375, :median 0.471375, :min 0.304167, :max 0.638583, :sd 0.23646782133728048, :cv 0.5016554151944428}}
+{:id :core-serial-self-calls, :params {:padding 0, :calls 4}, :status :ok, :wall-ms {:n 2, :mean 8.524291999999999, :median 8.524291999999999, :min 7.236625, :max 9.811959, :sd 1.821036135220276, :cv 0.213629018717364}}
+{:id :core-trace-log, :params {:mode :off, :calls 4, :padding 0}, :status :ok, :wall-ms {:n 2, :mean 11.2232495, :median 11.2232495, :min 10.323208, :max 12.123291, :sd 1.2728508959986247, :cv 0.11341197538187356}}
+{:id :core-provider-local-boundaries, :params {:mode :json, :chars 10000}, :status :ok, :wall-ms {:n 2, :mean 6.7937705, :median 6.7937705, :min 5.2745, :max 8.313041, :sd 2.1485729460133536, :cv 0.3162563330647324}}
+{:id :lifecycle-coordinator, :params {:agents 4, :cycles 1, :mailbox-batch 16}, :status :ok, :wall-ms {:n 2, :mean 1.8300830000000001, :median 1.8300830000000001, :min 1.708541, :max 1.951625, :sd 0.17188634479795062, :cv 0.09392270448823939}}
+{:id :lifecycle-spawn-return, :params {:agents 4, :cycles 1}, :status :ok, :wall-ms {:n 2, :mean 0.6791665, :median 0.6791665, :min 0.464958, :max 0.893375, :sd 0.30293656587559714, :cv 0.446041678845463}}
+{:id :lifecycle-dormant-wake, :params {:agents 4, :cycles 1}, :status :ok, :wall-ms {:n 2, :mean 2.522625, :median 2.522625, :min 2.381542, :max 2.663708, :sd 0.19952149202028346, :cv 0.07909280690561754}}
+{:id :lifecycle-api-cleanup, :params {:cycles 1}, :status :ok, :wall-ms {:n 2, :mean 5.1827495, :median 5.1827495, :min 4.903416, :max 5.462083, :sd 0.3950372241251448, :cv 0.07622155462561808}}
+{:id :context-render-edit, :params {:operations 20, :payload-chars 64}, :status :ok, :wall-ms {:n 2, :mean 5.247604, :median 5.247604, :min 4.765083, :max 5.730125, :sd 0.6823877423298285, :cv 0.1300379644366893}}
+{:id :context-pruned-storage, :params {:cycles 20, :payload-chars 8192}, :status :ok, :wall-ms {:n 2, :mean 8.7097295, :median 8.7097295, :min 8.290417, :max 9.129042, :sd 0.5929974243725686, :cv 0.06808448234501067}}
+{:id :globals-contention, :params {:workers 4, :total-updates 2000}, :status :ok, :wall-ms {:n 2, :mean 2.781833, :median 2.781833, :min 1.740791, :max 3.822875, :sd 1.4722557154000115, :cv 0.5292394314827711}}
+{:id :board-post-digest, :params {:posts 20, :retention 8, :page-size 3, :body-chars 1024}, :status :ok, :wall-ms {:n 2, :mean 20.404833, :median 20.404833, :min 18.605958, :max 22.203708, :sd 2.5439934220138998, :cv 0.12467602268609107}}
+{:id :board-captured-snapshot, :params {:capture :board, :posts 20, :retention 8, :page-size 3, :body-chars 8000}, :status :ok, :wall-ms {:n 2, :mean 33.518125, :median 33.518125, :min 29.181125, :max 37.855125, :sd 6.133444220012112, :cv 0.1829888819858543}}

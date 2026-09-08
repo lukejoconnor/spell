@@ -215,6 +215,252 @@
 ;; non-Spell comment token normalization tests
 ;; =============================================================================
 
+;; Eager-output references retain the allocation strategy from 0405fb6, with
+;; only the intended string/comment/character/regex state corrections applied.
+;; The original behavior-preserving oracle and measured probe remain immutable
+;; in commit 89a6347 and perf/results/optimization-parse-sanitizer-matched-vyqze266/.
+(def ^:private reference-valid-escape?
+  #{\t \b \n \r \f \\ \" \u \0 \1 \2 \3 \4 \5 \6 \7})
+
+(defn- reference-reader-token-state
+  "Track token boundaries outside strings/comments so #! is a reader dispatch
+   only at a form boundary. Clojure keeps #, ' and % inside existing tokens."
+  [state c]
+  (cond
+    (= state :dispatch)
+    (when-not (#{\_ \' \( \{ \" \= \^ \? \:} c) :token)
+
+    (or (Character/isWhitespace (char c)) (= c \,)
+        (#{\( \) \[ \] \{ \} \" \; \\ \@ \^ \` \~} c))
+    nil
+
+    (= state :token) :token
+    (= c \#) :dispatch
+    (= c \') nil
+    :else :token))
+
+(defn- reference-sanitize-comments
+  "Normalize common non-Spell comment tokens at line start when outside strings.
+   Rewrites line-start //, /*, and */ to ';' comments so reader recovery can
+   continue when models emit C/C++-style comment syntax."
+  [s]
+  (let [len (count s)
+        sb (StringBuilder. len)]
+    (loop [i 0, in-string false, escape false, line-start true, in-comment false, token-state nil]
+      (if (>= i len)
+        (.toString sb)
+        (let [c  (.charAt ^String s i)
+              c2 (when (< (inc i) len) (.charAt ^String s (inc i)))]
+          (cond
+            in-comment
+            (let [end? (or (= c \newline) (= c \return))]
+              (.append sb c)
+              (recur (inc i) false false end? (not end?) nil))
+
+            escape
+            (do (.append sb c)
+                (recur (inc i) in-string false (= c \newline) false
+                       (when-not in-string :token)))
+
+            in-string
+            (cond
+              (= c \\) (do (.append sb c) (recur (inc i) true true false false nil))
+              (= c \") (do (.append sb c) (recur (inc i) false false false false nil))
+              :else    (do (.append sb c) (recur (inc i) true false (= c \newline) false nil)))
+
+            (= c \\)
+            ;; A character literal consumes its first character, even \" or ;.
+            (do (.append sb c)
+                (recur (inc i) false true false false nil))
+
+            (or (= c \;) (and (= token-state :dispatch) (= c \!)))
+            (do (.append sb c)
+                (recur (inc i) false false false true nil))
+
+            (= c \newline)
+            (do (.append sb c) (recur (inc i) false false true false nil))
+
+            (and line-start (or (= c \space) (= c \tab) (= c \return)))
+            (do (.append sb c) (recur (inc i) false false true false nil))
+
+            (and line-start (= c \/) (or (= c2 \/) (= c2 \*)))
+            (do
+              (.append sb \;)
+              (recur (inc i) false false false true nil))
+
+            (and line-start (= c \*) (= c2 \/))
+            (do
+              (.append sb \;)
+              (recur (inc i) false false false true nil))
+
+            :else
+            (do (.append sb c)
+                (recur (inc i) (= c \") false false false
+                       (reference-reader-token-state token-state c)))))))))
+
+(defn- reference-sanitize-escapes
+  "Fix invalid escape sequences inside string literals.
+   LLMs often write LaTeX-like \\equiv, \\frac etc. in strings.
+   Clojure's reader rejects \\e, \\f is formfeed, etc.
+   This doubles the backslash for unknown escapes so they read as literal text."
+  [s]
+  (let [len (count s)
+        sb (StringBuilder. len)]
+    (loop [i 0, in-string false, escape false, in-comment false, token-state nil]
+      (if (>= i len)
+        (.toString sb)
+        (let [c (.charAt ^String s i)]
+          (cond
+            in-comment
+            (do (.append sb c)
+                (recur (inc i) false false
+                       (not (or (= c \newline) (= c \return))) nil))
+
+            escape
+            (if (or (not in-string) (= in-string :regex) (reference-valid-escape? c))
+              (do (.append sb c) (recur (inc i) in-string false false (when-not in-string :token)))
+              ;; Eager output already contains the original backslash.
+              (do
+                (.append sb \\)
+                (.append sb c)
+                (recur (inc i) in-string false false nil)))
+
+            in-string
+            (cond
+              (= c \\) (do (.append sb c) (recur (inc i) in-string true false nil))
+              (= c \") (do (.append sb c) (recur (inc i) false false false nil))
+              :else    (do (.append sb c) (recur (inc i) in-string false false nil)))
+
+            (= c \\)
+            ;; Outside a string, this introduces a character, not an escape.
+            (do (.append sb c)
+                (recur (inc i) false true false nil))
+
+            (or (= c \;) (and (= token-state :dispatch) (= c \!)))
+            (do (.append sb c)
+                (recur (inc i) false false true nil))
+
+            :else
+            (do (.append sb c)
+                (recur (inc i) (when (= c \")
+                                 (if (= token-state :dispatch) :regex true)) false false
+                       (reference-reader-token-state token-state c)))))))))
+
+(defn- reader-outcome [reader input]
+  (try {:ok (reader input)}
+       (catch RuntimeException e
+         {:error [(class e) (.getMessage e)]})))
+
+(deftest sanitizers-match-eager-reference-output
+  (let [targeted [nil "" "x" "λ" "\n" "\r\n" "//" "/*" "*/" "/" "*"
+                  "  // comment\r\n42" "\t/* comment\n*/\n42"
+                  "(str \"line\n// inside string\")"
+                  "(str \"line\n/* inside string\n*/\")"
+                  "\"x\\equiv y\"" "\"\\q\\e\"" "\"trailing\\"
+                  "\"valid\\n\\t\\\\\\\"\"" "outside\\equiv"
+                  "42\n(" "42 ] not-tail" "42 ] " "] not-tail"
+                  "// comment\n(think \"x\\equiv y\")"
+                  (str (apply str (repeat 4096 \x)) "\n// late rewrite")
+                  (str "\"" (apply str (repeat 4096 \x)) "\\e\"")]
+        rng (java.util.Random. 73491)
+        tokens ["x" "λ" "\n" "\r" "\t" " " "\"" "\\" "\\e" "\\n"
+                "//" "/*" "*/" "(" ")" "[" "]" ";" "42" "#!" "#_" "#" "foo#!" "foo'#!"]
+        generated (repeatedly 256
+                    #(apply str (repeatedly 32
+                                  (fn [] (nth tokens (.nextInt rng (count tokens)))))))
+        inputs (vec (concat targeted generated))]
+    (doseq [input inputs]
+      (testing (pr-str input)
+        (is (= (reference-sanitize-comments input)
+               (sanitize-nonspell-comment-markers input)))
+        (is (= (reference-sanitize-escapes input)
+               (sanitize-string-escapes input)))
+        (is (= (reference-sanitize-escapes (reference-sanitize-comments input))
+               (sanitize-string-escapes (sanitize-nonspell-comment-markers input))))
+        (doseq [reader [read-first read-all]]
+          (let [expected (with-redefs [spell.parse/sanitize-nonspell-comment-markers reference-sanitize-comments
+                                      spell.parse/sanitize-string-escapes reference-sanitize-escapes]
+                           (reader-outcome reader input))]
+            (is (= expected (reader-outcome reader input)))))))))
+
+(deftest unchanged-sanitizers-reuse-input
+  (doseq [input ["" "42" "(think \"valid\\ntext and unicode λ\")"
+                "  ; ordinary comment\n42" "(str \"https://example.invalid\")"]]
+    (is (identical? input (sanitize-nonspell-comment-markers input)))
+    (is (identical? input (sanitize-string-escapes input))))
+  (testing "nil input keeps the original empty-string result"
+    (is (= "" (sanitize-nonspell-comment-markers nil)))
+    (is (= "" (sanitize-string-escapes nil)))))
+
+(deftest sanitizer-reader-boundaries-unchanged
+  (is (= 42 (read-first "// comment\n42\n(")))
+  (is (= 42 (read-first "42 ] not-tail")))
+  (is (= [42] (read-all "42 ]  "))))
+
+(deftest multiline-string-comment-markers-are-literal
+  (doseq [marker ["//" "/*" "*/"]
+          newline ["\n" "\r\n"]
+          indent ["" "  \t"]]
+    (let [text (str "quoted \" text and slash \\" newline
+                    indent marker " literal" newline "end\\")
+          source (str "\"quoted \\\" text and slash \\\\" newline
+                      indent marker " literal" newline "end\\\\\"")
+          tail (str newline marker " actual comment with \" and \\q" newline "42")]
+      (testing (pr-str [marker newline indent])
+        (is (identical? source (sanitize-nonspell-comment-markers source)))
+        (is (= source (sanitize-string-escapes source)))
+        (is (= text (clojure.core/read-string source)))
+        (is (= text (read-first (str source tail))))
+        (is (= [text 42] (read-all (str source tail))))))))
+
+(deftest quotes-in-comments-do-not-change-string-state
+  (doseq [marker [";" "#!" "//" "/*" "*/"]
+          newline ["\n" "\r\n" "\r"]]
+    (let [body " comment with unmatched \" and \\q"
+          source (str marker body newline "\"x\\q\"\n// next comment\n42")
+          normalized (str (case marker ";" ";" "#!" "#!" (str ";" (subs marker 1)))
+                          body newline "\"x\\q\"\n;/ next comment\n42")
+          escaped (str (case marker ";" ";" "#!" "#!" (str ";" (subs marker 1)))
+                       body newline "\"x\\\\q\"\n;/ next comment\n42")]
+      (testing (pr-str [marker newline])
+        (is (= normalized (sanitize-nonspell-comment-markers source)))
+        (is (= escaped (sanitize-string-escapes normalized)))
+        (is (= "x\\q" (read-first source)))
+        (is (= ["x\\q" 42] (read-all source))))))
+  (testing "an ordinary comment can start after code"
+    (is (= [1 "x\\q"] (read-all "1 ; unmatched \"\n\"x\\q\""))))
+  (testing "comment text is not escape-repaired"
+    (let [source "; \"\\q"]
+      (is (identical? source (sanitize-string-escapes source))))))
+
+(deftest character-literals-do-not-open-strings-or-comments
+  (doseq [[token value] [["\\\"" \"] ["\\\\" \\] ["\\;" \;]
+                         ["\\newline" \newline] ["\\u0022" \"]]]
+    (let [source (str "[" token "\n// unmatched \" and \\q\n\"x\\q\"]")
+          normalized (str "[" token "\n;/ unmatched \" and \\q\n\"x\\q\"]")
+          same-line (str "[" token " \"line\n// literal\"]")]
+      (testing token
+        (is (= normalized (sanitize-nonspell-comment-markers source)))
+        (is (= [value "x\\q"] (read-first source)))
+        (is (= [[value "x\\q"]] (read-all source)))
+        (is (identical? same-line (sanitize-nonspell-comment-markers same-line)))
+        (is (= [value "line\n// literal"] (read-first same-line)))))))
+
+(deftest dispatch-comments-respect-token-boundaries
+  (doseq [prefix ["#!" "#!/usr/bin/env spell"]]
+    (is (= [42] (read-all (str prefix " \"\n// comment\n42")))))
+  (doseq [token ["foo#!" "foo'#!" "foo%#!" "%#!" ":foo#!"]]
+    (let [source (str "[" token " \"x\\q\"]")]
+      (is (= [(clojure.core/read-string token) "x\\q"] (read-first source)))))
+  (testing "reader prefixes return to form-start state"
+    (doseq [[prefix expected] [["#_" [42]] ["'" ['(quote 1) 42]]
+                               ["#_#_" []]]]
+      (is (= expected (read-all (str prefix "#! \"\n// comment\n1 42"))))))
+  (testing "a dispatch prefix after a completed form starts a comment"
+    (is (= [[1 2]] (read-all "[1,#! \"\n// comment\n2]"))))
+  (testing "dispatch comments preserve strings with literal markers"
+    (is (= ["line\n// literal"] (read-all "#! \"\n\"line\n// literal\"")))))
+
 (deftest sanitize-nonspell-comment-markers-test
   (testing "line-start // comments are normalized"
     (is (= ";/ C style comment\n(def x 1)"
@@ -239,3 +485,66 @@
   (testing "markers inside strings are unchanged"
     (is (= ['(def s "// keep me") '(def t "/* keep */")]
            (read-all "(def s \"// keep me\") (def t \"/* keep */\")")))))
+
+
+;; Independent reader-oracle regressions for deferred release parser failures.
+(deftest release-character-and-comment-balancing
+  (doseq [token ["\\(" "\\)" "\\\"" "\\;" "\\\\" "\\newline"
+                 "\\space" "\\return" "\\tab" "\\backspace" "\\formfeed"]]
+    (let [source (str "(list " token ")")
+          expected (clojure.core/read-string source)
+          partial (subs source 0 (dec (count source)))]
+      (testing token
+        (is (= 0 (paren-balance source)))
+        (is (identical? source (balance-parens source)))
+        (is (= [expected] (read-all source)))
+        (is (= expected (read-first source)))
+        (is (= 1 (paren-balance partial)))
+        (is (= [expected] (read-all (balance-parens partial))))))))
+
+(deftest release-comment-boundary-balancing
+  (doseq [eol ["\n" "\r" "\r\n"]
+          marker [";" "#!"]]
+    (let [source (str "(list 1 " marker " ignored )) \"" eol "2)")
+          expected (clojure.core/read-string source)]
+      (is (= 0 (paren-balance source)))
+      (is (= [expected] (read-all (balance-parens source))))
+      (is (= expected (read-first source)))))
+  (doseq [token ["foo#!" "foo'#!" "foo%#!" "%#!" ":foo#!"]]
+    (let [source (str "(" token " (x))")]
+      (is (= 0 (paren-balance source)))
+      (is (= [(clojure.core/read-string source)] (read-all source)))))
+  (doseq [prefix ["" "'" "#_" "#_#_"]]
+    (let [source (str "(" prefix "#! ignored ))) \"\n1 2)")]
+      (is (= 0 (paren-balance source)))
+      (is (= [(clojure.core/read-string source)] (read-all (balance-parens source)))))))
+
+(deftest release-regex-preservation-and-string-repair
+  (doseq [[pattern sample] [["\\d+" "123"] ["\\s+" " \t"] ["\\w+" "abc_9"]
+                            ["\\Q(a)\\E" "(a)"] ["a\\\"b" "a\"b"]
+                            ["\\\\" "\\"]]]
+    (let [source (str "#\"" pattern "\"")
+          oracle (clojure.core/read-string source)]
+      (testing source
+        (is (identical? source (sanitize-string-escapes source)))
+        (is (= 0 (paren-balance source)))
+        (doseq [actual [(read-first source) (first (read-all source))]]
+          (is (= (.pattern oracle) (.pattern actual)))
+          (is (= sample (re-matches actual sample)))
+          (is (nil? (re-matches actual "!no-match!")))))))
+  (let [source "[#\"\\d+\" \"x\\q\"]"
+        [pattern text] (read-first source)]
+    (is (= "123" (re-matches pattern "123")))
+    (is (= "x\\q" text))
+    (is (= text (second (first (read-all source)))))))
+
+
+(deftest release-whitespace-character-adjacent-dispatch-is-invalid
+  ;; The Clojure character reader consumes the adjacent # as token text;
+  ;; a literal whitespace character does not itself terminate that token.
+  (doseq [ch [\space \tab \newline \return]
+          suffix ["#\"\\d+\"" "#! ignored\n1"]]
+    (let [source (str "[" \\ ch suffix "]")]
+      (is (thrown? RuntimeException (clojure.core/read-string source)))
+      (is (thrown? RuntimeException (read-first source)))
+      (is (thrown? RuntimeException (read-all source))))))

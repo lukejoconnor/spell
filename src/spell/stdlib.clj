@@ -193,7 +193,7 @@ Bind the result, inspect it on the next turn, then decide what to do next."}
 ;; =============================================================================
 
 (def patterns
-  "Reusable orchestration patterns (Spell-specific)."
+  "Installable run-local modules: install, catalog, source, update, call."
   patterns-lib/patterns)
 
 ;; =============================================================================
@@ -219,7 +219,7 @@ Categories (use (!describe builtins :category) for full listing):
   sequences     — map, filter, reduce, sort, group-by, take, drop, partition, range, ...
   combinators   — comp, partial, juxt, complement, constantly, ...
   bitwise       — bit-and, bit-or, bit-xor, bit-shift-left, ...
-  spell         — spell-eval, reopen, wrap-cat, serialize-prefix, edit-reopen, serialize, stored
+  spell         — spell-eval, reopen, wrap-cat, serialize-prefix, edit-reopen, serialize
   concurrency   — future*
   error         — throw, ex-info, ex-data, ex-message, ex-cause, gensym
 
@@ -586,27 +586,13 @@ Used internally by !call-now, !print, !describe, and !extend."
 (serialize value)
 (serialize value limit)
 
-If the serialized form exceeds the run's character budget, the complete value
-is stored and represented by (stored \"id\"). Lists and symbols remain data.
-An explicit limit may lower the run budget; a negative limit uses the run budget.
-Display a slice or selected fields to inspect an oversized result."
-
-    :stored
-    "Retrieve a large value from the out-of-band store by its ID.
-
-(stored id)
-
-Values too large to inline during serialization are stored out-of-band
-and referenced as (stored \"id\"). This function retrieves the complete original
-value from the current run. References are shared by agents within that run."
-
-    :deep-truncate
-    "Recursively truncate string values within nested data structures to a character limit.
-
-(deep-truncate value limit)
-
-Walks maps, vectors, and lists. Strings exceeding the limit are truncated
-with a \"...\" suffix. Non-string leaves are unchanged."
+Produces a bounded ordinary snapshot as Spell-readable source. Lists and symbols
+remain data. The default is the run's per-output reader-rendered UTF-16 target
+(10000); an explicit integer >=128 may raise or lower it, and nil uses the default.
+Negative or invalid limits are rejected. Up to 20% grace stays whole; larger
+values shorten toward the target using ordinary omission data. There is no
+hidden full backing value or automatic retrieval store. Compute reductions before
+insertion; later retained rendering/persist does not silently re-cap a snapshot."
 
     :strip-parens
     "Strip n trailing closing parens from a string.
@@ -718,16 +704,20 @@ Example:
 and extend the completion so the child LLM continues with the binding in scope.
 
 '(!call-now name expr)
+'(!call-now {:max-chars 2000} name expr other-name other-expr)
 
 This is the primary tool-calling pattern. The expr is evaluated with effect
 functions available, the result is serialized as (def name result) in the
-continuation, and a child LLM turn begins. A multi-binding call shares one
-context character budget, including binding syntax. Oversized values are shown
-as (stored \"id\"); name still holds the full value. Inspect a slice next.
+continuation, and a child LLM turn begins. Each output has an independent target.
+The binding IS the ordinary bounded snapshot, not a hidden full original.
+Use a leading {:max-chars N} option to override the run target; nil uses the
+run default and integer N must be >=128. Compute reductions/select fields in expr
+before insertion. Omitted data is unavailable unless explicitly saved by the
+program; never replay an effect merely to recover its output.
 
 Example — tool call:
   '(!call-now files (io/sh \"ls\"))
-  ;; next turn: files is bound to {:exit 0 :out \"...\" :err \"...\"}
+  ;; next turn: files is bound to {:ok true :exit 0 :out \"...\" :err nil :truncated false}
 
 Example — inspect a computation:
   '(!call-now result (+ (* 3 17) (/ 100 4)))
@@ -744,6 +734,7 @@ to rerun the script later, write it to disk first with io/write-file."
     "Macro. Ephemeral version of !call-now.
 
 '(!peek name expr)
+'(!peek {:max-chars 2000} name expr)
 '(!peek-now name expr)
 
 !peek/!peek-now runs like !call-now, and the next-turn prefix includes:
@@ -754,12 +745,12 @@ result binding(s) from source. If you need part of the value, persist it first
 with your own persist edit marker.
 
 Example:
-  '(!peek-now code (io/read-lines \"main.py\"))
+  '(!peek-now code (io/read-lines \"main.py\" 101 103))
   ;; end of turn 1 completion
-  (def code [\"... many lines ...\"])
+  (def code {:ok true :out (first-line 101 [\"line a\" \"line b\"]) :err nil :truncated false})
   (prune 2)
   ;; start of turn 2 suffix
-  (def fn-defn (subvec code 100 111))
+  (persist fn-defn (subvec (:out code) 0 2))
   ;; next turn: both the !peek-now call and code are pruned; fn-defn remains"
 
     :!peek-now
@@ -770,6 +761,7 @@ Example:
 continuation — like !call-now but without creating named bindings.
 
 '(!print expr)
+'(!print {:max-chars 2000} expr)
 '(!print expr1 expr2 expr3)
 
 Use to inspect values without polluting the namespace. Accepts any number of arguments."
@@ -802,12 +794,12 @@ disappears. Use this for structural cleanup when you do not want a residual thin
 N defaults to 1 (prune previous sibling). Specify N to prune more siblings.
 
 Example:
-  '(!peek-now code (io/read-lines \"main.py\"))
+  '(!peek-now code (io/read-lines \"main.py\" 101 103))
   ;; end of turn 1 completion
-  (def code [\"... many lines ...\"])
+  (def code {:ok true :out (first-line 101 [\"line a\" \"line b\"]) :err nil :truncated false})
   (prune 2)
   ;; start of turn 2 suffix
-  (persist fn-defn (subvec code 100 111))
+  (persist fn-defn (subvec (:out code) 0 2))
   '(!extend completion)"
 
     :rethink
@@ -878,13 +870,16 @@ Example:
     (throw (ex-info "!ask-await requires a future" {:value fut})))
   (when-not (and runtime/*current-handle* runtime/*current-raw*)
     (throw (ex-info "!ask-await requires an active agent turn" {})))
-  (let [token (coordinator/begin-external-wait! runtime/*current-handle*)]
-    (future
-      (let [result (try (runtime/future-value fut)
-                        (catch Throwable e
-                          {:future-await/error (.getMessage e)
-                           :class (.getName (class e))}))]
-        (coordinator/complete-external-wait! token result)))
+  (let [{:keys [token created?]}
+        (coordinator/begin-external-wait! runtime/*current-handle* (:ref fut))]
+    (when eval/*completion-handoff* (eval/*completion-handoff*))
+    (when created?
+      (future
+        (let [result (try (runtime/future-value fut)
+                          (catch Throwable e
+                            {:future-await/error (.getMessage e)
+                             :class (.getName (class e))}))]
+          (coordinator/complete-external-wait! token result))))
     (runtime/block-for-message)))
 
 ;; =============================================================================
@@ -893,7 +888,7 @@ Example:
 
 (def all-namespaces
   "Core standard library namespaces (always available, not gated by eval).
-   patterns is an effect namespace (its functions call leaf-llm, agents/!spawn-ask).
+   patterns is an effect namespace (run-local module registry and invocation).
    Note: seqs, fns, and bit- operations are in core-builtins (matching Clojure)."
   {'strings strings
    'math math})

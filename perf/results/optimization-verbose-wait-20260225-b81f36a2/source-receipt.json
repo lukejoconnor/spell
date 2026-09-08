@@ -1,0 +1,12 @@
+{
+  "branch": "codex/dogfood-reliability",
+  "head": "89a63472e7f114de8d7e875acccf931927f11091",
+  "scope_diff_numstat": "0\t2\tsrc/spell/llm.clj\n32\t0\ttest/spell/llm_test.clj",
+  "sha256": {
+    "src/spell/llm.clj": "879261a280e5e84836664bc17f24b98551599e8cc4f599f9d4d56511b1e0ab9f",
+    "test/spell/llm_test.clj": "24cff0d2c8aa3b88bd9143bde1ede9a07a64f4b0aa62da3b7a945f3166f5ed6c",
+    "perf/results/optimization-verbose-wait-20260225-b81f36a2/wait_probe.clj": "0b1069c1f3c1953b964a3c9f90c73e9ee924538d92c9bf47f26c17d796e927b7",
+    "perf/results/optimization-verbose-wait-20260225-b81f36a2/run_pairs.py": "bc65a0dd9792f7203674f59658784d03ffdac174367f177a11a6fd66d7d98555",
+    "perf/results/optimization-verbose-wait-20260225-b81f36a2/run_bounded.py": "e4479b65b6b64e32355eac6b3a51bd9977e4ee648131115a0df1c6b6a58419fa"
+  }
+}

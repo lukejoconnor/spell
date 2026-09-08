@@ -107,6 +107,7 @@
                             (assoc-in s (conj path :generation) generation) s)))
                       state mailbox)]
           [(-> state
+               (update :external-waits #(apply dissoc % (keep :external-wait mailbox)))
                (assoc-in [:agents handle :mailbox] [])
                (assoc-in [:agents handle :signal] signal)) mailbox])))))
 
@@ -283,6 +284,8 @@
             state (-> state
                       (update :external-waits
                               #(into {} (remove (fn [[_ wait]] (= handle (:source wait))) %)))
+                      (update-in [:agents handle :mailbox]
+                                 #(into [] (remove :external-wait) %))
                       (update :edges #(apply dissoc % (map :id cancelled)))
                       (notify completion value))
             state (if retire?
@@ -323,29 +326,42 @@
          (assoc edge :status :cancelled)]))))
 
 (defn begin-external-wait!
-  "Register an interruptible computation wait. Existing incoming agent obligations
-   still require a newer real outgoing edge; this wait cannot manufacture one."
-  [source]
-  (let [token (Object.)]
-    (transact!
-      (fn [state]
-        (require-open state)
-        (let [a (require-agent state source)]
-          (when (and (empty? (:mailbox a)) (seq (incoming state source))
-                     (not (sleep-allowed? state source)))
-            (throw (ex-info "Cannot await computation while newer incoming obligations require attention"
-                            (sleep-refusal-data state source))))
-          [(cond-> (assoc-in state [:external-waits token]
-                            {:source source :generation (:generation a)})
-             (empty? (:mailbox a)) (assoc-in [:agents source :status] :external-wait)) token])))))
+  "Register an interruptible computation wait. The identity-aware arity returns
+   {:token token :created? boolean}; only the creator starts a watcher. A caller's
+   lifecycle owns one subscription per underlying ref through inbox receipt.
+   Awaiting again after receipt starts a new delivery, even for a completed ref.
+   Incoming obligations still require a newer real outgoing edge."
+  ([source] (:token (begin-external-wait! source (Object.))))
+  ([source ref]
+   (let [token (Object.)]
+     (transact!
+       (fn [state]
+         (require-open state)
+         (let [a (require-agent state source)
+               existing (some (fn [[id wait]]
+                                (when (and (= source (:source wait))
+                                           (identical? (:completed a) (:completion wait))
+                                           (identical? ref (:ref wait))) id))
+                              (:external-waits state))]
+           (when (and (empty? (:mailbox a)) (seq (incoming state source))
+                      (not (sleep-allowed? state source)))
+             (throw (ex-info "Cannot await computation while newer incoming obligations require attention"
+                             (sleep-refusal-data state source))))
+           [(cond-> state
+              (nil? existing)
+              (assoc-in [:external-waits token]
+                        {:source source :completion (:completed a) :ref ref :queued? false})
+              (empty? (:mailbox a)) (assoc-in [:agents source :status] :external-wait))
+            {:token (or existing token) :created? (nil? existing)}]))))))
 
 (defn complete-external-wait! [token value]
   (transact!
     (fn [state]
-      (if-let [{:keys [source]} (get-in state [:external-waits token])]
-        [(enqueue (update state :external-waits dissoc token) source
-                  {:message {:from :future :body value}}) true]
-        [state false]))))
+      (let [{:keys [source queued?] :as wait} (get-in state [:external-waits token])]
+        (if (and wait (not queued?))
+          [(enqueue (assoc-in state [:external-waits token :queued?] true) source
+                    {:external-wait token :message {:from :future :body value}}) true]
+          [state false])))))
 
 (defn acquire! [handle runner completion]
   (transact!

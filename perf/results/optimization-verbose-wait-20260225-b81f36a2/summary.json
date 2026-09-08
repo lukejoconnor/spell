@@ -1,0 +1,71 @@
+{
+  "pairs": [
+    {
+      "pair": 1,
+      "control": {
+        "process_wall_s": 3.6762713328935206,
+        "verbose_elapsed_ms": 1022.065124,
+        "nonverbose_elapsed_ms": 26.623666999999998,
+        "intentional_wait_ms": 1000
+      },
+      "candidate": {
+        "process_wall_s": 2.5000236253254116,
+        "verbose_elapsed_ms": 1.755875,
+        "nonverbose_elapsed_ms": 20.807666,
+        "intentional_wait_ms": 0
+      },
+      "verbose_elapsed_reduction_ms": 1020.309249,
+      "process_wall_reduction_s": 1.176247707568109
+    },
+    {
+      "pair": 2,
+      "control": {
+        "process_wall_s": 2.9672199999913573,
+        "verbose_elapsed_ms": 1025.041417,
+        "nonverbose_elapsed_ms": 23.537835,
+        "intentional_wait_ms": 1000
+      },
+      "candidate": {
+        "process_wall_s": 2.031248999759555,
+        "verbose_elapsed_ms": 2.235459,
+        "nonverbose_elapsed_ms": 24.701001,
+        "intentional_wait_ms": 0
+      },
+      "verbose_elapsed_reduction_ms": 1022.8059579999999,
+      "process_wall_reduction_s": 0.9359710002318025
+    },
+    {
+      "pair": 3,
+      "control": {
+        "process_wall_s": 2.921707875095308,
+        "verbose_elapsed_ms": 1018.239667,
+        "nonverbose_elapsed_ms": 23.381833,
+        "intentional_wait_ms": 1000
+      },
+      "candidate": {
+        "process_wall_s": 1.8923964169807732,
+        "verbose_elapsed_ms": 1.900917,
+        "nonverbose_elapsed_ms": 23.076125,
+        "intentional_wait_ms": 0
+      },
+      "verbose_elapsed_reduction_ms": 1016.33875,
+      "process_wall_reduction_s": 1.0293114581145346
+    }
+  ],
+  "assertions_per_probe_process": 53,
+  "probe_processes": 6,
+  "total_probe_assertions": 318,
+  "focused_tests": 77,
+  "focused_assertions": 675,
+  "all_children_reaped": true,
+  "wait_reduction_ms_per_pair": 1000,
+  "verbose_reduction_ms_median": 1020.309249,
+  "verbose_reduction_ms_range": [
+    1016.33875,
+    1022.8059579999999
+  ],
+  "process_reduction_s_range": [
+    0.9359710002318025,
+    1.176247707568109
+  ]
+}

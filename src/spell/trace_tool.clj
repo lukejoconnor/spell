@@ -99,8 +99,8 @@
     usage-summary]))
 
 (defn- read-edn-file [path]
-  ;; trace.edn is pretty-printed Clojure data (not strict EDN),
-  ;; so it may include reader forms like @deref.
+  ;; Read trace data without evaluating reader forms. Export whitespace is not
+  ;; significant; arbitrary recorded host values need not be strict EDN.
   (binding [*read-eval* false]
     (read-string (slurp (io/file path)))))
 

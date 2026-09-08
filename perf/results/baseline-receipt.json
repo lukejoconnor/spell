@@ -1,0 +1,19 @@
+{
+  "command": [
+    "clojure",
+    "-J-Dclojure.main.report=stderr",
+    "-M:perf",
+    "--warmup",
+    "2",
+    "--reps",
+    "5",
+    "--memory-reps",
+    "3",
+    "--out",
+    "perf/results/baseline.json"
+  ],
+  "exit": 0,
+  "timed_out": false,
+  "elapsed_seconds": 608.9309530258179,
+  "log": "perf/results/baseline.log"
+}

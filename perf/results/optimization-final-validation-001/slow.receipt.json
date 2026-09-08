@@ -1,0 +1,19 @@
+{
+  "name": "slow",
+  "command": [
+    "clojure",
+    "-J-Dclojure.main.report=stderr",
+    "-M:test-slow"
+  ],
+  "exit": 0,
+  "timed-out": false,
+  "child-reaped": true,
+  "wall-seconds": 39.026878874748945,
+  "counts": [
+    246,
+    960,
+    0,
+    0
+  ],
+  "passed": true
+}

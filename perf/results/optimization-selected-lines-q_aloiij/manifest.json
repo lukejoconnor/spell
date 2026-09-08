@@ -1,0 +1,100 @@
+[
+  {
+    "name": "io-tests",
+    "cwd": "/private/tmp/spell-dogfood-reliability",
+    "command": [
+      "clojure",
+      "-J-Xms256m",
+      "-J-Xmx256m",
+      "-M:test",
+      "-n",
+      "spell.io-test"
+    ],
+    "exit": 0,
+    "seconds": 11.342
+  },
+  {
+    "name": "control-1",
+    "cwd": "/private/tmp/spell-optimization-control-4abaa1d",
+    "command": [
+      "clojure",
+      "-J-Xms256m",
+      "-J-Xmx256m",
+      "-M",
+      "/private/tmp/spell-dogfood-reliability/perf/selected_lines_probe.clj",
+      "control-1"
+    ],
+    "exit": 0,
+    "seconds": 4.099
+  },
+  {
+    "name": "candidate-1",
+    "cwd": "/private/tmp/spell-dogfood-reliability",
+    "command": [
+      "clojure",
+      "-J-Xms256m",
+      "-J-Xmx256m",
+      "-M",
+      "/private/tmp/spell-dogfood-reliability/perf/selected_lines_probe.clj",
+      "candidate-1"
+    ],
+    "exit": 0,
+    "seconds": 3.223
+  },
+  {
+    "name": "control-2",
+    "cwd": "/private/tmp/spell-optimization-control-4abaa1d",
+    "command": [
+      "clojure",
+      "-J-Xms256m",
+      "-J-Xmx256m",
+      "-M",
+      "/private/tmp/spell-dogfood-reliability/perf/selected_lines_probe.clj",
+      "control-2"
+    ],
+    "exit": 0,
+    "seconds": 3.374
+  },
+  {
+    "name": "candidate-2",
+    "cwd": "/private/tmp/spell-dogfood-reliability",
+    "command": [
+      "clojure",
+      "-J-Xms256m",
+      "-J-Xmx256m",
+      "-M",
+      "/private/tmp/spell-dogfood-reliability/perf/selected_lines_probe.clj",
+      "candidate-2"
+    ],
+    "exit": 0,
+    "seconds": 3.204
+  },
+  {
+    "name": "control-3",
+    "cwd": "/private/tmp/spell-optimization-control-4abaa1d",
+    "command": [
+      "clojure",
+      "-J-Xms256m",
+      "-J-Xmx256m",
+      "-M",
+      "/private/tmp/spell-dogfood-reliability/perf/selected_lines_probe.clj",
+      "control-3"
+    ],
+    "exit": 0,
+    "seconds": 3.251
+  },
+  {
+    "name": "candidate-3",
+    "cwd": "/private/tmp/spell-dogfood-reliability",
+    "command": [
+      "clojure",
+      "-J-Xms256m",
+      "-J-Xmx256m",
+      "-M",
+      "/private/tmp/spell-dogfood-reliability/perf/selected_lines_probe.clj",
+      "candidate-3"
+    ],
+    "exit": 0,
+    "seconds": 3.399
+  }
+]

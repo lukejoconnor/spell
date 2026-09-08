@@ -280,19 +280,16 @@ These are successive turns, using an ordinary string assignment:
 '(!call-now worker-handle
    (agents/spawn "Answer incoming arithmetic requests with integers." :worker))
 
-'(!call-now task-future
-   (future (blocking/await
-             (blocking/request worker-handle "Multiply 23 by 41."))))
+'(do
+   (globals/set :task-future
+     (future (blocking/await
+               (blocking/request worker-handle "Multiply 23 by 41."))))
+   (!extend))
 
-'(!ask-await task-future)
+'(!ask-await (globals/get :task-future))
 ```
 
-Create the future once in the quoted trailing expression and retain its value
-through `!call-now`. An unrelated message can interrupt the join; after handling
-it, join the same `task-future` again. A generated `stored` reference retains the
-actual future object. Creating a future in ordinary retained source can repeat
-its request on later turns, while a `def` inside a quoted `do` does not preserve
-the binding for a later rejoin.
+Create the future once in the quoted effect action and retain the live object in an explicit `globals` entry (when that namespace is exposed). An unrelated message can interrupt the join; after handling it, join the same `(globals/get :task-future)` again. Do not pass the future through a `!call-now` snapshot: an opaque diagnostic is not a dereferenceable handle. Creating a future in retained source can repeat its request; a `def` inside a quoted `do` alone does not preserve a binding for a later rejoin. Check actual effect receipts if creation was interrupted before retrying. See [bounded results](bounded-results.md).
 
 `future` accepts one expression; use `do` for multiple forms. `blocking/request`
 creates a token and `blocking/await` collects it inside the future. The enclosing
@@ -312,4 +309,8 @@ Capacity admission is atomic. A rejected request sends no request messages; a
 rejected spawn collection registers or starts no children. Rejection raises a
 capacity error immediately and never waits for space. Completed, cancelled, and
 abandoned edges release their capacity. Context presentation limits are
-separate from coordinator admission and do not change stored result values.
+separate from coordinator admission and do not change computational result values.
+
+## Quiet shared research boards
+
+For long-running teams, use the [in-run mailing-list pattern](./mailing-list.md) to share bounded evidence summaries without awakening every subscriber. Explicit urgent notification and tracked worker onboarding use the existing coordinator; there are no additional blocking or persistence semantics.

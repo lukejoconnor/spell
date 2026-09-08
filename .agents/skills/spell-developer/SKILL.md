@@ -9,7 +9,7 @@ Use this skill when working inside the Spell implementation. Prefer the checked-
 
 ## Current Release State
 
-`v0.3.0` is unreleased. Public API and configuration details live in `docs/api.md`.
+Check `AGENTS.md` and `CHANGELOG.md` for the checked-out release state; do not assume an older release is still unreleased. Public API and configuration details live in `docs/api.md`.
 
 ## GitHub Issues and Pull Requests
 
@@ -65,7 +65,7 @@ Configuration:
 - `config/agent-profiles/*.agent.edn`: runtime agent profiles.
 - `config/model-profiles/*.edn`: provider/model-call profiles.
 - `config/prompts/sysprompt-*.txt`: transport-specific system prompts.
-- `config/spl-lib/patterns.spl`: reusable Spell programs.
+- `config/spl-lib/modules/*.spl`: two bundled editable module definitions (relay and mailing-list), plus project/HOME `.spell/modules` discovery. The host API is install/catalog/source/update/call; definitions are separate from mutable state. See `docs/installable-modules.md`.
 - `data/pricing.edn`: shared model pricing table.
 
 ## Reading Order

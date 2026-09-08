@@ -7,6 +7,7 @@
    user-call-fn."
   (:require [clojure.string :as str]
             [spell.runtime :as runtime]
+            [spell.context :as context]
             [spell.eval :as eval]
             [spell.globals :as globals]
             [spell.llm :as llm]
@@ -202,9 +203,10 @@
    (start-jline-reader! reader (atom false)))
   ([^LineReader reader stopping?]
    (start-jline-reader! reader stopping? {}))
-  ([^LineReader reader stopping? {:keys [state finished on-stop]
+  ([^LineReader reader stopping? {:keys [state finished on-stop on-interrupt]
                                 :or {state (atom :pending) finished (promise)
-                                     on-stop (fn [])}}]
+                                     on-stop (fn [])
+                                     on-interrupt #(queue-interactive-submission! ::eof)}}]
    (let [generation @reader-generation
          active? #(and (not @stopping?) (= generation @reader-generation))]
      (future
@@ -218,8 +220,8 @@
                          (when (active?) (queue-interactive-submission! submission))
                          :continue)
                        (catch UserInterruptException _
-                         (when (active?) (queue-interactive-submission! ::cancel))
-                         :continue)
+                         (when (active?) (on-interrupt))
+                         :stop)
                        (catch EndOfFileException _
                          (when (active?) (queue-interactive-submission! ::eof))
                          :stop)
@@ -413,9 +415,35 @@
 ;; Message extraction
 ;; =============================================================================
 
+(defn- decode-message-value
+  "Decode only the inert ordinary constructors emitted for message snapshots.
+   Never execute completion source or resolve effectful/global references."
+  [form]
+  (cond
+    (map? form) (into {} (map (fn [[k v]] [k (decode-message-value v)])) form)
+    (vector? form) (mapv decode-message-value form)
+    (set? form) (set (map decode-message-value form))
+    (seq? form)
+    (let [[op & args] form]
+      (cond
+        (and (= 'quote op) (= 1 (count args))) (first args)
+        (= 'list op) (apply list (map decode-message-value args))
+        (and (= 'into op) (= 2 (count args)) (= {} (first args))
+             (vector? (second args))
+             (every? #(and (vector? %) (= 2 (count %))) (second args)))
+        (into {} (map (fn [[k v]] [(decode-message-value k) (decode-message-value v)]))
+          (second args))
+        (and (= 'set op) (= 1 (count args)) (vector? (first args)))
+        (set (map decode-message-value (first args)))
+        (and (#{'symbol 'keyword} op) (#{1 2} (count args)) (every? string? args))
+        (apply (if (= 'symbol op) symbol keyword) args)
+        (= 'first-line op) (context/first-line-vector args)
+        :else form))
+    :else form))
+
 (defn- extract-messages
   "Extract ALL messages from a raw completion string.
-   Reads message bindings, resolving quoted data and run-owned references.
+   Reads message bindings, decoding inert ordinary snapshot forms only.
    Returns a vector of {:name sym :msg map}."
   [raw]
   (try
@@ -425,15 +453,7 @@
                             (when (and (seq? f) (= 'def (first f)) (>= (count f) 3))
                               (let [sym (second f)
                                     value-form (nth f 2)
-                                    val (cond
-                                          (and (seq? value-form) (= 2 (count value-form))
-                                               (= 'quote (first value-form)))
-                                          (second value-form)
-                                          (and (seq? value-form) (= 2 (count value-form))
-                                               (= 'stored (first value-form))
-                                               (string? (second value-form)))
-                                          (eval/stored (second value-form))
-                                          :else value-form)]
+                                    val (decode-message-value value-form)]
                                 (when (and (map? val) (contains? val :from))
                                   {:name sym :msg val})))))
                     vec)]
@@ -795,7 +815,7 @@
    Uses make-awake-fn to construct the inside-fn from the eval-fn."
   [eval-fn handle parent-handle prompt-str generation receive?]
   (let [completion (promise)
-        awake-fn (runtime/make-awake-fn handle eval-fn receive?)]
+        awake-fn (runtime/make-awake-fn handle eval-fn receive? :pre-eval)]
     (future
       (try
         (when-not (= generation @reader-generation)
@@ -904,17 +924,57 @@
 (defn- open-terminal! []
   (-> (TerminalBuilder/builder) (.system true) (.build)))
 
+(defn- open-line-reader! [^Terminal terminal]
+  (-> (LineReaderBuilder/builder) (.terminal terminal) (.build)))
+
+(defn- native-terminal-restorer
+  "Preserve native settings omitted by JLine Attributes (speeds and unused cc).
+   The system JNI input fd is stdin, which JLine leaves open on terminal close.
+   Other backends retain their existing Attributes restoration."
+  [^Terminal terminal]
+  (when (instance? org.jline.terminal.impl.AbstractPosixTerminal terminal)
+    (let [pty (.getPty ^org.jline.terminal.impl.AbstractPosixTerminal terminal)]
+      (when (and (instance? org.jline.terminal.impl.jni.JniNativePty pty)
+                 (zero? (.getSlave ^org.jline.terminal.impl.jni.JniNativePty pty)))
+        (let [saved (org.jline.nativ.CLibrary$Termios.)]
+          (when-not (zero? (org.jline.nativ.CLibrary/tcgetattr 0 saved))
+            (throw (ex-info "Cannot snapshot interactive terminal settings"
+                            {:type :user-terminal-snapshot-failed})))
+          (fn []
+            (when-not (zero? (org.jline.nativ.CLibrary/tcsetattr
+                              0 org.jline.nativ.CLibrary/TCSANOW saved))
+              (throw (ex-info "Cannot restore interactive terminal settings"
+                              {:type :user-terminal-restore-failed})))))))))
+
 (defn register-interactive-user-agent!
-  "Register :user with JLine for CLI TTY input. Returns a Closeable session."
-  []
+  "Register :user with JLine for CLI TTY input. Returns a Closeable session.
+   Ctrl+C stops the reader and invokes on-interrupt once; the API owns run shutdown."
+  ([] (register-interactive-user-agent! #(queue-interactive-submission! ::eof)))
+  ([on-interrupt]
   (if (runtime/handle? :user)
     (or (:closeable @interactive-session)
         (throw (ex-info "The :user agent is already registered without a JLine session"
                         {:type :user-agent-already-registered})))
     (let [^Terminal terminal (open-terminal!)
-        saved-attributes (Attributes. (.getAttributes terminal))
+        restore-native! (try (native-terminal-restorer terminal)
+                             (catch Throwable e
+                               (try (.close terminal)
+                                    (catch Throwable cleanup-error
+                                      (.addSuppressed e cleanup-error)))
+                               (throw e)))
+        [saved-attributes ^LineReader reader]
+        (try
+          (let [saved (Attributes. (.getAttributes terminal))]
+            [saved (open-line-reader! terminal)])
+          (catch Throwable e
+            ;; No session exists yet to own cleanup if attribute/reader setup fails.
+            (try (.close terminal)
+                 (catch Throwable cleanup-error (.addSuppressed e cleanup-error)))
+            (when restore-native!
+              (try (restore-native!)
+                   (catch Throwable cleanup-error (.addSuppressed e cleanup-error))))
+            (throw e)))
         original-attributes (str saved-attributes)
-        ^LineReader reader (-> (LineReaderBuilder/builder) (.terminal terminal) (.build))
         lock (Object.)
         session-id (Object.)
         reader-task (atom nil)
@@ -939,9 +999,12 @@
                         (finally
                           (try (.close terminal)
                                (finally
-                                 (.setAttributes terminal saved-attributes)
-                                 (when-let [task @reader-task]
-                                   (swap! reader-tasks disj task)))))))))]
+                                 (try
+                                   (try (.setAttributes terminal saved-attributes)
+                                        (finally (when restore-native! (restore-native!))))
+                                   (finally
+                                     (when-let [task @reader-task]
+                                       (swap! reader-tasks disj task)))))))))))]
     (try
       (install-newline-bindings! reader)
       (reset! interactive-session {:id session-id
@@ -954,6 +1017,7 @@
       (register-user-agent-core!
         #(let [task (start-jline-reader! reader stopping?
                                              {:state reader-state
+                                              :on-interrupt on-interrupt
                                               :finished reader-finished
                                               :on-stop (fn []
                                                          (let [interrupted? (Thread/interrupted)]
@@ -965,6 +1029,7 @@
            task))
       session
       (catch Throwable e
-        (reset! interactive-session nil)
-        (.close terminal)
-        (throw e))))))
+        (try (.close ^Closeable session)
+             (catch Throwable cleanup-error
+               (.addSuppressed e cleanup-error)))
+        (throw e)))))))

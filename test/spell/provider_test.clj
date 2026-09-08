@@ -585,23 +585,23 @@
 (deftest anthropic-pf-supports-prefill-test
   (testing "opus-4-6 model returns false"
     (let [p (provider/anthropic-pf-provider {:api-key "test" :model "claude-opus-4-6-20250301"})]
-      (is (false? (provider/supports-prefill p)))))
+      (is (false? (provider/supports-prefill p {})))))
 
   (testing "opus-4-7 model returns false"
     (let [p (provider/anthropic-pf-provider {:api-key "test" :model "claude-opus-4-7-20250416"})]
-      (is (false? (provider/supports-prefill p)))))
+      (is (false? (provider/supports-prefill p {})))))
 
   (testing "sonnet model returns true"
     (let [p (provider/anthropic-pf-provider {:api-key "test" :model "claude-sonnet-4-20250514"})]
-      (is (true? (provider/supports-prefill p)))))
+      (is (true? (provider/supports-prefill p {})))))
 
   (testing "opus-4-5 model returns true"
     (let [p (provider/anthropic-pf-provider {:api-key "test" :model "claude-opus-4-5-20250901"})]
-      (is (true? (provider/supports-prefill p)))))
+      (is (true? (provider/supports-prefill p {})))))
 
   (testing "Fable 5.1 returns false"
     (let [p (provider/anthropic-pf-provider {:api-key "test" :model "claude-fable-5-1"})]
-      (is (false? (provider/supports-prefill p))))))
+      (is (false? (provider/supports-prefill p {}))))))
 
 (deftest anthropic-adaptive-thinking-request-test
   (testing "tool-call path uses adaptive thinking on current model families"
@@ -753,3 +753,89 @@
               [0 0]))
           "should rethrow the last error when retries are exhausted")
       (is (= 3 @call-count) "should have attempted 1 initial + 2 retries"))))
+
+(deftest codex-response-deadline-config
+  (doseq [constructor [provider/codex-tc-provider provider/codex-msg-provider]]
+    (is (= 300 (:request-timeout-sec (constructor {:api-key "test"}))))
+    (is (= 37 (:request-timeout-sec (constructor {:api-key "test" :request-timeout-sec 37}))))
+    (doseq [invalid [nil 0 -1 0.5 "300"]]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"positive integer"
+                           (constructor {:api-key "test" :request-timeout-sec invalid})))))
+  (is (= 37 (:request-timeout-sec
+              (provider/plain-text-provider
+                (provider/codex-tc-provider {:api-key "test" :request-timeout-sec 37}))))))
+
+(deftest codex-response-deadline-includes-body
+  ;; Keep the exchange open until the client returns, rather than sleeping on
+  ;; the server. The test's outer guard also bounds a regressed unbounded client.
+  (doseq [constructor [provider/codex-tc-provider provider/codex-msg-provider]
+          stage [:before-headers :partial-body]]
+    (let [server (com.sun.net.httpserver.HttpServer/create
+                   (java.net.InetSocketAddress. "127.0.0.1" 0) 0)
+          executor (java.util.concurrent.Executors/newCachedThreadPool)
+          entered (promise)
+          release (promise)
+          requests (atom 0)]
+      (.setExecutor server executor)
+      (.createContext server "/responses"
+        (reify com.sun.net.httpserver.HttpHandler
+          (handle [_ exchange]
+            (try
+              (slurp (.getRequestBody exchange))
+              (swap! requests inc)
+              (when (= stage :partial-body)
+                (.add (.getResponseHeaders exchange) "Content-Type" "text/event-stream")
+                (.sendResponseHeaders exchange 200 0)
+                (let [out (.getResponseBody exchange)]
+                  (.write out (.getBytes "data: {\"type\":\"response.created\"}\n\n" "UTF-8"))
+                  (.flush out)))
+              (deliver entered true)
+              @release
+              (catch Exception _)
+              (finally (.close exchange))))))
+      (.start server)
+      (try
+        (let [p (constructor {:api-key "test" :request-timeout-sec 1
+                              :base-url (str "http://127.0.0.1:" (.getPort (.getAddress server)))})
+              task (future
+                     (try (provider/call-with-retries
+                            (fn [_] (provider/call-llm p "hello")) [0])
+                          (catch Throwable e e)))]
+          (try
+            (is (= true (deref entered 3000 ::not-reached)) (str stage))
+            (let [result (deref task 4000 ::hung)]
+              (is (instance? java.net.http.HttpTimeoutException result) (str result))
+              (when (instance? Throwable result)
+                (is (not (provider/retryable? result))))
+              (is (= 1 @requests) "A full-request timeout must not start another paid attempt"))
+            (finally (future-cancel task))))
+        (finally
+          (deliver release true)
+          (.stop server 0)
+          (.shutdownNow executor))))))
+
+(deftest codex-response-completes-before-deadline
+  (doseq [[constructor output] [[provider/codex-tc-provider [{:type "custom_tool_call" :input "42"}]]
+                                [provider/codex-msg-provider [{:type "message" :content [{:type "output_text" :text "42"}]}]]]]
+    (let [server (com.sun.net.httpserver.HttpServer/create
+                   (java.net.InetSocketAddress. "127.0.0.1" 0) 0)
+          body (.getBytes
+                 (str "data: " (json/write-str {:type "response.completed"
+                                                :response {:status "completed" :output output}}) "\n\n")
+                 "UTF-8")]
+      (.createContext server "/responses"
+        (reify com.sun.net.httpserver.HttpHandler
+          (handle [_ exchange]
+            (try
+              (slurp (.getRequestBody exchange))
+              (.add (.getResponseHeaders exchange) "Content-Type" "text/event-stream")
+              (.sendResponseHeaders exchange 200 (alength body))
+              (.write (.getResponseBody exchange) body)
+              (finally (.close exchange))))))
+      (.start server)
+      (try
+        (is (= "42" (provider/call-llm
+                       (constructor {:api-key "test" :request-timeout-sec 5
+                                     :base-url (str "http://127.0.0.1:" (.getPort (.getAddress server)))})
+                       "hello")))
+        (finally (.stop server 0))))))

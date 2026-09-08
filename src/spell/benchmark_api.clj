@@ -218,10 +218,6 @@
         resolved-agent-profile (or agent-profile (default-agent-profile-from-request req))
         normalized-format (normalize-format-spec format)
         resolved-trace-dir (when trace (or trace-dir (trace/default-trace-dir)))
-        effective-prefill (if (contains? req :prefill)
-                            prefill
-                            (and (provider/supports-prefill provider-inst)
-                                 (not thinking)))
         start-ns (System/nanoTime)]
     (try
       (let [result (api/run-internal (cond-> {:model-profile provider-inst
@@ -233,9 +229,9 @@
                                               :thinking thinking
                                               :reasoning-effort reasoning-effort
                                               :verbosity verbosity
-                                              :prefill? effective-prefill
                                               :suffix-grammar? suffix-grammar
                                               :format normalized-format}
+                              (contains? req :prefill) (assoc :prefill? prefill)
                               grammar-max-chars (assoc :grammar-max-chars grammar-max-chars)
                               prompt (assoc :prompt prompt)
                               init (assoc :init init)))]

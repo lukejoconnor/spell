@@ -7,7 +7,6 @@
    established through *trace-node-id*, which is bound during eval so children
    see their parent's ID."
   (:require [clojure.java.io :as io]
-            [clojure.pprint :as pp]
             [clojure.string :as str]))
 
 ;; ---------------------------------------------------------------------------
@@ -127,7 +126,9 @@
 
 (defn write-trace!
   "Write trace to a directory: .spl/.txt files + trace.edn + tree.txt.
-   Returns the directory path."
+   Returns the directory path. Output is not atomic: failures may leave partial
+   files, including a truncated trace.edn if printing fails. Exceptions propagate
+   and the trace writer is closed."
   [trace dir]
   (let [dir-file (io/file dir)]
     (.mkdirs dir-file)
@@ -140,8 +141,15 @@
                               (-> (dissoc node :raw-text)
                                   (assoc :file (file-name node))))
                             (:nodes trace))]
-      (spit (io/file dir-file "trace.edn")
-            (with-out-str (pp/pprint (assoc trace :nodes clean-nodes)))))
+      ;; Stream readable data without pretty-printer buffering or truncation.
+      (with-open [writer (io/writer (io/file dir-file "trace.edn"))]
+        (binding [*out* writer
+                  *print-length* nil
+                  *print-level* nil
+                  *print-meta* false
+                  *print-dup* false
+                  *print-readably* true]
+          (prn (assoc trace :nodes clean-nodes)))))
     ;; tree.txt
     (spit (io/file dir-file "tree.txt") (str (tree-str trace) "\n"))
     dir))

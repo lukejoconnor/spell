@@ -8,7 +8,6 @@
           :region "us-en"}
 
  :fetch {:backend :jina
-         :max-chars 40000
          :timeout-ms 15000
          :fallback-backend :raw}
 

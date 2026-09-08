@@ -90,7 +90,7 @@
                        (call-llm [_ _prompt opts]
                          (reset! seen-opts opts)
                          "\"child\")")
-                       (supports-prefill [_] true))
+                       (supports-prefill [_ _] true))
           workers-map {'helper {:doc "Helper"
                              :default-model-profile child-prov}}
           workers-ns (agent/resolve-workers workers-map llm/compile-agent agent/compile-agent-spec
@@ -198,7 +198,7 @@
                  (call-llm [_ _prompt opts]
                    (reset! seen-opts opts)
                    "\"ok\")")
-                 (supports-prefill [_] true))
+                 (supports-prefill [_ _] true))
           compiled (agent/compile-agent-spec
                     {:provider prov
                      :namespace-overrides {'feedback 'stdlib/feedback}})]
@@ -214,7 +214,7 @@
                  (call-llm [_ _prompt opts]
                    (reset! seen-opts opts)
                    "\"ok\")")
-                 (supports-prefill [_] true))
+                 (supports-prefill [_ _] true))
           workers-ns (agent/resolve-workers
                        {'helper {:doc "Helper agent"}}
                        llm/compile-agent agent/compile-agent-spec nil prov nil
@@ -232,7 +232,7 @@
                  (call-llm [_ _prompt opts]
                    (reset! seen-opts opts)
                    "\"ok\")")
-                 (supports-prefill [_] true))
+                 (supports-prefill [_ _] true))
           workers-ns (agent/resolve-workers
                        {'helper {:doc "Helper agent"
                                  :namespaces {'workers 'stdlib/strings}}}
@@ -250,7 +250,7 @@
                  (call-llm [_ _prompt opts]
                    (reset! seen-opts opts)
                    "\"ok\")")
-                 (supports-prefill [_] true))
+                 (supports-prefill [_ _] true))
           workers-ns (agent/resolve-workers
                        {'helper {:doc "Helper agent"
                                  :namespaces {'feedback 'stdlib/strings}}}
@@ -400,7 +400,11 @@
               (pr-str {:provider {:type :test :response "unused"}
                        :namespaces (array-map 'child 'child.agent.edn
                                               'patterns 'stdlib/patterns)}))
-        (with-redefs [mcp/compile-servers
+        ;; Explicit post-resolution failure; bundled modules are now opt-in.
+        (with-redefs [agent/stdlib-namespaces
+                      (assoc agent/stdlib-namespaces 'patterns
+                             {:cleanup-probe {:requires '[missing-cleanup-namespace]}})
+                      mcp/compile-servers
                       (fn [_ _]
                         {:namespaces {}
                          :close! #(swap! closed inc)})]
@@ -447,7 +451,7 @@
       (is (contains? v :read-file))
       (is (contains? v :sh))
       (is (not (contains? v :write-file)))
-      (is (= "Read a file with numbered lines." (get-in v [:docs :read-file])))
+      (is (= "Read plain file text in a result envelope." (get-in v [:docs :read-file])))
       (is (re-find #"Read-only filesystem inspection, codebase exploration"
                    (:short-docs v))))))
 
@@ -638,7 +642,7 @@
                  (call-llm [_ _prompt opts]
                    (reset! seen-opts opts)
                    "{:result 42})")
-                 (supports-prefill [_] true))
+                 (supports-prefill [_ _] true))
           compiled (agent/compile-agent-spec
                     {:name 'formatter
                      :provider prov

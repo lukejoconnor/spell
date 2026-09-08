@@ -4,6 +4,7 @@
             [clojure.string :as str]
             [clojure.java.io :as io]
             [spell.api :as api]
+            [spell.context :as context]
             [spell.mcp.cli :as mcp-cli]
             [spell.model-spec :as model-spec]
             [spell.provider :as provider]
@@ -115,6 +116,10 @@
    ["-M" "--max-tokens TOKENS" "Max tokens per LLM response (default: 16384)"
     :parse-fn #(Integer/parseInt %)
     :validate [pos? "Must be positive"]]
+   [nil "--context-max-chars CHARS" "Target chars per output snapshot (+20% grace; default: 10000, minimum: 128)"
+    :default context/default-max-chars
+    :parse-fn #(Integer/parseInt %)
+    :validate [#(>= % context/min-max-chars) "Must be at least 128"]]
    ["-K" "--thinking TOKENS" "Enable Anthropic thinking (token budget for extended thinking; adaptive for supported models)"
     :parse-fn #(Integer/parseInt %)
     :validate [pos? "Must be positive"]]
@@ -128,7 +133,7 @@
     :parse-fn #(Integer/parseInt %)
     :validate [pos? "Must be positive"]]
    [nil "--responses-api" "Force OpenAI Responses API instead of Chat Completions"]
-   [nil "--dogfood" "Enable Spell developer dogfooding feedback for this run"]
+   [nil "--dogfood" "Enable feedback and automatic module-edit journals for this run"]
    [nil "--agents-md" "Include cwd AGENTS.md (up to 32 KiB) in the task prompt"]
    ["-T" "--trace" "Record execution trace to a temp dir under java.io.tmpdir/spell-traces/"]
    [nil "--trace-dir DIR" "Record execution trace to DIR"
@@ -299,7 +304,7 @@
 (defn run-input
   [{:keys [prompt init]}
    {:keys [depth verbose log budget trace trace-dir dogfood agent-profile model thinking reasoning-effort verbosity test
-           suffix-grammar grammar-max-chars]
+           suffix-grammar grammar-max-chars context-max-chars]
     :as opts}
    usage-atom]
   (let [max-depth (cond
@@ -315,7 +320,6 @@
                                                   (or (nil? model) astra?))
                                          default-reasoning-effort))
         prov (make-provider opts)
-        prefill? (and (provider/supports-prefill prov) (not thinking))
         resolved-agent-profile (or agent-profile "config/agent-profiles/cli.agent.edn")
         log-writer (when log (io/writer (io/file log) :append true))]
     (try
@@ -327,17 +331,16 @@
                                            (zero? budget) 0
                                            :else budget)
                                  :depth max-depth
-                                 :prefill? prefill?
                                  :thinking thinking
                                  :reasoning-effort effective-reasoning-effort
                                  :verbosity verbosity
                                  :suffix-grammar? suffix-grammar
                                  :grammar-max-chars grammar-max-chars
+                                 :context-max-chars context-max-chars
                                  :usage-tracker usage-atom}
                           prompt (assoc :prompt prompt)
                           init (assoc :init init)
-                          dogfood (assoc :agent-namespace-overrides
-                                         {'feedback 'stdlib/feedback})
+                          dogfood (assoc :dogfood true)
                           (or trace trace-dir)
                           (assoc :trace-dir (or trace-dir (spell-trace/default-trace-dir)))
                           (and (some? (. System console)) (not= model "user"))
@@ -456,8 +459,11 @@
                          usage)
                 (print-usage usage))
               (binding [*out* *err*]
-                (println "Error:" error))
-              (System/exit 1))
+                (println "Error:" error)
+                (doseq [{:keys [stage error error-data]} (:cleanup-errors error-data)]
+                  (println (str "Cleanup failure (" (name stage) "): " error)
+                           (pr-str error-data))))
+              (System/exit (if (= :interactive-interrupt (:type error-data)) 130 1)))
             (do
               (println result)
               (System/exit 0)))))))))

@@ -4,6 +4,7 @@
             [spell.cli :as cli]
             [spell.runtime :as runtime]
             [spell.coordinator :as coordinator]
+            [spell.context :as context]
             [spell.core :as spell]
             [spell.llm :as llm]
             [spell.provider :as provider]
@@ -60,6 +61,65 @@
       (is (= 42 (llm "(quine completion (eval (do ")))
       (is (= 3 @call-count)))))
 
+(deftest bounded-peek-provider-prefix-prune-persist-lifecycle
+  (testing "actual !peek insertion is parseable, continues, and persists without recapping"
+    (let [rows (with-meta
+                 (mapv #(str "source-" % " " (apply str (repeat 160 "x"))) (range 40))
+                 {:spell/first-line 77})
+          reads (atom 0)
+          prefixes (atom [])
+          responses ["'(!peek {:max-chars 2048} rows (audit/read-rows)))))"
+                     "(persist kept rows) '(!extend completion))))"
+                     "'kept)))"]
+          forms-of (fn [prefix]
+                     (rest (second (nth (parse/read-first (parse/balance-parens prefix)) 2))))
+          named-value (fn [forms name]
+                        (some (fn [form]
+                                (when (and (seq? form)
+                                           (#{'def 'persist} (first form))
+                                           (= name (second form)))
+                                  (nth form 2)))
+                              forms))]
+      (binding [context/*context* (context/new-context {:max-chars 128})]
+        (let [expected (context/snapshot rows 2048)
+              expected-form (:form expected)
+              expected-text (context/render-form expected-form)
+              runner (th/make-test-runner
+                       {:response-fn (fn [prefix]
+                                       (let [index (count @prefixes)]
+                                         (swap! prefixes conj prefix)
+                                         (nth responses index)))}
+                       :prefill? false :recover false
+                       :namespaces {'audit {:read-rows (fn [] (swap! reads inc) rows)}})
+              result (runner "(quine completion (eval (do ")
+              inserted-prefix (nth @prefixes 1)
+              retained-prefix (nth @prefixes 2)
+              inserted-form (named-value (forms-of inserted-prefix) 'rows)
+              retained-form (named-value (forms-of retained-prefix) 'kept)
+              inserted (:ok (eval/spell-eval inserted-form {}))
+              positions (fn [value]
+                          (mapv #(context/line-position value %) (range (count value))))]
+          (is (= 3 (count @prefixes)))
+          (is (= 1 @reads) "Reopen, parsing, and persist must not repeat the effect")
+          (is (:truncated? expected))
+          (is (< 153 (count expected-text) 2049) "Explicit larger cap overrides default128")
+          (is (not= rows inserted))
+          (is (= expected-form inserted-form retained-form))
+          (is (= (:value expected) inserted result))
+          (is (= (positions (:value expected)) (positions inserted) (positions result)))
+          (is (= 77 (context/line-position result 0)))
+          (is (= 116 (context/line-position result (dec (count result)))))
+          (is (str/includes? inserted-prefix expected-text))
+          (is (str/includes? retained-prefix expected-text))
+          (is (nil? (named-value (forms-of retained-prefix) 'rows)))
+          (is (not (str/includes? retained-prefix "!peek")))
+          (is (not (str/includes? retained-prefix "(prune")))
+          (doseq [prefix [inserted-prefix retained-prefix]]
+            (let [parsed (parse/read-first (parse/balance-parens prefix))
+                  rendered (eval/serialize-quine-prefix parsed)]
+              (is (= prefix rendered) "Actual provider prefix is a stable materialized snapshot")
+              (is (= parsed (parse/read-first (parse/balance-parens rendered)))))))))))
+
 (deftest spell-eval-with-llm-test
   (testing "spell-eval can evaluate programs containing llm calls (with effects)"
     ;; Create an LLM with provider, then use its eval pipeline
@@ -113,7 +173,7 @@
     (runtime/register! handle)
     (deliver p raw)
     (is (= expected
-           (runtime/run-root-box handle p (runtime/make-awake-fn handle inbox-fn) inbox-fn))
+           (runtime/run-root-box handle p (runtime/make-awake-fn handle inbox-fn true :pre-eval) inbox-fn))
         "evaluation should see the reopenable completion, not the ignored suffix")
     (is (= expected (:last-raw @(:execution (coordinator/agent handle))))
         "stored raw should drop ignored suffixes so later wakeups can reopen it")
@@ -139,7 +199,7 @@
     (runtime/register! handle)
     (runtime/-send! handle (append-forms-macro '(def injected :yes)))
     (deliver p raw)
-    (runtime/box handle p (runtime/make-awake-fn handle inbox-fn))
+    (runtime/box handle p (runtime/make-awake-fn handle inbox-fn true :pre-eval))
     (let [stored (:last-raw @(:execution (coordinator/agent handle)))
           forms (vec (parse/read-all stored))
           reopened-form (last forms)
@@ -159,7 +219,7 @@
     (spit "test-greeting.txt" "Alice")
     (try
       (let [llm (th/make-test-runner
-                 {:response "(def thought \"read file\") (cat \"Hello, \" (:ok (io/slurp \"test-greeting.txt\")) \"!\"))"})]
+                 {:response "(def thought \"read file\") (cat \"Hello, \" (:out (io/slurp \"test-greeting.txt\")) \"!\"))"})]
         (let [result (llm "(eval '(do ")]
           (is (= "Hello, Alice!" result))))
       (finally
@@ -445,6 +505,20 @@
           llm (th/make-test-runner {:response "(describe-fn r)))"}
                                    :namespaces ns-map)]
       (is (= {:a "first" :b "second"} (llm "(eval (do '"))))))
+
+(deftest repeated-namespace-disclosure-test
+  (testing "both requested details reach the next model prefix"
+    (let [result (eval/spell-eval
+                   '(!describe skills :coding skills :spell-developer)
+                   {'completion '(quine completion (eval (do)))
+                    'skills {:detail {:coding "CODING DETAIL SENTINEL"
+                                      :spell-developer "DEVELOPER DETAIL SENTINEL"}}
+                    'describe-fn stdlib/describe
+                    '!llm-self (fn [prefix _options] prefix)})
+          prefix (pr-str (:ok result))]
+      (is (eval/ok? result))
+      (is (str/includes? prefix "CODING DETAIL SENTINEL"))
+      (is (str/includes? prefix "DEVELOPER DETAIL SENTINEL")))))
 
 (deftest describe-fallback-test
   (testing "describe prefers :docs :guide over raw :docs when both present"
@@ -745,12 +819,13 @@
       (is (= {"claude" [1 1]} (:costs leaf)))))
 
   (testing "codex tool-call resolves to message sibling with same model"
-    (let [prov (provider/->CodexTcProvider "tok" "acct" "https://chatgpt.com/backend-api/codex" "gpt-5.3-codex" 4096 "cache-key" nil nil)
+    (let [prov (provider/->CodexTcProvider "tok" "acct" "https://chatgpt.com/backend-api/codex" "gpt-5.3-codex" 4096 "cache-key" nil nil 37)
           leaf (provider/plain-text-provider prov)]
       (is (instance? spell.provider.CodexMsgProvider leaf))
       (is (= "gpt-5.3-codex" (:model leaf)))
       (is (= "acct" (:account-id leaf)))
-      (is (= 4096 (:max-tokens leaf)))))
+      (is (= 4096 (:max-tokens leaf)))
+      (is (= 37 (:request-timeout-sec leaf)))))
 
   (testing "openai tool-call resolves to non-toolcall sibling with same routing fields"
     (let [prov (provider/->OpenAIProvider "sk" "https://api.openai.com/v1" "gpt-5.4" 8192 nil true true
@@ -974,7 +1049,7 @@
       (is (= 32768 (:max-tokens p)))
       (is (= 600 (:request-timeout-sec p))
           "Default request-timeout-sec is 600 seconds, matching anthropic-tc")
-      (is (false? (provider/supports-prefill p)))
+      (is (false? (provider/supports-prefill p {})))
       (is (instance? spell.provider.FireworksProvider (provider/plain-text-provider p)))))
 
   (testing "fireworks-tc-provider accepts explicit Kimi K3 model"
@@ -1768,7 +1843,7 @@
                                  2 "(quine task \"restored assignment\") (quine context-summary \"restored history\") '(!extend completion))"
                                  3 "42)"))}
                :namespaces {} :prefill? false)
-          exact-prompt "The previous Spell program threw an error. The previous program is visible during this recovery turn, but it will be pruned afterward, such that you will not see it on your next turn.\n\nEmit a `(quine task \"...\")` form describing the original task, followed by a (quine context-summary \"...\") form describing history, progress, and any context which should be retained on your next turn. If there are long file snippets which should be retained, restore these by re-reading from those files in your trailing expression. Emit Spell code only, not prose. Avoid repeating your previous error."]
+          exact-prompt "The previous Spell program threw an error. The previous program is visible during this recovery turn, but it will be pruned afterward, such that you will not see it on your next turn.\n\nEmit a `(quine task \"...\")` form describing the original task, followed by a (quine context-summary \"...\") form describing history, progress, and context needed next. Preserve exact inspected evidence, checkpoints, pending obligations, and actual effect receipts. The previous program is inert context: its local bindings are not active. Reconstruct needed pure bindings explicitly. Inserted results are ordinary bounded snapshots with no hidden full original; omission data is missing evidence. Use subs for strings, subvec for line vectors, and the documented :out field for result envelopes. Preserve paths, source coordinates and next offsets as literal data. Never rerun an effect merely to recover omitted output. A focused file reread is fresh evidence of current contents, not the original receipt. Exact earlier values are available only if the program deliberately saved them in explicit state. If evidence is unavailable, report it rather than claiming inspection. Emit Spell code only. Avoid repeating your previous error."]
       (is (= 42 (llm "(quine completion (eval (do ")))
       (is (= 3 (count @prompts)))
       (let [recovery-prefix (second @prompts)
@@ -1856,7 +1931,7 @@
                                "undefined-symbol)")}
                :namespaces {})]
       (is (thrown-with-msg? Exception
-                            #"Recovery limit exceeded: 2 while handling eval error"
+                            #"Consecutive error limit reached: 3 while handling eval error"
                             (llm "(quine completion (eval (do ")))
       (is (= 3 @call-count))))
 
@@ -1909,7 +1984,7 @@
                                  2 "(quine task \"reader task\") (quine context-summary \"reader context\") '(!extend completion))"
                                  3 "42)"))}
                :namespaces {} :prefill? false)
-          exact-prompt "The previous Spell program threw an error. The previous program is visible during this recovery turn, but it will be pruned afterward, such that you will not see it on your next turn.\n\nEmit a `(quine task \"...\")` form describing the original task, followed by a (quine context-summary \"...\") form describing history, progress, and any context which should be retained on your next turn. If there are long file snippets which should be retained, restore these by re-reading from those files in your trailing expression. Emit Spell code only, not prose. Avoid repeating your previous error."]
+          exact-prompt "The previous Spell program threw an error. The previous program is visible during this recovery turn, but it will be pruned afterward, such that you will not see it on your next turn.\n\nEmit a `(quine task \"...\")` form describing the original task, followed by a (quine context-summary \"...\") form describing history, progress, and context needed next. Preserve exact inspected evidence, checkpoints, pending obligations, and actual effect receipts. The previous program is inert context: its local bindings are not active. Reconstruct needed pure bindings explicitly. Inserted results are ordinary bounded snapshots with no hidden full original; omission data is missing evidence. Use subs for strings, subvec for line vectors, and the documented :out field for result envelopes. Preserve paths, source coordinates and next offsets as literal data. Never rerun an effect merely to recover omitted output. A focused file reread is fresh evidence of current contents, not the original receipt. Exact earlier values are available only if the program deliberately saved them in explicit state. If evidence is unavailable, report it rather than claiming inspection. Emit Spell code only. Avoid repeating your previous error."]
       (is (= 42 (llm "(quine completion (eval (do ")))
       (let [recovery-prefix (second @prompts)
             following-prefix (nth @prompts 2)]
@@ -1932,7 +2007,7 @@
                                (swap! call-count inc)
                                "\\invalidchar)")}
                :namespaces {})]
-      (is (thrown-with-msg? Exception #"Recovery limit exceeded: 2 while handling reader error"
+      (is (thrown-with-msg? Exception #"Consecutive error limit reached: 3 while handling reader error"
                             (llm "(quine completion (eval (do ")))
       ;; Initial call + 2 recovery retries
       (is (= 3 @call-count))))
@@ -1946,7 +2021,7 @@
                                  2 "undefined-symbol)"
                                  3 "undefined-symbol)"))}
                :namespaces {})]
-      (is (thrown-with-msg? Exception #"Recovery limit exceeded: 2 while handling eval error"
+      (is (thrown-with-msg? Exception #"Consecutive error limit reached: 3 while handling eval error"
                             (llm "(quine completion (eval (do ")))
       ;; Initial parse error + one reader recovery retry + one eval recovery retry
       (is (= 3 @call-count)))))
@@ -2015,30 +2090,17 @@
 ;; Pattern tests
 ;; =============================================================================
 
-(deftest check-result-ok-test
-  (testing "check-result returns {:ok answer} when leaf-llm says OK"
-    ;; First call: main LLM returns check-result call; second call: leaf-llm returns "OK"
-    (let [call-count (atom 0)
-          llm (th/make-test-runner
-               {:response-fn (fn [_]
-                               (let [n (swap! call-count inc)]
-                                 (if (= n 1)
-                                   "(patterns/check-result \"What is 2+2?\" 4))"
-                                   "OK")))})]
-      (is (= {:ok 4} (llm "(eval '(do "))))))
-
-(deftest check-result-wrong-test
-  (testing "check-result returns {:wrong msg} when leaf-llm says WRONG"
-    ;; First call: main LLM returns check-result call; second call: leaf-llm returns "WRONG: ..."
-    (let [call-count (atom 0)
-          llm (th/make-test-runner
-               {:response-fn (fn [_]
-                               (let [n (swap! call-count inc)]
-                                 (if (= n 1)
-                                   "(patterns/check-result \"Capital of France?\" \"London\"))"
-                                   "WRONG: London is not the capital of France")))})]
-      (is (= {:wrong "London is not the capital of France"}
-             (llm "(eval '(do "))))))
+(deftest leaf-llm-returns-opaque-text-test
+  (testing "leaf text is returned verbatim, without an opinionated judging policy"
+    (doseq [text ["OK" "WRONG: example text"]]
+      (let [call-count (atom 0)
+            llm (th/make-test-runner
+                  {:response-fn (fn [_]
+                                  (if (= 1 (swap! call-count inc))
+                                    "(leaf-llm \"Return the supplied text\"))"
+                                    text))})]
+        (is (= text (llm "(eval '(do ")))
+        (is (= 2 @call-count))))))
 
 ;; =============================================================================
 ;; API retry logic (#64)
@@ -2049,7 +2111,7 @@
     (let [call-count (atom 0)
           prov (reify provider/LLMProvider
                  (plain-text-provider [this] this)
-                 (supports-prefill [_] true)
+                 (supports-prefill [_ _] true)
                  (call-llm [_ prompt] (provider/call-llm _ prompt {}))
                  (call-llm [_ prompt opts]
                    (swap! call-count inc)
@@ -2066,7 +2128,7 @@
     (let [call-count (atom 0)
           prov (reify provider/LLMProvider
                  (plain-text-provider [this] this)
-                 (supports-prefill [_] true)
+                 (supports-prefill [_ _] true)
                  (call-llm [_ prompt] (provider/call-llm _ prompt {}))
                  (call-llm [_ prompt opts]
                    (swap! call-count inc)
@@ -2081,7 +2143,7 @@
     (let [call-count (atom 0)
           prov (reify provider/LLMProvider
                  (plain-text-provider [this] this)
-                 (supports-prefill [_] true)
+                 (supports-prefill [_ _] true)
                  (call-llm [_ prompt] (provider/call-llm _ prompt {}))
                  (call-llm [_ prompt opts]
                    (swap! call-count inc)
@@ -2097,7 +2159,7 @@
     (let [call-count (atom 0)
           prov (reify provider/LLMProvider
                  (plain-text-provider [this] this)
-                 (supports-prefill [_] true)
+                 (supports-prefill [_ _] true)
                  (call-llm [_ prompt] (provider/call-llm _ prompt {}))
                  (call-llm [_ prompt opts]
                    (swap! call-count inc)
@@ -2259,7 +2321,7 @@
           received-opts (atom [])
           prov (reify provider/LLMProvider
                  (plain-text-provider [this] this)
-                 (supports-prefill [_] true)
+                 (supports-prefill [_ _] true)
                  (call-llm [_ prompt] (provider/call-llm _ prompt {}))
                  (call-llm [_ prompt opts]
                    (swap! received-prompts conj prompt)
@@ -2290,7 +2352,7 @@
           received-opts (atom [])
           prov (reify provider/LLMProvider
                  (plain-text-provider [this] this)
-                 (supports-prefill [_] false)
+                 (supports-prefill [_ _] false)
                  (call-llm [_ prompt] (provider/call-llm _ prompt {}))
                  (call-llm [_ prompt opts]
                    (swap! received-prompts conj prompt)
@@ -2314,14 +2376,14 @@
           leaf-calls (atom 0)
           leaf-provider (reify provider/LLMProvider
                           (plain-text-provider [this] this)
-                          (supports-prefill [_] false)
+                          (supports-prefill [_ _] false)
                           (call-llm [_ prompt] (provider/call-llm _ prompt {}))
                           (call-llm [_ prompt _opts]
                             (swap! leaf-calls inc)
                             (str "leaf:" prompt)))
           prov (reify provider/LLMProvider
                  (plain-text-provider [_] leaf-provider)
-                 (supports-prefill [_] true)
+                 (supports-prefill [_ _] true)
                  (call-llm [_ prompt] (provider/call-llm _ prompt {}))
                  (call-llm [_ _prompt _opts]
                    (swap! main-calls inc)
@@ -2336,7 +2398,7 @@
                    (throw (ex-info "no plain-text leaf transport"
                                    {:type :leaf-llm-plain-text-unsupported
                                     :provider :fake-tc})))
-                 (supports-prefill [_] true)
+                 (supports-prefill [_ _] true)
                  (call-llm [_ prompt] (provider/call-llm _ prompt {}))
                  (call-llm [_ _prompt _opts] "(def return 1))"))]
       (is (thrown-with-msg? clojure.lang.ExceptionInfo
@@ -2370,31 +2432,31 @@
 (deftest supports-prefill-test
   (testing "Anthropic tc provider does not support prefill"
     (let [p (provider/anthropic-tc-provider {:api-key "test"})]
-      (is (false? (provider/supports-prefill p)))))
+      (is (false? (provider/supports-prefill p {})))))
 
   (testing "OpenAI provider does not support prefill"
     (let [p (provider/openai-provider {:api-key "test"})]
-      (is (false? (provider/supports-prefill p)))))
+      (is (false? (provider/supports-prefill p {})))))
 
   (testing "Test provider defaults to supporting prefill"
     (let [p (provider/test-provider {})]
-      (is (true? (provider/supports-prefill p)))))
+      (is (true? (provider/supports-prefill p {})))))
 
   (testing "Test provider can be configured as no-prefill"
     (let [p (provider/test-provider {:prefill? false})]
-      (is (false? (provider/supports-prefill p)))))
+      (is (false? (provider/supports-prefill p {})))))
 
   (testing "Ollama provider supports prefill"
     (let [p (provider/ollama-provider)]
-      (is (true? (provider/supports-prefill p)))))
+      (is (true? (provider/supports-prefill p {})))))
 
   (testing "Fireworks provider supports prefill"
     (let [p (provider/fireworks-provider {:api-key "test"})]
-      (is (true? (provider/supports-prefill p)))))
+      (is (true? (provider/supports-prefill p {})))))
 
   (testing "Fireworks tc provider does not support prefill"
     (let [p (provider/fireworks-tc-provider {:api-key "test"})]
-      (is (false? (provider/supports-prefill p))))))
+      (is (false? (provider/supports-prefill p {}))))))
 
 ;; =============================================================================
 ;; User provider display tests
@@ -2476,7 +2538,7 @@
     (let [seen-opts (atom nil)
           prov (reify provider/LLMProvider
                  (plain-text-provider [this] this)
-                 (supports-prefill [_] true)
+                 (supports-prefill [_ _] true)
                  (call-llm [this prompt] (provider/call-llm this prompt {}))
                  (call-llm [_ _ opts]
                    (reset! seen-opts opts)
@@ -2493,7 +2555,7 @@
     (let [seen-opts (atom nil)
           prov (reify provider/LLMProvider
                  (plain-text-provider [this] this)
-                 (supports-prefill [_] true)
+                 (supports-prefill [_ _] true)
                  (call-llm [this prompt] (provider/call-llm this prompt {}))
                  (call-llm [_ _ opts]
                    (reset! seen-opts opts)
@@ -2538,3 +2600,35 @@
       (let [fut (llm "(eval (do ")]
         (is (:spell/future fut))
         (is (= ["result-a" "result-b"] (deref (:ref fut) 5000 :timeout)))))))
+
+(deftest verbose-llm-presentation-does-not-wait-test
+  (testing "Self and leaf logging preserve content/order without random presentation waits"
+    (doseq [kind [:self :leaf]
+            verbose? [false true]]
+      (th/with-test-run
+        (fn []
+          (let [writer (java.io.StringWriter.)
+                waits (atom 0)
+                calls (atom 0)
+                original-rand-int clojure.core/rand-int
+                self? (= kind :self)
+                response (if self? "42)" "offline leaf response")
+                input (if self? "(do " "offline leaf")
+                opts {:response-fn (fn [_] (swap! calls inc) response)}
+                invoke (if self? (th/make-test-runner opts) (th/make-test-leaf-llm opts))
+                expected-log (if self?
+                               "  === LLM Call (depth 1) ===\n  Prompt: \"(do \"\n  Response: 42)\n"
+                               "=== Leaf LLM Call (depth 0) ===\nPrompt: \"offline leaf\"\nResponse: offline leaf response\n")]
+            (with-redefs [clojure.core/rand-int
+                          (fn [n]
+                            (if (= n 500)
+                              (do (swap! waits inc) 0)
+                              (original-rand-int n)))]
+              (binding [eval/*verbose* verbose?
+                        eval/*log-writer* writer
+                        eval/*llm-depth* 0]
+                (is (= (if self? 42 response) (invoke input)) (str kind " return value"))))
+            (is (= 1 @calls) (str kind " provider lifecycle"))
+            (is (zero? @waits) (str kind " must not request presentation sleep"))
+            (is (= (if verbose? expected-log "") (str writer))
+                (str kind " verbose=" verbose? " exact log content/order"))))))))

@@ -351,3 +351,211 @@
           (is (= :stale-agent-lifecycle (deref attempted 2000 :timeout)))
           (is (zero? @evaluations))
           (is (= replacement (c/agent :reused))))))))
+
+(defn- bounded [p] (deref p 10000 ::timeout))
+
+(deftest retained-future-production-rejoin
+  (agents! :a)
+  (binding [runtime/*current-handle* :a runtime/*current-raw* "(quine completion (eval (do)))"]
+    (let [work (promise) entered (promise) delivered (promise)
+          reads (atom 0) completions (atom [])
+          original-value runtime/future-value
+          original-complete c/complete-external-wait!
+          fut {:spell/future true :ref work}]
+      (with-redefs [runtime/block-for-message (fn [] :unrelated-wake)
+                    runtime/future-value (fn [f] (swap! reads inc) (deliver entered true)
+                                          (original-value f))
+                    c/complete-external-wait! (fn [token value]
+                                               (let [r (original-complete token value)]
+                                                 (swap! completions conj r)
+                                                 (deliver delivered true) r))]
+        (stdlib/ask-await-builtin fut)
+        (is (= true (bounded entered)))
+        ;; A different wrapper must still identify the same underlying computation.
+        (stdlib/ask-await-builtin (assoc fut :display :other))
+        (is (= 1 (count (:external-waits (c/snapshot)))))
+        (deliver work 943)
+        (is (= true (bounded delivered)))
+        ;; Completion is queued but not yet received: still the original subscription.
+        (stdlib/ask-await-builtin fut)
+        (is (= 1 @reads))
+        (is (= [true] @completions))
+        (is (= [{:from :future :body 943}] (mapv :message (c/drain! :a))))
+        (is (empty? (:external-waits (c/snapshot))))))))
+
+(deftest external-wait-identity-and-receipt-contract
+  (agents! :a :b)
+  (let [x (promise) y (promise)
+        a (c/begin-external-wait! :a x)
+        b (c/begin-external-wait! :b x)
+        other (c/begin-external-wait! :a y)]
+    (is (every? :created? [a b other]))
+    (is (= {:token (:token a) :created? false} (c/begin-external-wait! :a x)))
+    (is (true? (c/complete-external-wait! (:token a) :x)))
+    (is (false? (:created? (c/begin-external-wait! :a x))))
+    (is (false? (c/complete-external-wait! (:token a) :duplicate)))
+    (is (true? (c/complete-external-wait! (:token b) :b)))
+    (is (true? (c/complete-external-wait! (:token other) :y)))
+    (is (= [:x :y] (mapv #(get-in % [:message :body]) (c/drain! :a))))
+    (is (= [:b] (mapv #(get-in % [:message :body]) (c/drain! :b))))
+    (let [later (c/begin-external-wait! :a x)]
+      (is (:created? later))
+      (is (not (identical? (:token a) (:token later))))
+      (is (true? (c/complete-external-wait! (:token later) :x)))
+      (is (= [:x] (mapv #(get-in % [:message :body]) (c/drain! :a)))))
+    (is (empty? (:external-waits (c/snapshot))))))
+
+(deftest external-wait-concurrent-rejoin-and-completion
+  (agents! :a)
+  (let [work (promise) first (c/begin-external-wait! :a work)
+        ready-a (promise) ready-b (promise) go (promise)
+        join (future (deliver ready-a true) @go (c/begin-external-wait! :a work))
+        done (future (deliver ready-b true) @go (c/complete-external-wait! (:token first) :result))]
+    (is (= true (bounded ready-a)))
+    (is (= true (bounded ready-b)))
+    (deliver go true)
+    (is (= {:token (:token first) :created? false} (bounded join)))
+    (is (= true (bounded done)))
+    (is (= [{:from :future :body :result}] (mapv :message (c/drain! :a))))
+    (is (empty? (:external-waits (c/snapshot))))))
+
+(deftest external-wait-lifecycle-cleans-pending-and-queued
+  (agents! :a)
+  (let [work (promise) completion (:completed (c/agent :a))
+        pending (c/begin-external-wait! :a work)
+        queued (c/begin-external-wait! :a (promise))]
+    (c/complete-external-wait! (:token queued) :old)
+    (c/send! :a {:message {:from :peer :body :keep}})
+    (c/finish! :a completion :finished)
+    (is (empty? (:external-waits (c/snapshot))))
+    (is (false? (c/complete-external-wait! (:token pending) :late)))
+    (is (= [{:from :peer :body :keep}] (mapv :message (c/drain! :a))))
+    (let [next (c/begin-external-wait! :a work)]
+      (is (:created? next))
+      (c/retire! :a (:completed (c/agent :a)) :retired)
+      (is (false? (c/complete-external-wait! (:token next) :late)))
+      (is (empty? (:external-waits (c/snapshot)))))))
+
+(deftest retained-future-production-failure-and-later-await
+  (agents! :a)
+  (binding [runtime/*current-handle* :a runtime/*current-raw* "(quine completion (eval (do)))"]
+    (let [computations (atom 0) release (promise)
+          work (future (swap! computations inc) @release (throw (ex-info "broken" {})))
+          fut {:spell/future true :ref work}
+          completions (atom 0) signal (atom (promise))
+          original c/complete-external-wait!]
+      (with-redefs [runtime/block-for-message (fn [] :wake)
+                    c/complete-external-wait!
+                    (fn [token result]
+                      (let [r (original token result)]
+                        (swap! completions inc) (deliver @signal true) r))]
+        (stdlib/ask-await-builtin fut)
+        (stdlib/ask-await-builtin fut)
+        (deliver release true)
+        (is (= true (bounded @signal)))
+        (let [messages (mapv :message (c/drain! :a))]
+          (is (= 1 (count messages)))
+          (is (string? (get-in messages [0 :body :future-await/error]))))
+        ;; Explicit await after receipt requests another delivery, not recomputation.
+        (reset! signal (promise))
+        (stdlib/ask-await-builtin fut)
+        (is (= true (bounded @signal)))
+        (is (= 1 (count (c/drain! :a))))
+        (is (= 2 @completions))
+        (is (= 1 @computations))
+        (is (empty? (:external-waits (c/snapshot))))))))
+
+(deftest production-watcher-submissions-and-lifecycle-ownership
+  (agents! :a :b)
+  (let [submitted (atom []) reads (atom 0) accepted (atom [])
+        original-value runtime/future-value
+        original-complete c/complete-external-wait!
+        x (promise) y (promise)
+        fx {:spell/future true :ref x}
+        fy {:spell/future true :ref y}
+        join (fn [caller f]
+               (binding [runtime/*current-handle* caller
+                         runtime/*current-raw* "(quine completion (eval (do)))"]
+                 (stdlib/ask-await-builtin f)))
+        run-task (fn [i] ((nth @submitted i)))]
+    ;; Submission is synchronous: an extra watcher cannot hide on the host
+    ;; executor until after the count assertions or with-redefs restoration.
+    (with-redefs [clojure.core/future-call
+                  (fn [f] (swap! submitted conj f) nil)
+                  runtime/block-for-message (fn [] :unrelated-wake)
+                  runtime/future-value
+                  (fn [f] (swap! reads inc) (original-value f))
+                  c/complete-external-wait!
+                  (fn [token value]
+                    (let [r (original-complete token value)]
+                      (swap! accepted conj r) r))]
+      (join :a fx)
+      (join :a (assoc fx :wrapper :different))
+      (is (= 1 (count @submitted)) "Pending rejoin submits no watcher")
+      (join :b fx)
+      (join :a fy)
+      (is (= 3 (count @submitted)) "Distinct caller/ref each owns a watcher")
+      (deliver x :x)
+      (deliver y :y)
+      (run-task 0)
+      (join :a fx)
+      (is (= 3 (count @submitted)) "Queued completion cannot reopen subscription")
+      (c/send! :a {:message {:from :peer :body :unrelated}})
+      (is (= [:x :unrelated] (mapv #(get-in % [:message :body]) (c/drain! :a))))
+      (is (= 2 (count (:external-waits (c/snapshot))))
+          "Receipt leaves other pending refs/callers intact")
+      (join :a fx)
+      (is (= 4 (count @submitted)) "Explicit post-receipt await is new delivery")
+      ;; Old pending watcher 2 is still live when :a finishes. The :b
+      ;; watcher and unrelated mailbox traffic must survive that settlement.
+      (c/send! :a {:message {:from :peer :body :keep}})
+      (c/finish! :a (:completed (c/agent :a)) :done)
+      (join :a fy)
+      (is (= 5 (count @submitted)) "New lifecycle may await the same ref")
+      (run-task 2)
+      (run-task 3)
+      (run-task 1)
+      (run-task 4)
+      (is (= [true false false true true] @accepted))
+      (is (= [:keep :y] (mapv #(get-in % [:message :body]) (c/drain! :a))))
+      (is (= [:x] (mapv #(get-in % [:message :body]) (c/drain! :b))))
+      (join :a fx)
+      (c/retire! :a (:completed (c/agent :a)) :retired)
+      (c/register! :a)
+      (join :a fx)
+      (is (= 7 (count @submitted)))
+      (run-task 5)
+      (run-task 6)
+      (is (= [true false false true true false true] @accepted))
+      (is (= [:x] (mapv #(get-in % [:message :body]) (c/drain! :a))))
+      (is (= 7 @reads) "Every submitted watcher was executed exactly once")
+      (is (empty? (:external-waits (c/snapshot)))))))
+
+(deftest production-controlled-failure-rejoin
+  (agents! :a)
+  (binding [runtime/*current-handle* :a
+            runtime/*current-raw* "(quine completion (eval (do)))"]
+    (let [tasks (atom []) computations (atom 0)
+          ;; The computation is performed once, independently of watcher tasks.
+          work (future (swap! computations inc) (throw (ex-info "broken" {})))
+          f {:spell/future true :ref work}]
+      (try @work (catch Throwable _))
+      (with-redefs [clojure.core/future-call (fn [task] (swap! tasks conj task) nil)
+                    runtime/block-for-message (fn [] :wake)]
+        (stdlib/ask-await-builtin f)
+        (stdlib/ask-await-builtin f)
+        (is (= 1 (count @tasks)))
+        ((nth @tasks 0))
+        (stdlib/ask-await-builtin f)
+        (is (= 1 (count @tasks)))
+        (let [batch (c/drain! :a)]
+          (is (= 1 (count batch)))
+          (is (string? (get-in batch [0 :message :body :future-await/error]))))
+        (stdlib/ask-await-builtin f)
+        (is (= 2 (count @tasks)))
+        ((nth @tasks 1))
+        (let [batch (c/drain! :a)]
+          (is (= 1 (count batch)))
+          (is (string? (get-in batch [0 :message :body :future-await/error]))))
+        (is (= 1 @computations))
+        (is (empty? (:external-waits (c/snapshot))))))))

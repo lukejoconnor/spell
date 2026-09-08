@@ -100,7 +100,7 @@ Effect functions are evaluated through the quoted trailing expression in the Spe
 
 The `agents/` namespace supports persistent named agents, messages, and tracked requests. `spawn` returns a handle; `send` delivers a message; `ask` returns a request ID immediately. `!ask` combines requesting and waiting. Incoming messages and completion reports become `msg-N` bindings; inspect their sender and request ID to determine what arrived. An unrelated message can awaken the caller while its requests remain pending; use `!wait` or `!sleep` to continue waiting on them. See [multi-agent communication](./multi-agent.md) for receipt, replies, and terminal commands.
 
-The `globals/` namespace provides shared values when a common registry, queue, or result map is more convenient than messages. The `workers/` namespace exposes named compiled workers declared by the selected profile; pass them to `agents/spawn` or `agents/spawn-ask` to start their lifecycles. `patterns/` contains reusable orchestration flows written in Spell.
+The `globals/` namespace provides shared values when a common registry, queue, or result map is more convenient than messages. The `workers/` namespace exposes named compiled workers declared by the selected profile; pass them to `agents/spawn` or `agents/spawn-ask` to start their lifecycles. `patterns/` exposes five verbs (`install`, `catalog`, `source`, `update`, `call`) for opt-in [editable Spell modules](./installable-modules.md). Definitions and mutable state are separate. Module `:requires` entries do not grant capabilities: each caller must already have the required namespaces.
 
 Use `!describe` for the functions available in a particular run.
 

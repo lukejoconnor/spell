@@ -194,35 +194,105 @@
     (is (empty? (:mailbox (coordinator/agent :main))))))
 
 (defn- compaction-case! [arrival]
-  (let [calls (atom []) marks (atom [])
-        enqueue! #(coordinator/send! :main
-                    {:message {:from :observer :body :compaction-message}})
+  (coordinator/register! :requester)
+  (let [calls (atom []) marks (atom []) edges (atom []) snapshots (atom [])
+        received (atom []) message-defs (atom [])
+        bodies [{:id :compact-message-1} {:id :compact-message-2}]
+        enqueue! (fn []
+                   (reset! edges
+                           (mapv #(coordinator/request! :requester [:main] true %) bodies)))
+        snapshot! (fn [stage]
+                    (swap! snapshots conj
+                           {:stage stage :states (mapv receipt-state @edges)}))
         compiled
         (make-agent
           (fn [prompt]
             (case (count (swap! calls conj prompt))
-              1 (do (when (= :first arrival) (enqueue!))
+              ;; A is an ordinary receiving turn that elects to compact.
+              1 (suffix '(!compact))
+              ;; B only generates the summary; an arrival here must stay queued.
+              2 (do (when (= :summary arrival) (enqueue!))
+                    (snapshot! :summary)
                     "'(def compacted-value :kept)")
-              2 (if (= :first arrival)
-                  (suffix :first-stage-received)
-                  (do (when (= :second arrival) (enqueue!))
-                      (suffix '(do (probe/mark :generated-tail) compacted-value))))
-              3 (suffix 'compacted-value)
+              ;; This is the actual new, compacted C prefix, not the summary prompt.
+              3 (do (snapshot! :compacted-prefix)
+                    (when (= :compacted arrival) (enqueue!))
+                    (snapshot! :compacted-generation)
+                    (suffix '(do (probe/mark :generated-tail) compacted-value)))
+              4 (let [form (first (parse/read-all (parse/balance-parens prompt)))
+                      forms (vec (rest (second (last form))))
+                      positions (keep-indexed
+                                  #(when (= '(think "pre-eval: tail not run") %2) %1)
+                                  forms)
+                      defs (mapv #(nth forms (inc %)) positions)]
+                  (reset! message-defs defs)
+                  (snapshot! :received)
+                  (suffix (list 'do (list* 'probe/received (map second defs))
+                                'compacted-value)))
               (throw (ex-info "Unexpected compaction call" {:prompt prompt}))))
-          {:mark #(swap! marks conj %)})
-        result (compiled (llm/direct-init (program '(!compact))) :main)]
-    (is (= (if (= :first arrival) :first-stage-received :kept) result))
-    (is (= (if (= :second arrival) 3 2) (count @calls)))
+          {:mark #(do (swap! marks conj %) nil)
+           :received (fn [& messages] (reset! received (vec messages)) nil)})
+        action (list '!llm-self prefix {:receive? true})
+        result (compiled (llm/direct-init (program action)) :main)
+        by-stage (into {} (map (juxt :stage :states) @snapshots))]
+    (is (= :kept result))
+    (is (= (if (= :none arrival) 3 4) (count @calls)))
     (is (= (if (= :none arrival) [:generated-tail] []) @marks))
-    (is (str/includes? (second @calls)
-                      (if (= :first arrival) "=compact=" "(def compacted-value :kept)")))
-    (is (= (if (= :none arrival) 0 1)
-           (occurrences (last @calls) :compaction-message)))
+    (is (str/includes? (second @calls) "=compact="))
+    (is (= '(quine completion (eval (do (def compacted-value :kept))))
+           (first (parse/read-all (parse/balance-parens (nth @calls 2)))))
+        "C is exactly the compacted context; A's generated-marker and B's scaffold are gone")
+    (when (= :summary arrival)
+      (is (= 2 (count @edges)))
+      (is (= (:summary by-stage) (:compacted-prefix by-stage))
+          "B did not dequeue, claim, or rotate receipt state before generating C"))
+    (when (not= :none arrival)
+      (let [queued (:compacted-generation by-stage)
+            accepted (:received by-stage)]
+        (is (= 2 (count queued)))
+        (doseq [state queued]
+          (is (= @edges (mapv :request-edge (:mailbox state)))
+              "The exact request IDs remain queued through B / C generation")
+          (is (nil? (:claimed-generation state))))
+        (doseq [state accepted]
+          (is (empty? (:mailbox state)))
+          (is (= (:agent-generation state) (:claimed-generation state))))
+        (is (= 2 (count @message-defs)))
+        (is (= 2 (count (distinct (map second @message-defs)))))
+        (is (= @edges (mapv :edge-id @received)) "C receives the same request IDs in order")
+        (is (= bodies (mapv :body @received)))
+        (doseq [body bodies]
+          (is (= 1 (occurrences (last @calls) (:id body)))
+              "Each request body appears exactly once in the received compacted prefix"))))
     (is (empty? (:mailbox (coordinator/agent :main))))))
 
 (deftest compaction-runs-both-stages (compaction-case! :none))
-(deftest compaction-receives-after-its-first-generation (compaction-case! :first))
-(deftest compaction-receives-after-its-second-generation (compaction-case! :second))
+(deftest compaction-defers-summary-arrivals-until-compacted-context
+  (compaction-case! :summary))
+(deftest compaction-receives-after-compacted-generation
+  (compaction-case! :compacted))
+
+(deftest ordinary-turn-can-preempt-compaction
+  (let [calls (atom []) marks (atom [])
+        compiled
+        (make-agent
+          (fn [prompt]
+            (case (count (swap! calls conj prompt))
+              1 (do (coordinator/send! :main
+                      {:message {:from :observer :body :before-compaction}})
+                    (suffix '(!compact)))
+              2 (suffix '(do (probe/mark :ordinary-receipt) :preempted))
+              (throw (ex-info "Preempted compaction must not start B or C" {}))))
+          {:mark #(do (swap! marks conj %) nil)})]
+    (is (= :preempted
+           (compiled (llm/direct-init
+                       (program (list '!llm-self prefix {:receive? true}))) :main)))
+    (is (= 2 (count @calls)))
+    (is (= [:ordinary-receipt] @marks))
+    (is (= 1 (occurrences (second @calls) :before-compaction)))
+    (is (str/includes? (second @calls) "(def generated-marker :present)"))
+    (is (not-any? #(str/includes? % "=compact=") @calls))
+    (is (empty? (:mailbox (coordinator/agent :main))))))
 
 (def ^:private invalid-completions
   [nil false 42 "(quine completion (eval (do )))"
@@ -274,3 +344,115 @@
   (rejection-case! :completion invalid-completions))
 (deftest invalid-self-call-options-fail-before-generation
   (rejection-case! :options invalid-options))
+(deftest minimum-cap-generated-receipt-evaluates-a-message-batch
+  (doseq [limit [128 180]]
+    (binding [context/*context* (context/new-context {:max-chars limit})
+              coordinator/*coordinator* (coordinator/new-coordinator)]
+      (try
+        (let [calls (atom []) marks (atom []) received (atom nil)
+              bodies (mapv #(hash-map :index % :detail (apply str (repeat 80 "message-detail-"))) [1 2])
+              proposed '(do (probe/mark :must-not-run) :proposed-result)
+              agent (make-agent
+                      (fn [prompt]
+                        (case (count (swap! calls conj prompt))
+                          1 (do (doseq [body bodies]
+                                  (coordinator/send! :main {:message {:from :observer :body body}}))
+                                (suffix proposed))
+                          2 (let [form (first (parse/read-all (parse/balance-parens prompt)))
+                                  forms (vec (rest (second (last form))))
+                                  positions (vec (keep-indexed
+                                                   #(when (= '(think "pre-eval: tail not run") %2) %1)
+                                                   forms))
+                                  message-defs (mapv #(nth forms (inc %)) positions)]
+                              (is (= 2 (count positions)) "Both factual annotations remain visible at the same cap")
+                              (is (some #{(quoted proposed)} forms) "Only the proposed tail becomes inert")
+                              (doseq [i positions]
+                                (let [contribution (subvec forms i (+ i 3))]
+                                  (is (= 'def (first (second contribution))))
+                                  (is (= '(quote (!extend completion)) (last contribution)))
+                                  (is (<= (count (str/join " " (map pr-str contribution))) limit)
+                                      "Annotation, message binding/reference and continuation share one unchanged cap")))
+                              (suffix (list 'do
+                                            (list* 'probe/received (map second message-defs))
+                                            '(probe/mark :continued)
+                                            :received-result)))
+                          (throw (ex-info "Unexpected generation" {:prompt prompt}))))
+                      {:mark #(do (swap! marks conj %) nil)
+                       :received (fn [& messages] (reset! received (vec messages)) nil)})
+              action (list 'do '(probe/mark :earlier-effect)
+                           (list '!llm-self prefix {:receive? true}))]
+          (is (= :received-result (agent (llm/direct-init (program action)) :main)))
+          (is (= [:earlier-effect :continued] @marks)
+              "The earlier effect executes exactly once; the replaced tail never executes")
+          (is (= (mapv #(hash-map :from :observer :body %) bodies) @received)
+              "The actual evaluator resolves both stored message values, losslessly and in order")
+          (is (= 2 (count @calls)))
+          (is (= limit (:max-chars context/*context*)))
+          (is (empty? (:mailbox (coordinator/agent :main)))))
+        (finally (coordinator/close!))))))
+
+(defn- assert-rendered-receipts [prompt site-text bodies original-action]
+  (let [form (first (parse/read-all (parse/balance-parens prompt)))
+        forms (vec (rest (second (last form))))
+        positions (keep-indexed #(when (and (seq? %2) (= 'think (first %2))) %1) forms)]
+    (is (= 'quine (first form)))
+    (is (= (count bodies) (count positions)))
+    (is (some #{(quoted original-action)} forms)
+        "The old proposed action remains visible as inert quoted source")
+    (doseq [[i body] (map vector positions bodies)]
+      (let [annotation (nth forms i)
+            message-def (nth forms (inc i))
+            message-value (nth message-def 2)]
+        (is (= 'def (first message-def)))
+        (is (= site-text (second annotation)))
+        (is (= body (:body (if (and (seq? message-value) (= 'quote (first message-value)))
+                            (second message-value) message-value))))
+        (is (= '(quote (!extend completion)) (nth forms (+ i 2))))))))
+
+(deftest startup-receipt-is-not-a-generated-proposal
+  (let [calls (atom []) marks (atom [])
+        action '(do (probe/mark :startup-tail) :not-run)
+        agent (make-agent (fn [prompt] (swap! calls conj prompt) (suffix :continued))
+                          {:mark #(swap! marks conj %)})]
+    (coordinator/register! :main)
+    (doseq [body [:startup-one :startup-two]]
+      (coordinator/send! :main {:message {:from :observer :body body}}))
+    (is (= :continued (agent (llm/direct-init (program action)) :main)))
+    (is (empty? @marks))
+    (is (= 1 (count @calls)))
+    (assert-rendered-receipts
+      (first @calls)
+      "startup: tail not run"
+      [:startup-one :startup-two] action)
+    (is (not (str/includes? (first @calls) "proposed trailing expression")))))
+
+(deftest generated-batch-receipt-replaces-only-the-proposed-tail
+  (let [calls (atom []) marks (atom []) generating (promise) release-generation (promise)
+        proposed '(do (probe/mark :must-not-run) :proposed-result)
+        action (list 'do '(probe/mark :earlier-effect)
+                     (list '!llm-self prefix {:receive? true}))
+        agent (make-agent
+                (fn [prompt]
+                  (case (count (swap! calls conj prompt))
+                    1 (do (deliver generating true)
+                          (await! release-generation "release generated receipt")
+                          (suffix proposed))
+                    2 (suffix '(do (probe/mark :continued) :received-result))
+                    (throw (ex-info "Unexpected generation" {:prompt prompt}))))
+                {:mark #(do (swap! marks conj %) nil)})
+        runner (launch agent action generating)]
+    (try
+      (is (= true (await! generating "generated receipt ready")))
+      (doseq [body [:generated-one :generated-two]]
+        (coordinator/send! :main {:message {:from :observer :body body}}))
+      (deliver release-generation true)
+      (is (= :received-result (await! runner "generated receipt result")))
+      (is (= [:earlier-effect :continued] @marks)
+          "Earlier effects ran once; only the new proposed tail did not execute")
+      (is (= 2 (count @calls)))
+      (is (empty? (:mailbox (coordinator/agent :main))))
+      (assert-rendered-receipts
+        (second @calls)
+        "pre-eval: tail not run"
+        [:generated-one :generated-two] proposed)
+      (finally (stop! runner release-generation)))))

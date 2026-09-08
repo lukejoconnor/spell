@@ -38,9 +38,11 @@ These options are scoped to one invocation of `run`.
 | `:reasoning-effort` | model profile `:default-reasoning-effort` | Reasoning-effort override for this run. |
 | `:budget` | agent profile `:default-budget` or runtime default | Maximum spend in dollars for the run. `nil` means the configured default. `0` means unlimited. |
 | `:depth` | unlimited | Maximum recursive LLM depth for this run. |
+| `:max-consecutive-errors` | agent profile value or 3 | Positive-integer lifecycle-local reader/evaluation failure limit. Overrides the root agent profile for this run; see [Error recovery](error-recovery.md). |
 | `:coordinator` | `{:max-edges 10000}` | Per-run coordination capacity. `:max-edges` must be a positive integer and counts pending hyperedges, regardless of target count. Admission rejects atomically before sending requests or launching children. |
 | `:context-max-chars` | 10000 | Maximum characters inserted by one tool-result or message contribution, including binding syntax. Integer of at least 128; `nil` uses the default. |
 | `:trace-dir` | none | When non-nil, record a Spell execution trace in this directory. |
+| `:dogfood` | false | Enable human feedback and automatic exact PATTERNS API install/edit journals at `.spell/feedback.edn` (or `SPELL_FEEDBACK_PATH`). Children share this run's mode/destination/identity; independent API runs get distinct identities. See [module ownership and journals](./installable-modules.md#automatic-dogfood-module-edit-journal) for scope and committed-edit recording failures. |
 | `:usage-tracker` | fresh atom | Existing usage atom to accumulate token and cost accounting into. |
 | `:user-reader` | none | When non-nil, register the interactive `:user` handle and read from this reader. The caller retains ownership of the reader. Spell requests cancellation of its reader task and clears input state when the run ends, so use a finite reader or one whose blocking read responds to thread interruption. An arbitrary reader that ignores interruption must be unblocked by its owner before reuse. |
 | `:log-writer` | none | Writer for raw LLM debugging output. Pass `*out*` or another writer for logging. |
@@ -54,25 +56,15 @@ These options are scoped to one invocation of `run`.
 
 Startup, receiving continuations, and explicit receipt establish the context used for later resumption. A raw helper's context is temporary, even if it is a quine. Returning from it preserves any newer context established by a receiving descendant. Explicit waits and dormant wakeups resume the latest such context and receive normally. Receipt atomically claims incoming requests; wait admission continues to consider every pending incoming obligation, including unread requests.
 
-## Context Contributions
+Receipt annotations are associated with the following message binding: `startup: tail not run`, `pre-eval: tail not run`, `wait resumed`, `dormant resumed`, and `receive: not evaluated`. A skipped tail refers only to that entry's trailing expression, not earlier effects. Explicit `receive` returns transformed code without evaluating it. Wait and dormant labels identify the resume pathway; they do not prove which prior effects ran. Use captured dispatches, received edges, and effect receipts for that evidence.
 
-`!call-now`, `!peek`, `!print`, and incoming agent messages use the same lossless rendering policy. Fitting results are inserted directly, including small siblings of oversized results. Oversized results remain complete in storage owned by this run and appear as `(stored "id")`; the resulting binding still holds the original value. Read a slice or select fields, then use `!peek` or `!print` to display that smaller value. Lists and symbols are quoted as data. Numbered source vectors retain their starting-line metadata, with line comments restored when rendered in a model prefix. Values with other metadata, including nested source vectors, use storage to preserve that metadata.
+## Bounded result snapshots
 
-`:context-max-chars` counts UTF-16 characters, not tokens, and bounds the whole contribution: a multi-binding call shares one budget, as does one aggregate completion report. Rendering stops at the budget instead of traversing or printing the entire payload. Bindings and reference syntax must fit too; if they cannot, the operation raises an explicit capacity error. Use fewer bindings or a larger limit. Complete successful payloads have no item-count or depth cap. MCP tool, resource, prompt, completion, and discovery results use this same insertion policy; their transport byte limits remain separate.
+Set `:context-max-chars` in `spell.api/run` to an integer at least 128 (default 10000); CLI `--context-max-chars CHARS` forwards it. This is a per-output reader-rendered UTF-16 target, not an aggregate packet cap or model token limit. Each output has 20% grace before shortening toward the target. Leading `{:max-chars N}` options on `!call-now`, `!peek`, and `!print`, and `(serialize value N)`, can override it upward or downward; nil uses the default and invalid/negative limits are rejected.
 
-The optional limit argument to `!call-now`, `!peek`, and `serialize` may lower the run limit. A negative limit uses the run limit; it no longer forces unlimited inlining. Explicit `deep-truncate` remains available when the program chooses to shorten data. Program-written context and explicit `persist` are still controlled by the program. Stored references are private to this API invocation and cannot retrieve another run's values.
+Effects compute full ordinary results before insertion. At tool-result and communication-body boundaries the next turn receives an ordinary snapshot with omission data where necessary. `!call-now` binds that snapshot, not a hidden full original. There is no automatic result storage or retrieval API. Later continuation rendering and `persist` preserve the retained snapshot without re-capping it. Exact request/lifecycle metadata remains outside bounded bodies.
 
-Low-level embedding through `spell.eval` can allocate the same storage explicitly:
-
-```clojure
-(require '[spell.context :as context])
-(binding [context/*context* (context/new-context {:max-chars 10000})]
-  ;; Evaluate all related agents and stored-value accesses in this scope.
-  ;; Clojure future and bound-fn convey the binding; raw Thread does not.
-  ...)
-```
-
-Standalone serialization can render small values without storage. Oversized values require the bound context. Stored values remain retained for the lifetime of that run. Invalid API configuration raises an exception; execution failures use the return shape below.
+Raw operational IO/web/MCP calls use `{:ok boolean :out payload :err text-or-nil}`, retaining process `:exit` and HTTP `:status`. Serialization adds `:truncated false` for a complete snapshot or `:truncated true` when it omits returned data, preserving an existing true flag and success/status metadata. Line ranges and character windows select the requested result and do not set this flag. Pure accessors and asynchronous/thunk control values have documented narrow exceptions. See [bounded results and explicit paging](bounded-results.md) for the complete call table, omission semantics, source coordinates, character ranges, explicit state and future retention. Invalid API configuration raises an exception; execution failures use the return shape below.
 
 ## Return Shape
 
@@ -177,7 +169,7 @@ Model profile files live under `config/model-profiles/` and use EDN maps.
 | `:default-reasoning-effort` | `:openai`, `:codex-tc`, `:anthropic-pf`, `:anthropic-tc`, `:fireworks`, `:fireworks-tc` | Provider-neutral reasoning setting. `spell.api/run :reasoning-effort` may override it for one run. |
 | `:max-tokens` | all hosted model providers | Maximum response tokens requested from the provider. |
 | `:retries` | all hosted model providers | Retry schedule for transient provider failures, expressed as sleep durations in seconds. |
-| `:request-timeout-sec` | `:openai`, `:anthropic-pf`, `:anthropic-tc`, `:fireworks`, `:fireworks-tc` | Per-request timeout in seconds. |
+| `:request-timeout-sec` | `:openai`, `:codex-tc`, `:anthropic-pf`, `:anthropic-tc`, `:fireworks`, `:fireworks-tc` | Per-request timeout in seconds. Codex defaults to 300 seconds for the complete HTTP exchange, including the streamed response body; use a positive integer to override. Its plain-text calls inherit this deadline. Expiry raises a non-retryable HTTP timeout. |
 | `:sse-idle-timeout-sec` | `:anthropic-pf`, `:anthropic-tc`, `:fireworks`, `:fireworks-tc` | Streaming timeout in seconds with no received bytes. |
 | `:sse-completion-timeout-sec` | `:anthropic-pf`, `:anthropic-tc`, `:fireworks`, `:fireworks-tc` | Total streaming response timeout in seconds. |
 | `:costs` | all | Pricing overrides merged into `data/pricing.edn`. |
@@ -235,6 +227,7 @@ Agent profile files live under `config/agent-profiles/` and use EDN maps.
 | `:default-model-profile` | Default model profile. `spell.api/run :model-profile` may override it for one run. |
 | `:default-budget` | Default maximum spend in dollars. `spell.api/run :budget` may override it for one run. |
 | `:recover` | Recovery behavior used when evaluating model output fails. See [Error recovery](error-recovery.md). |
+| `:max-consecutive-errors` | Positive integer, default 3. Inherited unless overridden. The Nth consecutive own reader/evaluation failure is terminal; successful completions and accepted handoffs reset. See [Error recovery](error-recovery.md). |
 | `:format` | Structured output contract used to validate and repair model output. |
 | `:format-retries` | Maximum format-repair attempts when `:format` is configured. |
 | `:available-agents` | Explicit sub-agent set exposed through the `workers/` namespace. Omit it to inherit the base profile's workers; use `[]` to disable them. |
@@ -412,3 +405,7 @@ for signatures, lifecycle results, cancellation, and the non-deadlock guarantee.
 Future orchestration uses `blocking/request` for an atomic request/result token
 and `blocking/send-await` to request and collect directly; both create tracked
 agent dependencies.
+
+## In-run mailing-list pattern
+
+The `patterns` namespace exposes exactly `install`, `catalog`, `source`, `update`, and `call` for [installable modules](./installable-modules.md). Source discovery selects worktree-root (cwd outside git) `.spell/modules`, then HOME `.spell/modules`, then bundles; catalog reports selected `:origin`. Loading is inert. Definitions live under run-local globals `:modules`, separate from application state. Explicitly save ordinary `patterns/source` data to keep code across fresh runs; reinstall does not reload or reset ownership/journals. Every participant can install/reuse `:mailing-list`; exactly one administrator initializes board state with `(patterns/call :mailing-list :init options)`. Ordinary operations call direct entries, `(patterns/call :mailing-list operation args)`. Init defaults to `[:general]`, or accepts explicit `:lists`; initializers and list creators are subscribed atomically. Configured `agents/spawn-ask` with an explicit startup program replaces board-specialized spawning. Enable `patterns`, `globals`, and `agents`. Quiet posts, paginated digests with explicit acknowledgements and retention gaps, urgent notification, and tracked onboarding are described in [In-run mailing lists](./mailing-list.md). The bundled `mailing-list` skill gives compact examples. State is isolated per `spell.api/run`, not durable across JVM exits.

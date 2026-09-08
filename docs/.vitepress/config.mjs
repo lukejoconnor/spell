@@ -30,7 +30,10 @@ export default defineConfig({
         text: 'Guide',
         items: [
           { text: 'Spell language overview', link: '/language-overview' },
+          { text: 'Bounded results and paging', link: '/bounded-results' },
           { text: 'Multi-agent communication', link: '/multi-agent' },
+          { text: 'Installable modules', link: '/installable-modules' },
+          { text: 'Mailing lists', link: '/mailing-list' },
           { text: 'Capabilities and configuration', link: '/capabilities' }
         ]
       },

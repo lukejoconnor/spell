@@ -1,0 +1,49 @@
+
+Running tests in #{"test"}
+
+Testing spell.agent-test
+
+Testing spell.agents-prompt-test
+
+Testing spell.api-test
+
+Testing spell.callable-arity-test
+
+Testing spell.context-test
+
+Testing spell.eval-test
+
+Testing spell.grammar-test
+
+Testing spell.llm-test
+
+Testing spell.macros-test
+
+Testing spell.mcp-client-test
+
+Testing spell.mcp-protocol-test
+
+Testing spell.mcp-regression-test
+
+Testing spell.mcp-review-fix-test
+
+Testing spell.mcp-stdio-limits-test
+
+Testing spell.parse-test
+
+Testing spell.prefill-policy-test
+
+Testing spell.provider-test
+
+Testing spell.skills-test
+
+Testing spell.sleep-refusal-recovery-test
+
+Testing spell.stdlib-test
+
+Testing spell.trace-test
+
+Testing spell.web-test
+
+Ran 513 tests containing 4564 assertions.
+0 failures, 0 errors.

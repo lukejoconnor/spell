@@ -1,0 +1,16 @@
+{
+  "cwd": "/private/tmp/spell-dogfood-reliability",
+  "command": [
+    "clojure",
+    "-J-Xms256m",
+    "-J-Xmx1g",
+    "-M:test",
+    "-n",
+    "spell.llm-test"
+  ],
+  "timeout_s": 60.0,
+  "exit": 0,
+  "timed_out": false,
+  "child_reaped": true,
+  "wall_s": 1.4135699169710279
+}

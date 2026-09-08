@@ -89,21 +89,24 @@ Current variants:
 
 The main system prompt is intentionally single-track. Variation should be transport-specific only: prefill, message, or tool-call. Provider-agnostic behavior changes should normally be reflected across all three files.
 
-## Pattern Library
+## Installable Pattern Modules
 
-`spl-lib/patterns.spl` contains reusable Spell patterns loaded through namespace wiring.
+`spl-lib/modules/*.spl` contains two bundled editable Spell module definitions (relay and mailing-list), plus project/HOME `.spell/modules` discovery. Namespace wiring exposes only `patterns/install`, `catalog`, `source`, `update`, and `call`; it does not install every bundle or initialize application state at startup. Install a bundle explicitly before calling its functions. Repeated installation preserves existing edits and state.
 
-Rules:
+Definitions live in run-local globals `:modules`, separate from application state. For `:mailing-list`, every participant may install/reuse the module, but exactly one administrator explicitly calls `:init` to create board state. Existing workers never initialize it again.
 
-- Keep patterns pure unless a side effect is required by design.
-- Document expected return shape in comments when downstream agents depend on it.
+- Keep orchestration policy in editable Spell source, not host rules. Document function behavior and return shapes in each entry's `:doc`; `catalog` derives parameters from its executable `:source` and omits bodies.
+- Pass definitions and entry source as quoted data. Pass `patterns/update` an evaluated function/builtin that returns the next whole definition. Retryable transforms must be pure; purity is a caller obligation, not an enforced effect sandbox.
+- List namespace dependencies in `:requires`; these precheck availability without granting capabilities. Enable required namespaces on each caller's profile.
+- Preserve supporting evidence and actual effect receipts before pruning; retrieve retained output instead of rediscovering it by repeating effects.
 
+See [the public migration guide](../docs/installable-modules.md) for the schema, five-verb signatures, and final bundle disposition.
 ## Web Configuration
 
 `web.edn` configures the `web` namespace.
 
 - Search defaults to Serper when `SERPER_API_KEY` is present; otherwise it falls back to DuckDuckGo.
-- Fetch defaults to the configured fetch backend and character limit.
+- Fetch defaults to the configured fetch backend; serialization owns display limits.
 - `SERPER_API_KEY` is web/search configuration only. It is not required for examples that do not use the `web` namespace.
 
 ## Important Gotchas

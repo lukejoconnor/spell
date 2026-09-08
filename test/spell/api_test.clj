@@ -26,7 +26,7 @@
       (reset! seen-opts opts)
       response)
     (plain-text-provider [this] this)
-    (supports-prefill [_] true)))
+    (supports-prefill [_ _] true)))
 
 (deftest run-prompt-test
   (testing "run with :prompt triggers LLM call and returns result"

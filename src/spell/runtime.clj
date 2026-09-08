@@ -165,13 +165,25 @@
   []
   (eval/compose-macros []))
 
+(defn- receipt-annotation [receipt-site]
+  ;; Labels associate with the following msg-N binding. Tail means only this
+  ;; entry's supplied/proposed trailing expression, not any earlier effects.
+  ;; Explicit receive transforms the supplied program without evaluating it.
+  ;; The label, binding and continuation share the same contribution budget;
+  ;; intrinsically oversized names or syntax can still exceed that budget.
+  (case receipt-site
+    :startup "startup: tail not run"
+    :pre-eval "pre-eval: tail not run"
+    :wait-resume "wait resumed"
+    :dormant-resume "dormant resumed"
+    :explicit-receive "receive: not evaluated"))
+
 (defn- create-msg
   "Create a Spell macro that reopens a parsed completion, appends (def name value),
    and appends an !extend continuation so the recipient continues thinking.
-   Injects a think annotation so the agent knows the message preempted its
-   trailing expression (if active) or awakened it (if sleeping).
+   Annotates the actual receipt site without inferring earlier execution.
   Internal plumbing for signaling (waiting-for, spawn-result)."
-  [name value]
+  [name value receipt-site]
   {:spell/macro true
    :expander
    {:spell/fn true
@@ -180,8 +192,8 @@
     ;; in the same contribution budget as the message and its annotation.
     :body [(list 'let
              ['forms (list 'context-forms
-                       [{:form (list 'quote (list 'think (str "[preempted or awakened by " name "]")))}
-                        {:name (list 'quote name) :value (list 'quote value)}
+                       [{:form (list 'quote (list 'think (receipt-annotation receipt-site)))}
+                        {:name (list 'quote name) :value (list 'quote value) :body-only? true}
                         {:form '(list 'quote (list '!extend (second q)))}])]
              '(reopen q
                 (reopen-eval (nth forms 0))
@@ -189,15 +201,21 @@
                 (reopen-eval (nth forms 2))))]}})
 
 
-(defn- envelope-macro [{:keys [message macro]}]
-  (or macro (create-msg (symbol (gensym "msg-")) message)))
+(defn- envelope-macro [receipt-site {:keys [message macro]}]
+  ;; Low-level send-msg-fn envelopes are caller-authored transforms: preserve them
+  ;; unchanged. Only ordinary message envelopes synthesize a msg-N and annotation.
+  (or macro (create-msg (symbol (gensym "msg-")) message receipt-site)))
 
 (defn- drain-inbox-macros!
   "Atomically take exactly one mailbox batch for handle (coordinator/drain! removes the
    batch, rotates its signal, and claims pending request slots in one transition) and
    convert each envelope to an inbox macro, preserving mailbox order."
-  [handle]
-  (mapv envelope-macro (coordinator/drain! handle)))
+  [handle receipt-site]
+  ;; Reject bad caller metadata before accepting or claiming any message.
+  (when-not (#{:startup :pre-eval :wait-resume :dormant-resume :explicit-receive} receipt-site)
+    (throw (ex-info "Unknown receipt site"
+                    {:type :invalid-receipt-site :receipt-site receipt-site})))
+  (mapv #(envelope-macro receipt-site %) (coordinator/drain! handle)))
 
 (defn receive
   "Explicit nonblocking receipt. Validates that program is a canonical completed quine,
@@ -222,7 +240,7 @@
                             (assoc (ex-data e) :handle handle) e))))
      (when-not (symbol? (second program))
        (throw (ex-info "receive requires a quine with a symbol name" {:program program})))
-     (let [macros (drain-inbox-macros! handle)
+     (let [macros (drain-inbox-macros! handle :explicit-receive)
            transformed (if (seq macros)
                          (inbox/apply-inbox-macros program macros
                                                   {:env (select-keys eval/*spell-env* ['eval])
@@ -234,21 +252,21 @@
        transformed)))
 
 (defn make-awake-fn
-  ([handle eval-fn] (make-awake-fn handle eval-fn true))
-  ([handle eval-fn receive?]
+  "Build an evaluation entry with a caller-supplied factual receipt site."
+  [handle eval-fn receive? receipt-site]
   (fn [raw]
     (binding [*checkpoint?* receive?]
-     (let [before-awake (:spell/before-awake (meta eval-fn))
-          after-awake (:spell/after-awake (meta eval-fn))]
-      (when before-awake (before-awake))
-      (try
-        (let [macros (if receive? (drain-inbox-macros! handle) [])
-              transformed (if (and (seq macros) (not (inbox-aware-eval-fn? eval-fn)))
-                            (inbox/materialize-inbox-raw raw macros {:builtins eval/core-builtins}) raw)]
-          (record-last-raw! handle transformed)
-          (binding [*current-eval-fn* (or (:spell/wake-eval-fn (meta eval-fn)) eval-fn)]
-            (if (inbox-aware-eval-fn? eval-fn) (eval-fn raw macros) (eval-fn transformed))))
-        (finally (when after-awake (after-awake)))))))))
+      (let [before-awake (:spell/before-awake (meta eval-fn))
+            after-awake (:spell/after-awake (meta eval-fn))]
+        (when before-awake (before-awake))
+        (try
+          (let [macros (if receive? (drain-inbox-macros! handle receipt-site) [])
+                transformed (if (and (seq macros) (not (inbox-aware-eval-fn? eval-fn)))
+                              (inbox/materialize-inbox-raw raw macros {:builtins eval/core-builtins}) raw)]
+            (record-last-raw! handle transformed)
+            (binding [*current-eval-fn* (or (:spell/wake-eval-fn (meta eval-fn)) eval-fn)]
+              (if (inbox-aware-eval-fn? eval-fn) (eval-fn raw macros) (eval-fn transformed))))
+          (finally (when after-awake (after-awake))))))))
 
 (defn- await-message! [handle]
   ;; The signal is a notification adapter. Mailbox and run closure are authoritative.
@@ -260,7 +278,7 @@
 (defn- make-asleep-fn [handle eval-fn]
   (fn [raw]
     (await-message! handle)
-    (box handle raw (make-awake-fn handle eval-fn))))
+    (box handle raw (make-awake-fn handle eval-fn true :wait-resume))))
 
 (defn box
   ([handle completion-source inside-fn]
@@ -292,14 +310,17 @@
           raw (:last-raw @(:execution a))]
       (try
         (future
-          (try
-            ;; Wait outside the root box: the earlier lifecycle has unwound.
-            (await-message! handle)
-            (run-root-box handle (or raw "") (make-awake-fn handle eval-fn) eval-fn completion)
-            (catch Throwable e
-              (when-not (= :coordinator-closed (:type (ex-data e)))
-                (coordinator/retire! handle completion (child-failure handle :startup e))
-                (throw e)))))
+          ;; Registration may come from a computation, but this thread owns an
+          ;; independent agent lifecycle, just as a spawned agent does.
+          (binding [*computation-future?* false *computation-owner* nil]
+            (try
+              ;; Wait outside the root box: the earlier lifecycle has unwound.
+              (await-message! handle)
+              (run-root-box handle (or raw "") (make-awake-fn handle eval-fn true :dormant-resume) eval-fn completion)
+              (catch Throwable e
+                (when-not (= :coordinator-closed (:type (ex-data e)))
+                  (coordinator/retire! handle completion (child-failure handle :startup e))
+                  (throw e))))))
         (catch Throwable e
           ;; Submission can fail after the preceding lifecycle rotated its
           ;; completion. Retire the unstarted next lifecycle, not the old one.
@@ -376,7 +397,9 @@
   []
   (assert-agent-context! "!wait")
   (let [outcome (coordinator/wait! *current-handle*)]
-    (when-not (= :idle (:status outcome)) (block-for-message))))
+    (when (#{:ready :waiting} (:status outcome))
+      (when eval/*completion-handoff* (eval/*completion-handoff*))
+      (block-for-message))))
 (defn sleep! [] (wait!))
 (defn reply-ask [msg value]
   (assert-agent-context! "!reply-ask")
@@ -614,7 +637,7 @@ Use from inside (future ...) orchestration code."
     :waiting "For message handling, put !wait/!sleep/!ask/!spawn-ask/!reply-ask or !ask-await last in the quoted trailing expression. Read received msg-N bindings in the resumed turn. A wait returns the whole resumed computation's value, so capturing it as a message or adding parentheses, ((agents/!wait)), misuses that value. Synchronous !llm-self result capture remains available."
     :receipts "On waking, establish which required actions executed before continuing dependent work. An incoming request can supersede your own proposed request while its source and local definitions remain. When dispatch must precede another step, capture immediate ask with a fresh name, e.g. '(!call-now question-edge (agents/ask :reviewer question)), then wait separately. Check actual captures, received reports, and out-edges/status before dependent replies, waits, or return. A proposed sent flag is not execution evidence. Resolve uncertain execution before retrying; complete an interrupted prerequisite first. See (!describe agents) for examples."
     :returning "Returning fills all still-unanswered claimed request slots with the same value and abandons unfinished outgoing collections; targets keep running. Explicitly reply to any request whose answer differs from your final return value. After a wake and before returning, inspect your pending incoming slots and send any such reply that has not executed. Receiving a peer's answer does not establish that your own reply to that peer ran. Before waiting, establish that work remains to collect and inspect uncertain obligations. A refused wait is an error: recover by inspecting current state and revising the program. Return when done."
-    :futures "Create a communication future once in a quoted trailing expression and retain it with !call-now for later joins. Inside it, blocking/request creates a token and blocking/await collects it; !ask-await resumes the enclosing agent with messages. (!describe agents) shows the complete pattern."
+    :futures "Create a communication future once in a quoted trailing expression and retain its identity explicitly with globals/set; rejoin it with globals/get. Inside it, blocking/request creates a token and blocking/await collects it; !ask-await resumes the enclosing agent with messages. (!describe agents) shows the complete pattern."
     :guide "AGENTS — Communication controlled by your program.
 
 Use agents/ operations in the quoted trailing expression. Each operation takes
@@ -730,23 +753,25 @@ no result binding. Reusing a name can leave an older binding visible after the
 new action was superseded. Keep fresh captures or inspect the coordinator.
 
 Requests collected in computation futures
-
-Create and capture the future in the quoted trailing expression so later turns
-reuse the same computation. These are successive turns:
+Create the future once in the quoted trailing expression and retain its identity
+explicitly in globals. These are successive turns:
   '(!call-now worker-handle (agents/spawn \"Answer incoming arithmetic requests with integers.\" :worker))
-  '(!call-now task-future (future (blocking/await (blocking/request worker-handle \"Multiply 23 by 41.\"))))
-  '(!ask-await task-future)
+  '(!call-now future-saved (do (globals/set :task-future (future (blocking/await (blocking/request worker-handle \"Multiply 23 by 41.\")))) :saved))
+  '(!ask-await (globals/get :task-future))
 future takes one expression; wrap multiple body forms in do. blocking/request
 creates a tracked result token; blocking/await collects it inside the future.
 The enclosing !ask-await resumes with a msg-N whose :from is :future and :body
 is the computed value. A body with :future-await/error reports a computation
-error. An unrelated message can arrive first: handle it, then
-join the same captured task-future again. A future stored through a stored
-reference keeps its identity. Do not recreate it to resume waiting.
+error. An unrelated message can arrive first: handle it, then join the same
+future with (globals/get :task-future) again. Do not recreate it to resume waiting.
+Rejoins share one subscription per caller, lifecycle, and underlying future through
+inbox receipt, including while its completion is queued. An explicit await after
+that receipt requests a fresh delivery of the completed value, not recomputation.
+Context bindings are bounded display snapshots, not identity-preserving storage.
 Creating a future in ordinary retained source can rerun its request on later
-turns. A local def inside a quoted do is not retained for a later rejoin;
-!call-now captures the future for that purpose. blocking/send-await creates
-and collects a NEW request; use blocking/await for an existing token.
+turns. A local def inside a quoted do is not retained for a later rejoin.
+blocking/send-await creates and collects a NEW request; use blocking/await for
+an existing token.
 
 Use (!describe agents :function) for signatures. Discover current/parent handles
 and registered roles; :user exists only when the run configured user input.

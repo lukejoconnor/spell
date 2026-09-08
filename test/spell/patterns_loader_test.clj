@@ -1,48 +1,104 @@
 (ns spell.patterns-loader-test
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.edn :as edn]
+            [clojure.java.io :as io]
+            [clojure.string :as str]
             [spell.parse :as parse]
-            [spell.patterns :as patterns]))
+            [spell.patterns :as patterns])
+  (:import [java.nio.file Files]
+           [java.util.concurrent TimeUnit]
+           [java.util.jar JarEntry JarOutputStream]))
 
-(def ^:private doc-keys
-  #{:short-docs :docs :detail})
+(def bundles [:relay :mailing-list])
 
-(def ^:private expected-requires
-  {:check-result ['strings]
-   :clean-prompt []
-   :ralph ['agents 'blocking]
-   :team ['strings 'io 'agents 'blocking]
-   :fix-loop ['strings 'io 'agents 'blocking]})
+(deftest public-namespace-has-only-module-verbs
+  (is (= #{:install :catalog :source :update :call}
+         (set (remove #{:short-docs :docs :detail} (keys patterns/patterns))))))
 
-(defn- defn-keys-from-spl
-  []
-  (->> (parse/read-all (slurp "config/spl-lib/patterns.spl"))
-       (keep (fn [form]
-               (when (and (seq? form)
-                          (= 'defn (first form))
-                          (symbol? (second form)))
-                 (keyword (name (second form))))))
-       set))
+(deftest bundled-definitions-are-executable-source-data
+  (doseq [module bundles]
+    (testing (name module)
+      (let [forms (parse/read-all
+                    (slurp (io/resource (str "modules/" (name module) ".spl"))))
+            definition (first forms)]
+        (is (= 1 (count forms)))
+        (is (map? definition))
+        (is (string? (:doc definition)))
+        (is (map? (:functions definition)))
+        (is (seq (:functions definition)))
+        (doseq [[k entry] (:functions definition)]
+          (is (keyword? k))
+          (is (string? (:doc entry)))
+          (is (vector? (:requires entry)))
+          (is (every? symbol? (:requires entry)))
+          (is (seq? (:source entry)))
+          (is (= 'fn (first (:source entry)))))))))
 
-(deftest patterns-loader-sync-test
-  (testing "patterns namespace exports every top-level defn in patterns.spl"
-    (let [expected (defn-keys-from-spl)
-          actual   (->> (keys patterns/patterns)
-                        (remove doc-keys)
-                        set)]
-      (is (= expected actual))
-      (doseq [k expected]
-        (is (= true (get-in patterns/patterns [k :spell/fn]))
-            (str k " should be a spell/fn"))
-        (is (vector? (get-in patterns/patterns [k :params]))
-            (str k " should have vector params"))
-        (is (seq (get-in patterns/patterns [k :body]))
-            (str k " should have non-empty body"))
-        (is (vector? (get-in patterns/patterns [k :requires]))
-            (str k " should carry a :requires vector"))))))
-
-(deftest patterns-loader-requires-test
-  (testing "public patterns carry the expected namespace requirements"
-    (doseq [[pattern-key requires] expected-requires]
-      (is (= requires
-             (get-in patterns/patterns [pattern-key :requires]))
-          (str pattern-key " should declare the expected namespace requirements")))))
+(deftest bundled-modules-load-from-jar-outside-checkout
+  (let [dir (.toFile (Files/createTempDirectory "spell-module-package-"
+                                               (make-array java.nio.file.attribute.FileAttribute 0)))
+        jar (io/file dir "application.jar")
+        output (io/file dir "result.edn")]
+    (try
+      ;; Package the actual production paths, so omitting the bundle path from
+      ;; deps.edn fails this test as well as a filesystem-only loader.
+      (with-open [out (JarOutputStream. (io/output-stream jar))]
+        (doseq [path (:paths (edn/read-string (slurp "deps.edn")))
+                :let [root (.toPath (io/file path))]
+                file (file-seq (io/file path))
+                :when (.isFile file)]
+          (.putNextEntry out (JarEntry. (str/replace
+                                         (str (.relativize root (.toPath file)))
+                                         java.io.File/separator "/")))
+          (io/copy file out)
+          (.closeEntry out)))
+      (let [jars (filter #(.isFile (io/file %))
+                         (str/split (System/getProperty "java.class.path")
+                                    (re-pattern java.io.File/pathSeparator)))
+            classpath (str/join java.io.File/pathSeparator
+                                (cons (.getAbsolutePath jar) jars))
+            code (str
+                   "(require 'spell.patterns 'spell.globals 'spell.coordinator 'spell.runtime 'clojure.java.io)\n"
+                   (pr-str
+                     '(binding [spell.globals/*store* (spell.globals/new-store)
+                                spell.coordinator/*coordinator* (spell.coordinator/new-coordinator)
+                                spell.runtime/*current-handle* :packaged-installer]
+                        (spell.coordinator/register! :packaged-installer)
+                        (let [catalog (spell.patterns/catalog)
+                              installs (mapv #(spell.patterns/install (:module %)) catalog)]
+                          (spell.patterns/update :relay assoc :doc "packaged edit")
+                          (prn {:protocol (.getProtocol (clojure.java.io/resource "modules/relay.spl"))
+                                :catalog-count (count catalog)
+                                :installed (every? :installed? installs)
+                                :reused (false? (:installed? (spell.patterns/install :relay)))
+                                :edited-doc (:doc (spell.patterns/source :relay))
+                                :source-head (first (:source (spell.patterns/source :relay :run)))}))))
+                   "\n(shutdown-agents)")
+            builder (doto (ProcessBuilder.
+                            ^java.util.List
+                            [(str (System/getProperty "java.home") "/bin/java")
+                             "-cp" classpath "clojure.main" "-e" code])
+                      (.directory dir)
+                      (.redirectErrorStream true)
+                      (.redirectOutput output))
+            _ (doto (.environment builder)
+                (.remove "SPELL_ROOT")
+                (.put "HOME" (.getAbsolutePath (io/file dir "home"))))
+            process (.start builder)]
+        (try
+          (let [finished? (.waitFor process 30 TimeUnit/SECONDS)]
+            (is finished? "Packaged child JVM completes outside the source checkout")
+            (when finished?
+              (let [text (slurp output)]
+                (is (zero? (.exitValue process)) text)
+                (when (zero? (.exitValue process))
+                  (is (= {:protocol "jar" :catalog-count 2 :installed true
+                          :reused true :edited-doc "packaged edit" :source-head 'fn}
+                         (edn/read-string text)))))))
+          (finally
+            (when (.isAlive process)
+              (.destroyForcibly process)
+              (.waitFor process 5 TimeUnit/SECONDS)))))
+      (finally
+        (doseq [file (reverse (file-seq dir))]
+          (io/delete-file file true))))))

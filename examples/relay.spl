@@ -1,0 +1,9 @@
+(quine completion
+  (eval
+    (do
+      (quine task "Run the relay example. The startup action below launches fresh reasoning rounds and a separate verifier. On resumption inspect the actual msg-N from :future and return its :body, preserving the structured :rounds report. Handle unrelated messages without recreating the future. A :solved true report records verifier agreement, not a correctness guarantee.")
+      '(do
+         (patterns/install :relay)
+         (patterns/call :relay :run
+           {:problem "Find the smallest positive integer divisible by every integer from 1 through 10. Explain a checkable derivation."
+            :max-rounds 2})))))

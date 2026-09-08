@@ -1,0 +1,4 @@
+{:doc "A small user-saved greeting module. Loading this map is inert."
+ :functions
+ {:run {:doc "Greet one name." :requires []
+        :source (fn [name] (str "Hello, " name))}}}

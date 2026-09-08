@@ -127,6 +127,12 @@
         (is (= :C (await! completion "resumed checkpoint value")))
         (is (= 4 (count @prompts)))
         (assert-wake-prefix (nth @prompts 3) :C message)
+        (is (re-find (if (= :wait mode)
+                       #"\(think \"wait resumed\"\)"
+                       #"\(think \"dormant resumed\"\)")
+                     (nth @prompts 3)))
+        (is (not (str/includes? (nth @prompts 3) "tail not run"))
+            "A wake does not infer that previously executed checkpoint effects were skipped")
         (is (not (str/includes? (nth @prompts 3) "(def checkpoint-marker :P)"))
             "A valid older parent frame must not supersede its receiving descendant")
         (is (= [:p-before :h-before :c-ran :h-after :p-after :wake] @marks)
