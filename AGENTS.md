@@ -2,7 +2,7 @@
 
 This file is a public orientation guide for agents, readers, and contributors working through the Spell source tree. Start with `README.md` for the human-facing project overview, CLI usage, and core language ideas, then use this file for installation checks, source-map lookup, tests, and implementation orientation.
 
-Current release: `v0.4.0`. See `docs/CHANGELOG.md` for release notes and `docs/api.md` for the public Clojure API and configuration surface.
+Current release: `v0.5.0`. See `docs/CHANGELOG.md` for release notes and `docs/api.md` for the public Clojure API and configuration surface.
 
 Spell is a Lisp dialect for LLM self-orchestration. A Spell completion is itself a program: the evaluator runs the program, and the program can call back into an LLM, spawn sub-agents, manage context, and use configured namespaces such as `io`, `web`, `agents`, `globals`, and `patterns`.
 
@@ -45,7 +45,7 @@ This repo includes Spell-specific skills under `.agents/skills/`. Use them as th
 | `data/pricing.edn` | Model pricing table used for usage and cost reporting. |
 | `docs/` | Public documentation for the release. |
 | `docs/index.md` | Documentation home; preview the VitePress site with `npm ci` and `npm run docs:dev`. |
-| `docs/CHANGELOG.md` | Release notes through `v0.4.0`. |
+| `docs/CHANGELOG.md` | Release notes through `v0.5.0`. |
 | `LICENSE` | MIT license text. |
 
 ## Agent Quick Start

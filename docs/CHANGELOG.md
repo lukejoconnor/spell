@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.5.0 - 2026-09-08
 
 ### Modules and coordination
 
@@ -15,6 +15,8 @@
 - Replaced stored-output representations with ordinary bounded snapshots. Complete raw values remain available to computation; retain needed evidence explicitly before pruning context. Updated recovery and context guidance explains ephemeral bindings and durable observations.
 
 ### Runtime and performance
+
+- Prevented duplicate completion notifications when rejoining a retained future after an unrelated wake. One subscription remains active through receipt; explicitly awaiting again after receipt delivers the completed value without repeating the computation.
 
 - Preserved queued messages through context compaction, corrected dormant-agent startup from computations, and reset consecutive-error limits after successful model turns.
 - Made Ctrl+C exit interactive runs and restore terminal state. Development workflow runners clean up their child processes on interruption and output failures.

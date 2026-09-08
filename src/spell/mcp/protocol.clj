@@ -7,7 +7,7 @@
            [java.util Base64 UUID]))
 
 (def protocol-version "2026-07-28")
-(def client-info {"name" "Spell" "version" "0.4.0"})
+(def client-info {"name" "Spell" "version" "0.5.0"})
 (def max-cli-text-chars 200000)
 (def required-meta-keys
   ["io.modelcontextprotocol/protocolVersion"
