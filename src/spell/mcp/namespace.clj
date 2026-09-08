@@ -174,7 +174,7 @@
                :err (cond-> (.getMessage ^Exception e)
                       (seq (:stderr data))
                       (str "\nMCP stderr:\n" (str/join "\n" (:stderr data))))
-               :truncated false}
+              }
         (contains? data :status) (assoc :status (:status data))))))
 
 (defmacro ^:private with-operational-result [& body]
@@ -269,7 +269,7 @@
   [clients entries]
   {:short-docs "Inspect and use configured MCP resources, prompts, completion, catalogs, and subscriptions."
    :docs
-   {:guide (str "MCP — Protocol operations for configured server aliases. Tool/read-resource/get-prompt/complete/info/refresh results are envelopes {:ok boolean :out payload :err string-or-nil :truncated boolean}. Attributed payloads remain full before context insertion; semantic tool failures retain content with :ok false. Known operational failures are envelopes; argument/schema/permission errors remain exceptions. Cached servers/resources/resource-templates/prompts remain raw vectors; listen-send returns nil. Tool calls live in each server's own namespace "
+   {:guide (str "MCP — Protocol operations for configured server aliases. Tool/read-resource/get-prompt/complete/info/refresh results are envelopes {:ok boolean :out payload :err string-or-nil}. Serialization adds :truncated to context snapshots. Attributed payloads remain full before context insertion; semantic tool failures retain content with :ok false. Known operational failures are envelopes; argument/schema/permission errors remain exceptions. Cached servers/resources/resource-templates/prompts remain raw vectors; listen-send returns nil. Tool calls live in each server's own namespace "
                 "and take one argument map when their schema has inputs. Inspect a server with (mcp/info :server). "
                 "Complete prompt arguments with (mcp/complete :server {\"type\" \"ref/prompt\" \"name\" \"prompt-name\"} "
                 "{\"name\" \"argument-name\" \"value\" \"prefix\"}). Subscribe before the triggering operation with "
@@ -346,7 +346,7 @@
                                     (get-in entries [server :tools])
                                     (:tools catalog)
                                     (:excluded-tools catalog))]
-                {:ok true :err nil :truncated false :out {:server server
+                {:ok true :err nil :out {:server server
                  :tool-count (count (:tools catalog))
                  :resource-count (count (:resources catalog))
                  :resource-template-count (count (:resource-templates catalog))

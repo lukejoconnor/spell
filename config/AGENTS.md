@@ -106,7 +106,7 @@ See [the public migration guide](../docs/installable-modules.md) for the schema,
 `web.edn` configures the `web` namespace.
 
 - Search defaults to Serper when `SERPER_API_KEY` is present; otherwise it falls back to DuckDuckGo.
-- Fetch defaults to the configured fetch backend and character limit.
+- Fetch defaults to the configured fetch backend; serialization owns display limits.
 - `SERPER_API_KEY` is web/search configuration only. It is not required for examples that do not use the `web` namespace.
 
 ## Important Gotchas

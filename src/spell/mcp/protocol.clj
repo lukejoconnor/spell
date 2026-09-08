@@ -248,7 +248,7 @@
   (let [semantic-error? (true? (get result "isError"))
         text (when semantic-error? (text-content result))
         error (when semantic-error? (if (str/blank? text) "MCP tool call failed" text))]
-    {:ok (not semantic-error?) :err error :truncated false
+    {:ok (not semantic-error?) :err error
      :out (cond-> {"mcp/server" (name server) "mcp/operation" operation}
             (contains? result "structuredContent")
             (assoc "structuredContent" (get result "structuredContent"))
@@ -256,26 +256,26 @@
             semantic-error? (assoc "isError" true "error" error))}))
 
 (defn model-resource-value [server result]
-  {:ok true :err nil :truncated false
+  {:ok true :err nil
    :out {"mcp/server" (name server)
          "mcp/operation" "resources/read"
          "contents" (get result "contents" [])}})
 
 (defn model-prompt-value [server result]
-  {:ok true :err nil :truncated false
+  {:ok true :err nil
    :out {"mcp/server" (name server)
          "mcp/operation" "prompts/get"
          "description" (get result "description")
          "messages" (get result "messages" [])}})
 
 (defn model-completion-value [server result]
-  {:ok true :err nil :truncated false
+  {:ok true :err nil
    :out {"mcp/server" (name server)
          "mcp/operation" "completion/complete"
          "completion" (get result "completion" {})}})
 
 (defn model-info-value [server discovery]
-  {:ok true :err nil :truncated false
+  {:ok true :err nil
    :out (assoc (select-keys discovery
                            ["supportedVersions" "capabilities" "_meta" "ttlMs" "cacheScope"
                             "catalogCache" "excludedTools" "instructions"])

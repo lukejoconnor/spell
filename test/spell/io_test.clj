@@ -130,11 +130,11 @@
 
 (deftest read-lines-range-errors
   (let [path (str test-dir "/missing-selected-lines.txt")]
-    (is (= {:ok false :out nil :truncated false :err (str "File not found: " path)}
+    (is (= {:ok false :out nil :err (str "File not found: " path)}
            (io/read-lines path 1 5))))
   (with-redefs [clojure.java.io/reader
                 (fn [& _] (throw (java.io.IOException. "selected read failed")))]
-    (is (= {:ok false :out nil :truncated false :err "Error reading file: selected read failed"}
+    (is (= {:ok false :out nil :err "Error reading file: selected read failed"}
            (io/read-lines "unused" 1 5)))))
 
 (deftest read-lines-empty
@@ -177,7 +177,7 @@
   (let [path (str test-dir "/slurp-test.txt")
         content "Hello, world!"]
     (spit path content)
-    (is (= {:ok true :err nil :truncated false :out content} (io/slurp-file path)))))
+    (is (= {:ok true :err nil :out content} (io/slurp-file path)))))
 
 (deftest slurp-file-not-found
   (let [result (io/slurp-file (str test-dir "/missing.txt"))]
@@ -186,7 +186,7 @@
 (deftest spit-file-test
   (let [path (str test-dir "/spit-test.txt")
         content "Test content"]
-    (is (= {:ok true :err nil :truncated false :out path} (io/spit-file path content)))
+    (is (= {:ok true :err nil :out path} (io/spit-file path content)))
     (is (= content (slurp path)))))
 
 (deftest spit-file-append
@@ -202,31 +202,31 @@
 (deftest write-file-success
   (let [path (str test-dir "/write-test.txt")
         content "Test content"]
-    (is (= {:ok true :err nil :truncated false :out path} (io/write-file path content)))
+    (is (= {:ok true :err nil :out path} (io/write-file path content)))
     (is (= content (slurp path)))))
 
 (deftest write-file-creates-dirs
   (let [path (str test-dir "/nested/deep/dir/file.txt")
         content "Nested content"]
-    (is (= {:ok true :err nil :truncated false :out path} (io/write-file path content)))
+    (is (= {:ok true :err nil :out path} (io/write-file path content)))
     (is (= content (slurp path)))))
 
 (deftest write-file-overwrites
   (let [path (str test-dir "/overwrite.txt")]
     (spit path "original")
-    (is (= {:ok true :err nil :truncated false :out path} (io/write-file path "new content")))
+    (is (= {:ok true :err nil :out path} (io/write-file path "new content")))
     (is (= "new content" (slurp path)))))
 
 (deftest write-file-unicode
   (let [path (str test-dir "/unicode-write.txt")
         content "写文件 📝"]
-    (is (= {:ok true :err nil :truncated false :out path} (io/write-file path content)))
+    (is (= {:ok true :err nil :out path} (io/write-file path content)))
     (is (= content (slurp path)))))
 
 (deftest write-file-multiline
   (let [path (str test-dir "/multiline-write.txt")
         content "Line 1\nLine 2\n\nLine 4"]
-    (is (= {:ok true :err nil :truncated false :out path} (io/write-file path content)))
+    (is (= {:ok true :err nil :out path} (io/write-file path content)))
     (is (= content (slurp path)))))
 
 ;; =============================================================================
@@ -236,7 +236,7 @@
 (deftest str-replace-success
   (let [path (str test-dir "/replace.txt")]
     (spit path "(def x 1)\n(def y 2)")
-    (is (= {:ok true :err nil :truncated false :out path} (io/str-replace path "(def x 1)" "(def x 42)")))
+    (is (= {:ok true :err nil :out path} (io/str-replace path "(def x 1)" "(def x 42)")))
     (is (= "(def x 42)\n(def y 2)" (slurp path)))))
 
 (deftest str-replace-not-found
@@ -261,7 +261,7 @@
 (deftest str-replace-multiline
   (let [path (str test-dir "/replace-multi.txt")]
     (spit path "function foo() {\n  return 1;\n}")
-    (is (= {:ok true :err nil :truncated false :out path}
+    (is (= {:ok true :err nil :out path}
            (io/str-replace path
                            "function foo() {\n  return 1;\n}"
                            "function foo() {\n  return 42;\n}")))
@@ -272,13 +272,13 @@
         before "# Header\n\n(def target 1)\n\n# Footer"
         after "# Header\n\n(def target 999)\n\n# Footer"]
     (spit path before)
-    (is (= {:ok true :err nil :truncated false :out path} (io/str-replace path "(def target 1)" "(def target 999)")))
+    (is (= {:ok true :err nil :out path} (io/str-replace path "(def target 1)" "(def target 999)")))
     (is (= after (slurp path)))))
 
 (deftest str-replace-special-chars
   (let [path (str test-dir "/special.txt")]
     (spit path "regex chars: $^.*+?()[]{}|\\")
-    (is (= {:ok true :err nil :truncated false :out path}
+    (is (= {:ok true :err nil :out path}
            (io/str-replace path
                            "regex chars: $^.*+?()[]{}|\\"
                            "replaced!")))
@@ -288,7 +288,7 @@
   (testing "$ and \\ in new-str are treated as literal characters"
     (let [path (str test-dir "/dollar.txt")]
       (spit path "price: OLD")
-      (is (= {:ok true :err nil :truncated false :out path} (io/str-replace path "OLD" "$100\\n")))
+      (is (= {:ok true :err nil :out path} (io/str-replace path "OLD" "$100\\n")))
       (is (= "price: $100\\n" (slurp path))))))
 
 (deftest str-replace-empty-old-str
@@ -302,13 +302,13 @@
 (deftest str-replace-all
   (let [path (str test-dir "/replace-all.txt")]
     (spit path "foo bar foo baz foo")
-    (is (= {:ok true :err nil :truncated false :out path} (io/str-replace path "foo" "qux" {:all true})))
+    (is (= {:ok true :err nil :out path} (io/str-replace path "foo" "qux" {:all true})))
     (is (= "qux bar qux baz qux" (slurp path)))))
 
 (deftest str-replace-all-single-occurrence
   (let [path (str test-dir "/replace-all-single.txt")]
     (spit path "one foo here")
-    (is (= {:ok true :err nil :truncated false :out path} (io/str-replace path "foo" "bar" {:all true})))
+    (is (= {:ok true :err nil :out path} (io/str-replace path "foo" "bar" {:all true})))
     (is (= "one bar here" (slurp path)))))
 
 (deftest str-replace-all-not-found
@@ -325,37 +325,37 @@
 (deftest replace-lines-single
   (let [path (str test-dir "/rl-single.txt")]
     (spit path "aaa\nbbb\nccc\n")
-    (is (= {:ok true :err nil :truncated false :out path} (io/replace-lines path 2 3 "BBB")))
+    (is (= {:ok true :err nil :out path} (io/replace-lines path 2 3 "BBB")))
     (is (= "aaa\nBBB\nccc\n" (slurp path)))))
 
 (deftest replace-lines-range
   (let [path (str test-dir "/rl-range.txt")]
     (spit path "line1\nline2\nline3\nline4\nline5\n")
-    (is (= {:ok true :err nil :truncated false :out path} (io/replace-lines path 2 5 "new2\nnew3")))
+    (is (= {:ok true :err nil :out path} (io/replace-lines path 2 5 "new2\nnew3")))
     (is (= "line1\nnew2\nnew3\nline5\n" (slurp path)))))
 
 (deftest replace-lines-delete
   (let [path (str test-dir "/rl-delete.txt")]
     (spit path "keep\nremove\nkeep\n")
-    (is (= {:ok true :err nil :truncated false :out path} (io/replace-lines path 2 3 "")))
+    (is (= {:ok true :err nil :out path} (io/replace-lines path 2 3 "")))
     (is (= "keep\nkeep\n" (slurp path)))))
 
 (deftest replace-lines-insert
   (let [path (str test-dir "/rl-insert.txt")]
     (spit path "aaa\nccc\n")
-    (is (= {:ok true :err nil :truncated false :out path} (io/replace-lines path 2 2 "bbb")))
+    (is (= {:ok true :err nil :out path} (io/replace-lines path 2 2 "bbb")))
     (is (= "aaa\nbbb\nccc\n" (slurp path)))))
 
 (deftest replace-lines-first-line
   (let [path (str test-dir "/rl-first.txt")]
     (spit path "old\nrest\n")
-    (is (= {:ok true :err nil :truncated false :out path} (io/replace-lines path 1 2 "new")))
+    (is (= {:ok true :err nil :out path} (io/replace-lines path 1 2 "new")))
     (is (= "new\nrest\n" (slurp path)))))
 
 (deftest replace-lines-last-line
   (let [path (str test-dir "/rl-last.txt")]
     (spit path "rest\nold\n")
-    (is (= {:ok true :err nil :truncated false :out path} (io/replace-lines path 2 3 "new")))
+    (is (= {:ok true :err nil :out path} (io/replace-lines path 2 3 "new")))
     (is (= "rest\nnew\n" (slurp path)))))
 
 (deftest replace-lines-out-of-range
@@ -375,7 +375,7 @@
 (deftest replace-lines-preserves-no-trailing-newline
   (let [path (str test-dir "/rl-no-nl.txt")]
     (spit path "aaa\nbbb\nccc")
-    (is (= {:ok true :err nil :truncated false :out path} (io/replace-lines path 2 3 "BBB")))
+    (is (= {:ok true :err nil :out path} (io/replace-lines path 2 3 "BBB")))
     (is (= "aaa\nBBB\nccc" (slurp path)))))
 
 ;; =============================================================================
@@ -386,7 +386,7 @@
   (testing "two non-adjacent edits applied atomically"
     (let [path (str test-dir "/rl-multi.txt")]
       (spit path "aaa\nbbb\nccc\nddd\neee\n")
-      (is (= {:ok true :err nil :truncated false :out path}
+      (is (= {:ok true :err nil :out path}
              (io/replace-lines path [[2 3 "BBB"] [4 5 "DDD"]])))
       (is (= "aaa\nBBB\nccc\nDDD\neee\n" (slurp path))))))
 
@@ -395,7 +395,7 @@
     (let [path (str test-dir "/rl-multi-sizes.txt")]
       (spit path "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
       ;; Replace lines 2-3 with one line, and lines 7-9 with four lines
-      (is (= {:ok true :err nil :truncated false :out path}
+      (is (= {:ok true :err nil :out path}
              (io/replace-lines path [[2 4 "two-three"] [7 10 "A\nB\nC\nD"]])))
       (is (= "1\ntwo-three\n4\n5\n6\nA\nB\nC\nD\n10\n" (slurp path))))))
 
@@ -403,7 +403,7 @@
   (testing "one delete and one replace"
     (let [path (str test-dir "/rl-multi-del.txt")]
       (spit path "keep\ndelete\nkeep\nchange\nkeep\n")
-      (is (= {:ok true :err nil :truncated false :out path}
+      (is (= {:ok true :err nil :out path}
              (io/replace-lines path [[2 3 ""] [4 5 "CHANGED"]])))
       (is (= "keep\nkeep\nCHANGED\nkeep\n" (slurp path))))))
 
@@ -412,7 +412,7 @@
     (let [path (str test-dir "/rl-multi-three.txt")]
       (spit path "a\nb\nc\nd\ne\nf\ng\n")
       ;; Pass out of order — should still work
-      (is (= {:ok true :err nil :truncated false :out path}
+      (is (= {:ok true :err nil :out path}
              (io/replace-lines path [[6 7 "F"] [2 3 "B"] [4 5 "D"]])))
       (is (= "a\nB\nc\nD\ne\nF\ng\n" (slurp path))))))
 
@@ -420,7 +420,7 @@
   (testing "adjacent but non-overlapping edits"
     (let [path (str test-dir "/rl-multi-adj.txt")]
       (spit path "a\nb\nc\nd\n")
-      (is (= {:ok true :err nil :truncated false :out path}
+      (is (= {:ok true :err nil :out path}
              (io/replace-lines path [[1 3 "AB"] [3 5 "CD"]])))
       (is (= "AB\nCD\n" (slurp path))))))
 
@@ -442,7 +442,7 @@
   (testing "vector with one edit works like the 4-arg form"
     (let [path (str test-dir "/rl-multi-one.txt")]
       (spit path "a\nb\nc\n")
-      (is (= {:ok true :err nil :truncated false :out path}
+      (is (= {:ok true :err nil :out path}
              (io/replace-lines path [[2 3 "B"]])))
       (is (= "a\nB\nc\n" (slurp path))))))
 
@@ -450,7 +450,7 @@
   (testing "multi-edit preserves absence of trailing newline"
     (let [path (str test-dir "/rl-multi-no-nl.txt")]
       (spit path "a\nb\nc\nd\ne")
-      (is (= {:ok true :err nil :truncated false :out path}
+      (is (= {:ok true :err nil :out path}
              (io/replace-lines path [[2 3 "B"] [4 5 "D"]])))
       (is (= "a\nB\nc\nD\ne" (slurp path))))))
 
@@ -485,12 +485,12 @@
 
 (deftest mkdir-test
   (let [path (str test-dir "/new-dir")]
-    (is (= {:ok true :err nil :truncated false :out path} (io/mkdir path)))
+    (is (= {:ok true :err nil :out path} (io/mkdir path)))
     (is (io/directory? path))))
 
 (deftest mkdirs-test
   (let [path (str test-dir "/a/b/c")]
-    (is (= {:ok true :err nil :truncated false :out path} (io/mkdirs path)))
+    (is (= {:ok true :err nil :out path} (io/mkdirs path)))
     (is (io/directory? path))))
 
 (deftest cwd-test
@@ -505,21 +505,21 @@
   (let [path (str test-dir "/delete-me.txt")]
     (spit path "delete me")
     (is (io/exists? path))
-    (is (= {:ok true :err nil :truncated false :out path} (io/delete path)))
+    (is (= {:ok true :err nil :out path} (io/delete path)))
     (is (not (io/exists? path)))))
 
 (deftest copy-test
   (let [src (str test-dir "/src.txt")
         dest (str test-dir "/dest.txt")]
     (spit src "content")
-    (is (= {:ok true :err nil :truncated false :out dest} (io/copy src dest)))
+    (is (= {:ok true :err nil :out dest} (io/copy src dest)))
     (is (= "content" (slurp dest)))))
 
 (deftest move-test
   (let [src (str test-dir "/move-src.txt")
         dest (str test-dir "/move-dest.txt")]
     (spit src "content")
-    (is (= {:ok true :err nil :truncated false :out dest} (io/move src dest)))
+    (is (= {:ok true :err nil :out dest} (io/move src dest)))
     (is (not (io/exists? src)))
     (is (= "content" (slurp dest)))))
 
@@ -847,11 +847,11 @@
     (is (= 0 (:exit result)))
     (is (= (str repo-root "\n") (:out result))))
   (let [result (io/git "checkout" "main")]
-    (is (= {:ok false :out nil :truncated false :err "git subcommand not allowed: \"checkout\". Allowed: blame, diff, log, rev-parse, show, status"}
+    (is (= {:ok false :out nil :err "git subcommand not allowed: \"checkout\". Allowed: blame, diff, log, rev-parse, show, status"}
            result))))
 
 (deftest git-helper-rejects-branch-test
-  (is (= {:ok false :out nil :truncated false :err "git subcommand not allowed: \"branch\". Allowed: blame, diff, log, rev-parse, show, status"}
+  (is (= {:ok false :out nil :err "git subcommand not allowed: \"branch\". Allowed: blame, diff, log, rev-parse, show, status"}
          (io/git "branch" "-D" "topic"))))
 
 ;; =============================================================================
@@ -934,29 +934,29 @@
              [9 nil "" [] 9]
              [1 1 "" [] 1]
              [1 0 "" [] 1]]]
-      (is (= {:ok true :out expected-text :err nil :truncated false}
+      (is (= {:ok true :out expected-text :err nil}
              (io/read-file path start end)))
       (let [result (io/read-lines path start end)]
-        (is (= {:ok true :out expected-lines :err nil :truncated false} result))
+        (is (= {:ok true :out expected-lines :err nil} result))
         (is (= {:spell/first-line first-line} (meta (:out result))))))
     (doseq [reader [io/read-file io/read-lines]]
       (let [result (reader missing 1 nil)]
         (is (false? (:ok result)))
         (is (nil? (:out result)))
         (is (re-find #"File not found:" (:err result)))
-        (is (false? (:truncated result)))))))
+        (is (not (contains? result :truncated)))))))
 
 (deftest selected-lines-preserve-delimiters-and-half-open-ranges
   (let [path (str test-dir "/mixed-delimiters.txt")
         text "one\r\ntwo\rthree\n\nfive"]
     (spit path text)
-    (is (= {:ok true :out text :err nil :truncated false} (io/read-file path)))
+    (is (= {:ok true :out text :err nil} (io/read-file path)))
     (is (= "two\rthree\n" (:out (io/read-file path 2 4))))
     (is (= ["one" "two" "three" "" "five"] (:out (io/read-lines path))))
     (is (= {:spell/first-line 20} (meta (:out (io/read-lines path 20 21)))))
     (is (= "" (:out (io/read-file path 20 21))))
     (is (= [] (:out (io/read-lines path 4 2))))
-    (is (false? (:truncated (io/read-file path 2 4))))))
+    (is (not (contains? (io/read-file path 2 4) :truncated)))))
 
 (deftest character-windows-are-utf16-surrogate-safe-and-truthful
   (let [path (str test-dir "/utf16-windows.txt")]
@@ -970,13 +970,13 @@
              [{:char-start 99} ["" ""]]]]
       (let [result (io/read-lines path 1 3 opts)]
         (is (= expected (:out result)) (pr-str opts))
-        (is (true? (:truncated result)))
+        (is (not (contains? result :truncated)))
         (is (= {:spell/first-line 1} (meta (:out result))))))
     (is (= "😀\r\n😃\r" (:out (io/read-file path 1 3 {:char-start 1 :char-end 3}))))
     (is (= "\r\n\r" (:out (io/read-file path 1 3 {:char-end 0}))))
-    (is (false? (:truncated (io/read-lines path 1 3 {:char-end 100}))))
-    (is (false? (:truncated (io/read-lines path 4 5 {:char-end 0}))))
-    (is (false? (:truncated (io/read-lines path 99 100 {:char-end 0}))))
+    (is (not (contains? (io/read-lines path 1 3 {:char-end 100}) :truncated)))
+    (is (not (contains? (io/read-lines path 4 5 {:char-end 0}) :truncated)))
+    (is (not (contains? (io/read-lines path 99 100 {:char-end 0}) :truncated)))
     (doseq [opts [{:char-start -1} {:char-end -1} {:char-start 1.5}
                  {:char-start nil} {:char-end 2.5} {:char-start 3 :char-end 2}]]
       (is (thrown? IllegalArgumentException (io/read-lines path opts))))
@@ -993,32 +993,32 @@
     (with-redefs [clojure.core/slurp (fn [& _] (throw (AssertionError. "streamed reads must not slurp")))]
       (let [result (io/read-lines path 2 3 {:char-start 4194300 :char-end 4194304})]
         (is (= ["xxxx"] (:out result)))
-        (is (true? (:truncated result)))
+        (is (not (contains? result :truncated)))
         (is (= {:spell/first-line 2} (meta (:out result))))
         (is (not (instance? clojure.lang.APersistentVector$SubVector (:out result)))))
       (is (= ["last"] (:out (io/read-lines path 3 4))))
       (is (= "xxxx\n" (:out (io/read-file path 2 3 {:char-end 4})))))))
 
 (deftest complete-process-output-and-error-envelopes
-  (is (= {:ok true :exit 0 :out " \nhello\t\n" :err " \nwarn\t\n" :truncated false}
+  (is (= {:ok true :exit 0 :out " \nhello\t\n" :err " \nwarn\t\n"}
          (io/exec ["bash" "-c" "printf ' \\nhello\\t\\n'; printf ' \\nwarn\\t\\n' >&2"])))
-  (is (= {:ok false :exit 7 :out "partial\n" :err nil :truncated false}
+  (is (= {:ok false :exit 7 :out "partial\n" :err nil}
          (io/sh "printf 'partial\\n'; exit 7")))
   (let [result (io/exec ["/spell/nonexistent/executable"])]
     (is (false? (:ok result)))
     (is (nil? (:exit result)))
     (is (= "" (:out result)))
     (is (string? (:err result)))
-    (is (false? (:truncated result))))
+    (is (not (contains? result :truncated))))
   (binding [io/*sh-timeout* 1]
     (let [result (io/sh "printf partial; sleep 2")]
       (is (false? (:ok result)))
       (is (= -1 (:exit result)))
       (is (= "" (:out result)))
-      (is (true? (:truncated result)))))
+      (is (not (contains? result :truncated)))))
   (let [path (str test-dir "/no-match.txt")]
     (spit path "abc\n")
-    (is (= {:ok true :exit 1 :out "" :err nil :truncated false}
+    (is (= {:ok true :exit 1 :out "" :err nil}
            (io/grep "missing" path)))
     (is (false? (:ok (io/grep "[" path))))))
 
@@ -1027,17 +1027,17 @@
     (io/write-file path "full text\n")
     (doseq [result [(io/slurp-file path) (io/slurp-bytes path) (io/stat path)
                     (io/ls test-dir) (io/mkdirs test-dir)]]
-      (is (= #{:ok :out :err :truncated} (set (keys result))))
+      (is (= #{:ok :out :err} (set (keys result))))
       (is (true? (:ok result)))
       (is (nil? (:err result)))
-      (is (false? (:truncated result))))
+      (is (not (contains? result :truncated))))
     (is (= "full text\n" (:out (io/slurp-file path))))
     (is (= "full text\n" (String. ^bytes (:out (io/slurp-bytes path)) "UTF-8")))
     (doseq [result [(io/slurp-file (str path ".missing")) (io/stat (str path ".missing"))
                     (io/ls path) (io/git "checkout")]]
       (is (false? (:ok result)))
       (is (string? (:err result)))
-      (is (false? (:truncated result))))
+      (is (not (contains? result :truncated))))
     (is (true? (io/exists? path)))
     (is (false? (io/directory? path)))
     (is (string? (io/cwd)))
@@ -1050,18 +1050,18 @@
     (is (not= 0 (:exit failed)))
     (is (= "" (:out failed)))
     (is (str/includes? (:err failed) missing))
-    (is (false? (:truncated failed))))
+    (is (not (contains? failed :truncated))))
   (let [a (str test-dir "/a.clj") z (str test-dir "/z.clj")]
     (spit z "z")
     (spit a "a")
     (is (= {:ok true :exit 0 :out (str a "\n" z "\n")
-            :err nil :truncated false}
+            :err nil}
            (io/glob "*.clj" test-dir)))
-    (is (= {:ok true :exit 0 :out "" :err nil :truncated false}
+    (is (= {:ok true :exit 0 :out "" :err nil}
            (io/glob "*.absent" test-dir))))
   (testing "a failed search can still return useful partial paths and diagnostics"
     (let [partial {:ok false :exit 7 :out "z\ra\n\nalpha\n"
-                   :err "cannot traverse child\n" :truncated false}]
+                   :err "cannot traverse child\n"}]
       (with-redefs [io/sh (constantly partial)]
         (is (= (assoc partial :out "\nalpha\nz\ra\n")
                (io/glob "*" test-dir)))))))

@@ -26,7 +26,7 @@
                 <a class='result__snippet'>A practical guide.</a>
               </div>
               </body></html>"]
-    (with-redefs [web/http-get-text (fn [_ _ _] {:ok true :err nil :truncated false :out html})]
+    (with-redefs [web/http-get-text (fn [_ _ _] {:ok true :err nil :out html})]
       (let [result (web/search "clojure" {:max-results 2 :backend :duckduckgo})]
         (is (contains? result :ok))
         (is (= 2 (count (:out result))))
@@ -45,7 +45,7 @@
                         </div>
                       </div>
                       </body></html>"]
-    (with-redefs [web/http-get-text (fn [_ _ _] {:ok true :err nil :truncated false :out captcha-html})]
+    (with-redefs [web/http-get-text (fn [_ _ _] {:ok true :err nil :out captcha-html})]
       (let [result (web/search "test query" {:backend :duckduckgo})]
         (is (contains? result :err))
         (is (str/includes? (:err result) "CAPTCHA"))))))
@@ -66,7 +66,7 @@
       (with-redefs [web/http-post-json (fn [url headers _ _]
                                          (is (= "https://google.serper.dev/search" url))
                                          (is (= "test-key-123" (get headers "X-API-KEY")))
-                                         {:ok true :err nil :truncated false :out serper-response})]
+                                         {:ok true :err nil :out serper-response})]
         (binding [web/*config-path* (.getAbsolutePath cfg-file)]
           (let [result (web/search "clojure" {:backend :serper})]
             (is (contains? result :ok))
@@ -89,7 +89,7 @@
   (let [cfg-file (java.io.File/createTempFile "spell-web-serper-" ".edn")]
     (try
       (spit cfg-file "{:search {:serper-api-key \"bad-key\"}}")
-      (with-redefs [web/http-post-json (fn [_ _ _ _] {:ok false :out nil :truncated false :err "HTTP 401 from https://google.serper.dev/search: Unauthorized"})]
+      (with-redefs [web/http-post-json (fn [_ _ _ _] {:ok false :out nil :err "HTTP 401 from https://google.serper.dev/search: Unauthorized"})]
         (binding [web/*config-path* (.getAbsolutePath cfg-file)]
           (let [result (web/search "test" {:backend :serper})]
             (is (contains? result :err))
@@ -102,7 +102,7 @@
                                     :link "https://serper.example"
                                     :snippet "from serper"}]}]
     (with-redefs [web/serper-api-key (fn [_] "env-or-config-key")
-                  web/http-post-json (fn [_ _ _ _] {:ok true :err nil :truncated false :out serper-response})
+                  web/http-post-json (fn [_ _ _ _] {:ok true :err nil :out serper-response})
                   web/http-get-text (fn [& _]
                                       (throw (ex-info "DuckDuckGo should not be called" {})))]
       (binding [web/*config-path* "/dev/null"]
@@ -117,7 +117,7 @@
                    </div>
                    </body></html>"]
     (with-redefs [web/serper-api-key (fn [_] nil)
-                  web/http-get-text (fn [_ _ _] {:ok true :err nil :truncated false :out duck-html})
+                  web/http-get-text (fn [_ _ _] {:ok true :err nil :out duck-html})
                   web/http-post-json (fn [& _]
                                        (throw (ex-info "Serper should not be called" {})))]
       (binding [web/*config-path* "/dev/null"]
@@ -131,7 +131,7 @@
     (try
       (spit cfg-file "{:search {:backend :duckduckgo}}")
       (with-redefs [web/serper-api-key (fn [_] "available-key")
-                    web/http-get-text (fn [_ _ _] {:ok true :err nil :truncated false :out duck-html})
+                    web/http-get-text (fn [_ _ _] {:ok true :err nil :out duck-html})
                     web/http-post-json (fn [& _]
                                          (throw (ex-info "Serper should not be called" {})))]
         (binding [web/*config-path* (.getAbsolutePath cfg-file)]
@@ -142,53 +142,43 @@
         (.delete cfg-file)))))
 
 
-(deftest fetch-jina-truncates-content
+(deftest fetch-jina-returns-complete-content
   (let [content (apply str (repeat 3000 "x"))]
     (with-redefs [web/http-get-text (fn [url _ _]
                                       (if (str/includes? url "r.jina.ai")
-                                        {:ok true :err nil :truncated false :out content}
-                                        {:ok false :out nil :truncated false :err "unexpected url"}))]
-      (let [result (web/fetch "https://example.com" {:max-chars 1000})]
+                                        {:ok true :err nil :out content}
+                                        {:ok false :out nil :err "unexpected url"}))]
+      (let [result (web/fetch "https://example.com" {})]
         (is (contains? result :ok))
-        (is (= (subs content 0 1000) (:out result)))
-        (is (true? (:truncated result)))))))
+        (is (= content (:out result)))
+        (is (not (contains? result :truncated)))))))
 
 (deftest fetch-falls-back-to-raw-when-jina-fails
   (let [html "<html><head><title>Example</title></head><body><article><p>Hello world.</p></article></body></html>"]
     (with-redefs [web/http-get-text (fn [url _ _]
                                       (if (str/includes? url "r.jina.ai")
-                                        {:ok false :out nil :truncated false :err "jina failed"}
-                                        {:ok true :err nil :truncated false :out html}))]
+                                        {:ok false :out nil :err "jina failed"}
+                                        {:ok true :err nil :out html}))]
       (let [result (web/fetch "https://example.com" {})]
         (is (= "# Example\n\nHello world.\n\nSource: https://example.com" (:out result)))))))
 
-(deftest fetch-is-full-unless-explicitly-clipped
+(deftest fetch-is-full
   (let [content (str (apply str (repeat 50000 "x")) "😀 tail\n")
-        response {:ok true :out content :err nil :truncated false :status 200}]
+        response {:ok true :out content :err nil :status 200}]
     (with-redefs [web/effective-config (constantly {:fetch {:backend :jina}})
                   web/http-get-text (fn [& _] response)]
       (is (= response (web/fetch "https://example.com")))
-      (doseq [[limit expected] [[0 ""] [1 "x"] [50001 (subs content 0 50000)]
-                                [50002 (subs content 0 50002)]]]
-        (let [result (web/fetch "https://example.com" {:max-chars limit})]
-          (is (= expected (:out result)))
-          (is (true? (:truncated result)))
-          (is (= 200 (:status result)))
-          (is (true? (:ok result)))))
-      (is (= response (web/fetch "https://example.com" {:max-chars (count content)})))
-      (doseq [limit [-1 1.5 "4"]]
-        (is (thrown? IllegalArgumentException (web/fetch "https://example.com" {:max-chars limit})))))))
+      (is (not (contains? (web/fetch "https://example.com") :truncated))))))
 
 (deftest fetch-failure-retains-http-evidence
   (let [body (apply str (repeat 45000 "e"))
-        failed {:ok false :out body :err "HTTP 503" :truncated false :status 503}]
+        failed {:ok false :out body :err "HTTP 503" :status 503}]
     (with-redefs [web/http-get-text (fn [& _] failed)]
       (is (= failed (web/fetch "https://example.com" {:backend :raw})))
-      (is (= (assoc failed :out "eee" :truncated true)
-             (web/fetch "https://example.com" {:backend :raw :max-chars 3}))))
+      (is (not (contains? (web/fetch "https://example.com" {:backend :raw}) :truncated))))
     (with-redefs [web/http-get-text (fn [url & _]
                                     (if (str/includes? url "r.jina.ai") failed
-                                        {:ok false :out nil :err "offline" :truncated false}))]
+                                        {:ok false :out nil :err "offline"}))]
       (let [result (web/fetch "https://example.com" {:backend :jina})]
         (is (= 503 (:status result)))
         (is (= body (:out result)))
@@ -199,16 +189,16 @@
   (let [paragraphs (map #(str "<p>paragraph-" % "</p>") (range 200))]
     (with-redefs [web/http-get-text (fn [& _]
                                     {:ok true :out (str "<html><body>" (apply str paragraphs) "</body></html>")
-                                     :err nil :truncated false :status 201})]
+                                     :err nil :status 201})]
       (let [result (web/fetch "https://example.com" {:backend :raw})]
         (is (= 201 (:status result)))
         (is (str/includes? (:out result) "paragraph-199"))
-        (is (false? (:truncated result)))))))
+        (is (not (contains? result :truncated)))))))
 
 (deftest search-preserves-status-and-failure-body
   (let [captcha "<html><div class='anomaly-modal'>captcha body</div></html>"
-        failure {:ok false :out "upstream body" :err "HTTP 502" :truncated false :status 502}]
-    (with-redefs [web/http-get-text (fn [& _] {:ok true :out captcha :err nil :truncated false :status 200})]
+        failure {:ok false :out "upstream body" :err "HTTP 502" :status 502}]
+    (with-redefs [web/http-get-text (fn [& _] {:ok true :out captcha :err nil :status 200})]
       (let [result (web/search "query" {:backend :duckduckgo})]
         (is (false? (:ok result)))
         (is (= captcha (:out result)))
@@ -222,7 +212,7 @@
     (with-redefs [web/serper-api-key (constantly "test-key")
                   web/http-post-json (fn [& _]
                                        {:ok true :out {:organic [{:title "T" :link "https://example.com"}]}
-                                        :err nil :truncated false :status 201})]
+                                        :err nil :status 201})]
       (let [result (web/search "query" {:backend :serper})]
         (is (= 201 (:status result)))
         (is (= [{:title "T" :url "https://example.com" :snippet ""}] (:out result))))))
@@ -248,12 +238,12 @@
       (let [base (str "http://127.0.0.1:" (.getPort (.getAddress server)))
             fail (web/http-get-text (str base "/fail") {} 5000)
             invalid (#'web/http-post-json (str base "/invalid") {} {} 5000)]
-        (is (= {:ok true :out "  body\n" :err nil :truncated false :status 200}
+        (is (= {:ok true :out "  body\n" :err nil :status 200}
                (web/http-get-text (str base "/ok") {} 5000)))
         (is (= body (:out fail)))
         (is (= 503 (:status fail)))
         (is (false? (:ok fail)))
-        (is (false? (:truncated fail)))
+        (is (not (contains? fail :truncated)))
         (is (false? (:ok invalid)))
         (is (= 200 (:status invalid)))
         (is (= "not-json\n" (:out invalid)))

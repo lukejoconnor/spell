@@ -202,7 +202,7 @@
 
 (defn- external-result? [v]
   (and (map? v) (boolean? (:ok v))
-       (boolean? (:truncated v))
+       (or (not (contains? v :truncated)) (boolean? (:truncated v)))
        (every? #(contains? v %) [:out :err])
        (every? #(or (nil? (get v %)) (integer? (get v %))) [:exit :status])))
 
@@ -285,8 +285,9 @@
           extras (normalize-map (apply dissoc v result-envelope-keys)
                    fuel depth local-changed)]
       (when @local-changed (vreset! changed true))
-      (cond-> (assoc (merge extras (select-keys v result-control-keys)) :out out :err err)
-        @local-changed (assoc :truncated true)))
+      (assoc (merge extras (select-keys v result-control-keys))
+             :out out :err err
+             :truncated (or (true? (:truncated v)) @local-changed)))
     (map? v) (normalize-map v fuel depth changed)
     (or (set? v) (sequential? v))
     (loop [items (seq v) result []]

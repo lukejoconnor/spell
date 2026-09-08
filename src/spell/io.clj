@@ -36,18 +36,18 @@
 ;; =============================================================================
 
 (defn slurp-file
-  "Read entire file as string. Returns {:ok true :err nil :truncated false :out content} or {:ok false :out nil :truncated false :err msg}."
+  "Read entire file as string. Returns {:ok true :err nil :out content} or {:ok false :out nil :err msg}."
   [path]
   (try
-    {:ok true :err nil :truncated false :out (slurp path)}
+    {:ok true :err nil :out (slurp path)}
     (catch java.io.FileNotFoundException _
-      {:ok false :out nil :truncated false :err (str "File not found: " path)})
+      {:ok false :out nil :err (str "File not found: " path)})
     (catch Exception e
-      {:ok false :out nil :truncated false :err (str "Error reading file: " (.getMessage e))})))
+      {:ok false :out nil :err (str "Error reading file: " (.getMessage e))})))
 
 (defn spit-file
   "Write string to file. Options: :append true to append instead of overwrite.
-   Creates parent directories if needed. Returns {:ok true :err nil :truncated false :out path} or {:ok false :out nil :truncated false :err msg}."
+   Creates parent directories if needed. Returns {:ok true :err nil :out path} or {:ok false :out nil :err msg}."
   ([path content] (spit-file path content {}))
   ([path content opts]
    (try
@@ -56,19 +56,19 @@
        (when (and parent (not (.exists parent)))
          (.mkdirs parent))
        (spit path content :append (:append opts false))
-       {:ok true :err nil :truncated false :out path})
+       {:ok true :err nil :out path})
      (catch Exception e
-       {:ok false :out nil :truncated false :err (str "Error writing file: " (.getMessage e))}))))
+       {:ok false :out nil :err (str "Error writing file: " (.getMessage e))}))))
 
 (defn slurp-bytes
-  "Read entire file as byte array. Returns {:ok true :err nil :truncated false :out bytes} or {:ok false :out nil :truncated false :err msg}."
+  "Read entire file as byte array. Returns {:ok true :err nil :out bytes} or {:ok false :out nil :err msg}."
   [path]
   (try
-    {:ok true :err nil :truncated false :out (Files/readAllBytes (Paths/get path (into-array String [])))}
+    {:ok true :err nil :out (Files/readAllBytes (Paths/get path (into-array String [])))}
     (catch java.nio.file.NoSuchFileException _
-      {:ok false :out nil :truncated false :err (str "File not found: " path)})
+      {:ok false :out nil :err (str "File not found: " path)})
     (catch Exception e
-      {:ok false :out nil :truncated false :err (str "Error reading file: " (.getMessage e))})))
+      {:ok false :out nil :err (str "Error reading file: " (.getMessage e))})))
 
 (defn- char-window [opts]
   (let [start (get opts :char-start 0)
@@ -83,18 +83,18 @@
   "Consume a line without materializing omitted characters. Delimiters are separate."
   [^java.io.PushbackReader reader selected? char-start char-end]
   (let [text (when selected? (StringBuilder.))]
-    (loop [offset 0 omitted? false]
+    (loop [offset 0]
       (let [c (.read reader)]
         (cond
           (= -1 c) (when (pos? offset)
-                     {:text (when text (.toString text)) :delimiter "" :truncated omitted?})
+                     {:text (when text (.toString text)) :delimiter ""})
           (or (= 10 c) (= 13 c))
           (let [delimiter (if (= 13 c)
                             (let [next (.read reader)]
                               (if (= 10 next) "\r\n"
                                   (do (when (not= -1 next) (.unread reader next)) "\r")))
                             "\n")]
-            {:text (when text (.toString text)) :delimiter delimiter :truncated omitted?})
+            {:text (when text (.toString text)) :delimiter delimiter})
           :else
           (let [next (when (Character/isHighSurrogate (char c)) (.read reader))
                 pair? (and next (not= -1 next) (Character/isLowSurrogate (char next)))
@@ -105,7 +105,7 @@
             (when keep?
               (.append text (char c))
               (when pair? (.append text (char next))))
-            (recur (+ offset width) (or omitted? (and selected? (not keep?))))))))))
+            (recur (+ offset width))))))))
 
 (defn- read-selection [path start end opts lines?]
   (when-not (and (integer? start) (or (nil? end) (integer? end)))
@@ -116,31 +116,30 @@
     (try
       (with-open [reader (java.io.PushbackReader. (jio/reader path) 1)]
         (let [text (when-not lines? (StringBuilder.))]
-          (loop [line-number 1 rows (transient []) truncated? false]
+          (loop [line-number 1 rows (transient [])]
             (if (and (or (nil? end) (< line-number end))
                      (or (nil? end) (< start end)))
               (if-let [row (read-windowed-line reader (<= start line-number) char-start char-end)]
                 (if (< line-number start)
-                  (recur (inc line-number) rows truncated?)
+                  (recur (inc line-number) rows)
                   (do
                     (when text (.append text ^String (:text row)) (.append text ^String (:delimiter row)))
                     (recur (inc line-number)
-                           (if lines? (conj! rows (:text row)) rows)
-                           (or truncated? (:truncated row)))))
+                           (if lines? (conj! rows (:text row)) rows))))
                 {:ok true :out (if lines? (with-meta (persistent! rows) {:spell/first-line start}) (.toString text))
-                 :err nil :truncated truncated?})
+                 :err nil})
               {:ok true :out (if lines? (with-meta (persistent! rows) {:spell/first-line start}) (.toString text))
-               :err nil :truncated truncated?}))))
+               :err nil}))))
       (catch java.io.FileNotFoundException _
-        {:ok false :out nil :err (str "File not found: " path) :truncated false})
+        {:ok false :out nil :err (str "File not found: " path)})
       (catch java.io.IOException e
-        {:ok false :out nil :err (str "Error reading file: " (.getMessage e)) :truncated false}))))
+        {:ok false :out nil :err (str "Error reading file: " (.getMessage e))}))))
 
 (defn read-file
   "Read plain text in a full result envelope. Optional 1-based half-open line range.
    Options :char-start/:char-end select a zero-based UTF-16 window on each line,
    excluding delimiters; split surrogate pairs are omitted. Original delimiters remain.
-   Only omitted characters, not line selection, set :truncated. Defaults are unbounded."
+   Line ranges and character windows select the requested result. Defaults are unbounded."
   ([path] (read-file path {}))
   ([path opts] (read-selection path 1 nil opts false))
   ([path start end] (read-file path start end {}))
@@ -149,7 +148,7 @@
 (defn read-lines
   "Read detached string rows in :out with :spell/first-line metadata. Optional
    1-based half-open line range and per-line UTF-16 :char-start/:char-end window.
-   Delimiters are stripped; only character omission sets :truncated."
+   Delimiters are stripped; character windows are request selectors."
   ([path] (read-lines path {}))
   ([path opts] (read-selection path 1 nil opts true))
   ([path start end] (read-lines path start end {}))
@@ -157,7 +156,7 @@
 
 (defn write-file
   "Write content to file, creating parent directories if needed.
-   Returns {:ok true :err nil :truncated false :out path} or {:ok false :out nil :truncated false :err msg}."
+   Returns {:ok true :err nil :out path} or {:ok false :out nil :err msg}."
   [path content]
   (spit-file path content))
 
@@ -185,18 +184,18 @@
 (defn str-replace
   "Replace a string in a file. By default, old-str must appear exactly once.
    With {:all true}, replaces all occurrences (must appear at least once).
-   Returns {:ok true :err nil :truncated false :out path} or {:ok false :out nil :truncated false :err msg}."
+   Returns {:ok true :err nil :out path} or {:ok false :out nil :err msg}."
   ([path old-str new-str] (str-replace path old-str new-str {}))
   ([path old-str new-str opts]
    (cond
      (nil? old-str)
-     {:ok false :out nil :truncated false :err "old-str cannot be nil"}
+     {:ok false :out nil :err "old-str cannot be nil"}
 
      (nil? new-str)
-     {:ok false :out nil :truncated false :err "new-str cannot be nil"}
+     {:ok false :out nil :err "new-str cannot be nil"}
 
      (= "" old-str)
-     {:ok false :out nil :truncated false :err "old-str cannot be empty"}
+     {:ok false :out nil :err "old-str cannot be empty"}
 
      :else
      (try
@@ -204,21 +203,21 @@
              occurrences (count-occurrences content old-str)]
          (cond
            (zero? occurrences)
-           {:ok false :out nil :truncated false :err (str "String not found in file: " (pr-str old-str))}
+           {:ok false :out nil :err (str "String not found in file: " (pr-str old-str))}
 
            (and (> occurrences 1) (not (:all opts)))
-           {:ok false :out nil :truncated false :err (str "String appears " occurrences " times (must be unique): " (pr-str old-str))}
+           {:ok false :out nil :err (str "String appears " occurrences " times (must be unique): " (pr-str old-str))}
 
            :else
            (let [new-content (if (:all opts)
                                (.replace ^String content ^String old-str ^String new-str)
                                (replace-first-literal content old-str new-str))]
              (spit path new-content)
-             {:ok true :err nil :truncated false :out path})))
+             {:ok true :err nil :out path})))
        (catch java.io.FileNotFoundException _
-         {:ok false :out nil :truncated false :err (str "File not found: " path)})
+         {:ok false :out nil :err (str "File not found: " path)})
        (catch Exception e
-         {:ok false :out nil :truncated false :err (str "Error: " (.getMessage e))})))))
+         {:ok false :out nil :err (str "Error: " (.getMessage e))})))))
 
 (defn- validate-edit
   "Validate a single [start end content] edit against n lines (half-open). Returns error string or nil."
@@ -256,7 +255,7 @@
    (replace-lines path start end content) — single edit, replaces lines start..end-1
    (replace-lines path [[start end content] ...]) — multiple edits, applied atomically
    start == end inserts before that line. Empty content string deletes the range.
-   Returns {:ok true :err nil :truncated false :out path} or {:ok false :out nil :truncated false :err msg}."
+   Returns {:ok true :err nil :out path} or {:ok false :out nil :err msg}."
   ([path edits]
    (try
      (let [content (slurp path)
@@ -267,21 +266,21 @@
            errors (keep (partial validate-edit n) edits)]
        (cond
          (seq errors)
-         {:ok false :out nil :truncated false :err (first errors)}
+         {:ok false :out nil :err (first errors)}
 
          (edits-overlap? (sort-by first edits))
-         {:ok false :out nil :truncated false :err "Edits have overlapping line ranges"}
+         {:ok false :out nil :err "Edits have overlapping line ranges"}
 
          :else
          (let [new-lines (apply-edits lines edits)
                result (str (str/join "\n" new-lines)
                            (when trailing-newline? "\n"))]
            (spit path result)
-           {:ok true :err nil :truncated false :out path})))
+           {:ok true :err nil :out path})))
      (catch java.io.FileNotFoundException _
-       {:ok false :out nil :truncated false :err (str "File not found: " path)})
+       {:ok false :out nil :err (str "File not found: " path)})
      (catch Exception e
-       {:ok false :out nil :truncated false :err (str "Error: " (.getMessage e))})))
+       {:ok false :out nil :err (str "Error: " (.getMessage e))})))
   ([path start end new-content]
    (replace-lines path [[start end new-content]])))
 
@@ -300,49 +299,49 @@
   (.isDirectory (File. ^String path)))
 
 (defn ls
-  "List directory contents. Returns vector of {:name :size} maps or {:ok false :out nil :truncated false :err msg}."
+  "List directory contents. Returns vector of {:name :size} maps or {:ok false :out nil :err msg}."
   [path]
   (try
     (let [dir (File. ^String path)]
       (if (.isDirectory dir)
         (if-let [entries (.listFiles dir)]
-          {:ok true :err nil :truncated false :out (->> entries
+          {:ok true :err nil :out (->> entries
                (map (fn [^File entry]
                       {:name (str (.getName entry)
                                   (when (.isDirectory entry) "/"))
                        :size (.length entry)}))
                (sort-by :name)
                vec)}
-          {:ok false :out nil :truncated false :err (str "Could not list directory: " path)})
-        {:ok false :out nil :truncated false :err (str "Not a directory: " path)}))
+          {:ok false :out nil :err (str "Could not list directory: " path)})
+        {:ok false :out nil :err (str "Not a directory: " path)}))
     (catch Exception e
-      {:ok false :out nil :truncated false :err (str "Error listing directory: " (.getMessage e))})))
+      {:ok false :out nil :err (str "Error listing directory: " (.getMessage e))})))
 
 (defn mkdir
-  "Create directory. Returns {:ok true :err nil :truncated false :out path} or {:ok false :out nil :truncated false :err msg}."
+  "Create directory. Returns {:ok true :err nil :out path} or {:ok false :out nil :err msg}."
   [path]
   (try
     (let [dir (File. ^String path)]
       (if (.mkdir dir)
-        {:ok true :err nil :truncated false :out path}
+        {:ok true :err nil :out path}
         (if (.exists dir)
-          {:ok false :out nil :truncated false :err (str "Already exists: " path)}
-          {:ok false :out nil :truncated false :err (str "Failed to create directory: " path)})))
+          {:ok false :out nil :err (str "Already exists: " path)}
+          {:ok false :out nil :err (str "Failed to create directory: " path)})))
     (catch Exception e
-      {:ok false :out nil :truncated false :err (str "Error creating directory: " (.getMessage e))})))
+      {:ok false :out nil :err (str "Error creating directory: " (.getMessage e))})))
 
 (defn mkdirs
-  "Create directory and all parent directories. Returns {:ok true :err nil :truncated false :out path} or {:ok false :out nil :truncated false :err msg}."
+  "Create directory and all parent directories. Returns {:ok true :err nil :out path} or {:ok false :out nil :err msg}."
   [path]
   (try
     (let [dir (File. ^String path)]
       (if (.mkdirs dir)
-        {:ok true :err nil :truncated false :out path}
+        {:ok true :err nil :out path}
         (if (.exists dir)
-          {:ok true :err nil :truncated false :out path}  ; Already exists is OK for mkdirs
-          {:ok false :out nil :truncated false :err (str "Failed to create directories: " path)})))
+          {:ok true :err nil :out path}  ; Already exists is OK for mkdirs
+          {:ok false :out nil :err (str "Failed to create directories: " path)})))
     (catch Exception e
-      {:ok false :out nil :truncated false :err (str "Error creating directories: " (.getMessage e))})))
+      {:ok false :out nil :err (str "Error creating directories: " (.getMessage e))})))
 
 (defn cwd
   "Get current working directory."
@@ -354,70 +353,70 @@
 ;; =============================================================================
 
 (defn delete
-  "Delete file or empty directory. Returns {:ok true :err nil :truncated false :out path} or {:ok false :out nil :truncated false :err msg}."
+  "Delete file or empty directory. Returns {:ok true :err nil :out path} or {:ok false :out nil :err msg}."
   [path]
   (try
     (let [file (File. ^String path)]
       (if (.delete file)
-        {:ok true :err nil :truncated false :out path}
+        {:ok true :err nil :out path}
         (if (not (.exists file))
-          {:ok false :out nil :truncated false :err (str "File not found: " path)}
-          {:ok false :out nil :truncated false :err (str "Failed to delete (directory not empty?): " path)})))
+          {:ok false :out nil :err (str "File not found: " path)}
+          {:ok false :out nil :err (str "Failed to delete (directory not empty?): " path)})))
     (catch Exception e
-      {:ok false :out nil :truncated false :err (str "Error deleting: " (.getMessage e))})))
+      {:ok false :out nil :err (str "Error deleting: " (.getMessage e))})))
 
 (defn copy
-  "Copy file from src to dest. Returns {:ok true :err nil :truncated false :out dest} or {:ok false :out nil :truncated false :err msg}."
+  "Copy file from src to dest. Returns {:ok true :err nil :out dest} or {:ok false :out nil :err msg}."
   [src dest]
   (try
     (Files/copy (Paths/get src (into-array String []))
                 (Paths/get dest (into-array String []))
                 (into-array CopyOption [StandardCopyOption/REPLACE_EXISTING]))
-    {:ok true :err nil :truncated false :out dest}
+    {:ok true :err nil :out dest}
     (catch java.nio.file.NoSuchFileException _
-      {:ok false :out nil :truncated false :err (str "Source not found: " src)})
+      {:ok false :out nil :err (str "Source not found: " src)})
     (catch Exception e
-      {:ok false :out nil :truncated false :err (str "Error copying: " (.getMessage e))})))
+      {:ok false :out nil :err (str "Error copying: " (.getMessage e))})))
 
 (defn move
-  "Move/rename file from src to dest. Returns {:ok true :err nil :truncated false :out dest} or {:ok false :out nil :truncated false :err msg}."
+  "Move/rename file from src to dest. Returns {:ok true :err nil :out dest} or {:ok false :out nil :err msg}."
   [src dest]
   (try
     (Files/move (Paths/get src (into-array String []))
                 (Paths/get dest (into-array String []))
                 (into-array CopyOption [StandardCopyOption/REPLACE_EXISTING]))
-    {:ok true :err nil :truncated false :out dest}
+    {:ok true :err nil :out dest}
     (catch java.nio.file.NoSuchFileException _
-      {:ok false :out nil :truncated false :err (str "Source not found: " src)})
+      {:ok false :out nil :err (str "Source not found: " src)})
     (catch Exception e
-      {:ok false :out nil :truncated false :err (str "Error moving: " (.getMessage e))})))
+      {:ok false :out nil :err (str "Error moving: " (.getMessage e))})))
 
 (defn stat
-  "Get file metadata. Returns {:size :modified :readable :writable :executable} or {:ok false :out nil :truncated false :err msg}."
+  "Get file metadata. Returns {:size :modified :readable :writable :executable} or {:ok false :out nil :err msg}."
   [path]
   (try
     (let [file (File. ^String path)]
       (if (.exists file)
-        {:ok true :err nil :truncated false :out {:size (.length file)
+        {:ok true :err nil :out {:size (.length file)
          :modified (.lastModified file)
          :readable (.canRead file)
          :writable (.canWrite file)
          :executable (.canExecute file)
          :directory (.isDirectory file)}}
-        {:ok false :out nil :truncated false :err (str "File not found: " path)}))
+        {:ok false :out nil :err (str "File not found: " path)}))
     (catch Exception e
-      {:ok false :out nil :truncated false :err (str "Error getting file info: " (.getMessage e))})))
+      {:ok false :out nil :err (str "Error getting file info: " (.getMessage e))})))
 
 (defn temp-file
-  "Create a temporary file. Returns {:ok true :err nil :truncated false :out path} or {:ok false :out nil :truncated false :err msg}.
+  "Create a temporary file. Returns {:ok true :err nil :out path} or {:ok false :out nil :err msg}.
    Optional prefix and suffix arguments."
   ([] (temp-file "spell" ".tmp"))
   ([prefix suffix]
    (try
      (let [path (Files/createTempFile prefix suffix (into-array FileAttribute []))]
-       {:ok true :err nil :truncated false :out (str path)})
+       {:ok true :err nil :out (str path)})
      (catch Exception e
-       {:ok false :out nil :truncated false :err (str "Error creating temp file: " (.getMessage e))}))))
+       {:ok false :out nil :err (str "Error creating temp file: " (.getMessage e))}))))
 
 ;; =============================================================================
 ;; File watching
@@ -551,14 +550,14 @@
                        (do (.waitFor process) false))]
       (if timed-out?
         (do (.destroyForcibly process)
-            {:ok false :exit -1 :out "" :err (str "Command timed out after " timeout-seconds " seconds") :truncated true})
+            {:ok false :exit -1 :out "" :err (str "Command timed out after " timeout-seconds " seconds")})
         (let [exit (.exitValue process) err @err-future]
-          {:ok (zero? exit) :exit exit :out @out-future :err (when-not (empty? err) err) :truncated false})))
+          {:ok (zero? exit) :exit exit :out @out-future :err (when-not (empty? err) err)})))
     (catch java.io.IOException e
-      {:ok false :exit nil :out "" :err (.getMessage e) :truncated false})))
+      {:ok false :exit nil :out "" :err (.getMessage e)})))
 
 (defn sh
-  "Execute shell command. Returns {:ok boolean :truncated boolean :exit N :out \"...\" :err \"...\"}.
+  "Execute shell command. Returns {:ok boolean :exit N :out \"...\" :err \"...\"}.
    Optional last arg may be an opts map with :timeout seconds.
    :timeout 0 disables timeout for this call.
    When SPELL_DOCKER_CONTAINER env var is set, commands execute inside
@@ -588,7 +587,7 @@
 
 (defn exec
   "Execute command directly (no shell). Takes command as vector of strings.
-   Returns {:ok boolean :truncated boolean :exit N :out \"...\" :err \"...\"}."
+   Returns {:ok boolean :exit N :out \"...\" :err \"...\"}."
   [args]
   (ensure-string-args "io/exec: all argv entries" args "")
   (run-process (ProcessBuilder. ^java.util.List (vec args)) *sh-timeout*))
@@ -618,7 +617,7 @@
   "Search file contents for one or more patterns. Each pattern is an independent
    extended regex (ERE) supporting alternation, +, ?, {n,m}, and (...) groups.
    Pass either a string or a non-empty collection of strings in the pattern position.
-   Returns {:ok boolean :truncated boolean :exit N :out \"...\" :err \"...\"}."
+   Returns {:ok boolean :exit N :out \"...\" :err \"...\"}."
   ([pattern path] (grep pattern path {}))
   ([pattern path opts]
    (ensure-string-args "io/grep: path" [path] "")
@@ -646,7 +645,7 @@
          result)))))
 
 (defn glob
-  "Find files by name pattern. Returns {:ok boolean :truncated boolean :exit N :out \"...\" :err \"...\"}."
+  "Find files by name pattern. Returns {:ok boolean :exit N :out \"...\" :err \"...\"}."
   ([pattern] (glob pattern "."))
   ([pattern path] (glob pattern path {}))
   ([pattern path opts]
@@ -676,7 +675,7 @@
 
 (defn git
   "Run an allowlisted read-only git subcommand.
-   Returns {:ok boolean :truncated boolean :exit N :out \"...\" :err \"...\"} or {:ok false :out nil :truncated false :err msg}."
+   Returns {:ok boolean :exit N :out \"...\" :err \"...\"} or {:ok false :out nil :err msg}."
   [subcmd & args]
   (let [subcmd (str subcmd)
         args (mapv str args)]
@@ -686,7 +685,7 @@
                      (when (seq args)
                        (str " " (str/join " " (map shell-quote args)))))]
         (sh cmd))
-      {:ok false :out nil :truncated false :err (str "git subcommand not allowed: " (pr-str subcmd)
+      {:ok false :out nil :err (str "git subcommand not allowed: " (pr-str subcmd)
                    ". Allowed: " (str/join ", " (sort git-read-commands)))})))
 
 (defn env
@@ -732,14 +731,14 @@
   (io/replace-lines path start end content)  — deletes lines in half-open range [start, end)
   (io/replace-lines path start start content) — inserts content before line start
   (io/replace-lines path [[s e c] ...])      — multi-edit (line numbers refer to original file)
-  (io/sh command)                            — execute shell command, returns {:ok :out :err :truncated :exit}
+  (io/sh command)                            — execute shell command, returns {:ok :out :err :exit}
   (io/sh command {:timeout 10})
   (io/sh-test command)                       — build a zero-arg shell-backed test thunk
   (io/exec [cmd arg1 ...])                   — execute command directly (no shell)
   (io/watch-send path handle)                — watch directory, send events as message to handle
 
-Ordinary IO tools return {:ok boolean :out payload :err string-or-nil :truncated boolean}.
-Full values are returned unless an explicit selection omits content. !call-now/!peek insert bounded visible snapshots.
+Ordinary IO tools return {:ok boolean :out payload :err string-or-nil}.
+Tools return the complete requested selection without :truncated. !call-now/!peek serialization adds :truncated false or true when it omits returned content.
 Process results also include :exit; stdout/stderr are exact, with empty stderr represented by nil.
 Raw exceptions: exists?/directory? booleans, cwd string, env map/string/nil, sh-test thunk, watch-send nil.
 `ls` returns an envelope whose :out contains structured entries with `:name` and `:size`; directory names end with `/`.
@@ -793,23 +792,23 @@ Recommended usage pattern: Search before reading a large file.
   ;; There is no hidden full result or stored handle behind an inserted snapshot."}
 
    :detail
-   {:slurp-bytes "Read file as byte array. Returns {:ok true :err nil :truncated false :out bytes} or {:ok false :out nil :truncated false :err msg}."
-    :write-file "Write content to file. Creates parent dirs. Returns {:ok true :err nil :truncated false :out path} or {:ok false :out nil :truncated false :err msg}."
+   {:slurp-bytes "Read file as byte array. Returns {:ok true :err nil :out bytes} or {:ok false :out nil :err msg}."
+    :write-file "Write content to file. Creates parent dirs. Returns {:ok true :err nil :out path} or {:ok false :out nil :err msg}."
     :exists? "Check if path exists."
     :directory? "Check if path is a directory."
-    :ls "List directory contents. Returns an envelope with :out vector of {:name :size} maps or {:ok false :out nil :truncated false :err msg}."
-    :mkdir "Create directory. Returns {:ok true :err nil :truncated false :out path} or {:ok false :out nil :truncated false :err msg}."
-    :mkdirs "Create directory tree. Returns {:ok true :err nil :truncated false :out path} or {:ok false :out nil :truncated false :err msg}."
+    :ls "List directory contents. Returns an envelope with :out vector of {:name :size} maps or {:ok false :out nil :err msg}."
+    :mkdir "Create directory. Returns {:ok true :err nil :out path} or {:ok false :out nil :err msg}."
+    :mkdirs "Create directory tree. Returns {:ok true :err nil :out path} or {:ok false :out nil :err msg}."
     :cwd "Get current working directory."
-    :delete "Delete file or empty directory. Returns {:ok true :err nil :truncated false :out path} or {:ok false :out nil :truncated false :err msg}."
-    :copy "Copy file. (copy src dest). Returns {:ok true :err nil :truncated false :out dest} or {:ok false :out nil :truncated false :err msg}."
-    :move "Move/rename file. (move src dest). Returns {:ok true :err nil :truncated false :out dest} or {:ok false :out nil :truncated false :err msg}."
-    :stat "Get file info. Returns an envelope with :out {:size :modified :readable :writable :executable :directory} or {:ok false :out nil :truncated false :err msg}."
-    :temp-file "Create temp file. Returns {:ok true :err nil :truncated false :out path} or {:ok false :out nil :truncated false :err msg}."
+    :delete "Delete file or empty directory. Returns {:ok true :err nil :out path} or {:ok false :out nil :err msg}."
+    :copy "Copy file. (copy src dest). Returns {:ok true :err nil :out dest} or {:ok false :out nil :err msg}."
+    :move "Move/rename file. (move src dest). Returns {:ok true :err nil :out dest} or {:ok false :out nil :err msg}."
+    :stat "Get file info. Returns an envelope with :out {:size :modified :readable :writable :executable :directory} or {:ok false :out nil :err msg}."
+    :temp-file "Create temp file. Returns {:ok true :err nil :out path} or {:ok false :out nil :err msg}."
     :env "Get env var(s). (env) returns all as map. (env \"PATH\") returns value or nil."
 
     :read-file
-    "Read plain text in {:ok boolean :out text :err string-or-nil :truncated boolean}.
+    "Read plain text in {:ok boolean :out text :err string-or-nil}.
 
 (io/read-file path)
 (io/read-file path opts)
@@ -820,7 +819,7 @@ start past EOF and reversed ranges return empty output. Line selection is not tr
 Options :char-start and :char-end select a zero-based UTF-16 window on each selected
 line, excluding its delimiter. Start defaults to 0; absent end is unlimited. Both must
 be nonnegative integers, with start <= end. Surrogate fragments at edges are omitted.
-Original LF, CRLF, and CR delimiters remain in :out. Only character omission sets :truncated.
+Original LF, CRLF, and CR delimiters remain in :out. Character windows are request selectors.
 Selected and skipped lines stream without materializing omitted giant line bodies.
 Default reads are full and unbounded; context insertion may produce a bounded snapshot.
 
@@ -835,7 +834,7 @@ Default reads are full and unbounded; context insertion may produce a bounded sn
 (io/read-lines path start end)
 (io/read-lines path start end opts)
 Uses the same 1-based half-open line ranges and per-line UTF-16 :char-start/:char-end
-options as read-file. Delimiters are stripped. Only character omission sets :truncated.
+options as read-file. Delimiters are stripped. Character windows are request selectors.
 Default reads are full and unbounded. !call-now/!peek bind the visible bounded snapshot,
 not a hidden complete value. Line metadata may display row numbers without altering strings.
 
@@ -856,7 +855,7 @@ For one-turn file peeks, use:
 
 The pattern argument must be a string or a non-empty collection of strings. For multiple patterns, use the collection form rather than extra positional arguments.
 
-Returns {:ok boolean :truncated boolean :exit N :out \"...\" :err \"...\"}.
+Returns {:ok boolean :exit N :out \"...\" :err \"...\"}.
 
 Options:
   :context N      — include N lines before and after each match (grep -C N). Use this
@@ -873,7 +872,7 @@ Options:
 (io/glob pattern path)
 (io/glob pattern path {:type \"f\" :max-depth 5})
 
-Returns {:ok boolean :truncated boolean :exit N :out \"...\" :err \"...\"}.
+Returns {:ok boolean :exit N :out \"...\" :err \"...\"}.
 Output is newline-delimited and sorted for stable downstream use."
 
     :git
@@ -896,7 +895,7 @@ Allowed subcommands: blame, branch, diff, log, rev-parse, show, status."
   Multiple edits, applied atomically. Line numbers refer to the ORIGINAL file —
   no drift between edits. Edits must not have overlapping ranges.
 
-Empty content string deletes the range. Returns {:ok true :err nil :truncated false :out path} or {:ok false :out nil :truncated false :err msg}.
+Empty content string deletes the range. Returns {:ok true :err nil :out path} or {:ok false :out nil :err msg}.
 
 Example — replace lines 42-44:
   (io/replace-lines \"main.py\" 42 45 \"    x = fixed_value\\n    return x\")
@@ -915,13 +914,13 @@ Example — multiple edits (no drift):
 
 Without :all, errors if old-str appears 0 or >1 times (uniqueness check).
 With {:all true}, replaces all occurrences (must appear at least once).
-Returns {:ok true :err nil :truncated false :out path} or {:ok false :out nil :truncated false :err msg}.
+Returns {:ok true :err nil :out path} or {:ok false :out nil :err msg}.
 
 Example:
   (io/str-replace \"config.json\" \"localhost\" \"production.example.com\")"
 
     :sh
-    "Execute a shell command. Returns {:ok boolean :truncated boolean :exit N :out \"...\" :err \"...\"}.
+    "Execute a shell command. Returns {:ok boolean :exit N :out \"...\" :err \"...\"}.
 
 (io/sh command)
 (io/sh command {:timeout secs})
@@ -955,7 +954,7 @@ relying on closure capture semantics."
 
 (io/exec [\"cmd\" \"arg1\" \"arg2\"])
 
-Returns {:ok boolean :truncated boolean :exit N :out \"...\" :err \"...\"}.
+Returns {:ok boolean :exit N :out \"...\" :err \"...\"}.
 Use when you need precise argument handling without shell interpretation."
 
     :watch-send
@@ -981,14 +980,14 @@ Example:
 (io/spit path content)
 (io/spit path content {:append true})
 
-Returns {:ok true :err nil :truncated false :out path} or {:ok false :out nil :truncated false :err msg}. Use :append to add to existing file."
+Returns {:ok true :err nil :out path} or {:ok false :out nil :err msg}. Use :append to add to existing file."
 
     :slurp
     "Read entire file as raw string (no line numbers).
 
 (io/slurp path)
 
-Returns {:ok true :err nil :truncated false :out content} or {:ok false :out nil :truncated false :err msg}.
+Returns {:ok true :err nil :out content} or {:ok false :out nil :err msg}.
 The :out payload is the full raw file contents. For streamed line and character windows, use io/read-file or io/read-lines."}
    ;; File reading/writing
    :slurp slurp-file

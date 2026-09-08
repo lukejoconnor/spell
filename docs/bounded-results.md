@@ -38,10 +38,10 @@ A later continuation, `persist`, or recursive container renders an already retai
 Operational IO, web, and MCP calls return:
 
 ```clojure
-{:ok true :out payload :err nil :truncated false}
+{:ok true :out payload :err nil}
 ```
 
-Failures use `:ok false` and explanatory `:err`, keeping available output under `:out`. Process results additionally have `:exit`; HTTP responses preserve `:status` when known. Display clipping sets `:truncated true` without changing `:ok`, `:exit`, or `:status`. Caller-requested character omission also sets it; selecting a line range alone does not. Third-party data remains under `:out` rather than overwriting the envelope fields.
+Failures use `:ok false` and explanatory `:err`, keeping available output under `:out`. Process results additionally have `:exit`; HTTP responses preserve `:status` when known. Serialization adds `:truncated false` when the returned result fits, or `:truncated true` precisely when serialization omits something, without changing `:ok`, `:exit`, or `:status`. An existing true flag survives reserialization and ordinary retained rendering. Line ranges and character windows are request selectors, not truncation. Raw envelopes have no `:truncated` field. Third-party data remains under `:out` rather than overwriting the envelope fields; its own truncated property is ordinary payload data.
 
 | Calls | `:out` on success |
 | --- | --- |
@@ -54,7 +54,7 @@ Failures use `:ok false` and explanatory `:err`, keeping available output under 
 | `web/search`, `web/fetch`, `web/config` | Requested result vector / full text by default / effective configuration |
 | Generated MCP tools, `mcp/read-resource`, `mcp/get-prompt`, `mcp/complete`, `mcp/info`, `mcp/refresh` | Full attributed structured payload or receipt |
 
-`grep` exit 1 with empty stderr is a valid no-match result; other failures need diagnosis. Process launch failure has `:exit nil`. Existing timeout behavior returns `:out ""`, `:exit -1`, and `:truncated true`: partial stdout is discarded, not retained for later inspection. The exact-stdout convention above applies to completed processes, not this timeout path. This limitation does not add retries or change timeout policy. MCP semantic errors preserve their structured payload under `:out`; exposed operational transport failures may return envelopes, while argument/schema/permission errors remain explicit exceptions.
+`grep` exit 1 with empty stderr is a valid no-match result; other failures need diagnosis. Process launch failure has `:exit nil`. Existing timeout behavior returns `:out ""`, `:exit -1`, and an explanatory timeout error: partial stdout is discarded, not retained for later inspection. The exact-stdout convention above applies to completed processes, not this timeout path. This limitation does not add retries or change timeout policy. MCP semantic errors preserve their structured payload under `:out`; exposed operational transport failures may return envelopes, while argument/schema/permission errors remain explicit exceptions.
 
 Narrow exceptions retain their existing control/accessor values: raw `io/exists?`, `io/directory?`, `io/cwd`, `io/env`; executable `io/sh-test` thunks; asynchronous IO watchers and MCP listeners; and cached MCP `servers`, `resources`, `resource-templates`, and `prompts` listings. Check namespace documentation rather than assuming every namespaced call has an envelope.
 

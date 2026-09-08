@@ -339,3 +339,38 @@
     (is (eval/ok? result))
     (is (true? (:ok value)))
     (is (true? (get-in value [:out :status :spell/representation-unavailable])))))
+
+(deftest serialization-owns-envelope-flags
+  (doseq [raw [{:ok true :out "small" :err nil}
+               {:ok false :exit -1 :out "" :err "Command timed out"}
+               {:ok false :status 503 :out "body" :err "HTTP 503"}]]
+    (is (not (contains? raw :truncated)))
+    (is (= (assoc raw :truncated false) (recover (rendered raw 1000))))
+    (is (= [(assoc raw :truncated false)] (recover (rendered [raw] 1000)))))
+  (let [raw {:ok false :exit 7 :status 503 :out (apply str (repeat 10000 "x")) :err "stderr\n"}
+        partial (recover (rendered raw 300))]
+    (is (true? (:truncated partial)))
+    (is (= (select-keys raw [:ok :exit :status :err])
+           (select-keys partial [:ok :exit :status :err])))
+    (is (= partial (recover (rendered partial 10000))))
+    (is (= partial (recover (context/render-form (context/value-form partial)))))
+    (is (true? (:truncated (first (recover (rendered [partial] 10000)))))))
+  (doseq [payload [{:truncated false :text "third-party"}
+                   {"truncated" true "text" "third-party"}]]
+    (is (= payload (recover (rendered payload 1000))))
+    (is (= payload (:out (recover (rendered {:ok true :out payload :err nil} 1000)))))))
+
+(deftest raw-envelope-output-boundaries
+  (doseq [macro-name ['!call-now '!peek]
+          size [5 10000]]
+    (let [raw {:ok true :out (apply str (repeat size "a")) :err nil}
+          env {'completion '(quine completion (eval (do)))
+               'raw raw '!llm-self (fn [q _] q)}
+          form (list macro-name {:max-chars 300} 'raw-has-flag '(contains? raw :truncated) 'result 'raw)
+          result (eval/spell-eval (macros/spell-macroexpand-1 form) env)
+          forms (rest (second (last (:ok result))))
+          evaluated (eval/spell-eval (list* 'do forms) {})]
+      (is (eval/ok? result) (pr-str result))
+      (is (eval/ok? evaluated) (pr-str evaluated))
+      (is (false? (get-in evaluated [:env 'raw-has-flag])))
+      (is (= (> size 300) (get-in evaluated [:env 'result :truncated]))))))

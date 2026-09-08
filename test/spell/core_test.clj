@@ -25,7 +25,7 @@
         (is (= "hello\n" (:out result)))
         (is (nil? (:err result)))
         (is (true? (:ok result)))
-        (is (false? (:truncated result)))))
+        (is (not (contains? result :truncated)))))
 
     (testing "io/sh captures exit code on failure"
       (let [result (run-spell '(io/sh "exit 42"))]
@@ -62,9 +62,9 @@
     (testing "io/write-file and io/read-file roundtrip"
       (let [test-file "/tmp/spell-test-file.txt"]
         (try
-          (is (= {:ok true :out test-file :err nil :truncated false}
+          (is (= {:ok true :out test-file :err nil}
                  (run-spell (list 'io/write-file test-file "line1\nline2\nline3"))))
-          (is (= {:ok true :out "line1\nline2\nline3" :err nil :truncated false}
+          (is (= {:ok true :out "line1\nline2\nline3" :err nil}
                  (run-spell (list 'io/read-file test-file))))
           (finally
             (jio/delete-file test-file true)))))
@@ -73,7 +73,7 @@
       (let [test-file "/tmp/spell-test-range.txt"]
         (try
           (run-spell (list 'io/write-file test-file "a\nb\nc\nd\ne"))
-          (is (= {:ok true :out "b\nc\n" :err nil :truncated false}
+          (is (= {:ok true :out "b\nc\n" :err nil}
                  (run-spell (list 'io/read-file test-file 2 4))))
           (finally
             (jio/delete-file test-file true)))))
@@ -81,9 +81,9 @@
     (testing "io/slurp and io/spit"
       (let [test-file "/tmp/spell-test-slurp.txt"]
         (try
-          (is (= {:ok true :out test-file :err nil :truncated false}
+          (is (= {:ok true :out test-file :err nil}
                  (run-spell (list 'io/spit test-file "hello world"))))
-          (is (= {:ok true :out "hello world" :err nil :truncated false}
+          (is (= {:ok true :out "hello world" :err nil}
                  (run-spell (list 'io/slurp test-file))))
           (finally
             (jio/delete-file test-file true)))))))

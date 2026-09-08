@@ -168,7 +168,7 @@
       (let [result (protocol/model-value :demo "tools/call"
                                         {"content" content "structuredContent" structured "isError" semantic?})]
         (is (= (not semantic?) (:ok result)))
-        (is (false? (:truncated result)))
+        (is (not (contains? result :truncated)))
         (is (= content (get-in result [:out "content"])))
         (is (= structured (get-in result [:out "structuredContent"])))
         (is (= "demo" (get-in result [:out "mcp/server"])))
@@ -225,7 +225,7 @@
                                         "structuredContent" structured}
                                  semantic? (assoc "isError" true "error" text))]
               (is (= {:ok (not semantic?) :out expected-out
-                      :err (when semantic? text) :truncated false}
+                      :err (when semantic? text)}
                      result))
               (is (= content (get-in result [:out "content"])))
               (is (= structured (get-in result [:out "structuredContent"])))
@@ -254,7 +254,7 @@
                           ((:refresh mcp) :demo)]]
             (is (false? (:ok result)))
             (is (= "transport failed" (:err result)))
-            (is (false? (:truncated result)))
+            (is (not (contains? result :truncated)))
             (is (= (:result data) (:out result)))
             (is (= (contains? data :status) (contains? result :status)))
             (is (= (:status data) (:status result)))))))
@@ -277,7 +277,7 @@
                     (fn [& _]
                       (throw (ex-info "MCP stdio server closed stdout"
                                       {:type :mcp-stdio-error :stderr stderr})))]
-        (is (= {:ok false :out nil :truncated false
+        (is (= {:ok false :out nil
                 :err (if (seq stderr)
                        "MCP stdio server closed stdout\nMCP stderr:\nFatal: unable to open database\n  detail with whitespace  "
                        "MCP stdio server closed stdout")}

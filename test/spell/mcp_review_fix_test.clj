@@ -422,7 +422,7 @@
             (is (<= (count text) 256))
             (is (true? (:ok decoded)))
             (is (true? (:truncated decoded)))
-            (is (false? (:truncated value)))
+            (is (not (contains? value :truncated)))
             (is (map? (:out decoded)))
             (is (not= value decoded))
             (is (not (re-find #"stored|UUID" text)))))))))
