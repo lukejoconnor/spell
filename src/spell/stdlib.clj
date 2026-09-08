@@ -870,14 +870,16 @@ Example:
     (throw (ex-info "!ask-await requires a future" {:value fut})))
   (when-not (and runtime/*current-handle* runtime/*current-raw*)
     (throw (ex-info "!ask-await requires an active agent turn" {})))
-  (let [token (coordinator/begin-external-wait! runtime/*current-handle*)]
+  (let [{:keys [token created?]}
+        (coordinator/begin-external-wait! runtime/*current-handle* (:ref fut))]
     (when eval/*completion-handoff* (eval/*completion-handoff*))
-    (future
-      (let [result (try (runtime/future-value fut)
-                        (catch Throwable e
-                          {:future-await/error (.getMessage e)
-                           :class (.getName (class e))}))]
-        (coordinator/complete-external-wait! token result)))
+    (when created?
+      (future
+        (let [result (try (runtime/future-value fut)
+                          (catch Throwable e
+                            {:future-await/error (.getMessage e)
+                             :class (.getName (class e))}))]
+          (coordinator/complete-external-wait! token result))))
     (runtime/block-for-message)))
 
 ;; =============================================================================

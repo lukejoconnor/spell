@@ -229,8 +229,8 @@
                           (when (= [:main [:worker]] (vec (take 2 args))) (swap! worker-requests inc))
                           (apply original-request args))
                         coordinator/begin-external-wait!
-                        (fn [handle]
-                          (let [token (original-begin handle)]
+                        (fn [handle ref]
+                          (let [token (original-begin handle ref)]
                             (when (= 1 (swap! joins inc))
                               (coordinator/request! :peer [:main] true :status))
                             token))]

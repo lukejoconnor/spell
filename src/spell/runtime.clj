@@ -764,6 +764,9 @@ The enclosing !ask-await resumes with a msg-N whose :from is :future and :body
 is the computed value. A body with :future-await/error reports a computation
 error. An unrelated message can arrive first: handle it, then join the same
 future with (globals/get :task-future) again. Do not recreate it to resume waiting.
+Rejoins share one subscription per caller, lifecycle, and underlying future through
+inbox receipt, including while its completion is queued. An explicit await after
+that receipt requests a fresh delivery of the completed value, not recomputation.
 Context bindings are bounded display snapshots, not identity-preserving storage.
 Creating a future in ordinary retained source can rerun its request on later
 turns. A local def inside a quoted do is not retained for a later rejoin.
