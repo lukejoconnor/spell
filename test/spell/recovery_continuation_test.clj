@@ -64,7 +64,7 @@
       (is (empty? (:receipts result))))))
 
 (deftest inert-recovery-guidance-matches-approved-text
-  (is (= "The previous Spell program threw an error. The previous program is visible during this recovery turn, but it will be pruned afterward, such that you will not see it on your next turn.\n\nEmit a `(quine task \"...\")` form describing the original task, followed by a (quine context-summary \"...\") form describing history, progress, and any context which should be retained on your next turn. Preserve the exact evidence, checkpoints, pending obligations, and actual effect receipts needed next. Prefer `(stored \"ID\")` with an ID actually observed in the previous program. Page a prior local value only after its needed pure binding has been re-established in the current program. Use `subs` for strings, `subvec` for line vectors, or the documented text/vector field for maps. Keep pages within the existing contribution cap and carry IDs plus next offsets as literal data. The previous program is inert context: its local bindings are not active. Reconstruct only the needed pure bindings or use retained stored references. Do not rerun an effect just to recover its output. Read the file again only when fresh contents are actually required, and identify the result as fresh evidence rather than the original receipt. If the original value cannot be retrieved, report missing evidence rather than claiming inspection or blindly refetching. Emit Spell code only. Avoid repeating your previous error."
+  (is (= "The previous Spell program threw an error. The previous program is visible during this recovery turn, but it will be pruned afterward, such that you will not see it on your next turn.\n\nEmit a `(quine task \"...\")` form describing the original task, followed by a (quine context-summary \"...\") form describing history, progress, and context needed next. Preserve exact inspected evidence, checkpoints, pending obligations, and actual effect receipts. The previous program is inert context: its local bindings are not active. Reconstruct needed pure bindings explicitly. Inserted results are ordinary bounded snapshots with no hidden full original; omission data is missing evidence. Use subs for strings, subvec for line vectors, and the documented :out field for result envelopes. Preserve paths, source coordinates and next offsets as literal data. Never rerun an effect merely to recover omitted output. A focused file reread is fresh evidence of current contents, not the original receipt. Exact earlier values are available only if the program deliberately saved them in explicit state. If evidence is unavailable, report it rather than claiming inspection. Emit Spell code only. Avoid repeating your previous error."
          @#'llm/inert-recovery-prompt)))
 
 (deftest reader-and-inert-eval-recovery-deliver-retained-evidence-guidance
@@ -78,14 +78,14 @@
       (is (= 42 (runner "(quine completion (eval (do ")))
       (is (= 2 (count @prompts)))
       (let [recovery-prefix (second @prompts)]
-        (doseq [fragment ["Preserve the exact evidence, checkpoints, pending obligations, and actual effect receipts needed next."
-                          "with an ID actually observed in the previous program"
-                          "Page a prior local value only after its needed pure binding has been re-established in the current program."
-                          "Use `subs` for strings, `subvec` for line vectors"
-                          "carry IDs plus next offsets as literal data"
+        (doseq [fragment ["Preserve exact inspected evidence, checkpoints, pending obligations, and actual effect receipts."
                           "The previous program is inert context: its local bindings are not active."
-                          "Do not rerun an effect just to recover its output."
-                          "identify the result as fresh evidence rather than the original receipt"
-                          "report missing evidence rather than claiming inspection or blindly refetching"]]
+                          "Reconstruct needed pure bindings explicitly."
+                          "ordinary bounded snapshots with no hidden full original"
+                          "Use subs for strings, subvec for line vectors"
+                          "Preserve paths, source coordinates and next offsets as literal data."
+                          "Never rerun an effect merely to recover omitted output."
+                          "fresh evidence of current contents, not the original receipt"
+                          "If evidence is unavailable, report it rather than claiming inspection."]]
           (is (str/includes? recovery-prefix fragment) fragment))
         (is (not (str/includes? recovery-prefix "restore these by re-reading from those files")))))))

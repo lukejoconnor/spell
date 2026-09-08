@@ -243,38 +243,41 @@
   (bounded-string (text-content result) max-cli-text-chars))
 
 (defn model-value
-  "Project a complete tool result into Spell data. Context insertion owns limits."
+  "Project a complete, attributed tool result into a full Spell result envelope."
   [server operation result]
   (let [semantic-error? (true? (get result "isError"))
-        text (when semantic-error? (text-content result))]
-    (cond-> {"mcp/server" (name server)
-             "mcp/operation" operation}
-      (contains? result "structuredContent")
-      (assoc "structuredContent" (get result "structuredContent"))
-      (seq (get result "content")) (assoc "content" (get result "content"))
-      semantic-error? (assoc "isError" true "error" (if (str/blank? text)
-                                                       "MCP tool call failed"
-                                                       text)))))
+        text (when semantic-error? (text-content result))
+        error (when semantic-error? (if (str/blank? text) "MCP tool call failed" text))]
+    {:ok (not semantic-error?) :err error :truncated false
+     :out (cond-> {"mcp/server" (name server) "mcp/operation" operation}
+            (contains? result "structuredContent")
+            (assoc "structuredContent" (get result "structuredContent"))
+            (contains? result "content") (assoc "content" (get result "content"))
+            semantic-error? (assoc "isError" true "error" error))}))
 
 (defn model-resource-value [server result]
-  {"mcp/server" (name server)
-   "mcp/operation" "resources/read"
-   "contents" (get result "contents" [])})
+  {:ok true :err nil :truncated false
+   :out {"mcp/server" (name server)
+         "mcp/operation" "resources/read"
+         "contents" (get result "contents" [])}})
 
 (defn model-prompt-value [server result]
-  {"mcp/server" (name server)
-   "mcp/operation" "prompts/get"
-   "description" (get result "description")
-   "messages" (get result "messages" [])})
+  {:ok true :err nil :truncated false
+   :out {"mcp/server" (name server)
+         "mcp/operation" "prompts/get"
+         "description" (get result "description")
+         "messages" (get result "messages" [])}})
 
 (defn model-completion-value [server result]
-  {"mcp/server" (name server)
-   "mcp/operation" "completion/complete"
-   "completion" (get result "completion" {})})
+  {:ok true :err nil :truncated false
+   :out {"mcp/server" (name server)
+         "mcp/operation" "completion/complete"
+         "completion" (get result "completion" {})}})
 
 (defn model-info-value [server discovery]
-  (assoc (select-keys discovery
-                      ["supportedVersions" "capabilities" "_meta" "ttlMs" "cacheScope"
-                       "catalogCache" "excludedTools" "instructions"])
-         "mcp/server" (name server)
-         "mcp/operation" "server/discover"))
+  {:ok true :err nil :truncated false
+   :out (assoc (select-keys discovery
+                           ["supportedVersions" "capabilities" "_meta" "ttlMs" "cacheScope"
+                            "catalogCache" "excludedTools" "instructions"])
+               "mcp/server" (name server)
+               "mcp/operation" "server/discover")})

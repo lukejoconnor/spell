@@ -188,6 +188,38 @@
       (is (.contains ^String @b-received ":from :reply-a"))
       (is (.contains ^String @b-received ":body \"reply-value\"")))))
 
+
+(deftest claimed-message-snapshots-remain-deliverable
+  (runtime/register! :snapshot-source)
+  (runtime/register! :snapshot-target)
+  (doseq [body [(Object.)
+               (lazy-seq (throw (ex-info "unrealizable message" {})))
+               (vec (repeat 10000 "large message"))]]
+    (let [edge (coordinator/request! :snapshot-source [:snapshot-target] true body)
+          q '(quine completion (eval (do '(!extend))))
+          transformed (binding [runtime/*current-handle* :snapshot-target
+                                context/*context* (context/new-context {:max-chars 128})]
+                        (runtime/receive q))
+          forms (rest (second (last transformed)))
+          message-form (first (filter #(and (seq? %) (= 'def (first %))) forms))
+          evaluated (eval/spell-eval message-form {})
+          message (:ok evaluated)]
+      (is (eval/ok? evaluated) (pr-str (dissoc evaluated :ok)))
+      (is (= {:from :snapshot-source :expects-response true :edge-id edge}
+             (dissoc message :body)))
+      (is (some? (:body message)))
+      (is (empty? (:mailbox (coordinator/agent :snapshot-target))))
+      (is (= (:generation (coordinator/agent :snapshot-target))
+             (get-in (coordinator/snapshot) [:edges edge :slots :snapshot-target :generation])))
+      (is (= transformed (binding [runtime/*current-handle* :snapshot-target]
+                           (runtime/receive transformed))))
+      (is (str/includes? (context/render-form transformed) "receive: not evaluated"))
+      (binding [runtime/*current-handle* :snapshot-target]
+        (runtime/reply message :snapshot-answered))
+      (is (nil? (get-in (coordinator/snapshot) [:edges edge])))
+      (is (= :snapshot-answered
+             (get-in (coordinator/agent :snapshot-source) [:mailbox 0 :message :body])))
+      (coordinator/drain! :snapshot-source))))
 (deftest dynamic-vars-bound-in-box-test
   (testing "*current-handle* and *current-raw* are bound during box execution"
     (let [handle :test-dynvars

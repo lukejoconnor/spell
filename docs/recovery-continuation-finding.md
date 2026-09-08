@@ -1,5 +1,7 @@
 # Recovery continuation: bounded independent finding
 
+> Historical finding: the quoted result-storage guidance below describes the earlier implementation, not the current API. Automatic retrieval was removed by [bounded snapshots](./bounded-results.md); see [current recovery guidance](./error-recovery.md). Original evidence and quotes are preserved.
+
 ## Scope and status
 
 Investigation only on `codex/dogfood-reliability`. The initial investigation made no production edits or provider calls. Main subsequently approved only the recovery guidance correction below; no limit increase, progress heuristic, or accounting changes. This report is separate from the module work. Main accepted documented DEFER of recovery accounting and approved the exact retained-value/checkpoint/no-replay paragraph via request edge 8. Recovery semantics remain unchanged.

@@ -116,7 +116,7 @@
    ["-M" "--max-tokens TOKENS" "Max tokens per LLM response (default: 16384)"
     :parse-fn #(Integer/parseInt %)
     :validate [pos? "Must be positive"]]
-   [nil "--context-max-chars CHARS" "Max chars per context contribution (default: 10000, minimum: 128)"
+   [nil "--context-max-chars CHARS" "Target chars per output snapshot (+20% grace; default: 10000, minimum: 128)"
     :default context/default-max-chars
     :parse-fn #(Integer/parseInt %)
     :validate [#(>= % context/min-max-chars) "Must be at least 128"]]

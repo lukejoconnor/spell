@@ -451,7 +451,7 @@
       (is (contains? v :read-file))
       (is (contains? v :sh))
       (is (not (contains? v :write-file)))
-      (is (= "Read a file with numbered lines." (get-in v [:docs :read-file])))
+      (is (= "Read plain file text in a result envelope." (get-in v [:docs :read-file])))
       (is (re-find #"Read-only filesystem inspection, codebase exploration"
                    (:short-docs v))))))
 

@@ -193,7 +193,7 @@
     :body [(list 'let
              ['forms (list 'context-forms
                        [{:form (list 'quote (list 'think (receipt-annotation receipt-site)))}
-                        {:name (list 'quote name) :value (list 'quote value)}
+                        {:name (list 'quote name) :value (list 'quote value) :body-only? true}
                         {:form '(list 'quote (list '!extend (second q)))}])]
              '(reopen q
                 (reopen-eval (nth forms 0))
@@ -637,7 +637,7 @@ Use from inside (future ...) orchestration code."
     :waiting "For message handling, put !wait/!sleep/!ask/!spawn-ask/!reply-ask or !ask-await last in the quoted trailing expression. Read received msg-N bindings in the resumed turn. A wait returns the whole resumed computation's value, so capturing it as a message or adding parentheses, ((agents/!wait)), misuses that value. Synchronous !llm-self result capture remains available."
     :receipts "On waking, establish which required actions executed before continuing dependent work. An incoming request can supersede your own proposed request while its source and local definitions remain. When dispatch must precede another step, capture immediate ask with a fresh name, e.g. '(!call-now question-edge (agents/ask :reviewer question)), then wait separately. Check actual captures, received reports, and out-edges/status before dependent replies, waits, or return. A proposed sent flag is not execution evidence. Resolve uncertain execution before retrying; complete an interrupted prerequisite first. See (!describe agents) for examples."
     :returning "Returning fills all still-unanswered claimed request slots with the same value and abandons unfinished outgoing collections; targets keep running. Explicitly reply to any request whose answer differs from your final return value. After a wake and before returning, inspect your pending incoming slots and send any such reply that has not executed. Receiving a peer's answer does not establish that your own reply to that peer ran. Before waiting, establish that work remains to collect and inspect uncertain obligations. A refused wait is an error: recover by inspecting current state and revising the program. Return when done."
-    :futures "Create a communication future once in a quoted trailing expression and retain it with !call-now for later joins. Inside it, blocking/request creates a token and blocking/await collects it; !ask-await resumes the enclosing agent with messages. (!describe agents) shows the complete pattern."
+    :futures "Create a communication future once in a quoted trailing expression and retain its identity explicitly with globals/set; rejoin it with globals/get. Inside it, blocking/request creates a token and blocking/await collects it; !ask-await resumes the enclosing agent with messages. (!describe agents) shows the complete pattern."
     :guide "AGENTS — Communication controlled by your program.
 
 Use agents/ operations in the quoted trailing expression. Each operation takes
@@ -753,23 +753,22 @@ no result binding. Reusing a name can leave an older binding visible after the
 new action was superseded. Keep fresh captures or inspect the coordinator.
 
 Requests collected in computation futures
-
-Create and capture the future in the quoted trailing expression so later turns
-reuse the same computation. These are successive turns:
+Create the future once in the quoted trailing expression and retain its identity
+explicitly in globals. These are successive turns:
   '(!call-now worker-handle (agents/spawn \"Answer incoming arithmetic requests with integers.\" :worker))
-  '(!call-now task-future (future (blocking/await (blocking/request worker-handle \"Multiply 23 by 41.\"))))
-  '(!ask-await task-future)
+  '(!call-now future-saved (do (globals/set :task-future (future (blocking/await (blocking/request worker-handle \"Multiply 23 by 41.\")))) :saved))
+  '(!ask-await (globals/get :task-future))
 future takes one expression; wrap multiple body forms in do. blocking/request
 creates a tracked result token; blocking/await collects it inside the future.
 The enclosing !ask-await resumes with a msg-N whose :from is :future and :body
 is the computed value. A body with :future-await/error reports a computation
-error. An unrelated message can arrive first: handle it, then
-join the same captured task-future again. A future stored through a stored
-reference keeps its identity. Do not recreate it to resume waiting.
+error. An unrelated message can arrive first: handle it, then join the same
+future with (globals/get :task-future) again. Do not recreate it to resume waiting.
+Context bindings are bounded display snapshots, not identity-preserving storage.
 Creating a future in ordinary retained source can rerun its request on later
-turns. A local def inside a quoted do is not retained for a later rejoin;
-!call-now captures the future for that purpose. blocking/send-await creates
-and collects a NEW request; use blocking/await for an existing token.
+turns. A local def inside a quoted do is not retained for a later rejoin.
+blocking/send-await creates and collects a NEW request; use blocking/await for
+an existing token.
 
 Use (!describe agents :function) for signatures. Discover current/parent handles
 and registered roles; :user exists only when the run configured user input.

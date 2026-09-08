@@ -58,27 +58,13 @@ Startup, receiving continuations, and explicit receipt establish the context use
 
 Receipt annotations are associated with the following message binding: `startup: tail not run`, `pre-eval: tail not run`, `wait resumed`, `dormant resumed`, and `receive: not evaluated`. A skipped tail refers only to that entry's trailing expression, not earlier effects. Explicit `receive` returns transformed code without evaluating it. Wait and dormant labels identify the resume pathway; they do not prove which prior effects ran. Use captured dispatches, received edges, and effect receipts for that evidence.
 
-## Context Contributions
+## Bounded result snapshots
 
-Set `:context-max-chars` in `spell.api/run` to an integer of at least 128 (default: 10000). The public CLI forwards `--context-max-chars CHARS` to this run option, for example `bin/spell --context-max-chars 50000 "Inspect the project"`. This limits context contribution characters, not model output tokens; `--max-tokens` remains a separate response-token limit.
+Set `:context-max-chars` in `spell.api/run` to an integer at least 128 (default 10000); CLI `--context-max-chars CHARS` forwards it. This is a per-output reader-rendered UTF-16 target, not an aggregate packet cap or model token limit. Each output has 20% grace before shortening toward the target. Leading `{:max-chars N}` options on `!call-now`, `!peek`, and `!print`, and `(serialize value N)`, can override it upward or downward; nil uses the default and invalid/negative limits are rejected.
 
-`!call-now`, `!peek`, `!print`, and incoming agent messages use the same lossless rendering policy. Fitting results are inserted directly, including small siblings of oversized results. Oversized results remain complete in storage owned by this run and appear as `(stored "id")`; the resulting binding still holds the original value. Read a slice or select fields, then use `!peek` or `!print` to display that smaller value. Lists and symbols are quoted as data. Numbered source vectors retain their starting-line metadata, with line comments restored when rendered in a model prefix. Values with other metadata, including nested source vectors, use storage to preserve that metadata.
+Effects compute full ordinary results before insertion. At tool-result and communication-body boundaries the next turn receives an ordinary snapshot with omission data where necessary. `!call-now` binds that snapshot, not a hidden full original. There is no automatic result storage or retrieval API. Later continuation rendering and `persist` preserve the retained snapshot without re-capping it. Exact request/lifecycle metadata remains outside bounded bodies.
 
-`:context-max-chars` counts UTF-16 characters, not tokens, and bounds the whole contribution: a multi-binding call shares one budget, as does one aggregate completion report. Rendering stops at the budget instead of traversing or printing the entire payload. Bindings and reference syntax must fit too; if they cannot, the operation raises an explicit capacity error. Use fewer bindings or a larger limit. Complete successful payloads have no item-count or depth cap. MCP tool, resource, prompt, completion, and discovery results use this same insertion policy; their transport byte limits remain separate.
-
-The optional limit argument to `!call-now`, `!peek`, and `serialize` may lower the run limit. A negative limit uses the run limit; it no longer forces unlimited inlining. Explicit `deep-truncate` remains available when the program chooses to shorten data. Program-written context and explicit `persist` are still controlled by the program. Stored references are private to this API invocation and cannot retrieve another run's values.
-
-Low-level embedding through `spell.eval` can allocate the same storage explicitly:
-
-```clojure
-(require '[spell.context :as context])
-(binding [context/*context* (context/new-context {:max-chars 10000})]
-  ;; Evaluate all related agents and stored-value accesses in this scope.
-  ;; Clojure future and bound-fn convey the binding; raw Thread does not.
-  ...)
-```
-
-Standalone serialization can render small values without storage. Oversized values require the bound context. Stored values remain retained for the lifetime of that run. Invalid API configuration raises an exception; execution failures use the return shape below.
+Operational IO/web/MCP calls use `{:ok boolean :out payload :err text-or-nil :truncated boolean}`, retaining process `:exit` and HTTP `:status`. Clipping changes `:truncated`, not success/status metadata. Pure accessors and asynchronous/thunk control values have documented narrow exceptions. See [bounded results and explicit paging](bounded-results.md) for the complete call table, omission semantics, source coordinates, character ranges, explicit state and future retention. Invalid API configuration raises an exception; execution failures use the return shape below.
 
 ## Return Shape
 

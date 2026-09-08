@@ -67,9 +67,9 @@
 
 (deftest call-now-expansion-test
   (testing "one renderer receives all evaluated bindings and any local limit"
-    (let [single (expand1 '(!call-now result value 100))
+    (let [single (expand1 '(!call-now {:max-chars 128} result value))
           multiple (expand1 '(!call-now a expr-a b expr-b))]
-      (is (= 100 (last (last (second single)))))
+      (is (= 128 (last (last (second single)))))
       (is (= 'context-forms (first (last (second multiple)))))
       (is (= 2 (count (second (last (second multiple))))))))
   (testing "!call-now rejects odd arg counts"

@@ -60,9 +60,9 @@
     (testing "io/write-file and io/read-file roundtrip"
       (let [test-file "/tmp/spell-test-file.txt"]
         (try
-          (is (= {:ok test-file}
+          (is (= {:ok true :out test-file :err nil :truncated false}
                  (run-spell (list 'io/write-file test-file "line1\nline2\nline3"))))
-          (is (= "1: line1\n2: line2\n3: line3"
+          (is (= {:ok true :out "line1\nline2\nline3" :err nil :truncated false}
                  (run-spell (list 'io/read-file test-file))))
           (finally
             (jio/delete-file test-file true)))))
@@ -71,7 +71,7 @@
       (let [test-file "/tmp/spell-test-range.txt"]
         (try
           (run-spell (list 'io/write-file test-file "a\nb\nc\nd\ne"))
-          (is (= "2: b\n3: c"
+          (is (= {:ok true :out "b\nc\n" :err nil :truncated false}
                  (run-spell (list 'io/read-file test-file 2 4))))
           (finally
             (jio/delete-file test-file true)))))
@@ -79,9 +79,9 @@
     (testing "io/slurp and io/spit"
       (let [test-file "/tmp/spell-test-slurp.txt"]
         (try
-          (is (= {:ok test-file}
+          (is (= {:ok true :out test-file :err nil :truncated false}
                  (run-spell (list 'io/spit test-file "hello world"))))
-          (is (= {:ok "hello world"}
+          (is (= {:ok true :out "hello world" :err nil :truncated false}
                  (run-spell (list 'io/slurp test-file))))
           (finally
             (jio/delete-file test-file true)))))))

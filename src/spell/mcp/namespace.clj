@@ -163,6 +163,22 @@
       (throw (ex-info "MCP :tools must be :all, a collection, or an alias map"
                       {:type :invalid-mcp-tool-selection :selection selection})))))
 
+(defn- operational-failure [e]
+  (let [data (ex-data e)]
+    (when (or (instance? java.io.IOException e)
+              (contains? #{:mcp-http-error :mcp-timeout :mcp-stdio-error
+                           :stdio-closed :mcp-client-closed :empty-mcp-response
+                           :missing-sse-response :mcp-json-rpc-error}
+                         (:type data)))
+      (cond-> {:ok false :out (or (:result data) (:response data) (:data data))
+               :err (.getMessage ^Exception e) :truncated false}
+        (contains? data :status) (assoc :status (:status data))))))
+
+(defmacro ^:private with-operational-result [& body]
+  `(try ~@body
+        (catch Exception e#
+          (if-let [result# (operational-failure e#)] result# (throw e#)))))
+
 (defn tool-namespace
   [server-alias mcp-client selection]
   (let [{:keys [selected]} (normalize-tool-selection selection (client/tools mcp-client))
@@ -202,13 +218,13 @@
                    (map (fn [[exposed tool]]
                           [exposed
                            (fn
-                             ([] (client/call-tool! mcp-client (get tool "name") {}))
+                             ([] (with-operational-result (client/call-tool! mcp-client (get tool "name") {})))
                              ([arguments]
                               (when-not (map? arguments)
                                 (throw (ex-info "MCP tool arguments must be a map"
                                                 {:type :invalid-mcp-arguments
                                                  :tool (get tool "name")})))
-                              (client/call-tool! mcp-client (get tool "name") arguments)))])
+                              (with-operational-result (client/call-tool! mcp-client (get tool "name") arguments))))])
                         selected))))))
 
 (defn- reported-excluded-tools
@@ -250,7 +266,7 @@
   [clients entries]
   {:short-docs "Inspect and use configured MCP resources, prompts, completion, catalogs, and subscriptions."
    :docs
-   {:guide (str "MCP — Protocol operations for configured server aliases. Tool calls live in each server's own namespace "
+   {:guide (str "MCP — Protocol operations for configured server aliases. Tool/read-resource/get-prompt/complete/info/refresh results are envelopes {:ok boolean :out payload :err string-or-nil :truncated boolean}. Attributed payloads remain full before context insertion; semantic tool failures retain content with :ok false. Known operational failures are envelopes; argument/schema/permission errors remain exceptions. Cached servers/resources/resource-templates/prompts remain raw vectors; listen-send returns nil. Tool calls live in each server's own namespace "
                 "and take one argument map when their schema has inputs. Inspect a server with (mcp/info :server). "
                 "Complete prompt arguments with (mcp/complete :server {\"type\" \"ref/prompt\" \"name\" \"prompt-name\"} "
                 "{\"name\" \"argument-name\" \"value\" \"prefix\"}). Subscribe before the triggering operation with "
@@ -290,8 +306,8 @@
    :read-resource (fn [server uri]
                     (let [server (keyword server)]
                       (require-permission! entries server :resources uri)
-                      (protocol/model-resource-value
-                       server (client/read-resource! (lookup-client clients server) uri))))
+                      (with-operational-result (protocol/model-resource-value
+                       server (client/read-resource! (lookup-client clients server) uri)))))
    :prompts (fn [server]
               (let [server (keyword server)]
                 (require-permission! entries server :prompts nil)
@@ -302,15 +318,15 @@
                  ([server name arguments]
                   (let [server (keyword server)]
                     (require-permission! entries server :prompts name)
-                    (protocol/model-prompt-value
-                     server (client/get-prompt! (lookup-client clients server) name arguments)))))
+                    (with-operational-result (protocol/model-prompt-value
+                     server (client/get-prompt! (lookup-client clients server) name arguments))))))
    :complete (fn [server reference argument]
                (let [server (keyword server)]
                  (require-permission! entries server :completion nil)
-                 (protocol/model-completion-value
-                  server (client/complete! (lookup-client clients server) reference argument))))
+                 (with-operational-result (protocol/model-completion-value
+                  server (client/complete! (lookup-client clients server) reference argument)))))
    :info (fn [server]
-           (let [server (keyword server)
+           (with-operational-result (let [server (keyword server)
                  mcp-client (lookup-client clients server)
                  info (client/info mcp-client)]
              (protocol/model-info-value
@@ -319,21 +335,21 @@
                      (reported-excluded-tools
                       (get-in entries [server :tools])
                       (client/tools mcp-client)
-                      (get info "excludedTools"))))))
+                      (get info "excludedTools")))))))
    :refresh (fn [server]
-              (let [server (keyword server)
+              (with-operational-result (let [server (keyword server)
                     catalog (client/refresh! (lookup-client clients server))
                     excluded-tools (reported-excluded-tools
                                     (get-in entries [server :tools])
                                     (:tools catalog)
                                     (:excluded-tools catalog))]
-                {:server server
+                {:ok true :err nil :truncated false :out {:server server
                  :tool-count (count (:tools catalog))
                  :resource-count (count (:resources catalog))
                  :resource-template-count (count (:resource-templates catalog))
                  :prompt-count (count (:prompts catalog))
                  :excluded-tools excluded-tools
-                 :cache (:cache catalog)}))
+                 :cache (:cache catalog)}})))
    :listen-send
    (fn [server notifications handle]
      (let [server (keyword server)]

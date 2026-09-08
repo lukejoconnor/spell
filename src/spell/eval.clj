@@ -134,85 +134,18 @@
     :else nil))
 
 ;; =============================================================================
-;; Call-now value store (out-of-band storage for large values)
+;; Explicit bounded snapshot insertion
 ;; =============================================================================
 
-(def store-value! context/store-value!)
-(def stored context/stored)
 (def context-forms context/contribution-forms)
 
-(defn- deep-truncate
-  "Recursively truncate string values within maps and sequences.
-   Returns a new value where all strings exceeding limit are truncated.
-   Non-string leaves are unchanged."
-  [value limit]
-  (cond
-    (string? value)
-    (if (<= (count (pr-str value)) limit)
-      value
-      (let [note (format "\n... [truncated, %d chars total]" (count value))
-            max-chars (max 100 (- limit (count (pr-str note)) 50))]
-        (str (subs value 0 (min (count value) max-chars)) note)))
-
-    (map? value)
-    (into {} (map (fn [[k v]] [k (deep-truncate v limit)]) value))
-
-    (sequential? value)
-    (mapv #(deep-truncate % limit) value)
-
-    :else value))
-
-(defn- format-first-line-vector
-  "Serialize a vector with :spell/first-line metadata as a (first-line ...)
-   form where each entry has an inline ; line-number comment.
-   Returns nil if the vector doesn't have first-line metadata."
-  [value]
-  (when (and (vector? value) (contains? (meta value) :spell/first-line))
-    (let [first-line (:spell/first-line (meta value))]
-    (if (empty? value)
-      (str "(first-line " first-line " [])")
-      (let [last-line (+ first-line (dec (count value)))
-            width (count (str last-line))
-            rows (map-indexed (fn [i line]
-                                (str " " (pr-str line)
-                                     " ; "
-                                     (format (str "%" width "d") (+ first-line i))))
-                              value)]
-        (str "(first-line " first-line " [\n"
-             (str/join "\n" rows)
-             "\n])"))))))
-
-(defn- first-line-form?
-  [form]
-  (and (seq? form)
-       (= 'first-line (first form))
-       (= 3 (count form))
-       (number? (second form))
-       (vector? (nth form 2))))
-
-(defn- format-first-line-form
-  [form]
-  (format-first-line-vector
-    (with-meta (nth form 2) {:spell/first-line (second form)})))
-
 (defn serialize-for-continuation
-  "Return a lossless value expression within the run's context character limit.
-   Oversized values remain complete in run-owned storage. An explicit limit may
-   lower the run cap; a negative limit uses the cap."
+  "Explicitly serialize a bounded ordinary snapshot. Larger valid overrides win."
   ([value] (context/serialize-value value))
   ([value limit] (context/serialize-value value limit)))
 
-(defn- serialize-prefix-form
-  [form]
-  (cond
-    (first-line-form? form)
-    (format-first-line-form form)
-
-    (seq? form)
-    (str "(" (str/join " " (map serialize-prefix-form form)) ")")
-
-    :else
-    (pr-str form)))
+(defn- serialize-prefix-form [form]
+  (context/render-form form))
 
 
 ;; =============================================================================
@@ -417,17 +350,7 @@
       (if (ok? r) (:ok r) (throw (ex-info (:err r) {:result r}))))
     (apply f args)))
 
-(defn- subvec-preserving-first-line
-  ([v start]
-   (subvec-preserving-first-line v start nil))
-  ([v start end]
-   (let [result (if (some? end)
-                  (subvec v start end)
-                  (subvec v start))
-         metadata (meta v)]
-     (if-let [first-line (:spell/first-line metadata)]
-       (with-meta result (assoc metadata :spell/first-line (+ first-line start)))
-       result))))
+(def subvec-preserving-first-line context/subvec-lines)
 
 (def core-builtins
   "Language primitives - always available in every llm variant.
@@ -542,13 +465,11 @@
    ;; Apply edit markers and keep the edited quine as data
    'edit-reopen (fn [quine-form]
                   (apply-edits quine-form (or *spell-env* {}))),
-   ;; Value store (for !call-now out-of-band large values)
-   'stored stored,
+   ;; Explicit bounded ordinary snapshots.
    'context-forms context-forms,
    'serialize (fn
                ([value] (serialize-for-continuation value))
                ([value limit] (serialize-for-continuation value limit))),
-   'deep-truncate (fn [value limit] (deep-truncate value (int limit))),
    ;; Eval directly in the caller env.
    'spell-eval (fn [expr]
                  (let [r (spell-eval expr (or *spell-env* {}))]
@@ -742,16 +663,10 @@
 (def special-forms
   "Special forms that are not free variables."
   #{'quote 'def 'persist 'do 'if 'let 'fn 'fn* 'quine 'reopen 'loop 'recur 'for 'try})
-
 (defn quote-value
-  "Wrap non-self-evaluating values in (quote ...) for safe embedding in generated code."
+  "Embed an already materialized value exactly; this is not a snapshot boundary."
   [v]
-  (cond
-    (or (nil? v) (number? v) (string? v) (boolean? v) (keyword? v)) v
-    (spell-fn? v) (list* 'fn (:params v) (:body v))
-    (and (vector? v) (contains? (meta v) :spell/first-line))
-    (list 'first-line (:spell/first-line (meta v)) v)
-    :else (list 'quote v)))
+  (context/value-form v))
 
 (defn apply-edits
   "Single walk: apply edit markers.

@@ -15,11 +15,11 @@ RESEARCH before committing to a plan or implementation:
 - Use !peek for exploratory reads and disposable probes. Persist only the specific snippets, facts, or outputs you will need on later turns.
 
 Bound research by the decision it enables (see [context-efficiency](../context-efficiency/SKILL.md#bounded-read-packets-and-a-durable-decision-record)):
-- Start with one unresolved question, exact source/test pointers, and one small read packet. Bound aggregate rendered output up front, including multiple bindings (roughly 3,000 rendered characters including syntax and escaping is a starting point, not a guaranteed inline threshold). Use exact `io/read-lines` ranges or narrow `io/grep` paths with documented `:include`, `:max-count`, and small `:context` options. `:max-count` limits matches per file, not total output; many files or large context can still overflow the packet.
+- Start with one unresolved question, exact source/test pointers, and one small read packet. Choose an aggregate read budget up front (host targets apply independently per output), including multiple bindings (roughly 3,000 rendered characters including syntax and escaping is a starting point, not a guaranteed inline threshold). Use exact `io/read-lines` ranges or narrow `io/grep` paths with documented `:include`, `:max-count`, and small `:context` options. `:max-count` limits matches per file, not total output; many files or large context can still overflow the packet.
 - Before disposable results are pruned, write an explicit compact action checkpoint as a literal `(def checkpoint {...})` after the packet's prune marker, or use `(persist checkpoint expression)` to materialize computed evidence. Include observed path/range or symbol, finding, decision, remaining uncertainty, named next artifact/edit, and verification command. A `think` alone or a `def` that depends on soon-pruned bindings is not a portable record. Retain the checkpoint explicitly through later pruning, compaction, or a fresh self-call; do not replay tool effects to reconstruct it. Keep actual execution receipts distinct from proposed actions.
 - Once the next action is known, produce its named artifact (patch, prototype, test, or report) or report a specific blocker before overlapping rereads. A blocker names the missing contract/evidence and the smallest request or experiment that would resolve it; it is not another broad reading plan.
 - Before another research packet, identify genuinely new evidence needed: a changed source, failing check, unanswered question, or unavailable result. State what the bounded packet adds to the checkpoint. Do not reread merely because raw output was pruned.
-- An opaque stored-result marker is not inspected evidence. Retrieve bounded pages from the original binding or `(stored observed-id)` before another source read: `subs` for strings, `subvec` for line vectors, or the documented field of a result map. `!print` takes one expression, not result-name/expression pairs. See [lossless retrieval recipes](../context-efficiency/SKILL.md#retrieve-retained-output-before-another-read). Preserve the observed ID, offsets and inspected evidence before pruning; report unavailable evidence rather than guessing success or repeating the same broad describe/read batch.
+- A snapshot omission is missing evidence, not a retrievable full body. Compute reductions before insertion; use focused current-file ranges for new evidence. Never repeat an effect merely to recover omitted output. Use `subs` for strings and `subvec` for line vectors under an envelope's `:out`; inspect `:ok`, `:err`, and `:truncated`. See [bounded snapshots and explicit reads](../context-efficiency/SKILL.md#work-with-bounded-snapshots-and-explicit-reads). Preserve inspected excerpts, source coordinates, checkpoints and actual receipts before pruning; deliberately save exact values in explicit files/globals when needed.
 - Carry checkpoint data and outstanding receipt obligations explicitly into new self-call source, using fresh locals rather than relying on stale bindings. These are optional, model-controlled task decisions expressed in ordinary Spell programs, not hidden harness progress counters, retry/deduplication rules, read suppression, or changes to coordinator semantics.
 
 For example, after inspecting a packet (illustrative facts, not execution receipts):
@@ -81,8 +81,8 @@ Explore a large file ephemerally, then persist only the relevant subset:
   '(!peek file-lines (io/read-lines "src/server.py" 1 80))
   ;; end of turn 1 completion
   (prune 2)
-  ;; start of turn 2 suffix
-  (persist handler-block (subvec file-lines 20 40))
+  ;; start of turn 2 suffix: first check :ok/:err/:truncated and inspect the rows
+  (persist handler-block (subvec (:out file-lines) 20 40))
   '(!peek test-lines (io/read-lines "tests/test_server.py" 52 84))
   ;; end of turn 2 completion
   (prune 2)

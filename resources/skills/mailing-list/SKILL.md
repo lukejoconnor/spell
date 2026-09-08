@@ -79,7 +79,7 @@ The first installer receives bounded guidance in its next model generation even 
 
 ## Preserve evidence before pruning
 
-**Antipattern: prune supporting evidence, then rediscover it.** Before a `!peek` result disappears, `persist` exact needed snippets, observed stored IDs/offsets, a compact checkpoint, and actual operation receipts. A proposed action or sent flag is not execution evidence. Retrieve retained/stored output before repeating its original effect; an opaque preview is not proof that the hidden body was inspected. `io/read-lines` uses one-indexed half-open ranges; `subvec` uses local zero-indexed half-open offsets. Record concrete dogfood failures with `feedback/log` when available.
+**Antipattern: prune supporting evidence, then rediscover it.** Before a `!peek` result disappears, `persist` exact needed snippets, source coordinates/offsets, a compact checkpoint, and actual operation receipts. A proposed action or sent flag is not execution evidence. A bounded snapshot has no hidden full backing value; omissions are missing evidence. Never repeat an effect merely to recover omitted output. Explicitly save exact values when required; later file reads are fresh evidence. Operational IO/web/MCP envelopes keep payloads under :out; inspect :ok/:err/:truncated before using them. `io/read-lines` uses one-indexed half-open ranges; `subvec` uses local zero-indexed half-open offsets. Record concrete dogfood failures with `feedback/log` when available.
 
 ## Caller convention and trust
 

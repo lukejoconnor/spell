@@ -7,6 +7,7 @@
    user-call-fn."
   (:require [clojure.string :as str]
             [spell.runtime :as runtime]
+            [spell.context :as context]
             [spell.eval :as eval]
             [spell.globals :as globals]
             [spell.llm :as llm]
@@ -414,9 +415,35 @@
 ;; Message extraction
 ;; =============================================================================
 
+(defn- decode-message-value
+  "Decode only the inert ordinary constructors emitted for message snapshots.
+   Never execute completion source or resolve effectful/global references."
+  [form]
+  (cond
+    (map? form) (into {} (map (fn [[k v]] [k (decode-message-value v)])) form)
+    (vector? form) (mapv decode-message-value form)
+    (set? form) (set (map decode-message-value form))
+    (seq? form)
+    (let [[op & args] form]
+      (cond
+        (and (= 'quote op) (= 1 (count args))) (first args)
+        (= 'list op) (apply list (map decode-message-value args))
+        (and (= 'into op) (= 2 (count args)) (= {} (first args))
+             (vector? (second args))
+             (every? #(and (vector? %) (= 2 (count %))) (second args)))
+        (into {} (map (fn [[k v]] [(decode-message-value k) (decode-message-value v)]))
+          (second args))
+        (and (= 'set op) (= 1 (count args)) (vector? (first args)))
+        (set (map decode-message-value (first args)))
+        (and (#{'symbol 'keyword} op) (#{1 2} (count args)) (every? string? args))
+        (apply (if (= 'symbol op) symbol keyword) args)
+        (= 'first-line op) (context/first-line-vector args)
+        :else form))
+    :else form))
+
 (defn- extract-messages
   "Extract ALL messages from a raw completion string.
-   Reads message bindings, resolving quoted data and run-owned references.
+   Reads message bindings, decoding inert ordinary snapshot forms only.
    Returns a vector of {:name sym :msg map}."
   [raw]
   (try
@@ -426,15 +453,7 @@
                             (when (and (seq? f) (= 'def (first f)) (>= (count f) 3))
                               (let [sym (second f)
                                     value-form (nth f 2)
-                                    val (cond
-                                          (and (seq? value-form) (= 2 (count value-form))
-                                               (= 'quote (first value-form)))
-                                          (second value-form)
-                                          (and (seq? value-form) (= 2 (count value-form))
-                                               (= 'stored (first value-form))
-                                               (string? (second value-form)))
-                                          (eval/stored (second value-form))
-                                          :else value-form)]
+                                    val (decode-message-value value-form)]
                                 (when (and (map? val) (contains? val :from))
                                   {:name sym :msg val})))))
                     vec)]

@@ -399,7 +399,7 @@
     (is @stream-closed?)
     (is (empty? @(:subscription-streams mcp-client)))))
 
-(deftest mcp-model-values-share-lossless-context-budget
+(deftest mcp-model-values-use-bounded-visible-snapshots
   (let [large-text (apply str (repeat 250000 "x"))
         blocks (vec (repeat 130 {"type" "text" "text" large-text}))
         resources (vec (repeat 130 {"uri" "memory://large" "text" large-text}))
@@ -418,6 +418,11 @@
         (binding [context/*context* (context/new-context {:max-chars 256})]
           (let [text (context/serialize-value value)
                 decoded (:ok (eval/spell-eval (parse/read-first text) {}))]
-            (is (= original (get value field)))
+            (is (= original (get-in value [:out field])))
             (is (<= (count text) 256))
-            (is (identical? value decoded))))))))
+            (is (true? (:ok decoded)))
+            (is (true? (:truncated decoded)))
+            (is (false? (:truncated value)))
+            (is (map? (:out decoded)))
+            (is (not= value decoded))
+            (is (not (re-find #"stored|UUID" text)))))))))

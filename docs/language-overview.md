@@ -81,23 +81,23 @@ Long-running programs need to keep decisions and small evidence while dropping b
 
 ### Worked flow: inspect, retain, discard
 
-First read a large file ephemerally:
+First read a focused current-file range ephemerally (one-based, half-open):
 
 ```clojure
-'(!peek file-lines (io/read-lines "src/spell/eval.clj"))
+'(!peek file-lines (io/read-lines "src/spell/eval.clj" 431 433))
 ```
 
 The next turn receives a generated binding and edit marker before the cursor:
 
 ```clojure
-(def file-lines (first-line 1 ["..." "..."]))
+(def file-lines {:ok true :out (first-line 431 ["line a" "line b"]) :err nil :truncated false})
 (prune 2)
 ```
 
-Use the result while it exists, preserve only the useful slice, and continue:
+This is an illustrative complete two-row result, not an assumed tool receipt. Check `:ok`, `:err`, and `:truncated` first. The binding is a bounded snapshot, not a hidden full file. Use local zero-based `subvec` indices to preserve an inspected slice; see [bounded results](bounded-results.md):
 
 ```clojure
-(persist effect-section (subvec file-lines 430 470))
+(persist effect-section (subvec (:out file-lines) 0 2))
 '(!extend)
 ```
 

@@ -84,7 +84,7 @@
 (defn config
   "Inspect effective web tool configuration."
   []
-  {:ok (effective-config)})
+  {:ok true :err nil :truncated false :out (effective-config)})
 
 ;; =============================================================================
 ;; HTTP helpers
@@ -109,10 +109,10 @@
           status (.statusCode response)
           body (.body response)]
       (if (<= 200 status 299)
-        {:ok body :status status}
-        {:error (str "HTTP " status " from " url) :status status}))
+        {:ok true :err nil :truncated false :out body :status status}
+        {:ok false :out body :err (str "HTTP " status " from " url) :truncated false :status status}))
     (catch Exception e
-      {:error (str "HTTP request failed: " (.getMessage e))})))
+      {:ok false :out nil :truncated false :err (str "HTTP request failed: " (.getMessage e))})))
 
 (defn- http-post-json
   "POST JSON body to url, return parsed JSON response."
@@ -132,11 +132,13 @@
           status (.statusCode response)
           body (.body response)]
       (if (<= 200 status 299)
-        {:ok (json/read-str body :key-fn keyword) :status status}
-        {:error (str "HTTP " status " from " url ": " (subs body 0 (min 200 (count body))))
-         :status status}))
+        (try
+          {:ok true :out (json/read-str body :key-fn keyword) :err nil :truncated false :status status}
+          (catch Exception e
+            {:ok false :out body :err (str "Invalid JSON response: " (.getMessage e)) :truncated false :status status}))
+        {:ok false :out body :err (str "HTTP " status " from " url) :truncated false :status status}))
     (catch Exception e
-      {:error (str "HTTP request failed: " (.getMessage e))})))
+      {:ok false :out nil :truncated false :err (str "HTTP request failed: " (.getMessage e))})))
 
 (defn- url-encode [s]
   (URLEncoder/encode (str s) (str StandardCharsets/UTF_8)))
@@ -188,16 +190,16 @@
     (str "https://duckduckgo.com" href)))
 
 (defn- parse-duckduckgo-results
-  "Parse search results from DuckDuckGo HTML. Returns {:ok results} or {:error msg}.
+  "Parse search results from DuckDuckGo HTML. Returns {:ok true :err nil :truncated false :out results} or {:ok false :out nil :truncated false :err msg}.
    Detects CAPTCHA/bot-detection pages and returns an error instead of empty results."
   [html]
   (let [doc (Jsoup/parse html)]
     ;; DuckDuckGo serves CAPTCHA pages with class 'anomaly-modal' when it suspects bot traffic.
     ;; These pages contain zero .result elements, so without this check we'd silently return [].
     (if (seq (.select doc "[class*=anomaly-modal]"))
-      {:error "DuckDuckGo returned a CAPTCHA challenge (bot detection). Search is temporarily unavailable."}
+      {:ok false :out nil :truncated false :err "DuckDuckGo returned a CAPTCHA challenge (bot detection). Search is temporarily unavailable."}
       (let [results (.select doc ".result")]
-        {:ok (->> results
+        {:ok true :err nil :truncated false :out (->> results
                   (map (fn [result]
                          (let [title-el (.selectFirst result "a.result__a")
                                snippet-el (or (.selectFirst result ".result__snippet")
@@ -225,40 +227,42 @@
         headers {"User-Agent" (get-in cfg [:http :user-agent])
                  "Accept" "text/html,application/xhtml+xml"}
         response (http-get-text url headers (get-in cfg [:fetch :timeout-ms] 15000))]
-    (if-let [err (:error response)]
-      {:error err}
-      (let [parsed (parse-duckduckgo-results (:ok response))]
-        (if (:error parsed)
-          parsed
-          {:ok (->> (:ok parsed)
-                    (take max-results)
-                    vec)})))))
+    (if-not (:ok response)
+      response
+      (try
+        (let [parsed (parse-duckduckgo-results (:out response))]
+          (if (:ok parsed)
+            (assoc response :out (vec (take max-results (:out parsed))))
+            (assoc response :ok false :err (:err parsed))))
+        (catch Exception e
+          (assoc response :ok false :err (str "Search parsing failed: " (.getMessage e))))))))
 
 (defn- search-serper
   "Search via Serper.dev (Google results). Requires SERPER_API_KEY env var."
   [q cfg max-results]
   (let [api-key (serper-api-key cfg)]
     (if (str/blank? api-key)
-      {:error "Serper search requires SERPER_API_KEY environment variable or :serper-api-key in config."}
+      {:ok false :out nil :truncated false :err "Serper search requires SERPER_API_KEY environment variable or :serper-api-key in config."}
       (let [response (http-post-json
                       "https://google.serper.dev/search"
                       {"X-API-KEY" api-key}
                       {"q" q "num" max-results}
                       (get-in cfg [:fetch :timeout-ms] 15000))]
-        (if-let [err (:error response)]
-          {:error err}
-          (let [organic (get-in response [:ok :organic] [])]
-            {:ok (->> organic
-                      (map (fn [r]
-                             {:title (or (:title r) "")
-                              :url (or (:link r) "")
-                              :snippet (or (:snippet r) "")}))
-                      (filter #(seq (:url %)))
-                      (take max-results)
-                      vec)}))))))
+        (if-not (:ok response)
+          response
+          (try
+            (assoc response :out (->> (get-in response [:out :organic] [])
+                                     (map (fn [r] {:title (or (:title r) "")
+                                                  :url (or (:link r) "")
+                                                  :snippet (or (:snippet r) "")}))
+                                     (filter #(seq (:url %)))
+                                     (take max-results)
+                                     vec))
+            (catch Exception e
+              (assoc response :ok false :err (str "Search parsing failed: " (.getMessage e))))))))))
 
 (defn search
-  "Search the web. Returns {:ok [{:title :url :snippet} ...]} or {:error msg}.
+  "Search the web. Returns {:ok true :err nil :truncated false :out [{:title :url :snippet} ...]} or {:ok false :out nil :truncated false :err msg}.
    Supported backends: :serper, :duckduckgo.
    Backend precedence: opts :backend > config :search :backend > runtime default
    (:serper when SERPER_API_KEY is available, else :duckduckgo)."
@@ -266,7 +270,7 @@
   ([query opts]
    (let [q (str/trim (str query))]
      (if (str/blank? q)
-       {:error "web/search query must be non-empty"}
+       {:ok false :out nil :truncated false :err "web/search query must be non-empty"}
        (let [cfg (effective-config)
              backend (keyword (or (:backend opts)
                                   (get-in cfg [:search :backend])
@@ -278,7 +282,7 @@
          (case backend
            :serper (search-serper q cfg max-results)
            :duckduckgo (search-duckduckgo q cfg max-results)
-           {:error (str "Unsupported search backend: " backend)}))))))
+           {:ok false :out nil :truncated false :err (str "Unsupported search backend: " backend)}))))))
 
 ;; =============================================================================
 ;; Fetch
@@ -295,15 +299,16 @@
       :else nil)))
 
 (defn- truncate-content
-  [text max-chars]
-  (if (<= (count text) max-chars)
-    text
-    (str (subs text 0 max-chars)
-         "\n\n[truncated to "
-         max-chars
-         " chars from "
-         (count text)
-         " chars]")))
+  [response max-chars]
+  (let [text (:out response)]
+    (if (and (some? max-chars) (string? text) (> (count text) max-chars))
+      (let [end (int max-chars)
+            end (if (and (pos? end)
+                         (Character/isHighSurrogate (.charAt ^String text (dec end)))
+                         (Character/isLowSurrogate (.charAt ^String text end)))
+                  (dec end) end)]
+        (assoc response :out (subs text 0 end) :truncated true))
+      response)))
 
 (defn- fetch-via-jina
   [url cfg]
@@ -324,8 +329,7 @@
         paragraph-texts (->> paragraphs
                              (map (fn [p]
                                     (-> p .text (str/replace #"\s+" " ") str/trim)))
-                             (filter seq)
-                             (take 120))
+                             (filter seq))
         body-text (if (seq paragraph-texts)
                     (str/join "\n\n" paragraph-texts)
                     (-> (or article-node doc)
@@ -342,37 +346,40 @@
   (let [headers {"User-Agent" (get-in cfg [:http :user-agent])
                  "Accept" "text/html,application/xhtml+xml"}
         response (http-get-text url headers (get-in cfg [:fetch :timeout-ms] 15000))]
-    (if-let [err (:error response)]
-      {:error err}
-      {:ok (html->markdown url (:ok response))})))
+    (if-not (:ok response)
+      response
+      (try
+        (assoc response :out (html->markdown url (:out response)))
+        (catch Exception e
+          (assoc response :ok false :err (str "HTML parsing failed: " (.getMessage e))))))))
 
 (defn fetch
-  "Fetch a URL and return markdown/text content.
-   Returns {:ok markdown} or {:error msg}."
+  "Fetch markdown/text in {:ok boolean :out payload :err string-or-nil
+   :truncated boolean}, with :status when known. Full output by default.
+   Only an explicit nonnegative integral :max-chars clips the UTF-16 output."
   ([url] (fetch url {}))
   ([url opts]
-   (if-let [normalized (normalize-url url)]
-     (let [cfg (effective-config)
-           backend (keyword (or (:backend opts) (get-in cfg [:fetch :backend] :jina)))
-           fallback-backend (keyword (or (:fallback-backend opts)
-                                         (get-in cfg [:fetch :fallback-backend] :raw))
-                                     )
-           max-chars (-> (or (:max-chars opts) (get-in cfg [:fetch :max-chars] 40000))
-                         int
-                         (max 500))
-           primary-response (case backend
-                              :jina (fetch-via-jina normalized cfg)
-                              :raw (fetch-via-raw normalized cfg)
-                              {:error (str "Unsupported fetch backend: " backend)})
-           response (if (and (:error primary-response)
-                             (= backend :jina)
-                             (= fallback-backend :raw))
-                      (fetch-via-raw normalized cfg)
-                      primary-response)]
-       (if-let [err (:error response)]
-         {:error err}
-         {:ok (truncate-content (:ok response) max-chars)}))
-     {:error (str "Invalid URL: " (pr-str url))})))
+   (let [max-chars (:max-chars opts)]
+     (when-not (or (nil? max-chars) (and (integer? max-chars) (not (neg? max-chars))))
+       (throw (IllegalArgumentException. "web/fetch: :max-chars must be a nonnegative integer")))
+     (if-let [normalized (normalize-url url)]
+       (let [cfg (effective-config)
+             backend (keyword (or (:backend opts) (get-in cfg [:fetch :backend] :jina)))
+             fallback-backend (keyword (or (:fallback-backend opts) (get-in cfg [:fetch :fallback-backend] :raw)))
+             primary-response (case backend
+                                :jina (fetch-via-jina normalized cfg)
+                                :raw (fetch-via-raw normalized cfg)
+                                {:ok false :out nil :err (str "Unsupported fetch backend: " backend) :truncated false})
+             response (if (and (not (:ok primary-response)) (= backend :jina) (= fallback-backend :raw))
+                        (let [fallback (fetch-via-raw normalized cfg)]
+                          ;; Keep the available HTTP evidence if fallback failed before receiving a response.
+                          (if (and (not (:ok fallback)) (not (contains? fallback :status))
+                                   (contains? primary-response :status))
+                            (assoc primary-response :err (str (:err primary-response) "; fallback: " (:err fallback)))
+                            fallback))
+                        primary-response)]
+         (truncate-content response max-chars))
+       {:ok false :out nil :err (str "Invalid URL: " (pr-str url)) :truncated false}))))
 
 ;; =============================================================================
 ;; Namespace definition for Spell
@@ -384,6 +391,12 @@
    :docs
    {:guide "WEB — Search and fetch web content.
 
+All operations return {:ok boolean :out payload :err string-or-nil :truncated boolean}.
+HTTP-backed results retain :status when known, including parser/CAPTCHA failures.
+Failures retain available response bodies in :out. Defaults return full values;
+only an explicit :max-chars fetch option clips output, safely at UTF-16 boundaries.
+Context insertion uses bounded visible snapshots rather than hidden full values.
+
   (web/search query)        — search web and return [{:title :url :snippet} ...]
   (web/fetch url)           — fetch URL and return markdown/text
   (web/config)              — inspect active web config
@@ -391,16 +404,16 @@
 Recommended usage pattern: Search, then fetch the most relevant result.
 
 1. Search and peek the results.
-  ...▌'(!peek-now results (web/search \"clojure transducers\"))
+  ...▌'(!peek results (web/search \"clojure transducers\"))
 
 2. Next turn: results is available. Pick the best URL and fetch it.
-  ...(def results {:ok [{:title \"Transducers - Clojure\" :url \"https://clojure.org/reference/transducers\" :snippet \"...\"} ...]})
-  (rethink 2 \"!peek-now call and binding(s) disappear unless you persist what you need.\")
-  ▌(persist best-url (get (first (:ok results)) :url))
-  '(!peek-now page (web/fetch best-url))"
-    :search "Search the web. Returns {:ok [{:title :url :snippet} ...]} or {:error msg}."
-    :fetch "Fetch a URL and return markdown/text. Returns {:ok text} or {:error msg}."
-    :config "Return effective web config map with defaults applied."}
+  ...(def results {:ok true :err nil :truncated false :out [{:title \"Transducers - Clojure\" :url \"https://clojure.org/reference/transducers\" :snippet \"...\"} ...]})
+  (rethink 2 \"!peek call and binding(s) disappear unless you persist what you need.\")
+  ▌(persist best-url (get (first (:out results)) :url))
+  '(!peek page (web/fetch best-url))"
+    :search "Search the web. Returns {:ok true :err nil :truncated false :out [{:title :url :snippet} ...]} or {:ok false :out nil :truncated false :err msg}."
+    :fetch "Fetch a URL and return markdown/text. Returns {:ok true :err nil :truncated false :out text} or {:ok false :out nil :truncated false :err msg}."
+    :config "Return an envelope with the effective config map in :out."}
    :detail
    {:search
     "Search backends: :serper (Google results), :duckduckgo (HTML scraping).
@@ -410,7 +423,7 @@ Recommended usage pattern: Search, then fetch the most relevant result.
 (web/search \"query\" {:backend :duckduckgo})
 
 Returns:
-  {:ok [{:title \"...\" :url \"https://...\" :snippet \"...\"} ...]}
+  {:ok true :err nil :truncated false :out [{:title \"...\" :url \"https://...\" :snippet \"...\"} ...]}
 
 Result count defaults to config max-results (5), clamped to [1, 10].
 Backend precedence: opts :backend > config/web.edn :search :backend >
@@ -426,7 +439,10 @@ Backends:
   :jina — uses https://r.jina.ai/<url> (default)
   :raw  — direct HTTP GET + lightweight HTML-to-markdown extraction
 
-If :jina fails, fetch falls back to :raw by default."
+If :jina fails, fetch falls back to :raw by default.
+No implicit character or paragraph cap applies. Only explicit opts :max-chars selects a
+nonnegative integral UTF-16 output limit; clipped results set :truncated true without
+appending a marker. Config :fetch :max-chars is legacy and does not limit output."
 
     :config
     "Inspect effective config.

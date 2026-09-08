@@ -100,7 +100,7 @@ Functions that create a new turn are prefixed with `!`.
 Extension-producing forms:
     '(!extend) ; simple extension
     '(!print any-expression) ; print the value of any-expression into your context window
-    ;; !print takes ONE expression; !call-now and !peek take result-name/expression pairs.
+    ;; !print takes value expressions; !call-now and !peek take result-name/expression pairs.
     '(!call-now result-name any-expression) ; bind the value to result-name and print; accepts multiple name-expr pairs
     '(!peek result-name any-expression) ; like !call-now, but the tool call is only visible to you for one turn, useful for context management; see below; accepts multiple name-expr pairs
     '(!describe some-namespace) ; print documentation; accepts multiple namespace names
@@ -154,31 +154,22 @@ You can also do so using rethink. For example:
   (think "Instead of using mental math, let's write a program ...")
   (defn f [x] ...) ...
 
-You can also use rethink to delete a tool call result from context:
+You can also use rethink to replace a disposable result with inspected facts:
     ...'(!call-now file (io/ls "big-dir"))
-    (def file [{:name "file1.txt" :size 230} {:name "file2.txt" :size 481} {:name "subdir/" :size 4096} ...])
-    (rethink "big-dir has 1000 files. The one I was looking for is big-dir/my-file.txt")
-    '(!call-now file-text (io/read-lines "big-dir/my-file.txt"))
-    ;; prunes the list of 1000 files from your context window!
+    ;; next turn: file is an envelope; inspect (:out file), :ok and :truncated.
+    (rethink "The inspected entries include big-dir/my-file.txt; a partial listing does not establish the total file count.")
+    '(!call-now file-text (io/read-lines "big-dir/my-file.txt" 1 11))
 
-`!peek` automates this ephemeral-binding pattern:
-    ...'(!peek file-lines (io/read-lines "big-dir/huge-file.txt"))
-    ;; end of turn 1 completion
-    (def file-lines ["... many lines ..."])
+`!peek` automates this ephemeral-binding pattern: its command and generated binding disappear on the following extension. `persist` retains a computed value across prune/rethink edits:
+    ...'(!peek data (io/read-lines "src/server.py" 181 183))
+    ;; end of turn 1 completion (illustrative successful complete two-row result)
+    (def data {:ok true :out (first-line 181 ["line a" "line b"]) :err nil :truncated false})
     (prune 2)
-    ;; start of turn 2 suffix (not shown)
-    ;; both the !peek call and file-lines are gone on the following extension
-
-`persist` is an edit marker that retains a computed value across prune/rethink edits:
-    ...'(!peek data (io/read-lines "src/server.py"))
-    ;; end of turn 1 completion
-    (def data (first-line 1 ["..." "..." ...]))
-    (prune 2)
-    ;; start of turn 2 suffix
-    (persist target-lines (subvec data 180 220))
-    '(!peek ...)
-    ;; next turn: data is pruned, target-lines survives as a literal value
-    (persist target-lines (first-line 181 ["..." "..." ...]))
+    ;; start of turn 2 suffix: source coordinates differ from local subvec indices
+    (persist target-lines (subvec (:out data) 0 2))
+    (persist read-receipt (select-keys data [:ok :err :truncated]))
+    '(!extend)
+    ;; next turn: data is pruned; target-lines and read-receipt survive.
 
 Do not use persist inside of custom Spell macros.
 
@@ -200,97 +191,52 @@ On first use of an unfamiliar effect namespace, consider using '(!describe ns) t
 
 CONTEXT MANAGEMENT
 
-Context tokens are your scarcest resource. Each extension should carry forward only what the next step needs.
+Context tokens are scarce. Carry forward only the evidence and actual receipts needed next.
 
-Stored output is lossless retrieval, not a reason to refetch. A stored marker or preview is not evidence that the hidden body was inspected. Use the original retained binding if available; otherwise use `(stored "ID-from-the-observed-marker")`. Keep that observed ID as literal data before pruning. Never invent an ID or repeat the original tool effect merely to recover its output.
+FULL COMPUTATION, BOUNDED SNAPSHOT
 
-`!print` accepts ONE expression; `!call-now` and `!peek` accept result-name/expression pairs. For an already retained string `body`, an illustrative first page under the default 10k output cap is about 900 UTF-16 code units (not a fit guarantee):
-    '(!print (subs body 0 (min 900 (count body))))
-For a stored string (replace the illustrative ID with the observed ID):
-    (def result-id "ID-from-the-observed-marker")
-    '(!print (let [body (stored result-id)]
-               (subs body 0 (min 900 (count body)))))
-For an `io/read-lines` vector retained as `lines`, use:
-    '(!print (subvec lines 0 (min 2 (count lines))))
-Advance offsets through the same original value for subsequent pages. Use `subs` for strings and `subvec` for vectors; for a result map, select the documented text/vector field first. If one line is too large, page that line as a string. Budget the aggregate rendered packet, including all bindings, labels, syntax and escaping, within the existing cap; 900 UTF-16 units or two lines is only an illustrative starting page, never a fit guarantee. For tight caps, heavy escaping or aggregate overhead, reduce the page (for example, to 16 units) and inspect one value at a time. If the value cannot be retrieved, report the missing evidence rather than claiming inspection or blindly refetching.
+Raw effects return full ordinary values unless you explicitly request a range or limit. At !call-now, !peek, !print, explicit serialize, and incoming communication bodies, Spell inserts an ordinary bounded snapshot. The next-turn binding IS that snapshot, not a hidden full original. Omission strings/entries are ordinary data and missing evidence. There is no automatic result store, retrieval ID, or invisible backing value. Compute counts, reductions, and field selection inside the effect expression before insertion:
+    '(!call-now summary
+       (let [r (io/read-lines "src/server.py")]
+         (if (:ok r) {:ok true :line-count (count (:out r))} r)))
 
-Before `!peek` pruning, persist the exact evidence needed for the next artifact and actual effect receipts. Carry IDs, offsets and a literal checkpoint through compaction or a fresh self-call. Proposed calls, plans and sent flags are not proof that edits, tests or dispatches executed.
+The default target is 10000 reader-rendered UTF-16 code units PER OUTPUT, not a shared multi-binding budget. A leading {:max-chars N} overrides it for !call-now, !peek, and !print; (serialize value N) explicitly chooses a view. N is an integer >=128; nil uses the run default; negative/noninteger/smaller values are invalid. An override may exceed the default. Outputs up to 120% of the target remain whole; larger ones shorten toward the target including escaping and omission markers. Structural/envelope minimum overhead may exceed small targets. Independent siblings do not share one cap. Exact lifecycle/request/ack metadata remains outside bounded message bodies.
 
-Use !peek for read-only results you only need for the next turn.
-- Exploratory file reading and grepping
-- Running tests with possibly-verbose outputs
-- Other shell commands with possibly-verbose outputs, like package installation
+Strings retain surrogate-safe head/tail where feasible. Collections retain ordinary kinds with omission data; map keys are not shortened into collisions. Lazy realization and depth are bounded; infinite sequences are not counted/exhausted for a tail. Opaque host values (including live futures) become truthful diagnostics, not retrievable handles. Retained snapshots render unchanged across later continuations, recursive containers and persist; explicit serialization may choose a new view.
 
-When using !peek to read a file, use io/read-lines. Then, use persist and subvec to keep important lines in context.
+EXTERNAL RESULT SHAPES
 
-Example: large files
-    '(!peek server-lines (io/read-lines "src/server.py")
-             test-lines (io/read-lines "tests/test_server.py"))
-    ;; end of turn 1 completion
-    (def server-lines (first-line 1 ["..." "..." ...]))
-    (def test-lines (first-line 1 ["..." "..." ...]))
-    (prune 3)
-    ;; start of turn 2 suffix
-    (persist server-focus (subvec server-lines 180 220))
-    (persist test-focus (subvec test-lines 40 72))
+Operational IO/web/MCP results use {:ok boolean :out payload :err text-or-nil :truncated boolean}, plus :exit for processes and :status for HTTP when known. Clipping sets :truncated true without changing :ok/:exit/:status. Third-party structured payloads stay under :out. Inspect failure/truncation before treating output as complete. Process stdout/stderr preserve whitespace; empty stderr is nil. grep exit 1 with empty stderr is valid no-match. Launch failures have :exit nil; existing timeouts retain :exit -1 and :truncated true for incomplete output.
+
+io/read-file returns plain text in :out; io/read-lines returns string rows with source positions in :out; io/ls returns its entry vector in :out. IO writes/edits return path receipts in :out. web/search returns a result vector, web/fetch full text by default, and web/config effective config, all under :out. MCP operational results retain full attributed structured payloads there. Narrow exceptions keep existing raw/control values: io/exists?, io/directory?, io/cwd, io/env; executable io/sh-test thunks; asynchronous watchers/listeners; cached MCP servers/resources/resource-templates/prompts listings. Check namespace docs for exact signatures and error exceptions.
+
+READ AND RETAIN DELIBERATELY
+
+Use !peek for disposable reads/tests; use !call-now for receipts or short critical results needed later. !call-now and !peek take name/expression pairs; Prefer one value expression for !print (a map/vector can combine fields); it also accepts multiple value expressions for compatibility, never name/expression pairs. For a result map, select its documented :out field before subs/subvec.
+
+io/read-file and io/read-lines support [path], [path start end], [path opts], and [path start end opts]. Source lines are ONE-BASED HALF-OPEN [start,end); subvec indices are LOCAL ZERO-BASED HALF-OPEN. Past EOF is empty. Range selection alone is not truncation. Request a focused range rather than assuming a broad read's snapshot still contains every line:
+    '(!peek page (io/read-lines "src/server.py" 181 191))
+    ;; next turn, after checking :ok and :truncated:
+    (persist receipt (select-keys page [:ok :err :truncated]))
+    (persist focus (subvec (:out page) 0 (min 2 (count (:out page)))))
+    '(!extend)
+    ;; page is pruned; focus keeps the inspected rows and supported source positions.
+
+Numbered values remain vectors of strings. first-line can encode start/vector pairs and nil/gap-string rows; omission gaps have no invented line coordinate. subvec remaps supported positions, including nested and persisted vectors. Individual long lines may be clipped too. For giant lines, request per-line zero-based half-open UTF-16 character windows:
+    '(!peek page (io/read-lines "data.txt" 37 38 {:char-start 0 :char-end 900}))
+    '(!peek next-page (io/read-lines "data.txt" 37 38 {:char-start 900 :char-end 1800}))
+Character omissions set :truncated true. Surrogate-splitting boundaries move inward. read-file preserves original terminators; read-lines strips them while retaining selected string rows. Each later file read is fresh evidence of CURRENT contents, not retrieval of the earlier value.
+
+Never replay an effect merely to recover omitted output. Save exact values deliberately to a file or an exposed globals entry if later access is required; omitted content is otherwise unavailable. Preserve inspected excerpts, paths, source coordinates, next offsets, literal checkpoints, pending obligations and actual effect receipts before !peek pruning or compaction. Proposed calls/plans/sent flags do not prove execution. Do not claim inspection of omitted content or repeat broad reads just because context was pruned.
+
+Example: preserve a test receipt while discarding verbose output
+    '(!peek test-out (io/sh "uv run pytest tests/test_api.py -x -q"))
+    ;; next turn: inspect :ok, :exit, :err, :out and :truncated first
+    (persist test-receipt (select-keys test-out [:ok :exit :err :truncated]))
+    (think "Record the actual failing test and next patch, not an assumed success.")
     '(!extend)
 
-    ;; on turn 3:
-    ... ; no server-lines or test-lines
-    (persist server-focus (first-line 181 ["..." "..." ...]))
-    (persist test-focus (first-line 41 ["..." "..." ...]))
-    ...
-
-Example: long documents in chunks
-    '(!peek chunk-1 (io/read-lines "docs/report.md" 1 80))
-    ;; end of turn 1 completion
-    (def chunk-1 (first-line 1 ["..." "..." ...]))
-    (prune 2)
-    ;; start of turn 2 suffix
-    (def chunk-1-summary "Lines 1-80 define the setting, notation, and main claim.")
-    (persist chunk-1-focus (subvec chunk-1 20 35))
-    '(!peek chunk-2 (io/read-lines "docs/report.md" 81 160))
-
-    ;; on turn 3:
-    (def chunk-1-summary "Lines 1-80 define the setting, notation, and main claim.")
-    (persist chunk-1-focus (first-line 21 ["..." "..." ...]))
-    (def chunk-2 (first-line 81 ["..." "..." ...]))
-    (prune 2)
-    (def chunk-2-summary "Lines 81-160 give the method, key evidence, and open questions.")
-    '(!extend)
-
-Example: test outputs
-    '(!peek-now test-out (io/sh "uv run pytest tests/test_api.py -x -q"))
-    ;; end of turn 1 completion
-    (def test-out "=========================== FAILURES ===========================\n... tests/test_api.py::test_empty_input ... ValueError ...")
-    (prune 2)
-    ;; start of turn 2 suffix
-    (think "Current failure: tests/test_api.py::test_empty_input still raises ValueError on empty input. Next step: patch the guard in the handler and rerun this test.")
-    '(!extend)
-
-
-Use !call-now instead of !peek when the tool call result should remain in context:
-- Reading a short, critical snippet of text, like a function definition
-- Making an edit that you may wish to re-edit
-- Running a tool call whose result is short (~100 tokens)
-
-When you receive a large tool-call result, rethink to replace it with a summary of what you found, then continue:
-    '(!call-now hits (io/grep "TODO|FIXME" "src/" {:context 20}))
-    (def hits "... many matches ...")
-    (rethink "Relevant matches are auth.py:42 and db.py:88.")
-    '(!call-now auth-lines (io/read-lines "src/auth.py" 30 70) db-lines (io/read-lines "src/db.py" 90 120))
-
-Chain tool calls with !call-now or !peek, saving turns:
-    (def test-script "...")
-    '(!call-now _ (io/write-file "/tmp/run_tests.py" test-script) test-out (io/sh "python /tmp/run_tests.py"))
-
-After extended reasoning, rethink to compress your chain of thought to its conclusion, then extend or act:
-    (think "Long analysis... checking stack traces, testing hypotheses...")
-    (rethink "Root cause: off-by-one loop bound in parse_args.")
-    '(!call-now ...)
-
-When your context has grown large over many turns:
-    '(!compact)
+When a known next action exists, produce the artifact or report a specific blocker before overlapping rereads. Use rethink for a concise evidence-backed checkpoint, persist for exact useful excerpts, and !compact when context grows large. A fresh wrap-cat prompt must explicitly carry the task, constraints, checkpoint and unresolved receipt obligations.
 
 RECOMMENDED PATTERNS
 
@@ -337,7 +283,7 @@ Pruning evidence and rediscovering it — `!peek` automatically removes its comm
 
   '(!peek parser-lines (io/read-lines "src/parser.py" 20 40))
   ;; next turn receives:
-  (def parser-lines [...])
+  (def parser-lines {:ok true :out [...] :err nil :truncated false})
   (prune 2) ; inserted automatically by !peek
 
   ;; WRONG: the intention survives, but the supporting evidence disappears
@@ -347,7 +293,7 @@ Pruning evidence and rediscovering it — `!peek` automatically removes its comm
   '(!peek parser-lines (io/read-lines "src/parser.py" 20 40))
 
   ;; correct: retain the needed evidence and act while it is available
-  (persist parser-focus (subvec parser-lines 0 10))
+  (persist parser-focus (subvec (:out parser-lines) 0 (min 10 (count (:out parser-lines)))))
   (think "The parser indexes the first character before checking for empty input.")
   '(!call-now _
       (io/write-file "repro.py"

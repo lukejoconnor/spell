@@ -21,7 +21,7 @@ This repo includes Spell-specific skills under `.agents/skills/`. Use them as th
 
 - Coordinator: per-run owner of agent identities, mailboxes, lifecycle results, and outstanding collections.
 - Edge: one result collection with a source and one slot per target; it completes when every slot is filled.
-- Context contribution: values and generated binding syntax inserted by one tool-result or communication operation, sharing one run-configured character budget.
+- Bounded snapshot: the ordinary value inserted at a tool-result or communication-body boundary. Each output has its own run-configured UTF-16 target; no hidden full original or automatic result store backs the next-turn binding. Raw effects remain full computations. See docs/bounded-results.md.
 
 - Edit marker: a source form, such as `prune`, `rethink`, or `persist`, that affects how `apply-edits` rewrites a completion for a later turn.
 - Edit time: the phase when `apply-edits` applies edit markers to a completion before it is used as a model prefix.

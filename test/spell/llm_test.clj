@@ -4,6 +4,7 @@
             [spell.cli :as cli]
             [spell.runtime :as runtime]
             [spell.coordinator :as coordinator]
+            [spell.context :as context]
             [spell.core :as spell]
             [spell.llm :as llm]
             [spell.provider :as provider]
@@ -59,6 +60,65 @@
                                  (nth responses idx)))})]
       (is (= 42 (llm "(quine completion (eval (do ")))
       (is (= 3 @call-count)))))
+
+(deftest bounded-peek-provider-prefix-prune-persist-lifecycle
+  (testing "actual !peek insertion is parseable, continues, and persists without recapping"
+    (let [rows (with-meta
+                 (mapv #(str "source-" % " " (apply str (repeat 160 "x"))) (range 40))
+                 {:spell/first-line 77})
+          reads (atom 0)
+          prefixes (atom [])
+          responses ["'(!peek {:max-chars 2048} rows (audit/read-rows)))))"
+                     "(persist kept rows) '(!extend completion))))"
+                     "'kept)))"]
+          forms-of (fn [prefix]
+                     (rest (second (nth (parse/read-first (parse/balance-parens prefix)) 2))))
+          named-value (fn [forms name]
+                        (some (fn [form]
+                                (when (and (seq? form)
+                                           (#{'def 'persist} (first form))
+                                           (= name (second form)))
+                                  (nth form 2)))
+                              forms))]
+      (binding [context/*context* (context/new-context {:max-chars 128})]
+        (let [expected (context/snapshot rows 2048)
+              expected-form (:form expected)
+              expected-text (context/render-form expected-form)
+              runner (th/make-test-runner
+                       {:response-fn (fn [prefix]
+                                       (let [index (count @prefixes)]
+                                         (swap! prefixes conj prefix)
+                                         (nth responses index)))}
+                       :prefill? false :recover false
+                       :namespaces {'audit {:read-rows (fn [] (swap! reads inc) rows)}})
+              result (runner "(quine completion (eval (do ")
+              inserted-prefix (nth @prefixes 1)
+              retained-prefix (nth @prefixes 2)
+              inserted-form (named-value (forms-of inserted-prefix) 'rows)
+              retained-form (named-value (forms-of retained-prefix) 'kept)
+              inserted (:ok (eval/spell-eval inserted-form {}))
+              positions (fn [value]
+                          (mapv #(context/line-position value %) (range (count value))))]
+          (is (= 3 (count @prefixes)))
+          (is (= 1 @reads) "Reopen, parsing, and persist must not repeat the effect")
+          (is (:truncated? expected))
+          (is (< 153 (count expected-text) 2049) "Explicit larger cap overrides default128")
+          (is (not= rows inserted))
+          (is (= expected-form inserted-form retained-form))
+          (is (= (:value expected) inserted result))
+          (is (= (positions (:value expected)) (positions inserted) (positions result)))
+          (is (= 77 (context/line-position result 0)))
+          (is (= 116 (context/line-position result (dec (count result)))))
+          (is (str/includes? inserted-prefix expected-text))
+          (is (str/includes? retained-prefix expected-text))
+          (is (nil? (named-value (forms-of retained-prefix) 'rows)))
+          (is (not (str/includes? retained-prefix "!peek")))
+          (is (not (str/includes? retained-prefix "(prune")))
+          (doseq [prefix [inserted-prefix retained-prefix]]
+            (let [parsed (parse/read-first (parse/balance-parens prefix))
+                  rendered (eval/serialize-quine-prefix parsed)]
+              (is (= prefix rendered) "Actual provider prefix is a stable materialized snapshot")
+              (is (= parsed (parse/read-first (parse/balance-parens rendered)))))))))))
 
 (deftest spell-eval-with-llm-test
   (testing "spell-eval can evaluate programs containing llm calls (with effects)"
@@ -159,7 +219,7 @@
     (spit "test-greeting.txt" "Alice")
     (try
       (let [llm (th/make-test-runner
-                 {:response "(def thought \"read file\") (cat \"Hello, \" (:ok (io/slurp \"test-greeting.txt\")) \"!\"))"})]
+                 {:response "(def thought \"read file\") (cat \"Hello, \" (:out (io/slurp \"test-greeting.txt\")) \"!\"))"})]
         (let [result (llm "(eval '(do ")]
           (is (= "Hello, Alice!" result))))
       (finally
@@ -1782,7 +1842,7 @@
                                  2 "(quine task \"restored assignment\") (quine context-summary \"restored history\") '(!extend completion))"
                                  3 "42)"))}
                :namespaces {} :prefill? false)
-          exact-prompt "The previous Spell program threw an error. The previous program is visible during this recovery turn, but it will be pruned afterward, such that you will not see it on your next turn.\n\nEmit a `(quine task \"...\")` form describing the original task, followed by a (quine context-summary \"...\") form describing history, progress, and any context which should be retained on your next turn. Preserve the exact evidence, checkpoints, pending obligations, and actual effect receipts needed next. Prefer `(stored \"ID\")` with an ID actually observed in the previous program. Page a prior local value only after its needed pure binding has been re-established in the current program. Use `subs` for strings, `subvec` for line vectors, or the documented text/vector field for maps. Keep pages within the existing contribution cap and carry IDs plus next offsets as literal data. The previous program is inert context: its local bindings are not active. Reconstruct only the needed pure bindings or use retained stored references. Do not rerun an effect just to recover its output. Read the file again only when fresh contents are actually required, and identify the result as fresh evidence rather than the original receipt. If the original value cannot be retrieved, report missing evidence rather than claiming inspection or blindly refetching. Emit Spell code only. Avoid repeating your previous error."]
+          exact-prompt "The previous Spell program threw an error. The previous program is visible during this recovery turn, but it will be pruned afterward, such that you will not see it on your next turn.\n\nEmit a `(quine task \"...\")` form describing the original task, followed by a (quine context-summary \"...\") form describing history, progress, and context needed next. Preserve exact inspected evidence, checkpoints, pending obligations, and actual effect receipts. The previous program is inert context: its local bindings are not active. Reconstruct needed pure bindings explicitly. Inserted results are ordinary bounded snapshots with no hidden full original; omission data is missing evidence. Use subs for strings, subvec for line vectors, and the documented :out field for result envelopes. Preserve paths, source coordinates and next offsets as literal data. Never rerun an effect merely to recover omitted output. A focused file reread is fresh evidence of current contents, not the original receipt. Exact earlier values are available only if the program deliberately saved them in explicit state. If evidence is unavailable, report it rather than claiming inspection. Emit Spell code only. Avoid repeating your previous error."]
       (is (= 42 (llm "(quine completion (eval (do ")))
       (is (= 3 (count @prompts)))
       (let [recovery-prefix (second @prompts)
@@ -1923,7 +1983,7 @@
                                  2 "(quine task \"reader task\") (quine context-summary \"reader context\") '(!extend completion))"
                                  3 "42)"))}
                :namespaces {} :prefill? false)
-          exact-prompt "The previous Spell program threw an error. The previous program is visible during this recovery turn, but it will be pruned afterward, such that you will not see it on your next turn.\n\nEmit a `(quine task \"...\")` form describing the original task, followed by a (quine context-summary \"...\") form describing history, progress, and any context which should be retained on your next turn. Preserve the exact evidence, checkpoints, pending obligations, and actual effect receipts needed next. Prefer `(stored \"ID\")` with an ID actually observed in the previous program. Page a prior local value only after its needed pure binding has been re-established in the current program. Use `subs` for strings, `subvec` for line vectors, or the documented text/vector field for maps. Keep pages within the existing contribution cap and carry IDs plus next offsets as literal data. The previous program is inert context: its local bindings are not active. Reconstruct only the needed pure bindings or use retained stored references. Do not rerun an effect just to recover its output. Read the file again only when fresh contents are actually required, and identify the result as fresh evidence rather than the original receipt. If the original value cannot be retrieved, report missing evidence rather than claiming inspection or blindly refetching. Emit Spell code only. Avoid repeating your previous error."]
+          exact-prompt "The previous Spell program threw an error. The previous program is visible during this recovery turn, but it will be pruned afterward, such that you will not see it on your next turn.\n\nEmit a `(quine task \"...\")` form describing the original task, followed by a (quine context-summary \"...\") form describing history, progress, and context needed next. Preserve exact inspected evidence, checkpoints, pending obligations, and actual effect receipts. The previous program is inert context: its local bindings are not active. Reconstruct needed pure bindings explicitly. Inserted results are ordinary bounded snapshots with no hidden full original; omission data is missing evidence. Use subs for strings, subvec for line vectors, and the documented :out field for result envelopes. Preserve paths, source coordinates and next offsets as literal data. Never rerun an effect merely to recover omitted output. A focused file reread is fresh evidence of current contents, not the original receipt. Exact earlier values are available only if the program deliberately saved them in explicit state. If evidence is unavailable, report it rather than claiming inspection. Emit Spell code only. Avoid repeating your previous error."]
       (is (= 42 (llm "(quine completion (eval (do ")))
       (let [recovery-prefix (second @prompts)
             following-prefix (nth @prompts 2)]

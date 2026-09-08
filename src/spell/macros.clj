@@ -2,7 +2,8 @@
   "Spell macro system: registry, expansion, and all macro definitions.
 
    Macros are code→code transformers registered in the spell-macros atom.
-   The evaluator and internal env-closing expansion call spell-macroexpand-1.")
+   The evaluator and internal env-closing expansion call spell-macroexpand-1."
+  (:require [spell.context :as context]))
 
 ;; =============================================================================
 ;; Macro system
@@ -198,40 +199,42 @@
                             (mapcat (fn [step] [g step]) (butlast steps))))
                [(last steps)])))))
 
-;; !call-now and !peek evaluate each expression before one bounded insertion.
-;; Every injected binding shares the run's context contribution budget.
+;; Each output receives an independent explicit snapshot budget.
 (defn- reopen-eval-form [expr] (list 'reopen-eval expr))
 
-(defn- bounded-reopen
-  [bindings descriptors extra-form-exprs limit]
+(defn- bounded-reopen [bindings descriptors extra-form-exprs limit]
   (let [forms (gensym "context-forms__")
         descriptors (into descriptors (map (fn [expr] {:form (second expr)}) extra-form-exprs))
-        render (cond-> (list 'context-forms descriptors) limit (concat [limit]))]
+        render (list 'context-forms descriptors limit)]
     (list 'let (conj bindings forms render)
           (list '!llm-self
                 (list* 'reopen (list 'edit-reopen 'completion)
                        (map-indexed (fn [i _] (reopen-eval-form (list 'nth forms i))) descriptors))
                 {:receive? true}))))
 
-(defn- call-now-expander
-  [macro-name args extra-form-exprs]
-  (let [argc (count args)]
-    (when-not (or (= argc 2) (= argc 3) (and (even? argc) (>= argc 4)))
-      (throw (ex-info (str macro-name ": expected 2 args (name expr), 3 args (name expr limit), or even >= 4 args (name1 expr1 name2 expr2 ...)")
+(defn- output-options [args]
+  (if (and (map? (first args)) (contains? (first args) :max-chars))
+    (do (when-not (= #{:max-chars} (set (keys (first args))))
+          (throw (ex-info "Output options support only :max-chars" {})))
+        [(rest args) (:max-chars (first args)) true])
+    [args nil false]))
+
+(defn- call-now-expander [macro-name args extra-form-exprs]
+  (let [[args limit _] (output-options args)
+        argc (count args)]
+    (when-not (and (even? argc) (>= argc 2))
+      (throw (ex-info (str macro-name ": expected 2 args per name/expression pair, with optional leading {:max-chars N}")
                       {:args-count argc})))
-    (let [pairs (if (= argc 3) [(take 2 args)] (partition 2 args))
+    (let [pairs (partition 2 args)
           temps (mapv (fn [_] (gensym "call-now__")) pairs)
           bindings (vec (mapcat (fn [temp [_ expr]] [temp expr]) temps pairs))
           descriptors (mapv (fn [temp [name-sym _]] {:name (list 'quote name-sym) :value temp}) temps pairs)]
-      (bounded-reopen bindings descriptors extra-form-exprs (when (= argc 3) (nth args 2))))))
+      (bounded-reopen bindings descriptors extra-form-exprs limit))))
 
-(defn- peek-extra-form-exprs
-  [args]
-  (let [n-bindings (if (and (even? (count args)) (>= (count args) 4))
-                     (/ (count args) 2)
-                     1)]
-    [(reopen-eval-form
-      (list 'list (list 'quote 'prune) (inc n-bindings)))]))
+(defn- peek-extra-form-exprs [args]
+  (let [[args _ _] (output-options args)
+        n-bindings (quot (count args) 2)]
+    [(reopen-eval-form (list 'list (list 'quote 'prune) (inc n-bindings)))]))
 
 (defspellmacro '!call-now
   (fn [& args]
@@ -294,25 +297,19 @@
 ;; !print: (!print expr...) — evaluate exprs, extend completion with bare serialized values.
 ;; Like (!call-now x x) but without creating a binding — values appear as
 ;; literals in the continuation so the LLM can see them.
-(defn- print-expander
-  [& val-exprs]
-  (let [temps (mapv (fn [_] (gensym "print__")) val-exprs)]
+(defn- print-expander [& args]
+  (let [[val-exprs limit _] (output-options args)
+        temps (mapv (fn [_] (gensym "print__")) val-exprs)]
     (bounded-reopen (vec (mapcat vector temps val-exprs))
-                    (mapv (fn [temp] {:value temp}) temps) [] nil)))
+                    (mapv (fn [temp] {:value temp}) temps) [] limit)))
 
 (defspellmacro '!print print-expander)
 ;; Backward-compatible alias.
 (defspellmacro 'print print-expander)
-
-;; first-line: (first-line n [data...]) -> quoted vector with :spell/first-line metadata.
-;; This keeps the annotation alive across pr-str/read-string round-trips.
+;; first-line preserves original positions, including synthetic nil-coordinate gap rows.
 (defspellmacro 'first-line
-  (fn [first-line data-form]
-    (let [vec-data (if (vector? data-form)
-                     data-form
-                     (throw (ex-info "first-line expects a vector literal"
-                                     {:form data-form})))]
-      (list 'quote (with-meta vec-data (assoc (or (meta vec-data) {}) :spell/first-line first-line))))))
+  (fn [& pairs]
+    (list 'quote (context/first-line-vector pairs))))
 
 ;; define: Scheme-style alias for def
 (defspellmacro 'define

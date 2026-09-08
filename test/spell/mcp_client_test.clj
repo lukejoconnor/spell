@@ -30,8 +30,8 @@
       (with-open [c (client/open-client :demo {:transport {:http {:url url}}})]
         (is (= ["add" "echo"] (mapv #(get % "name") (client/tools c))))
         (is (= {"echo" "hello"}
-               (get (client/call-tool! c "echo" {"text" "hello"})
-                    "structuredContent")))
+               (get-in (client/call-tool! c "echo" {"text" "hello"})
+                       [:out "structuredContent"])))
         (is (= 1 (count (client/resources c))))
         (is (= 1 (count (client/resource-templates c))))
         (is (= 1 (count (client/prompts c))))
@@ -53,7 +53,7 @@
                                          :headers {"X-Secret" "needle-secret"}})]
         (is (= "[REDACTED]"
                (get-in (client/call-tool! c "echo" {"text" "needle-secret"})
-                       ["structuredContent" "echo"])))))))
+                       [:out "structuredContent" "echo"])))))))
 
 (deftest generated-namespace-and-permissions-test
   (with-server
@@ -74,21 +74,21 @@
         (is (str/includes? (get-in mcp [:detail :complete]) "ref/prompt"))
         (is (str/includes? (get-in mcp [:detail :listen-send]) "resourceSubscriptions"))
         (is (= {"echo" "hi"}
-               (get ((:say demo) {"text" "hi"}) "structuredContent")))
+               (get-in ((:say demo) {"text" "hi"}) [:out "structuredContent"])))
         (is (= ["memory://readme"] (mapv #(get % "uri") ((:resources mcp) :demo))))
         (is (= ["review"] (mapv #(get % "name") ((:prompts mcp) :demo))))
         (is (= "resource text"
                (get-in ((:read-resource mcp) :demo "memory://readme")
-                       ["contents" 0 "text"])))
+                       [:out "contents" 0 "text"])))
         (is (= "Review it"
                (get-in ((:get-prompt mcp) :demo "review" {"style" "strict"})
-                       ["messages" 0 "content" "text"])))
+                       [:out "messages" 0 "content" "text"])))
         (is (= ["strict" "friendly"]
                (get-in ((:complete mcp) :demo
                         {"type" "ref/prompt" "name" "review"}
                         {"name" "style" "value" "s"})
-                       ["completion" "values"])))
-        (is (= "demo" (get ((:info mcp) :demo) "mcp/server")))
+                       [:out "completion" "values"])))
+        (is (= "demo" (get-in ((:info mcp) :demo) [:out "mcp/server"])))
         (is (= :mcp-permission-denied
                (try ((:read-resource mcp) :demo "memory://private") nil
                     (catch clojure.lang.ExceptionInfo e (:type (ex-data e))))))))))
@@ -146,14 +146,14 @@
                                             {"value" "slow" "delayMs" 100}))
             fast (future (client/call-tool! c "delayed_echo"
                                             {"value" "fast" "delayMs" 1}))]
-        (is (= "fast" (get-in @fast ["structuredContent" "value"])))
-        (is (= "slow" (get-in @slow ["structuredContent" "value"]))))
+        (is (= "fast" (get-in @fast [:out "structuredContent" "value"])))
+        (is (= "slow" (get-in @slow [:out "structuredContent" "value"]))))
       (let [notifications (atom [])]
         (client/listen! c {"toolsListChanged" true} #(swap! notifications conj %))
         (is (= "notifications/tools/list_changed" (get-in @notifications [0 "method"]))))
       (let [probe (client/call-tool! c "env_probe" {})]
-        (is (= "[REDACTED]" (get-in probe ["structuredContent" "value"])))
-        (is (false? (get-in probe ["structuredContent" "inheritedApiKey"])))
+        (is (= "[REDACTED]" (get-in probe [:out "structuredContent" "value"])))
+        (is (false? (get-in probe [:out "structuredContent" "inheritedApiKey"])))
         (Thread/sleep 20)
         (is (= ["[REDACTED]"] (stdio/stderr-tail (:stdio-transport c)))))
       (finally
@@ -244,4 +244,6 @@
         (is (= :registered-listener (:sender @observed)))
         (let [result (eval/spell-eval (parse/read-first (:rendered @observed)) {})]
           (is (eval/ok? result))
-          (is (= payload (get-in result [:ok :payload]))))))))
+          (is (not= payload (get-in result [:ok :payload])))
+          (is (<= (count (:rendered @observed)) 154))
+          (is (not (re-find #"stored|UUID" (:rendered @observed)))))))))
