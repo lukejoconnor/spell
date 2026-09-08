@@ -266,3 +266,19 @@
     (is (thrown? clojure.lang.ExceptionInfo ((:echo generated) "not-a-map")))
     (with-redefs [client/call-tool! (fn [& _] (throw (IllegalArgumentException. "bad argument")))]
       (is (thrown? IllegalArgumentException ((:echo generated) {}))))))
+
+(deftest operational-error-envelope-preserves-captured-stdio-diagnostics
+  (let [tool {"name" "echo" "inputSchema" {"type" "object"}}
+        generated (with-redefs [client/tools (constantly [tool])]
+                    (mcp-ns/tool-namespace :demo ::client :all))]
+    (doseq [stderr [["Fatal: unable to open database" "  detail with whitespace  "]
+                   [] nil]]
+      (with-redefs [client/call-tool!
+                    (fn [& _]
+                      (throw (ex-info "MCP stdio server closed stdout"
+                                      {:type :mcp-stdio-error :stderr stderr})))]
+        (is (= {:ok false :out nil :truncated false
+                :err (if (seq stderr)
+                       "MCP stdio server closed stdout\nMCP stderr:\nFatal: unable to open database\n  detail with whitespace  "
+                       "MCP stdio server closed stdout")}
+               ((:echo generated) {})))))))

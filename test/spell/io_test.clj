@@ -1042,3 +1042,26 @@
     (is (false? (io/directory? path)))
     (is (string? (io/cwd)))
     (is (map? (io/env)))))
+
+(deftest glob-reports-producer-failure-and-preserves-sorted-results
+  (let [missing (str test-dir "/missing-glob-directory")
+        failed (io/glob "*.clj" missing)]
+    (is (false? (:ok failed)))
+    (is (not= 0 (:exit failed)))
+    (is (= "" (:out failed)))
+    (is (str/includes? (:err failed) missing))
+    (is (false? (:truncated failed))))
+  (let [a (str test-dir "/a.clj") z (str test-dir "/z.clj")]
+    (spit z "z")
+    (spit a "a")
+    (is (= {:ok true :exit 0 :out (str a "\n" z "\n")
+            :err nil :truncated false}
+           (io/glob "*.clj" test-dir)))
+    (is (= {:ok true :exit 0 :out "" :err nil :truncated false}
+           (io/glob "*.absent" test-dir))))
+  (testing "a failed search can still return useful partial paths and diagnostics"
+    (let [partial {:ok false :exit 7 :out "z\ra\n\nalpha\n"
+                   :err "cannot traverse child\n" :truncated false}]
+      (with-redefs [io/sh (constantly partial)]
+        (is (= (assoc partial :out "\nalpha\nz\ra\n")
+               (io/glob "*" test-dir)))))))

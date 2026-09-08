@@ -171,7 +171,10 @@
                            :missing-sse-response :mcp-json-rpc-error}
                          (:type data)))
       (cond-> {:ok false :out (or (:result data) (:response data) (:data data))
-               :err (.getMessage ^Exception e) :truncated false}
+               :err (cond-> (.getMessage ^Exception e)
+                      (seq (:stderr data))
+                      (str "\nMCP stderr:\n" (str/join "\n" (:stderr data))))
+               :truncated false}
         (contains? data :status) (assoc :status (:status data))))))
 
 (defmacro ^:private with-operational-result [& body]

@@ -657,8 +657,19 @@
                  max-depth (conj "-maxdepth" max-depth)
                  (:type opts) (conj "-type" (shell-quote (str (:type opts))))
                  true (conj "-name" (shell-quote pattern) "-print"))
-         cmd (str (str/join " " parts) " | sort")]
-     (sh cmd))))
+         result (sh (str/join " " parts))
+         out (:out result)]
+     ;; Sort the captured lines without replacing find's exit status with sort's.
+     ;; Remove only the terminal LF; preserve CRs and empty filename fragments.
+     (if (seq out)
+       (assoc result :out
+              (str (str/join "\n"
+                             (sort (str/split
+                                     (if (str/ends-with? out "\n")
+                                       (subs out 0 (dec (count out))) out)
+                                     #"\n" -1)))
+                   "\n"))
+       result))))
 
 (def ^:private git-read-commands
   #{"blame" "diff" "log" "rev-parse" "show" "status"})
