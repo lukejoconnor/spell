@@ -33,7 +33,7 @@
                         (map #(list 'quote %) args)))))
 
 (defn mail [op args]
-  (invoke-pattern :call [:mailing-list :call op args]))
+  (invoke-pattern :call [:mailing-list op args]))
 
 (defn init-board! [opts]
   (invoke-pattern :install [:mailing-list])
@@ -80,8 +80,19 @@
       (throw (ex-info "Deterministic provider call bound exceeded" {:handle handle :calls n})))
     n))
 
+;; Ordinary configured tracked child composition. Setup executes before the first
+;; model generation; failures are visible tracked results, not retry policy.
+(defn workflow-startup [handle]
+  (str "(quine completion (eval (do '(let [failure (try (do "
+       "(patterns/install :mailing-list) "
+       "(patterns/call :mailing-list :subscribe-many {:lists [:design :implementation] :from :earliest}) nil) "
+       "(catch e {:spell/child-failure true :phase :onboarding :handle " (pr-str handle) " :error (str e)}))] "
+       "(if failure failure (!llm-self (wrap-cat \"Subscriptions installed. Do NOT call patterns/call :mailing-list :init. Perform the assigned task.\") {:receive? true}))))))"))
+
 (deftest real-workflow-completes-and-persists
-  (let [calls (atom {})
+  (let [compiled (atom nil)
+        edges (atom [])
+        calls (atom {})
         marks (atom [])
         returns (atom [])
         onboarding (atom #{})
@@ -97,6 +108,7 @@
                                :child-returns @returns
                                :subscriptions-before-generation @onboarding
                                :provider-calls @calls
+                               :dispatched-edges @edges
                                :self-call-effect-count (count @marks)
                                :design-pages @pages}]
                    (spit report-file (pr-str report))
@@ -121,7 +133,7 @@
                            "(def local-evidence {:owner :design-worker :marker :retained}) '(do (audit/mark local-evidence) (!extend)))"
                            (do
                              (is (.contains ^String p "local-evidence") "Self-call keeps source context")
-                             "'(do (patterns/call :mailing-list :call :post {:list :design :summary \"design complete\" :body local-evidence}) (audit/child local-evidence)))")))
+                             "'(do (patterns/call :mailing-list :post {:list :design :summary \"design complete\" :body local-evidence}) (audit/child local-evidence)))")))
                        :implementation-worker
                        (do
                          (when (= n 1)
@@ -131,42 +143,48 @@
                            (swap! onboarding conj h))
                          (if (= n 1)
                            "'(throw \"bounded task error after onboarding\")))"
-                           "'(do (patterns/call :mailing-list :call :post {:list :implementation :summary \"implementation complete\" :body {:status :completed :task-recovery true}}) '{:status :completed :owner :implementation-worker :task-recovery true})))"))
+                           "'(do (patterns/call :mailing-list :post {:list :implementation :summary \"implementation complete\" :body {:status :completed :task-recovery true}}) '{:status :completed :owner :implementation-worker :task-recovery true})))"))
                        :main
                        (let [message (last (re-seq #"msg-[0-9]+" p))]
                          (when-not message
                            (throw (ex-info (str "Main startup diagnostic: " (subs p (max 0 (- (count p) 900)))) {})))
                          (if (= n 1)
-                           (str "'(do (audit/record " message ") (patterns/call :mailing-list :call :spawn {:task \"Run bounded implementation task\" :handle :implementation-worker :lists [:design :implementation]}) (agents/!wait)))")
+                           (str "'(do (audit/record " message ") (fixture/edge (agents/spawn-ask (fixture/child) (fixture/startup :implementation-worker) :implementation-worker)) (agents/!wait)))")
                            (str "'(audit/finish " message ")))"))) ))) }
                 :prefill? false
                 :namespaces {'patterns stdlib/patterns
                              'globals globals/globals-namespace
                              'agents runtime/agents-namespace
+                             'fixture {:child (fn [] @compiled)
+                                       :startup workflow-startup
+                                       :edge (fn [edge] (swap! edges conj edge) edge)}
                              'audit {:mark #(swap! marks conj %)
                                      :child #(assoc % :status :completed)
                                      :record #(swap! returns conj %)
                                      :page #(swap! pages conj %)
                                      :finish finish}})
+        _ (reset! compiled agent)
         value (th/run-agent-init agent
                 "(quine completion (eval (do '(do
                    (patterns/install :mailing-list)
                    (patterns/call :mailing-list :init {:retention 8 :page-size 3})
-                   (patterns/call :mailing-list :call :create {:list :design :description (str :design)})
-                   (patterns/call :mailing-list :call :create {:list :implementation :description (str :implementation)})
-                   (patterns/call :mailing-list :call :subscribe {:list :design :from :earliest})
-                   (patterns/call :mailing-list :call :subscribe {:list :implementation :from :earliest})
-                   (patterns/call :mailing-list :call :post {:list :design :summary \"seed design\" :body {:sequence 0}})
-                   (patterns/call :mailing-list :call :post {:list :design :summary \"seed design\" :body {:sequence 1}})
-                   (patterns/call :mailing-list :call :post {:list :design :summary \"seed design\" :body {:sequence 2}})
-                   (patterns/call :mailing-list :call :post {:list :design :summary \"seed design\" :body {:sequence 3}})
-                   (let [page (patterns/call :mailing-list :call :digest {:list :design :limit 3})]
+                   (patterns/call :mailing-list :create {:list :design :description (str :design)})
+                   (patterns/call :mailing-list :create {:list :implementation :description (str :implementation)})
+                   (patterns/call :mailing-list :subscribe {:list :design :from :earliest})
+                   (patterns/call :mailing-list :subscribe {:list :implementation :from :earliest})
+                   (patterns/call :mailing-list :post {:list :design :summary \"seed design\" :body {:sequence 0}})
+                   (patterns/call :mailing-list :post {:list :design :summary \"seed design\" :body {:sequence 1}})
+                   (patterns/call :mailing-list :post {:list :design :summary \"seed design\" :body {:sequence 2}})
+                   (patterns/call :mailing-list :post {:list :design :summary \"seed design\" :body {:sequence 3}})
+                   (let [page (patterns/call :mailing-list :digest {:list :design :limit 3})]
                      (audit/page page)
-                     (patterns/call :mailing-list :call :ack {:token (:token page)}))
-                   (patterns/call :mailing-list :call :spawn {:task \"Keep local evidence across a self-call, then return\" :handle :design-worker :lists [:design :implementation]})
+                     (patterns/call :mailing-list :ack {:token (:token page)}))
+                   (fixture/edge (agents/spawn-ask (fixture/child) (fixture/startup :design-worker) :design-worker))
                    (agents/!wait)))))")
         board (globals/get-val :mailing-list)
         persisted (clojure.edn/read-string (slurp report-file))]
+    (is (= 2 (count @edges)))
+    (is (= @edges (mapv :edge-id @returns)) "Actual dispatched edges match collected reports")
     (is (= :completed (:status value)))
     (is (= value persisted) "The completed report is persisted, not merely proposed")
     (is (= [:design-worker :implementation-worker] (mapv :from @returns)))
@@ -184,7 +202,9 @@
     (is (= 1 (count (get-in board [:lists :implementation :messages]))))))
 
 (deftest onboarding-failure-is-bounded-and-precedes-generation
-  (let [worker-calls (atom 0)
+  (let [compiled (atom nil)
+        edges (atom [])
+        worker-calls (atom 0)
         main-calls (atom {})
         agent (th/make-test-agent
                 {:response-fn
@@ -197,20 +217,25 @@
                 :namespaces {'patterns stdlib/patterns
                              'globals globals/globals-namespace
                              'agents runtime/agents-namespace
+                             'fixture {:child (fn [] @compiled)
+                                       :startup workflow-startup
+                                       :edge (fn [edge] (swap! edges conj edge) edge)}
                              'audit {:finish (fn [v] (coordinator/close!) v)}})
+        _ (reset! compiled agent)
         value (th/run-agent-init agent
                 "(quine completion (eval (do '(do
                    (patterns/install :mailing-list)
                    (patterns/call :mailing-list :init {:max-subscribers 1})
-                   (patterns/call :mailing-list :call :create {:list :design :description (str :design)})
-                   (patterns/call :mailing-list :call :create {:list :implementation :description (str :implementation)})
-                   (patterns/call :mailing-list :call :subscribe {:list :implementation})
-                   (patterns/call :mailing-list :call :spawn {:task \"Must never reach generation\" :handle :blocked-worker :lists [:design :implementation]})
+                   (patterns/call :mailing-list :create {:list :design :description (str :design)})
+                   (patterns/call :mailing-list :create {:list :implementation :description (str :implementation)})
+                   (patterns/call :mailing-list :subscribe {:list :implementation})
+                   (fixture/edge (agents/spawn-ask (fixture/child) (fixture/startup :blocked-worker) :blocked-worker))
                    (agents/!wait)))))")]
+    (is (= @edges [(:edge-id value)]))
     (is (true? (get-in value [:body :spell/child-failure])))
     (is (= :onboarding (get-in value [:body :phase])))
     (is (= :blocked-worker (get-in value [:body :handle])))
-    (is (re-find #"subscriber limit reached" (get-in value [:body :error])))
+    (is (re-find #":max-subscribers limit 1 reached" (get-in value [:body :error])))
     (is (zero? @worker-calls))
     (is (= 1 (:main @main-calls)))
     (doseq [list-name [:design :implementation]]

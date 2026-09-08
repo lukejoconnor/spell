@@ -1,402 +1,272 @@
-;; Installable definition data; reading/installing never runs this source.
-{:doc
- "Shared in-run mailing-list board. Install/reuse definitions separately from explicit one-time initialization of :mailing-list state.",
+;; Installable definition data; reading/installing never initializes board state.
+{:doc "Shared in-run mailing-list board. Install definitions, then exactly one initializer calls :init. Consumers are direct catalog entries; helpers marked Internal are editable implementation, not onboarding actions."
  :functions
  {:init
-  {:doc
-   "Initialize board state once from an options map; duplicate initialization errors without replacing any state. Installation alone never initializes or resets the board.",
-   :requires [agents globals],
-   :source
-   (fn
-    [options]
-    (let
-     [ml-owner
-      (agents/current-handle)
-      ml-config
-      (merge
-       {:retention 200,
-        :page-size 20,
-        :max-lists 32,
-        :max-subscribers 32,
-        :max-message-chars 16000}
-       options)
-      ml-initial
-      {:owner ml-owner, :version 1, :config ml-config, :epoch 0, :lists {}, :last-result nil}]
-     (map
-      (fn
-       [[k upper]]
-       (when
-        (not (and (integer? (get ml-config k)) (<= 1 (get ml-config k) upper)))
-        (throw (str "mailing-list: invalid bound " k))))
-      [[:retention 2000]
-       [:page-size 100]
-       [:max-lists 128]
-       [:max-subscribers 64]
-       [:max-message-chars 65536]])
-     (when
-      (seq
-       (remove
-        #{:max-lists :page-size :retention :max-message-chars :max-subscribers}
-        (keys options)))
-      (throw "mailing-list: unknown option"))
-     (globals/update
-      :mailing-list
-      (fn
-       [ml-existing]
-       (when (some? ml-existing) (throw "mailing-list: already initialized"))
-       ml-initial))
-     {:owner ml-owner, :global :mailing-list, :ready true}))},
-  :call
-  {:doc
-   "Dispatch a board operation and arguments map. Resolve current module helpers through patterns/call; mutations return the exact successful globals/update snapshot result. Sends and child launches happen outside retryable transactions.",
-   :requires [agents globals patterns],
-   :source
-   (fn
-    [ml-operation ml-arguments]
-    (when (not (map? ml-arguments)) (throw "mail: arguments must be a map"))
-    (let
-     [ml-state
-      (globals/get :mailing-list)
-      ml-args
-      (assoc ml-arguments :agent (get ml-arguments :agent (agents/current-handle)))]
-     (when (not ml-state) (throw "mail: board not initialized; designate exactly one initializer"))
-     (case
-      ml-operation
-      :info
-      {:owner (:owner ml-state),
-       :config (:config ml-state),
-       :module-functions (vec (keys (:functions (patterns/source :mailing-list))))}
-      :lists
-      (map
-       (fn
-        [[k ls]]
-        {:list k,
-         :description (:description ls),
-         :high-water (dec (:next ls)),
-         :retained (count (:messages ls)),
-         :subscribers (vec (keys (:subscriptions ls)))})
-       (:lists ml-state))
-      :digest
-      (patterns/call :mailing-list :digest ml-state ml-args)
-      :message
-      (let
-       [ls (get-in ml-state [:lists (:list ml-args)]) id (:id ml-args)]
-       (when (not ls) (throw "mail: unknown list"))
-       (when
-        (not (and (integer? id) (pos? id) (< id (:next ls))))
-        (throw "mail: unknown message ID"))
-       (let
-        [m (first (filter (fn [m] (= id (:id m))) (:messages ls)))]
-        {:list (:list ml-args), :id id, :message m, :expired? (nil? m)}))
-      :notify
-      (let
-       [ls (get-in ml-state [:lists (:list ml-args)]) id (get ml-args :id (dec (:next ls)))]
-       (when (not ls) (throw "mail: unknown list"))
-       (when
-        (not (and (integer? id) (<= 0 id (dec (:next ls)))))
-        (throw "mail: invalid notification watermark"))
-       {:list (:list ml-args),
-        :id id,
-        :deliveries
-        (patterns/call
-         :mailing-list
-         :deliver
-         (vec (keys (:subscriptions ls)))
-         {:kind :mailing-list, :list (:list ml-args), :through id})})
-      :post!
-      (let
-       [posted (patterns/call :mailing-list :call :post ml-args)]
-       (assoc
-        posted
-        :deliveries
-        (patterns/call
-         :mailing-list
-         :deliver
-         (:targets posted)
-         {:kind :mailing-list, :list (:list posted), :through (:id posted)})))
-      :spawn
-      (let
-       [task (:task ml-args) handle (:handle ml-args) lists (:lists ml-args)]
-       (when
-        (not
-         (and
-          (string? task)
-          (keyword? handle)
-          (vector? lists)
-          (<= (count lists) (get-in ml-state [:config :max-lists]))
-          (every? (fn [k] (contains? (:lists ml-state) k)) lists)))
-        (throw "mail: spawn needs :task string, :handle keyword, and existing :lists vector"))
-       (let
-        [teaching
-         (str
-          "You are a mailing-list board worker. Bootstrap installed/reused the :mailing-list module; patterns/install never resets the board. Do NOT call patterns/call :mailing-list :init. \nContext discipline: avoid the prune-evidence-then-rediscover antipattern. Before pruning a tool result, persist the exact evidence, actual effect receipts and next-action checkpoint needed for the artifact; retrieve retained or stored output instead of repeating effects.\n"
-          "Your subscriptions are already installed before this generation. "
-          "Use quoted trailing effects, e.g. '(!call-now page (patterns/call :mailing-list :call :digest {:list :research})). "
-          "Use the actual list names: "
-          (pr-str lists)
-          ". "
-          "Digest requires singular keyword :list; call once per list, never :lists. "
-          "Digest is read-only; after processing its messages and visible :gap, "
-          "acknowledge exactly its :token with patterns/call :mailing-list :call :ack {:token (:token page)}. "
-          "Post compact summaries with :post; :post! explicitly awakens every subscriber. "
-          "Retrieve full evidence with :message {:list k :id n}. "
-          "Read (!describe skills :mailing-list) for progressive guidance when available. "
-          "Communicate via normal tracked agents requests; do not poll or invent blocking waits. "
-          "Task: "
-          task)
-         bootstrap
-         (list
-          'quine
-          'completion
-          (list
-           'eval
-           (list
-            'do
-            (list
-             'quote
-             (list
-              'let
-              ['ml-onboarding-failure
-               (list
-                'try
-                (list
-                 'do
-                 (list 'patterns/install :mailing-list)
-                 (list
-                  'patterns/call
-                  :mailing-list
-                  :call
-                  :subscribe-many
-                  {:agent handle, :lists lists, :from (get ml-args :from :earliest)})
-                 nil)
-                (list
-                 'catch
-                 'ml-onboarding-error
-                 {:spell/child-failure true,
-                  :handle handle,
-                  :phase :onboarding,
-                  :error (list 'str 'ml-onboarding-error)}))]
-              (list
-               'if
-               'ml-onboarding-failure
-               'ml-onboarding-failure
-               (list '!llm-self (wrap-cat teaching) {:receive? true})))))))]
-        {:handle handle,
-         :onboarding :pending,
-         :edge (agents/spawn-ask (pr-str bootstrap) handle)}))
-      (let
-       [updated
-        (globals/update
-         :mailing-list
-         (fn
-          [ml-current]
-          (let
-           [[next-board result]
-            (patterns/call :mailing-list :change ml-current ml-operation ml-args)]
-           (assoc next-board :last-result result))))]
-       (:last-result updated)))))},
-  :change
-  {:doc
-   "Pure retryable board transition [board operation arguments] -> [next-board result]. No sends, spawns or global mutations; customization must preserve transaction purity.",
-   :requires [patterns],
-   :source
-   (fn
-    [b op a]
-    (let
-     [k (:list a) ls (get-in b [:lists k]) who (:agent a)]
-     (case
-      op
-      :create
-      (do
-       (when
-        (or (not (keyword? k)) (> (count (str k)) 128))
-        (throw "mail: :list must be a short keyword"))
-       (when ls (throw "mail: list already exists"))
-       (when
-        (>= (count (:lists b)) (get-in b [:config :max-lists]))
-        (throw "mail: list limit reached"))
-       (when
-        (or (not (string? (:description a))) (> (count (:description a)) 1000))
-        (throw "mail: description must be a string of at most 1000 characters"))
-       [(assoc-in
-         b
-         [:lists k]
-         {:description (:description a), :next 1, :messages [], :subscriptions {}})
-        {:list k, :created true}])
-      :subscribe
-      (do
-       (when (not ls) (throw "mail: unknown list"))
-       (when
-        (or (not (keyword? who)) (> (count (str who)) 128))
-        (throw "mail: :agent must be a short handle keyword"))
-       (when
-        (not (contains? #{:latest :earliest} (get a :from :latest)))
-        (throw "mail: :from must be :latest or :earliest"))
-       (if-let
-        [sub (get-in ls [:subscriptions who])]
-        [b (assoc sub :list k :agent who)]
-        (do
-         (when
-          (>= (count (:subscriptions ls)) (get-in b [:config :max-subscribers]))
-          (throw "mail: subscriber limit reached"))
-         (let
-          [epoch
-           (inc (:epoch b))
-           cursor
-           (if (= :earliest (:from a)) 0 (dec (:next ls)))
-           sub
-           {:epoch epoch, :cursor cursor}]
-          [(-> b (assoc :epoch epoch) (assoc-in [:lists k :subscriptions who] sub))
-           (assoc sub :list k :agent who)]))))
-      :subscribe-many
-      (do
-       (when
-        (or (not (vector? (:lists a))) (> (count (:lists a)) (get-in b [:config :max-lists])))
-        (throw "mail: :lists must be a bounded vector"))
-       (loop
-        [state b todo (:lists a) results []]
-        (if
-         (empty? todo)
-         [state {:agent who, :subscriptions results}]
-         (let
-          [[next-state result]
-           (patterns/call :mailing-list :change state :subscribe (assoc a :list (first todo)))]
-          (recur next-state (rest todo) (conj results result))))))
-      :unsubscribe
-      (do
-       (when (not ls) (throw "mail: unknown list"))
-       [(update-in b [:lists k :subscriptions] dissoc who)
-        {:list k, :agent who, :unsubscribed true}])
-      :post
-      (do
-       (when (not ls) (throw "mail: unknown list"))
-       (when
-        (or (not (string? (:summary a))) (empty? (:summary a)) (> (count (:summary a)) 500))
-        (throw "mail: :summary must contain 1-500 characters"))
-       (when
-        (and (:thread a) (or (not (string? (:thread a))) (> (count (:thread a)) 128)))
-        (throw "mail: :thread must be a short string"))
-       (when
-        (and
-         (:reply-to a)
-         (not (and (integer? (:reply-to a)) (pos? (:reply-to a)) (< (:reply-to a) (:next ls)))))
-        (throw "mail: :reply-to must reference an earlier ID in this list"))
-       (let
-        [id
-         (:next ls)
-         msg
-         (assoc
-          (select-keys a [:summary :body :thread :reply-to :provenance :tags])
-          :id
-          id
-          :author
-          who)
-         all
-         (conj (:messages ls) msg)
-         keep-n
-         (get-in b [:config :retention])]
-        (when
-         (> (count (pr-str msg)) (get-in b [:config :max-message-chars]))
-         (throw "mail: message too large; store evidence elsewhere and post a reference"))
-        [(->
-          b
-          (assoc-in [:lists k :next] (inc id))
-          (assoc-in [:lists k :messages] (vec (drop (max 0 (- (count all) keep-n)) all))))
-         {:list k, :id id, :targets (vec (keys (:subscriptions ls)))}]))
-      :ack
-      (let
-       [token
-        (:token a)
-        tk
-        (:list token)
-        agent
-        (:agent token)
-        sub
-        (get-in b [:lists tk :subscriptions agent])
-        through
-        (:through token)
-        high
-        (dec (get-in b [:lists tk :next] 1))]
-       (when (nil? token) (throw "mail: :ack requires {:token page-token}"))
-       (when
-        (or (nil? sub) (not= (:epoch sub) (:epoch token)) (not= who agent))
-        (throw "mail: stale subscription token or wrong agent"))
-       (when
-        (not (and (integer? through) (<= 0 through high)))
-        (throw "mail: invalid acknowledgement watermark"))
-       (let
-        [cursor (max (:cursor sub) through)]
-        [(assoc-in b [:lists tk :subscriptions agent :cursor] cursor)
-         {:list tk, :agent agent, :cursor cursor}]))
-      (throw (str "mail: unknown change " op)))))},
+  {:doc "Options map {:lists [:general] :retention 200 :page-size 20 :max-lists 32 :max-subscribers 32 :max-message-chars 16000}. Omitted :lists defaults to [:general]; explicit nonempty distinct keyword vector replaces it. Atomically creates lists and initializer subscriptions. Returns {:owner h :global :mailing-list :ready true :lists [k ...] :subscriptions [{:list k :agent h :epoch e :cursor 0} ...]}. Example: (patterns/call :mailing-list :init {:lists [:design :implementation]}). Duplicate init errors; install never initializes/subscribes."
+   :requires [patterns]
+   :source (fn [options] (patterns/call :mailing-list :transact :init options))}
+  :info
+  {:doc "Args {}; returns {:owner h :config limits :module-functions [entry ...]}. Example: (patterns/call :mailing-list :info {}). Does not initialize."
+   :requires [globals patterns]
+   :source (fn [args]
+             (when (not (map? args)) (throw "mail: :info arguments must be a map"))
+             (let [b (globals/get :mailing-list)]
+               (when (not b) (throw "mail: :info board not initialized; designate exactly one initializer"))
+               {:owner (:owner b) :config (:config b)
+                :module-functions (vec (keys (:functions (patterns/source :mailing-list))))}))}
+  :lists
+  {:doc "Args {}; returns [{:list k :description s :high-water n :retained n :subscribers [h ...]} ...]. Example: (patterns/call :mailing-list :lists {}). Read-only discovery."
+   :requires [globals]
+   :source (fn [args]
+             (when (not (map? args)) (throw "mail: :lists arguments must be a map"))
+             (let [b (globals/get :mailing-list)]
+               (when (not b) (throw "mail: :lists board not initialized; designate exactly one initializer"))
+               (map (fn [[k ls]] {:list k :description (:description ls)
+                                  :high-water (dec (:next ls)) :retained (count (:messages ls))
+                                  :subscribers (vec (keys (:subscriptions ls)))})
+                    (:lists b))))}
+  :create
+  {:doc "Args {:list keyword :description string}. Creates a list and subscribes the actual caller atomically at cursor 0; supplied :agent cannot replace the creator. Returns {:list k :created true :subscription {:list k :agent h :epoch e :cursor 0}}. Example: (patterns/call :mailing-list :create {:list :research :description \"Evidence\"}). List keyword <=128 chars; description <=1000; configured max-lists applies."
+   :requires [patterns]
+   :source (fn [args] (patterns/call :mailing-list :transact :create args))}
+  :subscribe
+  {:doc "Args {:list k :agent caller :from :latest}; :from is :latest or :earliest (cursor 0, including visible earlier retention loss). Returns {:list k :agent h :epoch e :cursor n}. Existing subscription preserves cursor/epoch. Example: (patterns/call :mailing-list :subscribe {:list :research :from :earliest}). Configured max-subscribers applies per list."
+   :requires [patterns]
+   :source (fn [args] (patterns/call :mailing-list :transact :subscribe args))}
+  :subscribe-many
+  {:doc "Args {:lists [k ...] :agent caller :from :latest}; nonempty distinct keyword vector within configured max-lists, all lists must exist. Atomically returns {:agent h :subscriptions [{:list k :agent h :epoch e :cursor n} ...]}; existing cursors are preserved. Example: (patterns/call :mailing-list :subscribe-many {:lists [:design :implementation] :from :earliest}). Never initializes."
+   :requires [patterns]
+   :source (fn [args] (patterns/call :mailing-list :transact :subscribe-many args))}
+  :unsubscribe
+  {:doc "Args {:list k :agent caller}; returns {:list k :agent h :unsubscribed true}. Example: (patterns/call :mailing-list :unsubscribe {:list :research}). Removes subscription; resubscribe gets a new epoch invalidating old tokens. No automatic retirement."
+   :requires [patterns]
+   :source (fn [args] (patterns/call :mailing-list :transact :unsubscribe args))}
+  :post
+  {:doc "Args {:list k :summary string :body any}, optional :agent (author defaults to caller; supplied :agent is unauthenticated author attribution, not a verified sender), :thread string, :reply-to prior same-list ID, :tags, :provenance. Quiet: returns {:list k :id n :targets [subscriber ...]} without sends. Example: (patterns/call :mailing-list :post {:list :research :summary \"E7 result\" :body {:evidence \"full\"}}). Summary 1-500 chars, thread <=128, serialized message <= configured max-message-chars; oversized content errors, never truncates. Retention bounds history; use :message for full body."
+   :requires [patterns]
+   :source (fn [args] (patterns/call :mailing-list :transact :post args))}
+  :post!
+  {:doc "Same args/validation as :post; commits once, then urgently sends to its subscriber snapshot INCLUDING author when subscribed. Returns post receipt plus :deliveries [{:agent h :sent bool :error optional-string} ...]. Example: (patterns/call :mailing-list :post! {:list :research :summary \"Urgent contradiction\"}). Effects occur outside retries; accepted send is not processing evidence. No automatic retry/deduplication."
+   :requires [patterns]
+   :source (fn [args]
+             (let [posted (patterns/call :mailing-list :transact :post! args)]
+               (assoc posted :deliveries
+                      (patterns/call :mailing-list :deliver (:targets posted)
+                                     {:kind :mailing-list :list (:list posted) :through (:id posted)}))))}
+  :notify
+  {:doc "Args {:list k :id watermark}, :id defaults to current high-water (0 allowed on empty list). Sends without posting to current subscriber snapshot INCLUDING author/caller when subscribed. Returns {:list k :id n :deliveries [{:agent h :sent bool :error optional-string} ...]}. Example: (patterns/call :mailing-list :notify {:list :research :id 7}). Explicit urgency only; no automatic retries."
+   :requires [globals patterns]
+   :source (fn [args]
+             (when (not (map? args)) (throw "mail: :notify arguments must be a map"))
+             (let [b (globals/get :mailing-list) k (:list args) ls (get-in b [:lists k])]
+               (when (not b) (throw "mail: :notify board not initialized; designate exactly one initializer"))
+               (when (not (keyword? k)) (throw "mail: :notify :list must be a keyword"))
+               (when (not ls) (throw (str "mail: :notify unknown :list " (pr-str k))))
+               (let [high (dec (:next ls)) id (get args :id high)]
+                 (when (not (and (integer? id) (<= 0 id high)))
+                   (throw (str "mail: :notify :id must be an integer in 0-" high)))
+                 {:list k :id id
+                  :deliveries (patterns/call :mailing-list :deliver
+                                            (vec (keys (:subscriptions ls)))
+                                            {:kind :mailing-list :list k :through id})})))}
+  :message
+  {:doc "Args {:list k :id positive-issued-ID}; returns {:list k :id n :message full-message-or-nil :expired? bool}. Full message includes :body and metadata; expired evidence is explicit, unknown IDs error. Example: (patterns/call :mailing-list :message {:list :research :id 7}). Read-only; does not advance a cursor or require subscription. Any board participant can retrieve retained full messages; the board is not a privacy boundary."
+   :requires [globals]
+   :source (fn [args]
+             (when (not (map? args)) (throw "mail: :message arguments must be a map"))
+             (let [b (globals/get :mailing-list) k (:list args) ls (get-in b [:lists k]) id (:id args)]
+               (when (not b) (throw "mail: :message board not initialized; designate exactly one initializer"))
+               (when (not (keyword? k)) (throw "mail: :message :list must be a keyword"))
+               (when (not ls) (throw (str "mail: :message unknown :list " (pr-str k))))
+               (when (not (and (integer? id) (pos? id) (< id (:next ls))))
+                 (throw (str "mail: :message :id must be an issued integer in 1-" (dec (:next ls)) " for " k)))
+               (let [m (first (filter (fn [m] (= id (:id m))) (:messages ls)))]
+                 {:list k :id id :message m :expired? (nil? m)})))}
   :digest
-  {:doc
-   "Read a board snapshot and argument map with required keyword :list (singular, one call per list; :lists is unsupported); return bounded summaries, visible retention gap and exact acknowledgement token without mutation.",
-   :requires [],
+  {:doc "Args {:list keyword :agent caller :limit page-size}; singular :list required, :lists forbidden, limit 1-100. Returns {:list k :agent h :cursor n :high-water n :gap nil-or-{:from n :through n} :messages [summaries ...] :remaining n :token {:list k :agent h :epoch e :through n}}. Example: (patterns/call :mailing-list :digest {:list :research :limit 10}). Read-only snapshot; inspect gap and fetch :message bodies as needed, then :ack its exact token. Independent cursor per list; never acknowledge unseen head IDs."
+   :requires [agents globals patterns]
+   :source (fn [args]
+             (when (not (map? args)) (throw "mail: :digest arguments must be a map"))
+             (let [b (globals/get :mailing-list)]
+               (when (not b) (throw "mail: :digest board not initialized; designate exactly one initializer"))
+               (patterns/call :mailing-list :digest-page b
+                              (assoc args :agent (get args :agent (agents/current-handle))))))}
+  :ack
+  {:doc "Args {:token exact-page-token :agent caller}; token itself contains :list, :agent, :epoch, :through. Returns {:list k :agent h :cursor n}. Example: after handling page/gap, (patterns/call :mailing-list :ack {:token (:token page)}). Monotone snapshot acknowledgement cannot consume later posts; stale epochs/wrong agent error before watermark checks. Subscription changes on other lists do not invalidate this token. Never guess a token or add a separate list."
+   :requires [patterns]
+   :source (fn [args] (patterns/call :mailing-list :transact :ack args))}
+  :transact
+  {:doc "Internal effect plumbing [operation arguments] -> exact committed transition receipt. Resolves the current pure :change via patterns/call inside each globals/update retry; different retries may select different revisions. No delivery inside retries. Public callers use the direct consumer entries."
+   :requires [agents globals patterns]
+   :source (fn [op args]
+             (when (not (map? args)) (throw (str "mail: " op " arguments must be a map")))
+             (let [a (assoc args :agent (if (contains? #{:init :create} op) (agents/current-handle)
+                                          (get args :agent (agents/current-handle))))
+                   updated (globals/update :mailing-list
+                             (fn [b]
+                               (when (and (not= op :init) (not b))
+                                 (throw (str "mail: " op " board not initialized; designate exactly one initializer")))
+                               (let [[next-board result] (patterns/call :mailing-list :change b op a)]
+                                 (assoc next-board :last-result result))))]
+               (:last-result updated)))}
+  :change
+  {:doc "Internal pure retryable [board operation arguments] -> [next-board result]. No effects or nested registry resolution within this selected invocation: local subscribe/create helpers stay in its source snapshot throughout one multi-list transition. The caller :transact resolves :change afresh via patterns/call on each globals/update retry, so the entire transaction is not revision-frozen. Customize preserving purity and compatible state."
+   :requires []
    :source
-   (fn
-    [b a]
-    (when (not (map? a)) (throw "mail: arguments must be a map"))
-    (when
-     (contains? a :lists)
-     (throw "mail: :digest accepts singular :list, not :lists; call once per list, e.g. (patterns/call :mailing-list :call :digest {:list :research})"))
-    (when
-     (not (keyword? (:list a)))
-     (throw "mail: :digest requires a keyword :list, e.g. (patterns/call :mailing-list :call :digest {:list :research})"))
-    (let
-     [k
-      (:list a)
-      who
-      (:agent a)
-      ls
-      (get-in b [:lists k])
-      sub
-      (get-in ls [:subscriptions who])
-      limit
-      (get a :limit (get-in b [:config :page-size]))]
-     (when
-      (not ls)
-      (throw
-       (str "mail: unknown list " (pr-str k)
-            "; choose an existing list with (patterns/call :mailing-list :call :lists {}) or create it with (patterns/call :mailing-list :call :create {:list "
-            (pr-str k) " :description \"Purpose\"}); then call (patterns/call :mailing-list :call :digest {:list " (pr-str k) "})")))
-     (when
-      (not sub)
-      (throw
-       (str "mail: subscribe before reading a digest for " (pr-str k)
-            "; call (patterns/call :mailing-list :call :subscribe {:list " (pr-str k)
-            "}), then (patterns/call :mailing-list :call :digest {:list " (pr-str k) "})")))
-     (when (not (and (integer? limit) (<= 1 limit 100))) (throw "mail: :limit must be 1-100"))
-     (let
-      [cursor
-       (:cursor sub)
-       high
-       (dec (:next ls))
-       oldest
-       (if (seq (:messages ls)) (:id (first (:messages ls))) (:next ls))
-       page
-       (vec (take limit (filter (fn [m] (> (:id m) cursor)) (:messages ls))))
-       through
-       (if (seq page) (:id (last page)) cursor)]
-      {:list k,
-       :agent who,
-       :cursor cursor,
-       :high-water high,
-       :gap (when (< cursor (dec oldest)) {:from (inc cursor), :through (dec oldest)}),
-       :messages (map (fn [m] (select-keys m [:id :author :summary :thread :reply-to])) page),
-       :remaining (- high through),
-       :token {:list k, :agent who, :epoch (:epoch sub), :through through}})))},
+   (fn [b op a]
+     (let [fail (fn [message] (throw (str "mail: " op " " message)))
+           check-list (fn [k]
+                        (when (or (not (keyword? k)) (> (count (str k)) 128))
+                          (fail ":list must be a keyword of at most 128 characters")))
+           check-agent (fn [who]
+                         (when (or (not (keyword? who)) (> (count (str who)) 128))
+                           (fail ":agent must be a handle keyword of at most 128 characters")))
+           check-lists (fn [ks max-n]
+                         (when (not (and (vector? ks) (seq ks) (<= (count ks) max-n)
+                                         (= (count ks) (count (distinct ks))) (every? keyword? ks)))
+                           (fail (str ":lists must be a nonempty distinct keyword vector of at most " max-n " entries")))
+                         (map check-list ks))
+           subscribe-one
+           (fn [state args]
+             (let [k (:list args) who (:agent args) ls (get-in state [:lists k])]
+               (check-list k)
+               (when (not ls) (fail (str "unknown :list " (pr-str k))))
+               (check-agent who)
+               (when (not (contains? #{:latest :earliest} (get args :from :latest)))
+                 (fail ":from must be :latest or :earliest"))
+               (if-let [sub (get-in ls [:subscriptions who])]
+                 [state (assoc sub :list k :agent who)]
+                 (do
+                   (when (>= (count (:subscriptions ls)) (get-in state [:config :max-subscribers]))
+                     (fail (str ":max-subscribers limit " (get-in state [:config :max-subscribers]) " reached for " k)))
+                   (let [epoch (inc (:epoch state))
+                         cursor (if (= :earliest (:from args)) 0 (dec (:next ls)))
+                         sub {:epoch epoch :cursor cursor}]
+                     [(-> state (assoc :epoch epoch) (assoc-in [:lists k :subscriptions who] sub))
+                      (assoc sub :list k :agent who)])))))
+           create-one
+           (fn [state args]
+             (let [k (:list args)]
+               (check-list k)
+               (when (get-in state [:lists k]) (fail (str ":list " k " already exists")))
+               (when (>= (count (:lists state)) (get-in state [:config :max-lists]))
+                 (fail (str ":max-lists limit " (get-in state [:config :max-lists]) " reached")))
+               (when (or (not (string? (:description args))) (> (count (:description args)) 1000))
+                 (fail ":description must be a string of at most 1000 characters"))
+               (let [created (assoc-in state [:lists k]
+                                      {:description (:description args) :next 1 :messages [] :subscriptions {}})
+                     [subscribed subscription] (subscribe-one created (assoc args :from :earliest))]
+                 [subscribed {:list k :created true :subscription subscription}])))]
+       (case (if (= op :post!) :post op)
+         :init
+         (do
+           (when (some? b) (fail "already initialized"))
+           (let [options (dissoc a :agent :lists)
+                 config (merge {:retention 200 :page-size 20 :max-lists 32
+                                :max-subscribers 32 :max-message-chars 16000} options)
+                 who (:agent a) ks (get a :lists [:general])]
+             (when (seq (remove #{:retention :page-size :max-lists :max-subscribers :max-message-chars} (keys options)))
+               (fail (str "unknown option fields " (pr-str (vec (remove #{:retention :page-size :max-lists :max-subscribers :max-message-chars} (keys options)))))))
+             (map (fn [[k upper]]
+                    (when (not (and (integer? (get config k)) (<= 1 (get config k) upper)))
+                      (fail (str k " must be an integer in 1-" upper))))
+                  [[:retention 2000] [:page-size 100] [:max-lists 128] [:max-subscribers 64] [:max-message-chars 65536]])
+             (check-agent who)
+             (check-lists ks (:max-lists config))
+             (loop [state {:owner who :version 1 :config config :epoch 0 :lists {} :last-result nil}
+                    todo ks subscriptions []]
+               (if (empty? todo)
+                 [state {:owner who :global :mailing-list :ready true :lists ks :subscriptions subscriptions}]
+                 (let [[next-state result] (create-one state {:list (first todo) :description "" :agent who})]
+                   (recur next-state (rest todo) (conj subscriptions (:subscription result))))))))
+         :create (create-one b a)
+         :subscribe (subscribe-one b a)
+         :subscribe-many
+         (do
+           (check-lists (:lists a) (get-in b [:config :max-lists]))
+           (loop [state b todo (:lists a) results []]
+             (if (empty? todo)
+               [state {:agent (:agent a) :subscriptions results}]
+               (let [[next-state result] (subscribe-one state (assoc a :list (first todo)))]
+                 (recur next-state (rest todo) (conj results result))))))
+         :unsubscribe
+         (let [k (:list a) who (:agent a)]
+           (check-list k)
+           (check-agent who)
+           (when (not (get-in b [:lists k])) (fail (str "unknown :list " (pr-str k))))
+           [(update-in b [:lists k :subscriptions] dissoc who)
+            {:list k :agent who :unsubscribed true}])
+         :post
+         (let [k (:list a) ls (get-in b [:lists k]) who (:agent a)]
+           (check-list k)
+           (check-agent who)
+           (when (not ls) (fail (str "unknown :list " (pr-str k))))
+           (when (or (not (string? (:summary a))) (empty? (:summary a)) (> (count (:summary a)) 500))
+             (fail (str ":summary must contain 1-500 characters; received "
+                        (if (string? (:summary a)) (count (:summary a)) "non-string"))))
+           (when (and (:thread a) (or (not (string? (:thread a))) (> (count (:thread a)) 128)))
+             (fail ":thread must be a string of at most 128 characters"))
+           (when (and (:reply-to a)
+                      (not (and (integer? (:reply-to a)) (pos? (:reply-to a)) (< (:reply-to a) (:next ls)))))
+             (fail ":reply-to must reference an earlier ID in this list"))
+           (let [id (:next ls)
+                 msg (assoc (select-keys a [:summary :body :thread :reply-to :provenance :tags]) :id id :author who)
+                 size (count (pr-str msg)) max-size (get-in b [:config :max-message-chars])
+                 all (conj (:messages ls) msg) keep-n (get-in b [:config :retention])]
+             (when (> size max-size)
+               (fail (str ":max-message-chars limit " max-size " exceeded by serialized message of " size
+                          " characters; store evidence elsewhere and post a reference")))
+             [(-> b (assoc-in [:lists k :next] (inc id))
+                  (assoc-in [:lists k :messages] (vec (drop (max 0 (- (count all) keep-n)) all))))
+              {:list k :id id :targets (vec (keys (:subscriptions ls)))}]))
+         :ack
+         (let [token (:token a) tk (:list token) agent (:agent token)
+               sub (get-in b [:lists tk :subscriptions agent]) through (:through token)
+               high (dec (get-in b [:lists tk :next] 1))]
+           (when (not (map? token)) (fail ":ack requires {:token page-token}; :token must be the exact digest token map"))
+           (when (or (nil? sub) (not= (:epoch sub) (:epoch token)) (not= (:agent a) agent))
+             (fail "stale subscription token or wrong agent"))
+           (when (not (and (integer? through) (<= 0 through high)))
+             (fail (str ":token :through must be an integer in 0-" high)))
+           (let [cursor (max (:cursor sub) through)]
+             [(assoc-in b [:lists tk :subscriptions agent :cursor] cursor)
+              {:list tk :agent agent :cursor cursor}]))
+         (fail "unknown internal transition"))))}
+  :digest-page
+  {:doc "Internal pure [board arguments] -> read-only digest snapshot. Retains singular-list diagnostics, visible retention gaps, exact epoch/watermark tokens. Public consumers use :digest with one map."
+   :requires []
+   :source
+   (fn [b a]
+     (when (not (map? a)) (throw "mail: :digest arguments must be a map"))
+     (when (contains? a :lists)
+       (throw "mail: :digest accepts singular :list, not :lists; call once per list, e.g. (patterns/call :mailing-list :digest {:list :research})"))
+     (when (not (keyword? (:list a)))
+       (throw "mail: :digest requires a keyword :list, e.g. (patterns/call :mailing-list :digest {:list :research})"))
+     (let [k (:list a) who (:agent a) ls (get-in b [:lists k])
+           sub (get-in ls [:subscriptions who]) limit (get a :limit (get-in b [:config :page-size]))]
+       (when (not ls)
+         (throw (str "mail: :digest unknown list " (pr-str k)
+                     "; choose an existing list with (patterns/call :mailing-list :lists {}) or create it with (patterns/call :mailing-list :create {:list "
+                     (pr-str k) " :description \"Purpose\"}); then call (patterns/call :mailing-list :digest {:list " (pr-str k) "})")))
+       (when (not sub)
+         (throw (str "mail: :digest subscribe before reading a digest for " (pr-str k)
+                     "; call (patterns/call :mailing-list :subscribe {:list " (pr-str k)
+                     "}), then (patterns/call :mailing-list :digest {:list " (pr-str k) "})")))
+       (when (not (and (integer? limit) (<= 1 limit 100))) (throw "mail: :digest :limit must be 1-100"))
+       (let [cursor (:cursor sub) high (dec (:next ls))
+             oldest (if (seq (:messages ls)) (:id (first (:messages ls))) (:next ls))
+             page (vec (take limit (filter (fn [m] (> (:id m) cursor)) (:messages ls))))
+             through (if (seq page) (:id (last page)) cursor)]
+         {:list k :agent who :cursor cursor :high-water high
+          :gap (when (< cursor (dec oldest)) {:from (inc cursor) :through (dec oldest)})
+          :messages (map (fn [m] (select-keys m [:id :author :summary :thread :reply-to])) page)
+          :remaining (- high through)
+          :token {:list k :agent who :epoch (:epoch sub) :through through}})))}
   :deliver
-  {:doc
-   "Attempt each target notice once outside transactions; return per-recipient sent/error receipts. Acceptance is not evidence of processing.",
-   :requires [agents],
-   :source
-   (fn
-    [targets notice]
-    (map
-     (fn
-      [target]
-      (try
-       (do (agents/send target notice) {:agent target, :sent true})
-       (catch e {:agent target, :sent false, :error (str e)})))
-     targets))}}}
+  {:doc "Internal effect helper [targets notice] -> per-recipient {:agent h :sent bool :error optional-string}. Attempts each target once outside transactions, preserving author-included subscriber targets. Acceptance is not processing evidence."
+   :requires [agents]
+   :source (fn [targets notice]
+             (map (fn [target]
+                    (try (do (agents/send target notice) {:agent target :sent true})
+                         (catch e {:agent target :sent false :error (str e)})))
+                  targets))}}}
