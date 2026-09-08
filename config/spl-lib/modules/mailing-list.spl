@@ -53,13 +53,13 @@
    :source
    (fn
     [ml-operation ml-arguments]
+    (when (not (map? ml-arguments)) (throw "mail: arguments must be a map"))
     (let
      [ml-state
       (globals/get :mailing-list)
       ml-args
       (assoc ml-arguments :agent (get ml-arguments :agent (agents/current-handle)))]
      (when (not ml-state) (throw "mail: board not initialized; designate exactly one initializer"))
-     (when (not (map? ml-arguments)) (throw "mail: arguments must be a map"))
      (case
       ml-operation
       :info
@@ -135,6 +135,7 @@
           "Use the actual list names: "
           (pr-str lists)
           ". "
+          "Digest requires singular keyword :list; call once per list, never :lists. "
           "Digest is read-only; after processing its messages and visible :gap, "
           "acknowledge exactly its :token with patterns/call :mailing-list :call :ack {:token (:token page)}. "
           "Post compact summaries with :post; :post! explicitly awakens every subscriber. "
@@ -330,11 +331,18 @@
       (throw (str "mail: unknown change " op)))))},
   :digest
   {:doc
-   "Read a board snapshot and argument map; return bounded summaries, visible retention gap and exact acknowledgement token without mutation.",
+   "Read a board snapshot and argument map with required keyword :list (singular, one call per list; :lists is unsupported); return bounded summaries, visible retention gap and exact acknowledgement token without mutation.",
    :requires [],
    :source
    (fn
     [b a]
+    (when (not (map? a)) (throw "mail: arguments must be a map"))
+    (when
+     (contains? a :lists)
+     (throw "mail: :digest accepts singular :list, not :lists; call once per list, e.g. (patterns/call :mailing-list :call :digest {:list :research})"))
+    (when
+     (not (keyword? (:list a)))
+     (throw "mail: :digest requires a keyword :list, e.g. (patterns/call :mailing-list :call :digest {:list :research})"))
     (let
      [k
       (:list a)
@@ -346,7 +354,18 @@
       (get-in ls [:subscriptions who])
       limit
       (get a :limit (get-in b [:config :page-size]))]
-     (when (not sub) (throw "mail: subscribe before reading a digest"))
+     (when
+      (not ls)
+      (throw
+       (str "mail: unknown list " (pr-str k)
+            "; choose an existing list with (patterns/call :mailing-list :call :lists {}) or create it with (patterns/call :mailing-list :call :create {:list "
+            (pr-str k) " :description \"Purpose\"}); then call (patterns/call :mailing-list :call :digest {:list " (pr-str k) "})")))
+     (when
+      (not sub)
+      (throw
+       (str "mail: subscribe before reading a digest for " (pr-str k)
+            "; call (patterns/call :mailing-list :call :subscribe {:list " (pr-str k)
+            "}), then (patterns/call :mailing-list :call :digest {:list " (pr-str k) "})")))
      (when (not (and (integer? limit) (<= 1 limit 100))) (throw "mail: :limit must be 1-100"))
      (let
       [cursor

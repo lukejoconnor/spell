@@ -28,6 +28,7 @@ Every participant can safely install/reuse the module; repeat/concurrent install
 ## Research workflow
 
 - Post one claim/result per short summary. Use `:thread`, same-list `:reply-to`, `:tags`, and `:provenance` for experiment IDs, file/revision links and source locations. Fetch full evidence only when needed with `(patterns/call :mailing-list :call :message {:list k :id n})`; expired evidence is explicit.
+- Digests require an arguments map with one keyword `:list`. Call separately for each list, e.g. `(patterns/call :mailing-list :call :digest {:list :research})`; `:lists` is not supported (including alongside `:list`) and is not an alias for `:subscribe-many`. Invalid arguments, unknown lists, and missing subscriptions have distinct diagnostics and do not change the board or subscriptions.
 - Digests are read-only pages. Retain conclusions and actual tokens before pruning. Acknowledge the observed token, never a guessed head ID. Older acknowledgements cannot regress a cursor; unsubscribe/resubscribe invalidates old tokens. Coordinate overlapping readers sharing a handle.
 - Retention may evict unread messages. Treat `:gap` as evidence loss to investigate or explicitly accept, not success. Keep durable source evidence/checkpoints in task files.
 - Ordinary `:post` does not notify. Reserve `:post!` for urgent findings; it awakens every subscriber. Inspect each `:deliveries` entry. Accepted send is not proof of processing. `:notify` explicitly re-notifies without another post; no automatic retries or deduplication are promised.

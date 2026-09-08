@@ -64,6 +64,61 @@
   (binding [*handle* :fresh]
     (is (= {:custom :fresh} (mail :digest {})))))
 
+(deftest digest-diagnostics-preserve-the-entire-board
+  (init! {:page-size 1})
+  (create!)
+  (mail :create {:list :unsubscribed :description "Existing but not subscribed"})
+  (mail :subscribe {:list :research :from :earliest})
+  (binding [*handle* :other-reader]
+    (mail :subscribe {:list :research :from :earliest}))
+  (post! "First")
+  (post! "Second")
+  (mail :ack {:token (:token (mail :digest {:list :research}))})
+  (let [before (globals/get-val :mailing-list)
+        subscriptions (into {} (map (fn [[k ls]] [k (:subscriptions ls)]) (:lists before)))
+        example "(patterns/call :mailing-list :call :digest {:list :research})"
+        keyword-error (re-pattern (java.util.regex.Pattern/quote
+                                   (str "mail: :digest requires a keyword :list, e.g. " example)))
+        plural-error (re-pattern (java.util.regex.Pattern/quote
+                                  (str "mail: :digest accepts singular :list, not :lists; call once per list, e.g. " example)))
+        unknown-error (re-pattern (java.util.regex.Pattern/quote
+                                   "mail: unknown list :missing; choose an existing list with (patterns/call :mailing-list :call :lists {}) or create it with (patterns/call :mailing-list :call :create {:list :missing :description \"Purpose\"}); then call (patterns/call :mailing-list :call :digest {:list :missing})"))
+        subscription-error (re-pattern (java.util.regex.Pattern/quote
+                                        "mail: subscribe before reading a digest for :unsubscribed; call (patterns/call :mailing-list :call :subscribe {:list :unsubscribed}), then (patterns/call :mailing-list :call :digest {:list :unsubscribed})"))
+        cases (concat
+                (map #(vector % #"mail: arguments must be a map")
+                     [nil false 42 "research" [] [:research] '(:research)])
+                (map #(vector % keyword-error)
+                     [{} {:list nil} {:list "research"} {:list [:research]} {:list 42}])
+                (map #(vector % plural-error)
+                     [{:lists [:research]} {:lists nil}
+                      {:list :research :lists [:research]}
+                      {:list :missing :lists [:research]}])
+                [[{:list :missing} unknown-error]
+                 [{:list :missing :limit 0} unknown-error]
+                 [{:list :unsubscribed} subscription-error]
+                 [{:list :unsubscribed :limit 0} subscription-error]
+                 [{:list :research :limit 0} #"mail: :limit must be 1-100"]])]
+    ;; Exercise both public dispatch (before assoc) and the editable pure helper.
+    (doseq [[args diagnostic] cases
+            route [:dispatch :helper]]
+      (testing (str route " " (pr-str args))
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo diagnostic
+              (if (= :dispatch route)
+                (mail :digest args)
+                (call-pattern :call :mailing-list :digest before
+                              (if (map? args) (assoc args :agent :main) args)))))
+        (is (= before (globals/get-val :mailing-list))
+            "All board data, owner, counters, retention and subscriptions are unchanged")
+        (is (= subscriptions
+               (into {} (map (fn [[k ls]] [k (:subscriptions ls)])
+                             (:lists (globals/get-val :mailing-list)))))
+            "No subscription was added, removed, advanced or re-epoched")))
+    (let [page (mail :digest {:list :research})]
+      (is (= 1 (:cursor page)))
+      (is (= [2] (mapv :id (:messages page))))
+      (is (= before (globals/get-val :mailing-list))))))
+
 (deftest retention-and-monotone-ack
   (init! {:retention 3 :page-size 2}) (create!)
   (mail :subscribe {:list :research :from :earliest})
