@@ -1,0 +1,51 @@
+; Complete explicit setup program; run with --init-file in a FRESH runtime.
+; NOT a live receipt: root + :ownership-peer perform real effects, then real model audits.
+(quine completion
+  (eval
+    (do
+      (def baseline
+        '{:doc "Ownership live acceptance."
+          :functions {:run {:doc "Increment input." :requires []
+                            :source (fn [n] (do "OWNERSHIP_BODY_V1" (+ n 1)))}}})
+      (def peer-program
+        '(quine completion
+           (eval
+             (do
+               '(let [reuse (patterns/install :ownership-live)
+                      owner (:owner reuse)
+                      caller (agents/current-handle)
+                      before (patterns/call :ownership-live :run 10)
+                      prior (patterns/source :ownership-live)
+                      denied (try
+                               (patterns/update :ownership-live assoc-in
+                                 [:functions :run :source]
+                                 '(fn [n] (do "OWNERSHIP_BODY_REJECTED" (+ n 99))))
+                               (catch e {:rejected? true :message (:message e)}))
+                      unchanged? (= prior (patterns/source :ownership-live))
+                      edit (patterns/update :ownership-live {:owner owner} assoc-in
+                             [:functions :run :source]
+                             '(fn [n] (do "OWNERSHIP_BODY_V2" (+ n 2))))
+                      after (patterns/call :ownership-live :run 10)
+                      again (patterns/install :ownership-live)
+                      evidence {:caller caller :owner owner :reuse reuse :before before
+                                :denied denied :unchanged? unchanged? :edit edit
+                                :after after :reinstall again}
+                      instructions "PEER_AUDIT: Explicit program setup (not model-invented code) performed these effects. Audit only captured evidence: caller :ownership-peer differs from owner, reuse/reinstall installed? false, before 11, default edit rejected with actionable owner message, unchanged? true, explicit-owner edit actual editor :ownership-peer, after 12, journal status ok. Inspect your actual model prefix: no executable entry source and no automatic ownership notice assigning this module to you. Return a quoted map {:peer-ok? boolean :opaque-prefix? boolean :wrong-owner-notice? boolean}. No tools/source fetch needed. Never prune evidence then rediscover it; retain exact receipts before pruning."
+                      prefix (wrap-cat instructions
+                               (list 'def 'evidence (list 'quote evidence)))
+                      audit (!llm-self prefix {:receive? true})]
+                  (assoc evidence :audit audit))))))
+      '(let [hidden-install (do (patterns/install :ownership-live baseline) nil)
+             owner (agents/current-handle)
+             before (patterns/call :ownership-live :run 10)
+             evidence {:owner owner :before before :hidden-install-return hidden-install}
+             instructions "OWNER_ONBOARDING_AUDIT: The explicit setup helper installed :ownership-live but discarded its receipt. Only real captured evidence is supplied. Inspect the actual prefix for automatically supplied ownership guidance naming :ownership-live, saying you own it, expect edit requests and should coordinate changes/use patterns/update. Do not count this audit instruction as that guidance. No entry source should appear. Return a quoted map {:owner-notice? boolean :opaque-prefix? boolean :hidden-return? boolean}; hidden-install-return must be nil. Do not install, edit, fetch source or use tools. Never prune evidence then rediscover it; retain actual receipts."
+             audit (!llm-self (wrap-cat instructions
+                               (list 'def 'evidence (list 'quote evidence)))
+                              {:receive? true})
+             edge (agents/spawn-ask (pr-str peer-program) :ownership-peer)
+             receipts {:owner owner :before before :owner-audit audit :peer-edge edge}
+             collect "OWNER_COLLECT_AUDIT: Explicit setup installed with hidden return, audited automatic onboarding, and dispatched a real peer. Collect the actual result for peer-edge; wait via quoted agents/!wait only while required work remains. Preserve actual received edge/body. Then capture patterns/call :ownership-live :run 10 and patterns/install :ownership-live using !call-now; require 12, installed? false, same owner. Peer must report before 11, rejected default edit, unchanged? true, explicit-owner edit owner unchanged/editor :ownership-peer/journal ok, after 12, audit peer-ok? and opaque-prefix? true and wrong-owner-notice? false. Owner-audit must have all three booleans true. Check current prefix has no executable entry source and no duplicate automatic ownership onboarding. Return a quoted compact map {:pass? boolean :receipts receipts :peer received-peer-evidence :after actual-after :reuse actual-reuse :opaque-prefix? boolean :duplicate-notice? boolean}. Do not fabricate results or fetch source merely to invoke it. Journal/prefix independent verification belongs to the external companion, not invented model evidence. If interrupted, inspect pending edges before retrying. Never prune evidence then rediscover it; retain receipts/observed IDs first."]
+         (!llm-self (wrap-cat collect
+                      (list 'def 'receipts (list 'quote receipts)))
+                    {:receive? true})))))

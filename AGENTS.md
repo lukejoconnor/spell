@@ -175,7 +175,7 @@ The fast suite covers parser, evaluator, provider, agent, web, API, trace, macro
 
 For performance work, read `perf/README.md` and `perf/findings-and-targets.md`. Use the optional `:perf` alias or `python3 perf/run.py`; give new measurements a distinct `--name` to preserve the checked-in baseline.
 
-Use `-T` to record an execution trace under the temporary Spell trace directory, or `--trace-dir DIR` to write it to an explicit durable location. Use `--dogfood` to expose the feedback namespace to the main agent and its workers. Use `--agents-md` to prepend the current working directory's `AGENTS.md`, capped at 32 KiB, to a natural-language task. The trace tool can inspect a trace directory directly, for example:
+Use `-T` to record an execution trace under the temporary Spell trace directory, or `--trace-dir DIR` to write it to an explicit durable location. Use `--dogfood` to expose the feedback namespace to the main agent and its workers and automatically journal exact successful PATTERNS API install baselines and changed definitions at the existing feedback destination. Public API equivalent: `:dogfood true`. See `docs/installable-modules.md` for immutable module ownership, deliberate-owner update acknowledgment and `EDIT COMMITTED / RECORDING FAILED` receipts; never replay an already committed edit to repair recording. Use `--agents-md` to prepend the current working directory's `AGENTS.md`, capped at 32 KiB, to a natural-language task. The trace tool can inspect a trace directory directly, for example:
 
 ```bash
 clojure -M -m spell.trace-tool --trace-dir DIR --summary
