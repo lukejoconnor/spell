@@ -37,16 +37,16 @@
 (deftest catalog-is-discovery-not-installation
   (let [[catalog missing-source unknown]
         (run-form '(vector (patterns/catalog)
-                           (patterns/source :check-result)
+                           (patterns/source :relay)
                            (patterns/catalog :unknown-module)))
         by-name (into {} (map (juxt :module identity) catalog))]
-    (is (= #{:check-result :ralph :team :fix-loop :relay :mailing-list}
+    (is (= #{:relay :mailing-list}
            (set (keys by-name))))
     (is (every? false? (map :installed? catalog)))
     (is (nil? missing-source))
     (is (nil? unknown))
-    (is (= #{:run} (set (keys (:functions (by-name :check-result))))))
-    (is (= #{:init :call :change :digest :deliver}
+    (is (= #{:run} (set (keys (:functions (by-name :relay))))))
+    (is (= #{:init :info :lists :create :subscribe :subscribe-many :unsubscribe :post :post! :notify :message :digest :ack :transact :change :digest-page :deliver}
            (set (keys (:functions (by-name :mailing-list))))))
     (is (not (str/includes? (pr-str catalog) ":source")))))
 
@@ -54,14 +54,14 @@
   (let [[first-receipt second-receipt source state]
         (run-form
           '(do
-             (def first-receipt (patterns/install :check-result))
-             (patterns/update :check-result assoc :doc "edited documentation")
+             (def first-receipt (patterns/install :relay))
+             (patterns/update :relay assoc :doc "edited documentation")
              (globals/set :module-user-state {:counter 17})
-             (vector first-receipt (patterns/install :check-result)
-                     (patterns/source :check-result)
+             (vector first-receipt (patterns/install :relay)
+                     (patterns/source :relay)
                      (globals/get :module-user-state))))]
-    (is (= {:module :check-result :installed? true :fns [:run]} (core-receipt first-receipt)))
-    (is (= {:module :check-result :installed? false :fns [:run]} (core-receipt second-receipt)))
+    (is (= {:module :relay :installed? true :fns [:run]} (core-receipt first-receipt)))
+    (is (= {:module :relay :installed? false :fns [:run]} (core-receipt second-receipt)))
     (is (= "edited documentation" (:doc source)))
     (is (= {:counter 17} state))))
 
@@ -158,25 +158,25 @@
         b (th/make-test-agent "nil" :namespaces namespaces :recover false)
         gate (promise)
         call (fn [agent handle]
-               @gate (agent (program '(patterns/install :check-result)) handle))
+               @gate (agent (program '(patterns/install :relay)) handle))
         fa (future (call a :installer-a))
         fb (future (call b :installer-b))]
     (deliver gate true)
     (let [ra (deref fa 10000 ::timeout) rb (deref fb 10000 ::timeout)]
       (is (not= ::timeout ra))
       (is (not= ::timeout rb))
-      (is (= #{{:module :check-result :installed? true :fns [:run]}
-               {:module :check-result :installed? false :fns [:run]}}
+      (is (= #{{:module :relay :installed? true :fns [:run]}
+               {:module :relay :installed? false :fns [:run]}}
              (set (map core-receipt [ra rb]))))
       (is (= [{:sentinel :board} {:counter 17}]
              (run-form '[(globals/get :mailing-list) (globals/get :user-state)]))))))
 
 (deftest separate-runs-do-not-share-definitions
   (let [first-run (th/with-test-run
-                    #(run-form '(do (patterns/install :check-result)
-                                    (patterns/source :check-result))))
+                    #(run-form '(do (patterns/install :relay)
+                                    (patterns/source :relay))))
         second-run (th/with-test-run
-                     #(run-form '(patterns/source :check-result)))]
+                     #(run-form '(patterns/source :relay)))]
     (is (map? first-run))
     (is (nil? second-run))))
 

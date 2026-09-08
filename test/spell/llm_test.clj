@@ -2029,30 +2029,17 @@
 ;; Pattern tests
 ;; =============================================================================
 
-(deftest check-result-ok-test
-  (testing "check-result returns {:ok answer} when leaf-llm says OK"
-    ;; First call: main LLM returns check-result call; second call: leaf-llm returns "OK"
-    (let [call-count (atom 0)
-          llm (th/make-test-runner
-               {:response-fn (fn [_]
-                               (let [n (swap! call-count inc)]
-                                 (if (= n 1)
-                                   "(patterns/install :check-result) (patterns/call :check-result :run \"What is 2+2?\" 4))"
-                                   "OK")))})]
-      (is (= {:ok 4} (llm "(eval '(do "))))))
-
-(deftest check-result-wrong-test
-  (testing "check-result returns {:wrong msg} when leaf-llm says WRONG"
-    ;; First call: main LLM returns check-result call; second call: leaf-llm returns "WRONG: ..."
-    (let [call-count (atom 0)
-          llm (th/make-test-runner
-               {:response-fn (fn [_]
-                               (let [n (swap! call-count inc)]
-                                 (if (= n 1)
-                                   "(patterns/install :check-result) (patterns/call :check-result :run \"Capital of France?\" \"London\"))"
-                                   "WRONG: London is not the capital of France")))})]
-      (is (= {:wrong "London is not the capital of France"}
-             (llm "(eval '(do "))))))
+(deftest leaf-llm-returns-opaque-text-test
+  (testing "leaf text is returned verbatim, without an opinionated judging policy"
+    (doseq [text ["OK" "WRONG: example text"]]
+      (let [call-count (atom 0)
+            llm (th/make-test-runner
+                  {:response-fn (fn [_]
+                                  (if (= 1 (swap! call-count inc))
+                                    "(leaf-llm \"Return the supplied text\"))"
+                                    text))})]
+        (is (= text (llm "(eval '(do ")))
+        (is (= 2 @call-count))))))
 
 ;; =============================================================================
 ;; API retry logic (#64)

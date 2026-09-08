@@ -9,7 +9,7 @@
            [java.util.concurrent TimeUnit]
            [java.util.jar JarEntry JarOutputStream]))
 
-(def bundles [:check-result :ralph :team :fix-loop :relay :mailing-list])
+(def bundles [:relay :mailing-list])
 
 (deftest public-namespace-has-only-module-verbs
   (is (= #{:install :catalog :source :update :call}
@@ -66,13 +66,13 @@
                         (spell.coordinator/register! :packaged-installer)
                         (let [catalog (spell.patterns/catalog)
                               installs (mapv #(spell.patterns/install (:module %)) catalog)]
-                          (spell.patterns/update :check-result assoc :doc "packaged edit")
-                          (prn {:protocol (.getProtocol (clojure.java.io/resource "modules/check-result.spl"))
+                          (spell.patterns/update :relay assoc :doc "packaged edit")
+                          (prn {:protocol (.getProtocol (clojure.java.io/resource "modules/relay.spl"))
                                 :catalog-count (count catalog)
                                 :installed (every? :installed? installs)
-                                :reused (false? (:installed? (spell.patterns/install :check-result)))
-                                :edited-doc (:doc (spell.patterns/source :check-result))
-                                :source-head (first (:source (spell.patterns/source :check-result :run)))}))))
+                                :reused (false? (:installed? (spell.patterns/install :relay)))
+                                :edited-doc (:doc (spell.patterns/source :relay))
+                                :source-head (first (:source (spell.patterns/source :relay :run)))}))))
                    "\n(shutdown-agents)")
             builder (doto (ProcessBuilder.
                             ^java.util.List
@@ -90,7 +90,7 @@
               (let [text (slurp output)]
                 (is (zero? (.exitValue process)) text)
                 (when (zero? (.exitValue process))
-                  (is (= {:protocol "jar" :catalog-count 6 :installed true
+                  (is (= {:protocol "jar" :catalog-count 2 :installed true
                           :reused true :edited-doc "packaged edit" :source-head 'fn}
                          (edn/read-string text)))))))
           (finally

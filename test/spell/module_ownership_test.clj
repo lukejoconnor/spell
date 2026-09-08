@@ -34,7 +34,7 @@
             :installed? true :fns [:run] :revision 1 :sequence 1} first))
     (is (= definition (get-in state [:modules :m])))
     (is (= :owner (:owner (patterns/catalog :m))))
-    (is (nil? (:owner (patterns/catalog :check-result))))
+    (is (nil? (:owner (patterns/catalog :relay))))
     (binding [runtime/*current-handle* :editor]
       (is (= (assoc first :installed? false :editor :editor)
              (patterns/install :m nil))))
@@ -176,11 +176,11 @@
                 :prefill? false :recover false)]
     (is (= "hello"
            (binding [runtime/*current-handle* nil]
-             (agent (program '(do (patterns/install :check-result)
+             (agent (program '(do (patterns/install :relay)
                                   (!llm-self "(str \"hel")))
                     :notice-string))))
     (is (= 1 (count @prefixes)) "Notice delivery adds no model call")
-    (is (str/includes? (first @prefixes) "You own module(s) :check-result"))
+    (is (str/includes? (first @prefixes) "You own module(s) :relay"))
     (is (str/ends-with? (first @prefixes) prefix))
     (is (empty? (get-in @globals/*store* [:module-notices :notice-string])))))
 
@@ -344,11 +344,11 @@
                                   (suffix :done)))}
                 :prefill? false :recover false)]
     (is (= :done (binding [runtime/*current-handle* nil]
-                    (agent (program '(do (patterns/install :check-result)
+                    (agent (program '(do (patterns/install :relay)
                                          (!llm-self "(quine completion (eval (do ")))
                            :notice-agent))))
     (is (= 2 (count @prefixes)))
-    (is (str/includes? (first @prefixes) "You own module(s) :check-result"))
+    (is (str/includes? (first @prefixes) "You own module(s) :relay"))
     (is (not (str/includes? (second @prefixes) "MODULE NOTICE")))
     (is (empty? (get-in @globals/*store* [:module-notices :notice-agent])))))
 
@@ -356,8 +356,8 @@
   (let [records (atom [])
         run (fn [dogfood?]
               (binding [runtime/*current-handle* nil]
-                (api/run {:init (program '(do (patterns/install :check-result)
-                                           (agents/spawn-ask "(eval '(patterns/install :ralph))" :child)
+                (api/run {:init (program '(do (patterns/install :relay)
+                                           (agents/spawn-ask "(eval '(patterns/install :mailing-list))" :child)
                                            (agents/!wait)))
                         :dogfood dogfood?
                         :model-profile (provider/test-provider {:response (suffix :done) :prefill? false})
@@ -395,7 +395,7 @@
                                :mark #(swap! marks conj %)})
                 :prefill? false :recover false)
         result (binding [runtime/*current-handle* nil spell.trace/*trace* t]
-                 (agent (program '(!call-now install-receipt (patterns/install :check-result)
+                 (agent (program '(!call-now install-receipt (patterns/install :relay)
                                             evidence (audit/tick)))
                         :notice-receiving))]
     (is (= 1 @ticks))
@@ -426,7 +426,7 @@
                 :prefill? false :recover false)]
     (is (= [{:message {:from :observer :body :still-queued}}]
            (binding [runtime/*current-handle* nil]
-             (agent (program '(do (patterns/install :check-result)
+             (agent (program '(do (patterns/install :relay)
                                   (!llm-self "(quine completion (eval (do ")))
                     :notice-raw))))
     (is (= 1 (count @seen)))
@@ -439,7 +439,7 @@
                 :prefill? false :recover false)]
     (is (thrown? Exception
           (binding [runtime/*current-handle* nil]
-            (agent (program '(do (patterns/install :check-result)
+            (agent (program '(do (patterns/install :relay)
                                  (!llm-self "(quine completion (eval (do ")))
                    :failed-provider))))
     (is (str/includes? (first @seen) "MODULE NOTICE"))
@@ -490,7 +490,7 @@
   (with-redefs [feedback/new-dogfood-context #(throw (Exception. "off must not initialize dogfood"))
                 feedback/append-entry! (fn [& _] (throw (Exception. "off must not append")))]
     (let [result (binding [runtime/*current-handle* nil]
-                   (api/run {:init (program '(patterns/install :check-result))
+                   (api/run {:init (program '(patterns/install :relay))
                              :model-profile (provider/test-provider {:response "nil"})
                              :agent-profile "config/agent-profiles/cli.agent.edn"}))]
       (is (nil? (:error result)) (pr-str result))
