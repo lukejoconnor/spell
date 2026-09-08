@@ -1,8 +1,9 @@
 (ns spell.recovery-continuation-test
-  "Deterministic characterization, not approval of a new recovery policy."
+  "Deterministic regression coverage for lifecycle-local consecutive recovery errors."
   (:require [clojure.test :refer [deftest is use-fixtures]]
             [clojure.string :as str]
             [spell.llm :as llm]
+            [spell.coordinator :as coordinator]
             [spell.test-helpers :as th]))
 
 (use-fixtures :each th/with-test-run)
@@ -14,7 +15,7 @@
                 {:response-fn
                  (fn [_]
                    (let [index (count @depths)]
-                     (swap! depths conj llm/*recovery-depth*)
+                     (swap! depths conj (:consecutive-errors @(:execution (coordinator/agent :main))))
                      (if (< index (count responses))
                        (nth responses index)
                        (throw (ex-info "Reproducer response script exhausted" {})))))}
@@ -27,17 +28,17 @@
                     {:error (.getMessage e)}))]
     (assoc outcome :depths @depths :receipts @receipts)))
 
-(deftest distinct-later-mistakes-retain-nested-depth
+(deftest distinct-repaired-mistakes-do-not-accumulate
   (let [result (scripted-run
                 ["'(missing-a)"
                  "(def checkpoint-a {:receipt :a}) '(do (probe/receipt checkpoint-a) (!llm-self (reopen completion)))"
                  "'(missing-b)"
                  "(def checkpoint-b {:receipt :b}) '(do (probe/receipt checkpoint-b) (!llm-self (reopen completion)))"
-                 "'(missing-c)"])]
+                 "'(missing-c)"
+                 "42"])]
     (println "distinct-later-mistakes" (pr-str result))
-    (is (str/includes? (or (:error result) "")
-                       "Recovery limit exceeded: 2 while handling eval error"))
-    (is (= [0 1 1 2 2] (:depths result)))
+    (is (= 42 (:value result)))
+    (is (= [0 1 0 1 0 1] (:depths result)))
     (is (= [{:receipt :a} {:receipt :b}] (:receipts result)))))
 
 (deftest successful-continuation-preserves-checkpoint-without-replay
@@ -47,10 +48,10 @@
                  "checkpoint"])]
     (println "successful-continuation" (pr-str result))
     (is (= {:receipt :a} (:value result)))
-    (is (= [0 1 1] (:depths result)))
+    (is (= [0 1 0] (:depths result)))
     (is (= [{:receipt :a}] (:receipts result)))))
 
-(deftest unresolved-reader-and-eval-retries-share-two-attempts
+(deftest unresolved-reader-and-eval-errors-share-three-failure-limit
   (doseq [[label responses phase]
           [[:eval (repeat 3 "undefined-symbol)") "eval"]
            [:reader (repeat 3 "\\invalidchar)") "reader"]
@@ -58,7 +59,7 @@
     (let [result (scripted-run (vec responses))]
       (println (name label) (pr-str result))
       (is (str/includes? (or (:error result) "")
-                         (str "Recovery limit exceeded: 2 while handling " phase " error")))
+                         (str "Consecutive error limit reached: 3 while handling " phase " error")))
       (is (= [0 1 2] (:depths result)))
       (is (empty? (:receipts result))))))
 

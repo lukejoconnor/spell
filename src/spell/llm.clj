@@ -4,6 +4,7 @@
    Core loop: call LLM, concatenate prefix+response, parse, eval."
   (:require [clojure.string :as str]
             [spell.eval :as eval]
+            [spell.coordinator :as coordinator]
             [spell.grammar :as grammar]
             [spell.inbox :as inbox]
             [spell.module-notices :as module-notices]
@@ -46,26 +47,55 @@
    'math stdlib/math
    'builtins stdlib/builtins-namespace})
 
-(def ^:private max-recovery-attempts
-  "Maximum number of recovery retries before failing."
-  2)
+(def default-max-consecutive-errors 3)
 
-(def ^:dynamic *recovery-depth*
-  "Current depth of nested recovery retries across reader and eval recovery."
-  0)
+(defn validate-max-consecutive-errors [n]
+  (when-not (and (integer? n) (pos? n))
+    (throw (ex-info ":max-consecutive-errors must be a positive integer"
+                    {:type :invalid-max-consecutive-errors
+                     :option :max-consecutive-errors :value n})))
+  n)
 
-(defn- throw-if-recovery-exhausted!
-  "Throw when the shared recovery budget is exhausted."
-  [phase error-msg]
-  (when (>= *recovery-depth* max-recovery-attempts)
-    (throw (ex-info (str "Recovery limit exceeded: " max-recovery-attempts
-                         " while handling " (name phase) " error")
-                    (cond-> {:type :recovery-exhausted
-                             :phase phase
-                             :attempts *recovery-depth*
-                             :limit max-recovery-attempts}
-                      error-msg
-                      (assoc (if (= phase :reader) :parse-error :error) error-msg))))))
+(defn- lifecycle-error-state [fallback]
+  (if-let [agent (and runtime/*current-handle*
+                     (coordinator/agent runtime/*current-handle*))]
+    (let [state (:execution agent)
+          generation (:generation agent)]
+      (swap! state (fn [s]
+                     (if (= generation (:recovery-generation s)) s
+                       (assoc s :recovery-generation generation :consecutive-errors 0))))
+      state)
+    fallback))
+
+(defn- propagated-completion-error?
+  "An error already crossing an inbox/provider boundary is not an ancestor's own failure."
+  [result]
+  (loop [r result]
+    (when (map? r)
+      (or (:spell/completion-error r)
+          (recur (:result r))))))
+
+(defn- completion-success! [state frame]
+  ;; A handoff records before child entry, never again on ancestor unwind.
+  (when (compare-and-set! frame :open :succeeded)
+    (swap! state assoc :consecutive-errors 0)))
+
+(defn- completion-failure! [state frame limit phase error-msg]
+  ;; A parent's own later failure still counts after its successful handoff.
+  (when-not (= :failed @frame)
+    (reset! frame :failed)
+    (let [streak (:consecutive-errors
+                   (swap! state update :consecutive-errors (fnil inc 0)))]
+      (when (>= streak limit)
+        (throw (ex-info (str "Consecutive error limit reached: " limit
+                             " while handling " (name phase) " error")
+                        (cond-> {:type :recovery-exhausted :phase phase
+                                 :consecutive-errors streak :attempts streak :limit limit
+                                 :max-consecutive-errors limit
+                                 :handle runtime/*current-handle*}
+                          error-msg (assoc (if (= phase :reader) :parse-error :error)
+                                           error-msg))))))))
+
 
 (def ^:private inert-recovery-prompt
   "The previous Spell program threw an error. The previous program is visible during this recovery turn, but it will be pruned afterward, such that you will not see it on your next turn.
@@ -185,9 +215,6 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
     (let [same-tail? (boolean (trailing-expression-error? program result))
           error-map (recovery-error-map same-tail? result)
           indent (apply str (repeat eval/*llm-depth* "  "))
-          _ (throw-if-recovery-exhausted! :eval (:error error-map))
-          _ (eval/vlog (str indent "Recovery attempt: "
-                            (inc *recovery-depth*) "/" max-recovery-attempts))
           recovery-quine (if same-tail?
                            (build-same-tail-recovery-quine program error-map receive?)
                            (build-inert-recovery-quine program error-map receive?))
@@ -196,7 +223,7 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
                           eval/*raw-text* nil
                           eval/*builtins* variant-builtins
                           eval/*gated-ns-hints* gated-ns-hints
-                          *recovery-depth* (inc *recovery-depth*)]
+                          eval/*completion-handoff* nil]
                   (eval/spell-eval recovery-quine {'eval eval-builtin}))]
       (if (eval/ok? retry)
         retry
@@ -208,10 +235,7 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
   [raw parse-error inbox-macros variant-builtins eval-builtin gated-ns-hints receive?]
   (let [error-msg (or (.getMessage parse-error) "Unknown reader error")
         indent (apply str (repeat eval/*llm-depth* "  "))
-        _ (throw-if-recovery-exhausted! :reader error-msg)
         _ (eval/vlog (str indent "=== Reader Error Recovery ==="))
-        _ (eval/vlog (str indent "Recovery attempt: "
-                          (inc *recovery-depth*) "/" max-recovery-attempts))
         error-map {:error (str "Reader error: " error-msg) :raw raw}
         recovery-context (list 'do
                            (list 'def '_recovery_prompt inert-recovery-prompt)
@@ -227,7 +251,7 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
                          eval/*raw-text* nil
                          eval/*builtins* variant-builtins
                          eval/*gated-ns-hints* gated-ns-hints
-                         *recovery-depth* (inc *recovery-depth*)]
+                         eval/*completion-handoff* nil]
                  (eval/spell-eval recovery-program {'eval eval-builtin}))]
     (if (eval/ok? result)
       (:ok result)
@@ -240,14 +264,19 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
    Closes over eval-builtin from config. Calls balance-parens because
    completions may arrive with mismatched trailing parens.
    trace-data-atom, when non-nil, receives {:program} for tracing."
-  [{:keys [variant-builtins eval-builtin recover-fn allow-multiple-top-level? gated-ns-hints receive?]
-    :or {receive? true}} trace-data-atom]
-  (let [f
+  [{:keys [variant-builtins eval-builtin recover-fn allow-multiple-top-level? gated-ns-hints receive?
+           max-consecutive-errors recovery-state]
+    :or {receive? true max-consecutive-errors default-max-consecutive-errors}} trace-data-atom]
+  (let [limit (validate-max-consecutive-errors max-consecutive-errors)
+        fallback (or recovery-state (atom {:consecutive-errors 0}))
+        f
         (fn
           ([raw]
            ((make-inbox-fn {:variant-builtins variant-builtins
                             :eval-builtin eval-builtin
                             :recover-fn recover-fn
+                            :max-consecutive-errors limit
+                            :recovery-state fallback
                             :allow-multiple-top-level? allow-multiple-top-level?
                             :receive? receive?
                             :gated-ns-hints gated-ns-hints}
@@ -255,7 +284,10 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
             raw
             []))
           ([raw inbox-macros]
-           (binding [eval/*gated-ns-hints* (or gated-ns-hints {})]
+           (let [state (lifecycle-error-state fallback)
+                 frame (atom :open)]
+            (binding [eval/*gated-ns-hints* (or gated-ns-hints {})
+                      eval/*completion-handoff* #(completion-success! state frame)]
              (let [raw (parse/balance-parens raw)
                    [program parse-err]
                    (if allow-multiple-top-level?
@@ -268,10 +300,15 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
                        [(parse/read-first raw) nil]
                        (catch Exception e [nil e])))]
                (if parse-err
-                 (if recover-fn
-                   (try-reader-recovery raw parse-err inbox-macros variant-builtins
-                                        eval-builtin eval/*gated-ns-hints* receive?)
-                   (throw parse-err))
+                 (do
+                   (completion-failure! state frame limit :reader (.getMessage parse-err))
+                   (if recover-fn
+                     (try-reader-recovery raw parse-err inbox-macros variant-builtins
+                                          eval-builtin eval/*gated-ns-hints* receive?)
+                     (throw (ex-info (.getMessage parse-err)
+                                     {:result {:err (.getMessage parse-err)
+                                               :spell/completion-error true}}
+                                     parse-err))))
                  (let [continuation-raw (if allow-multiple-top-level?
                                           (if (seq inbox-macros)
                                             (inbox/materialize-inbox-raw raw inbox-macros
@@ -295,8 +332,13 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
                                         eval/*builtins*       variant-builtins
                                         runtime/*current-raw* continuation-raw]
                                 (eval/spell-eval program' {'eval eval-builtin}))
+                       propagated? (propagated-completion-error? result)
+                       _ (cond
+                           (eval/ok? result) (completion-success! state frame)
+                           (not propagated?)
+                           (completion-failure! state frame limit :eval (:err result)))
                        final-result
-                       (if (and (eval/err? result) recover-fn)
+                       (if (and (eval/err? result) recover-fn (not propagated?))
                          (let [_ (do (eval/vlog (str indent "=== Error Recovery ==="))
                                      (eval/vlog (str indent "Error: " (:err result))))
                                result-with-program (assoc result :program program')]
@@ -304,7 +346,8 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
                              (let [_ (eval/vlog (str indent "Namespace recovery: " (pr-str fix-expr)))
                                    retry (binding [eval/*llm-depth* (inc eval/*llm-depth*)
                                                    eval/*raw-text* nil
-                                                   eval/*builtins* variant-builtins]
+                                                   eval/*builtins* variant-builtins
+                                                   eval/*completion-handoff* nil]
                                            (eval/spell-eval fix-expr
                                                             (merge (:env result) {'eval eval-builtin})))]
                                (if (eval/ok? retry)
@@ -319,7 +362,8 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
                                               :source-program program}))
                    (if (eval/ok? final-result)
                      (:ok final-result)
-                     (throw (ex-info (:err final-result) {:result final-result})))))))))]
+                     (throw (ex-info (:err final-result)
+                                     {:result (assoc final-result :spell/completion-error true)}))))))))))]
     (with-meta f {:spell/inbox-aware true})))
 
 (defn- register-agent
@@ -442,6 +486,8 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
                            a prunable inert recovery context)
                          - false: disable recovery (errors propagate immediately)
                          - fn: custom namespace recovery function (result-map) -> fixed-expr
+   - :max-consecutive-errors - Positive integer, default 3. Lifecycle-local reader/eval failure limit;
+                         successful completions and accepted normal handoffs reset it.
    - :prefill?         - optional assistant prefill policy. When omitted/nil, use the
                          provider's effective-model capability unless thinking is enabled.
                          Explicit true rejects unsupported providers/models or thinking.
@@ -459,9 +505,11 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
    The returned function is the root/new-handle startup path. Same-handle
    prefix completion remains internal via !llm-self only."
   [{:keys [namespaces provider model system llm-var recover format prefill? thinking reasoning-effort verbosity
-           suffix-grammar? grammar-max-chars]
-    :or {namespaces {} model nil recover true suffix-grammar? false grammar-max-chars 2000}}]
-  (let [native-prefill? (provider/supports-prefill provider {:model model})
+           suffix-grammar? grammar-max-chars max-consecutive-errors]
+    :or {namespaces {} model nil recover true suffix-grammar? false grammar-max-chars 2000
+         max-consecutive-errors default-max-consecutive-errors}}]
+  (let [max-consecutive-errors (validate-max-consecutive-errors max-consecutive-errors)
+        native-prefill? (provider/supports-prefill provider {:model model})
         compatible-prefill? (and native-prefill? (not thinking))
         _ (when (and (true? prefill?) (not compatible-prefill?))
             (throw (ex-info "Explicit :prefill? true is unsupported by this provider or thinking mode; omit :prefill? or set false"
@@ -554,7 +602,8 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
                  :variant-builtins variant-builtins
                  :eval-builtin eval-builtin
                  :gated-ns-hints gated-ns-hints
-                 :recover-fn recover-fn}
+                 :recover-fn recover-fn
+                 :max-consecutive-errors max-consecutive-errors}
         _ (deliver final-config config')
         start-root (fn start-root [prompt handle]
                      (when runtime/*computation-future?*
@@ -607,8 +656,21 @@ Emit a `(quine task \"...\")` form describing the original task, followed by a (
                                            (let [f (make-inbox-fn (assoc config' :receive? false) trace-data)]
                                              (with-meta f (assoc (meta f) :spell/wake-eval-fn wake-eval-fn))))
                                 awake-fn (runtime/make-awake-fn runtime/*current-handle* inbox-fn receive? :pre-eval)]
+                            (when eval/*completion-handoff* (eval/*completion-handoff*))
                             (binding [runtime/*checkpoint?* receive?]
-                              (-llm config' runtime/*current-handle* awake-fn nil prompt-str trace-data))))
+                              (try
+                                (-llm config' runtime/*current-handle* awake-fn nil prompt-str trace-data)
+                                (catch Exception e
+                                  ;; Provider/descendant errors are not this caller's own failure.
+                                  ;; Preserve typed terminal/control exceptions unchanged.
+                                  (if (:type (ex-data e))
+                                    (throw e)
+                                    (throw (ex-info (.getMessage e)
+                                                    (assoc (ex-data e) :result
+                                                           (assoc (or (:result (ex-data e))
+                                                                      {:err (.getMessage e)})
+                                                                  :spell/completion-error true))
+                                                    e))))))))
         compiled-agent (with-meta start-root {:spell/compiled-agent true
                                               :spell/agent-spec {:model model}})]
     (reset! self-ref same-handle-llm)

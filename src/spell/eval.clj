@@ -26,6 +26,10 @@
   "Nil outside interactive CLI runs; otherwise the run's typed interrupt marker."
   nil)
 
+(def ^:dynamic *completion-handoff*
+  "Internal completion-success callback, invoked only after validated handoff."
+  nil)
+
 (def ^:dynamic *verbose*
   "When true, print LLM prompts and responses."
   false)

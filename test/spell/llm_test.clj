@@ -1870,7 +1870,7 @@
                                "undefined-symbol)")}
                :namespaces {})]
       (is (thrown-with-msg? Exception
-                            #"Recovery limit exceeded: 2 while handling eval error"
+                            #"Consecutive error limit reached: 3 while handling eval error"
                             (llm "(quine completion (eval (do ")))
       (is (= 3 @call-count))))
 
@@ -1946,7 +1946,7 @@
                                (swap! call-count inc)
                                "\\invalidchar)")}
                :namespaces {})]
-      (is (thrown-with-msg? Exception #"Recovery limit exceeded: 2 while handling reader error"
+      (is (thrown-with-msg? Exception #"Consecutive error limit reached: 3 while handling reader error"
                             (llm "(quine completion (eval (do ")))
       ;; Initial call + 2 recovery retries
       (is (= 3 @call-count))))
@@ -1960,7 +1960,7 @@
                                  2 "undefined-symbol)"
                                  3 "undefined-symbol)"))}
                :namespaces {})]
-      (is (thrown-with-msg? Exception #"Recovery limit exceeded: 2 while handling eval error"
+      (is (thrown-with-msg? Exception #"Consecutive error limit reached: 3 while handling eval error"
                             (llm "(quine completion (eval (do ")))
       ;; Initial parse error + one reader recovery retry + one eval recovery retry
       (is (= 3 @call-count)))))

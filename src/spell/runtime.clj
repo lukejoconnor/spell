@@ -394,7 +394,9 @@
   []
   (assert-agent-context! "!wait")
   (let [outcome (coordinator/wait! *current-handle*)]
-    (when-not (= :idle (:status outcome)) (block-for-message))))
+    (when (#{:ready :waiting} (:status outcome))
+      (when eval/*completion-handoff* (eval/*completion-handoff*))
+      (block-for-message))))
 (defn sleep! [] (wait!))
 (defn reply-ask [msg value]
   (assert-agent-context! "!reply-ask")

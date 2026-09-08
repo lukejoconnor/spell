@@ -879,6 +879,7 @@ Example:
   (when-not (and runtime/*current-handle* runtime/*current-raw*)
     (throw (ex-info "!ask-await requires an active agent turn" {})))
   (let [token (coordinator/begin-external-wait! runtime/*current-handle*)]
+    (when eval/*completion-handoff* (eval/*completion-handoff*))
     (future
       (let [result (try (runtime/future-value fut)
                         (catch Throwable e

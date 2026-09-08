@@ -14,7 +14,7 @@
             [spell.user :as user]))
 
 (def ^:private public-run-keys
-  #{:prompt :init :model-profile :agent-profile :model :reasoning-effort
+  #{:prompt :init :model-profile :agent-profile :model :reasoning-effort :max-consecutive-errors
     :budget :depth :context-max-chars :trace-dir :usage-tracker :user-reader :log-writer :coordinator :dogfood})
 
 (def ^:private removed-run-keys
@@ -60,6 +60,8 @@
                      (or model (:default-model profile)) (assoc :model (or model (:default-model profile)))
                      (or reasoning-effort (:default-reasoning-effort profile))
                      (assoc :reasoning-effort (or reasoning-effort (:default-reasoning-effort profile)))
+                     (contains? opts :max-consecutive-errors)
+                     (assoc :max-consecutive-errors (:max-consecutive-errors opts))
                      (contains? opts :prefill?) (assoc :prefill? (:prefill? opts))
                      (:thinking opts) (assoc :thinking (:thinking opts))
                      (:verbosity opts) (assoc :verbosity (:verbosity opts))

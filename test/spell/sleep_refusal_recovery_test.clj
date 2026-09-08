@@ -154,7 +154,7 @@
       (fn []
         (let [{:keys [exception calls before handled bodies state]} (run-refusal kind true false true)]
           (is (= :recovery-exhausted (:type (ex-data exception))) (str kind))
-          (is (= 2 (:limit (ex-data exception))))
+          (is (= 3 (:limit (ex-data exception))))
           (is (= 4 calls) "Initial request delivery, refused attempt, and two recovery calls")
           (is (= [before before] (mapv :state handled)))
           (is (true? (:spell/child-failure (first bodies))))
