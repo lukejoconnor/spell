@@ -194,35 +194,105 @@
     (is (empty? (:mailbox (coordinator/agent :main))))))
 
 (defn- compaction-case! [arrival]
-  (let [calls (atom []) marks (atom [])
-        enqueue! #(coordinator/send! :main
-                    {:message {:from :observer :body :compaction-message}})
+  (coordinator/register! :requester)
+  (let [calls (atom []) marks (atom []) edges (atom []) snapshots (atom [])
+        received (atom []) message-defs (atom [])
+        bodies [{:id :compact-message-1} {:id :compact-message-2}]
+        enqueue! (fn []
+                   (reset! edges
+                           (mapv #(coordinator/request! :requester [:main] true %) bodies)))
+        snapshot! (fn [stage]
+                    (swap! snapshots conj
+                           {:stage stage :states (mapv receipt-state @edges)}))
         compiled
         (make-agent
           (fn [prompt]
             (case (count (swap! calls conj prompt))
-              1 (do (when (= :first arrival) (enqueue!))
+              ;; A is an ordinary receiving turn that elects to compact.
+              1 (suffix '(!compact))
+              ;; B only generates the summary; an arrival here must stay queued.
+              2 (do (when (= :summary arrival) (enqueue!))
+                    (snapshot! :summary)
                     "'(def compacted-value :kept)")
-              2 (if (= :first arrival)
-                  (suffix :first-stage-received)
-                  (do (when (= :second arrival) (enqueue!))
-                      (suffix '(do (probe/mark :generated-tail) compacted-value))))
-              3 (suffix 'compacted-value)
+              ;; This is the actual new, compacted C prefix, not the summary prompt.
+              3 (do (snapshot! :compacted-prefix)
+                    (when (= :compacted arrival) (enqueue!))
+                    (snapshot! :compacted-generation)
+                    (suffix '(do (probe/mark :generated-tail) compacted-value)))
+              4 (let [form (first (parse/read-all (parse/balance-parens prompt)))
+                      forms (vec (rest (second (last form))))
+                      positions (keep-indexed
+                                  #(when (= '(think "pre-eval: tail not run") %2) %1)
+                                  forms)
+                      defs (mapv #(nth forms (inc %)) positions)]
+                  (reset! message-defs defs)
+                  (snapshot! :received)
+                  (suffix (list 'do (list* 'probe/received (map second defs))
+                                'compacted-value)))
               (throw (ex-info "Unexpected compaction call" {:prompt prompt}))))
-          {:mark #(swap! marks conj %)})
-        result (compiled (llm/direct-init (program '(!compact))) :main)]
-    (is (= (if (= :first arrival) :first-stage-received :kept) result))
-    (is (= (if (= :second arrival) 3 2) (count @calls)))
+          {:mark #(do (swap! marks conj %) nil)
+           :received (fn [& messages] (reset! received (vec messages)) nil)})
+        action (list '!llm-self prefix {:receive? true})
+        result (compiled (llm/direct-init (program action)) :main)
+        by-stage (into {} (map (juxt :stage :states) @snapshots))]
+    (is (= :kept result))
+    (is (= (if (= :none arrival) 3 4) (count @calls)))
     (is (= (if (= :none arrival) [:generated-tail] []) @marks))
-    (is (str/includes? (second @calls)
-                      (if (= :first arrival) "=compact=" "(def compacted-value :kept)")))
-    (is (= (if (= :none arrival) 0 1)
-           (occurrences (last @calls) :compaction-message)))
+    (is (str/includes? (second @calls) "=compact="))
+    (is (= '(quine completion (eval (do (def compacted-value :kept))))
+           (first (parse/read-all (parse/balance-parens (nth @calls 2)))))
+        "C is exactly the compacted context; A's generated-marker and B's scaffold are gone")
+    (when (= :summary arrival)
+      (is (= 2 (count @edges)))
+      (is (= (:summary by-stage) (:compacted-prefix by-stage))
+          "B did not dequeue, claim, or rotate receipt state before generating C"))
+    (when (not= :none arrival)
+      (let [queued (:compacted-generation by-stage)
+            accepted (:received by-stage)]
+        (is (= 2 (count queued)))
+        (doseq [state queued]
+          (is (= @edges (mapv :request-edge (:mailbox state)))
+              "The exact request IDs remain queued through B / C generation")
+          (is (nil? (:claimed-generation state))))
+        (doseq [state accepted]
+          (is (empty? (:mailbox state)))
+          (is (= (:agent-generation state) (:claimed-generation state))))
+        (is (= 2 (count @message-defs)))
+        (is (= 2 (count (distinct (map second @message-defs)))))
+        (is (= @edges (mapv :edge-id @received)) "C receives the same request IDs in order")
+        (is (= bodies (mapv :body @received)))
+        (doseq [body bodies]
+          (is (= 1 (occurrences (last @calls) (:id body)))
+              "Each request body appears exactly once in the received compacted prefix"))))
     (is (empty? (:mailbox (coordinator/agent :main))))))
 
 (deftest compaction-runs-both-stages (compaction-case! :none))
-(deftest compaction-receives-after-its-first-generation (compaction-case! :first))
-(deftest compaction-receives-after-its-second-generation (compaction-case! :second))
+(deftest compaction-defers-summary-arrivals-until-compacted-context
+  (compaction-case! :summary))
+(deftest compaction-receives-after-compacted-generation
+  (compaction-case! :compacted))
+
+(deftest ordinary-turn-can-preempt-compaction
+  (let [calls (atom []) marks (atom [])
+        compiled
+        (make-agent
+          (fn [prompt]
+            (case (count (swap! calls conj prompt))
+              1 (do (coordinator/send! :main
+                      {:message {:from :observer :body :before-compaction}})
+                    (suffix '(!compact)))
+              2 (suffix '(do (probe/mark :ordinary-receipt) :preempted))
+              (throw (ex-info "Preempted compaction must not start B or C" {}))))
+          {:mark #(do (swap! marks conj %) nil)})]
+    (is (= :preempted
+           (compiled (llm/direct-init
+                       (program (list '!llm-self prefix {:receive? true}))) :main)))
+    (is (= 2 (count @calls)))
+    (is (= [:ordinary-receipt] @marks))
+    (is (= 1 (occurrences (second @calls) :before-compaction)))
+    (is (str/includes? (second @calls) "(def generated-marker :present)"))
+    (is (not-any? #(str/includes? % "=compact=") @calls))
+    (is (empty? (:mailbox (coordinator/agent :main))))))
 
 (def ^:private invalid-completions
   [nil false 42 "(quine completion (eval (do )))"

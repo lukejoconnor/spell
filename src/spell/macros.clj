@@ -483,7 +483,8 @@
     ([comp-sym] (list '!llm-self (list 'edit-reopen comp-sym) {:receive? true}))))
 
 ;; compact: (!compact completion) — apply edit markers, append compaction instructions, continue via !llm-self
-;; The generated follow-up opts in after wrap-cat has collected its arguments.
+;; Only summary generation defers receipt; the compacted follow-up opts in after
+;; wrap-cat has collected its arguments. The ordinary caller remains receiving.
 (def ^:private compact-suffix
   (str "(think \"=compact= Compact your context into the wrap-cat below. "
        "Each argument is a QUOTED form: '(def x 1) '(think \\\"label\\\" ...) etc. "
@@ -504,4 +505,4 @@
        (list 'str
              (list 'serialize-prefix (list 'edit-reopen comp-sym))
              compact-suffix)
-       {:receive? true}))))
+       {:receive? false}))))

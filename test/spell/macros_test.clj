@@ -132,7 +132,7 @@
                    (list 'str
                          (list 'serialize-prefix (list 'edit-reopen 'saved))
                          suffix)
-                   {:receive? true})
+                   {:receive? false})
              (expand1 '(!compact saved))))))
 
   (testing "first-line wraps vector literals with metadata and rejects non-vectors"

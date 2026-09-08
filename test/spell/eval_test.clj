@@ -2937,7 +2937,7 @@
       (is (clojure.string/includes? suffix-str "=compact="))
       (is (clojure.string/includes? suffix-str "fresh env"))
       (is (clojure.string/includes? suffix-str "Do not use '(persist name)"))
-      (is (= {:receive? true} (nth expanded 2)))
+      (is (= {:receive? false} (nth expanded 2)))
       (is (clojure.string/includes? suffix-str
             "'((fn [next-context] (!llm-self next-context {:receive? true})) (wrap-cat ")))))
 
