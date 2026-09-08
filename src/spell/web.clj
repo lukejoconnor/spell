@@ -28,7 +28,6 @@
   {:search {:max-results 5
             :region "us-en"}
    :fetch {:backend :jina
-           :max-chars 40000
            :timeout-ms 15000
            :fallback-backend :raw}
    :http {:user-agent "spell-web/0.1 (+https://github.com/loconnor/spell)"}})
@@ -442,7 +441,7 @@ Backends:
 If :jina fails, fetch falls back to :raw by default.
 No implicit character or paragraph cap applies. Only explicit opts :max-chars selects a
 nonnegative integral UTF-16 output limit; clipped results set :truncated true without
-appending a marker. Config :fetch :max-chars is legacy and does not limit output."
+appending a marker."
 
     :config
     "Inspect effective config.
@@ -451,7 +450,7 @@ appending a marker. Config :fetch :max-chars is legacy and does not limit output
 
 Config defaults:
   {:search {:max-results 5 :region \"us-en\"}
-   :fetch  {:backend :jina :max-chars 40000 :timeout-ms 15000 :fallback-backend :raw}
+   :fetch  {:backend :jina :timeout-ms 15000 :fallback-backend :raw}
    :http   {:user-agent \"spell-web/0.1 ...\"}}
 
 Set :search :backend in config/web.edn to force a backend.

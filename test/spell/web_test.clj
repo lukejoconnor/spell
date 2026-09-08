@@ -6,11 +6,11 @@
 (deftest config-loads-overrides
   (let [f (java.io.File/createTempFile "spell-web-config-" ".edn")]
     (try
-      (spit f "{:search {:max-results 3 :backend :duckduckgo} :fetch {:max-chars 1234}}")
+      (spit f "{:search {:max-results 3 :backend :duckduckgo} :fetch {:timeout-ms 1234}}")
       (binding [web/*config-path* (.getAbsolutePath f)]
         (let [cfg (:out (web/config))]
           (is (= 3 (get-in cfg [:search :max-results])))
-          (is (= 1234 (get-in cfg [:fetch :max-chars])))
+          (is (= 1234 (get-in cfg [:fetch :timeout-ms])))
           (is (= :duckduckgo (get-in cfg [:search :backend])))))
       (finally
         (.delete f)))))
@@ -165,7 +165,7 @@
 (deftest fetch-is-full-unless-explicitly-clipped
   (let [content (str (apply str (repeat 50000 "x")) "😀 tail\n")
         response {:ok true :out content :err nil :truncated false :status 200}]
-    (with-redefs [web/effective-config (constantly {:fetch {:backend :jina :max-chars 2}})
+    (with-redefs [web/effective-config (constantly {:fetch {:backend :jina}})
                   web/http-get-text (fn [& _] response)]
       (is (= response (web/fetch "https://example.com")))
       (doseq [[limit expected] [[0 ""] [1 "x"] [50001 (subs content 0 50000)]
