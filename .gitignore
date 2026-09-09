@@ -60,6 +60,14 @@ writeup/
 /old/
 
 # Public docs surface
+# Keep root Markdown limited to the public entry points.
+/*.md
+!/README.md
+!/AGENTS.md
+
+# Internal acceptance programs; maintained fixtures live under test/.
+/*ACCEPTANCE.spl
+
 docs/*
 !docs/api.md
 !docs/multi-agent.md
@@ -70,6 +78,8 @@ docs/*
 !docs/start.md
 !docs/language-overview.md
 !docs/capabilities.md
+!docs/bounded-results.md
+!docs/installable-modules.md
 !docs/.vitepress/
 !docs/.vitepress/**
 

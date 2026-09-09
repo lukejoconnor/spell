@@ -208,7 +208,7 @@ Retain coordinator non-deadlock, dynamic scope, non-tail returns, recovery, expl
 
 ## Completed optimization run — 2026-09-07 addendum
 
-This section updates priorities using new evidence; all historical measurements and targets above remain intact. See [runtime-optimization-report.md](runtime-optimization-report.md) and the root `OPTIMIZATION_CHANGELOG.md` for controls, per-change commits, tradeoffs, review and rollback.
+This section updates priorities using new evidence; all historical measurements and targets above remain intact. See [runtime-optimization-report.md](runtime-optimization-report.md) for controls, per-change commits, tradeoffs, review and rollback.
 
 - **Completed:** selected-line backing detachment (`3e2cc1b`): three fresh pairs, 29,884,320 → 15,136 B held-minus-released heap with a structural 200,000 → 100-line backing change; caller allocation +976 B. Retention-only.
 - **Completed:** streamed trace export (`0405fb6`): three fresh pairs, median9,463.012 →168.512 ms and ~21.203 GB →130.145 MB caller allocation on a generated fixture. Accepted compact formatting and partial diagnostic output on printer failure; no private-trace extrapolation.

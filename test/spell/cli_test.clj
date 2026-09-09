@@ -113,7 +113,7 @@
                           (when (and (= :main handle) (= :waiting (:status outcome)))
                             (deliver wait-entered outcome))
                           outcome))]
-          (api/run {:init (slurp "LIVE-ACCEPTANCE.spl")
+          (api/run {:init (slurp "test/fixtures/live-acceptance.spl")
                     :agent-profile "config/agent-profiles/cli.agent.edn"
                     :model-profile (provider/test-provider {:prefill? false :response-fn response})}))]
     (is (nil? (:error result)) (pr-str (dissoc result :usage-tracker)))

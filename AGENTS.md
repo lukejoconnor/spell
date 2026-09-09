@@ -33,6 +33,8 @@ This repo includes Spell-specific skills under `.agents/skills/`. Use them as th
 
 ## Top-Level Layout
 
+Keep public guides and release notes in `docs/`, runnable examples in `examples/`, and maintained test fixtures in `test/fixtures/`. The root Markdown entry points are `README.md` and this source guide. Store internal plans, run reports, reviews, acceptance records, and source inventories in a private notebook or ignored local directory. Check new documents for their intended audience before including them in public commits or releases.
+
 | Path | Purpose |
 | --- | --- |
 | `bin/spell` | Shell wrapper around the Clojure CLI entry point. |

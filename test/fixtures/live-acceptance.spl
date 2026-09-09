@@ -1,7 +1,7 @@
 (quine completion
   (eval
     (do
-      (quine task "LIVE ACCEPTANCE — opt-in paid pilot, NEW runtime, default context cap 10000. Do not change files or create a framework. This program starts by disclosing the actual coding skill; discovery metadata alone is not success. Read LIVE-ACCEPTANCE.md for expected conditions if needed.
+      (quine task "LIVE ACCEPTANCE — opt-in paid pilot, NEW runtime, default context cap 10000. Do not change files or create a framework. This program starts by disclosing the actual coding skill; discovery metadata alone is not success.
 
 Proceed in separate receiving turns, keeping compact literal checkpoints and actual execution receipts:
 1. Inspect bounded ACTUAL coding instructions (e.g. CODING TASKS and RESEARCH). If disclosure is stored, page the observed original ID, never repeat disclosure to recover it. Record a short instruction excerpt and observed offsets. Describe globals and agents before using them.
