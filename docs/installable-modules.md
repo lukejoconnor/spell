@@ -121,12 +121,12 @@ Direct consumers are `:init`, `:info`, `:lists`, `:create`, `:subscribe`, `:subs
 
 ## Evidence and bounded context
 
-Preserve the predecessor pruning-evidence rule: **do not prune supporting evidence and then rediscover it**. Before `!peek` results disappear, `persist` the exact needed source slice, source coordinates/offset, checkpoint, and actual effect receipts. Plans, source forms, and sent flags are not execution receipts. Incoming messages may replace an unexecuted trailing action.
+Before `!peek` results disappear, `persist` the exact needed source slice, source coordinates/offset, checkpoint, and actual effect receipts. Plans, source forms, and sent flags are not execution receipts. Incoming messages may replace an unexecuted trailing action.
 
 `io/read-lines` ranges are one-indexed and half-open; `subvec` indexes are local, zero-indexed and half-open. For example, reading file lines `[181,221)` yields 40 lines. `(subvec (:out lines) 0 10)` keeps original lines 181–190, not lines 0–9 of the file. The result is an envelope with string rows under `:out`; inspect `:ok`, `:err`, and `:truncated`. A bounded snapshot has no hidden full original. Never repeat an effect merely to recover omitted output; later file reads are fresh evidence. See [bounded results](./bounded-results.md).
 
-For model-facing recovery/continuation guidance, see [current error recovery](./error-recovery.md); the [recovery continuation finding](./recovery-continuation-finding.md) is historical evidence. This migration does not introduce a new production recovery policy.
+For recovery and continuation behavior, see [error recovery](./error-recovery.md).
 
-## Review and acceptance
+## Release notes
 
-The [module-library changelog](https://github.com/lukejoconnor/spell/blob/main/MODULE_LIBRARY_CHANGELOG.md) records the changes and validation. Earlier plans and run reports describe their historical revision. A running JVM retains the implementation loaded at startup; use a fresh runtime to exercise repository source changes.
+See the [changelog](./CHANGELOG.md) for release changes. A running JVM retains the implementation loaded at startup; use a fresh runtime to exercise repository source changes.
