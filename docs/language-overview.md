@@ -10,6 +10,18 @@ Spell is a Lisp dialect implemented in Clojure and copies most of Clojure's sema
 
 In particular, each model self-call runs statelessly in a fresh local environment. Only the self-call's argument and return value cross the turn boundary. This prevents a child completion from depending on a hidden parent environment or overwriting a parent binding. Functions are dynamically scoped; ordinary closures do not persist across model turns.
 
+## Collection and string helpers
+
+Both `(map f coll)` and `(mapv f coll)` eagerly return a vector. Spell's `mapv` is the familiar name for the existing `map` behavior, not the full Clojure API: both support exactly one function and one collection, with no multi-collection or transducer arity. Nil and empty collections return `[]`. Both use the same callable invocation rules, including dynamically scoped Spell functions.
+
+```clojure
+(mapv (fn [x] (* x x)) [1 2 3]) ;; => [1 4 9]
+(strings/index-of "banana" "an")   ;; => 1
+(strings/index-of "banana" "an" 2) ;; => 3
+```
+
+`strings/index-of` accepts `(s needle)` or `(s needle from-index)`, coercing the first two arguments with `str` and returning `nil` when no match exists. The optional integer start is inclusive and zero-based, measured in UTF-16 code units (not Unicode code points). `from-index` is narrowed to a signed 32-bit Java int via `unchecked-int` before boundary rules apply. Negative narrowed starts behave as zero. A nonempty needle cannot match at or beyond the end; an empty needle returns the narrowed start clamped between zero and the string's UTF-16 length. For example, `(strings/index-of "😀a" "a" 1)` returns `2`, and `(strings/index-of "abc" "" 9)` returns `3`. `strings/last-index-of` currently supports only `(s needle)`.
+
 ## The completion is the program
 
 A Spell model call receives the beginning of a program as its prompt. The model returns the remaining text. Spell concatenates the prompt and model suffix, parses the completed program, evaluates it, and returns its value.

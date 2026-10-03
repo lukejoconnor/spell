@@ -21,13 +21,31 @@
   {:short-docs "String manipulation and regex (mirrors clojure.string)."
    :docs {:guide "STRINGS — Mirrors clojure.string. Regex functions take string patterns (not compiled regex).
 
-Same as Clojure: index-of, last-index-of, starts-with?, ends-with?, includes?, blank?, trim, replace, split, split-lines, join, lower-case, upper-case, capitalize.
+Available functions include index-of, last-index-of, starts-with?, ends-with?, includes?, blank?, trim, replace, split, split-lines, join, lower-case, upper-case, capitalize.
+
+(strings/index-of s needle) or (strings/index-of s needle from-index)
+  Coerces s and needle with str; returns the first match's zero-based UTF-16 offset, or nil.
+  from-index is an inclusive integer offset, narrowed to a signed 32-bit Java int
+  via unchecked-int before boundary rules apply. Negative narrowed offsets start at zero.
+  Nonempty needles at/after the end return nil. Empty needles return the narrowed
+  offset clamped to [0, UTF-16 length], including when it is beyond the end.
+(strings/last-index-of s needle) supports two arguments only.
 
 Related builtins: subs, re-find, re-matches, re-seq.
 
 Use (!describe strings :fn-name) for any function."}
    :detail
-   {:split
+   {:index-of
+    "(strings/index-of s needle) or (strings/index-of s needle from-index)
+Coerces s and needle with str. Returns a zero-based UTF-16 match offset or nil.
+The inclusive integer from-index is narrowed to a signed 32-bit Java int via
+unchecked-int before boundary rules apply: negative narrowed starts act as zero;
+nonempty needles at/after the end return nil; empty needles clamp the narrowed
+start to [0, UTF-16 length]."
+    :last-index-of
+    "(strings/last-index-of s needle) — two arguments only. Coerces both with str;
+returns the last match's zero-based UTF-16 offset, or nil."
+    :split
     "Split string by regex pattern. Pattern is a string (not a compiled regex).
 
 (strings/split s pattern)
@@ -52,9 +70,12 @@ Returns the new string with all occurrences replaced.
 
 Example:
   (strings/replace \"hello world\" \"o\" \"0\") ;; => \"hell0 w0rld\""}
-   :index-of (fn [s substr]
-               (let [idx (.indexOf ^String (str s) ^String (str substr))]
-                 (when (>= idx 0) idx)))
+   :index-of (fn
+               ([s substr]
+                (let [idx (.indexOf ^String (str s) ^String (str substr))]
+                  (when (>= idx 0) idx)))
+               ([s substr from-index]
+                (str/index-of (str s) (str substr) from-index)))
    :last-index-of (fn [s substr]
                     (let [idx (.lastIndexOf ^String (str s) ^String (str substr))]
                       (when (>= idx 0) idx)))
@@ -416,7 +437,9 @@ Note: map? returns false for spell functions ({:spell/fn true ...}) and futures 
 
     :sequences
     "  apply — call function with args from a collection: (apply + [1 2 3])
-  map — apply function to each element, returning a vector
+  map — apply function to each element, returning a vector: (map f coll)
+  mapv — same eager vector behavior as map: (mapv f coll); nil/empty input returns []
+    Both accept one collection only (no transducer arity); Spell functions use dynamic caller scope.
   map-indexed — like map but function receives [index element]
   filter — keep elements where predicate is truthy, returning a vector
   reduce — fold collection with function: (reduce f init coll)

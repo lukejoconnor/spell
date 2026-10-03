@@ -439,6 +439,7 @@
                 ([m1 m2 & more] (compose-macros (cons m1 (cons m2 more)))))
    ;; Core higher-order functions (spell-fn aware)
    'map (fn [f coll] (mapv #(invoke-fn f [%]) coll)),
+   'mapv (fn [f coll] (mapv #(invoke-fn f [%]) coll)),
    'map-indexed (fn [f coll] (vec (map-indexed #(invoke-fn f [%1 %2]) coll))),
    'filter (fn [pred coll] (filterv #(invoke-fn pred [%]) coll)),
    'reduce (fn
