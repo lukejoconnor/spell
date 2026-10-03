@@ -992,3 +992,42 @@
     (is (nil? (:long-context (#'provider/lookup-cost "custom" {"custom" [1.0 2.0]})))))
   (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Invalid long-context pricing tier"
         (#'provider/lookup-cost "custom" {"custom" {:input 1 :output 2 :long-context {:threshold -1}}}))))
+
+(deftest responses-cache-write-accounting
+  (doseq [[total reads writes ordinary] [[12000 0 12000 0]
+                                         [15000 12000 3000 0]
+                                         [20000 12000 3000 5000]]]
+    (let [usage (#'provider/parse-openai-responses-usage
+                  {:input_tokens total :input_tokens_details {:cached_tokens reads :cache_write_tokens writes}
+                   :output_tokens 50 :output_tokens_details {:reasoning_tokens 20}})
+          expected (/ (+ (* ordinary 2.0) (* reads 0.10) (* writes 2.50) (* 50 10.0)) 1000000.0)]
+      (is (= ordinary (:uncached_input_tokens usage)))
+      (is (= reads (:cached_input_tokens usage)))
+      (is (= writes (:cache_write_input_tokens usage)))
+      (is (= writes (:cache_creation_input_tokens usage)))
+      (is (= 30 (:visible_output_tokens usage)))
+      (is (= 20 (:reasoning_output_tokens usage)))
+      (is (< (abs (- expected (#'provider/usage-cost "gpt-6.1-sol" usage nil))) 1.0e-10))))
+  (is (= 0 (:cache_write_input_tokens (#'provider/parse-openai-responses-usage {:input_tokens 10})))))
+
+(deftest responses-verbosity-schema
+  (doseq [verbosity [nil "auto" "low" "medium" "high"]]
+    (let [body (request-json-body
+                 (#'provider/openai-responses-request "test" "https://api.openai.com/v1" "gpt-6.1-sol"
+                  "prompt" "system" 32768 "medium" verbosity nil true "cache-key" 600))]
+      (is (not (contains? body :verbosity)))
+      (is (= (when (contains? #{"low" "medium" "high"} verbosity) {:verbosity verbosity}) (:text body)))
+      (is (= {:effort "medium"} (:reasoning body)))
+      (is (= 32768 (:max_output_tokens body)))
+      (is (= "required" (:tool_choice body)))
+      (is (= "spell_suffix" (get-in body [:tools 0 :name])))
+      (is (= "cache-key" (:prompt_cache_key body))))))
+
+(deftest unfrozen-usage-bucket-adds-request-local-cost
+  (doseq [[new-input expected] [[100000 0.6] [300000 1.6]]]
+    (let [usage (atom {:by-model {"gpt-6.1-sol" {:uncached_input_tokens 200000 :calls 1}}})]
+      (binding [provider/*usage* usage provider/*budget* nil]
+        (provider/track-usage! "gpt-6.1-sol" {:uncached_input_tokens new-input}))
+      (is (< (abs (- expected (provider/current-cost usage))) 1.0e-10))
+      (is (= (+ 200000 new-input) (get-in @usage [:by-model "gpt-6.1-sol" :uncached_input_tokens])))
+      (is (= 2 (get-in @usage [:by-model "gpt-6.1-sol" :calls]))))))

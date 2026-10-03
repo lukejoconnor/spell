@@ -255,7 +255,9 @@
                                         (+ existing-cost (or turn-cost 0.0))))
 
                                     :else
-                                    (usage-cost model merged-stats (or cost-table (:cost-table u))))]
+                                    (let [old-cost (usage-cost model existing (or cost-table (:cost-table u)) false)]
+                                      (when (or (number? old-cost) (number? turn-cost))
+                                        (+ (or old-cost 0.0) (or turn-cost 0.0)))))]
                   (cond-> (-> u
                               (update :records (fnil conj [])
                                       {:model model :usage usage :cost turn-cost})
@@ -1044,13 +1046,15 @@
   (or (gpt6-model? model) (str/includes? (str model) "codex")))
 
 (defn- parse-openai-responses-usage
-  "Normalize OpenAI Responses-style usage, splitting cached tokens out of input."
+  "Normalize Responses usage into disjoint ordinary input, cache reads, and cache writes."
   [usage]
   (let [cached-tokens (get-in usage [:input_tokens_details :cached_tokens] 0)
+        cache-write-tokens (get-in usage [:input_tokens_details :cache_write_tokens] 0)
         reasoning-tokens (get-in usage [:output_tokens_details :reasoning_tokens] 0)
         output-tokens (:output_tokens usage 0)]
     (with-legacy-usage-keys
-      {:uncached_input_tokens (max 0 (- (:input_tokens usage 0) cached-tokens))
+      {:uncached_input_tokens (max 0 (- (:input_tokens usage 0) cached-tokens cache-write-tokens))
+       :cache_write_input_tokens cache-write-tokens
        :cached_input_tokens cached-tokens
        :visible_output_tokens (max 0 (- output-tokens reasoning-tokens))
        :reasoning_output_tokens reasoning-tokens})))
@@ -1087,7 +1091,8 @@
                instructions (assoc :instructions instructions)
                max-tokens (assoc :max_output_tokens max-tokens)
                reasoning (assoc :reasoning reasoning)
-               verbosity (assoc :verbosity verbosity)
+               (contains? #{"low" "medium" "high"} verbosity)
+               (assoc :text {:verbosity verbosity})
                prompt-cache-key (assoc :prompt_cache_key prompt-cache-key)
                tool-mode? (assoc :tools [tool]
                                  :tool_choice "required"))
