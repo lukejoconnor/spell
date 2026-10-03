@@ -1,4 +1,5 @@
 {:provider :anthropic-pf
  :api-key-env "ANTHROPIC_API_KEY"
+ :default-model "claude-sonnet-5-5"
  :max-tokens 16384
  :default-agent-profile "../agent-profiles/base-pf.agent.edn"}

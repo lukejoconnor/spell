@@ -55,7 +55,10 @@
 
 (deftest tc-tool-choice-honors-effective-model
   (doseq [[default-model effective-model expected-choice]
-          [["claude-sonnet-4-5-20250929" "claude-fable-5-1" "auto"]
+          [["claude-sonnet-4-5-20250929" "claude-opus-5-5" "auto"]
+           ["claude-sonnet-4-5-20250929" "claude-sonnet-5-5" "auto"]
+           ["claude-opus-5-5" "claude-sonnet-4-5-20250929" "any"]
+           ["claude-sonnet-4-5-20250929" "claude-fable-5-1" "auto"]
            ["claude-fable-5-1" "claude-sonnet-4-5-20250929" "any"]]]
     (let [body (capture-tc-body default-model effective-model)]
       (is (= effective-model (:model body)))
@@ -85,7 +88,9 @@
 
 (deftest no-prefill-keeps-task-in-user-content
   (doseq [[model policy]
-          [["claude-fable-5-1" {}]
+          [["claude-opus-5-5" {}]
+           ["claude-sonnet-5-5" {}]
+           ["claude-fable-5-1" {}]
            ["claude-fable-5-1" {:prefill? false}]
            ["claude-sonnet-4-5-20250929" {:prefill? false}]]]
     (let [{:keys [body prefix]}
@@ -145,3 +150,30 @@
       (let [{:keys [body]} (capture-pf-body compile-fn)]
         (is (= ["user"] (mapv :role (:messages body))))
         (is (clojure.string/includes? (pr-str (:messages body)) "Preserve my task"))))))
+
+(deftest claude-55-effective-prefill-policy
+  (doseq [model ["claude-opus-5-5" "claude-sonnet-5-5"]]
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (compile-with-model "claude-sonnet-4-5-20250929" model)))
+    (is (fn? (compile-with-model model "claude-sonnet-4-5-20250929")))
+    (is (fn? (llm/compile-agent {:provider (provider/map->AnthropicPfProvider {:model model})
+                                 :prefill? false})))))
+
+(deftest sonnet-between-tools-survives-agent-profile-compilation
+  (doseq [mode [:pf :tc]]
+    (let [p ((if (= mode :pf)
+               provider/map->AnthropicPfProvider
+               provider/map->AnthropicTcProvider)
+             {:api-key "offline-test" :model "claude-sonnet-5-5" :max-tokens 16384})
+          profile (spell.agent/load-agent-spec "config/agent-profiles/base-tc.agent.edn")
+          {:keys [body]} (capture-pf-body
+                          #(spell.agent/compile-agent-spec
+                             (assoc profile :provider p
+                                    :thinking {:type "between_tools"}
+                                    :reasoning-effort "low")))]
+      (is (= {:type "between_tools"} (:thinking body)))
+      (is (= {:effort "low"} (:output_config body)))
+      (is (= 16384 (:max_tokens body)))
+      (is (= ["user"] (mapv :role (:messages body))))
+      (when (= mode :tc)
+        (is (= {:type "auto"} (:tool_choice body)))))))

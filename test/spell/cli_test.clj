@@ -309,12 +309,17 @@
                       {:provider :anthropic-tc :opts opts})]
         (is (= :anthropic-tc
                (:provider ((var cli/make-provider) {:model "opus"}))))
-        (is (= "claude-opus-4-8" (:model @captured))))))
+        (is (= "claude-opus-5-5" (:model @captured))))))
 
   (testing "Fable aliases route to the expected Anthropic tool-call models"
     (doseq [[alias expected] [["fable" "claude-fable-5-1"]
                               ["fable51" "claude-fable-5-1"]
-                              ["fable5" "claude-fable-5"]]]
+                              ["fable5" "claude-fable-5"]
+                              ["opus55" "claude-opus-5-5"]
+                              ["sonnet" "claude-sonnet-5-5"]
+                              ["sonnet55" "claude-sonnet-5-5"]
+                              ["sonnet5" "claude-sonnet-5"]
+                              ["opus48" "claude-opus-4-8"]]]
       (let [captured (atom nil)]
         (with-redefs [provider/anthropic-tc-provider
                       (fn [opts]
@@ -381,7 +386,7 @@
     (is (str/includes? exit-message "Reasoning effort for OpenAI and adaptive Anthropic models"))
     (is (str/includes? exit-message "codex-tc:<model>"))
     (is (str/includes? exit-message "openai-tc:gpt-6-astra"))
-    (is (str/includes? exit-message "anthropic-tc:claude-opus-4-8"))
+    (is (str/includes? exit-message "anthropic-tc:claude-opus-5-5"))
     (is (str/includes? exit-message "spell -m fable 'Use Claude Fable 5.1'"))
     (is (str/includes? exit-message "fireworks-tc:kimi-k2p7-code"))
     (is (str/includes? exit-message "--dogfood"))
@@ -401,3 +406,19 @@
     (let [result (cli/validate-args ["-m" "gpt56sol" "-R" "max" "Return 42"])]
       (is (= "Return 42" (:prompt result)))
       (is (= "max" (get-in result [:options :reasoning-effort]))))))
+
+(deftest sol-luna-cli-selection
+  (doseq [[alias model] {"sol" "gpt-6.1-sol" "gpt61sol" "gpt-6.1-sol"
+                         "sol6" "gpt-6-sol" "gpt6sol" "gpt-6-sol"
+                         "luna" "gpt-6-luna" "gpt6luna" "gpt-6-luna"}]
+    (let [captured (atom nil)]
+      (with-redefs [provider/openai-provider
+                    (fn [opts] (reset! captured opts) {:provider :openai-tc})]
+        (is (= :openai-tc (:provider (#'cli/make-provider {:model alias}))))
+        (is (= model (:model @captured)))
+        (is (:force-tool-call @captured))
+        (is (:use-responses-api @captured)))))
+  (let [help (:exit-message (cli/validate-args ["--help"]))]
+    (doseq [model ["gpt-6.1-sol" "gpt-6-sol" "gpt-6-luna" "claude-sonnet-5-5" "claude-opus-5-5"]]
+      (is (str/includes? help model)))
+    (is (str/includes? help "none only on supporting models"))))

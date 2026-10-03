@@ -187,9 +187,35 @@ Model profile files live under `config/model-profiles/` and use EDN maps.
 | `:response` | `:test` | Single fixed test response. |
 | `:prefill?` | `:test` | Whether the test provider reports prefill support. |
 
-`:default-reasoning-effort` maps to each provider's native mechanism, including Anthropic thinking budgets. GPT-6 Astra supports `low`, `medium`, `high`, `xhigh`, and `max`; the checked-in OpenAI and Codex profiles default to `medium`, and `spell.api/run :reasoning-effort` may override them. Prefill behavior is derived from provider capability and the selected agent prompt profile.
+`:default-reasoning-effort` maps to each provider's native mechanism. The checked-in OpenAI and Codex profiles default to `medium`; `spell.api/run :reasoning-effort` may override them. Prefill behavior is derived from provider capability and the selected agent prompt profile.
 
-GPT-6 Astra has a 1,050,000-token context window and a maximum output of 128,000 tokens. Spell retains its configured per-response output limits. [Its standard pricing](https://developers.openai.com/api/docs/models/gpt-6-astra) is recorded in `data/pricing.edn` at $10/M uncached input tokens, $1/M cached input tokens, $12.50/M cache-write tokens, and $50/M output tokens, so normal usage and dollar-budget enforcement use the shared cost architecture. OpenAI prices requests with more than 272K input tokens at 2x input/cache rates and 1.5x output for the full request; Spell does not currently select a pricing tier from per-request context length, so reported cost and budget enforcement use the standard tier above that threshold.
+### Current models and pricing
+
+The CLI/Codex and OpenAI defaults remain **GPT-6 Astra**; `gpt`, `astra`, `gpt6`, and `gpt6astra` are unchanged. The Anthropic constructor/profile defaults and generic `opus` / `sonnet` aliases now select **Claude 5.5**. Fable aliases remain unchanged. Explicit provider prefixes are preserved: for example, `anthropic-pf:opus55` selects Opus 5.5's plain-text path without assistant prefill.
+
+Standard USD per million tokens, checked against official documentation on October 3, 2026:
+
+| Model | Aliases | Input | Cache read | Cache write | Output |
+|---|---|---:|---:|---:|---:|
+| GPT-6 Astra | `gpt`, `astra`, `gpt6`, `gpt6astra` | $10 | $1 | $12.50 | $50 |
+| GPT-6.1 Sol | `sol`, `sol61`, `gpt61sol` | $2 | $0.10 | $2.50 | $10 |
+| GPT-6 Sol (comparator) | `sol6`, `gpt6sol` | $2 | $0.20 | $2.50 | $10 |
+| GPT-6 Luna | `luna`, `luna6`, `gpt6luna` | $0.10 | $0.01 | $0.125 | $0.50 |
+| Claude Opus 5.5 | `opus`, `opus55` | $4 | $0.20 | $5 | $20 |
+| Claude Sonnet 5.5 | `sonnet`, `sonnet55` | $2 | $0.20 | $2.50 | $10 |
+| Claude Fable 5.1 | `fable`, `fable51` | $10 | $0.25 | $12.50 | $50 |
+
+Sources: OpenAI [Astra](https://developers.openai.com/api/docs/models/gpt-6-astra), [Sol 6.1](https://developers.openai.com/api/docs/models/gpt-6.1-sol), [Sol 6](https://developers.openai.com/api/docs/models/gpt-6-sol), [Luna](https://developers.openai.com/api/docs/models/gpt-6-luna), and [Claude pricing](https://platform.claude.com/docs/en/about-claude/pricing). Anthropic cache-write rates here are for five-minute caching; extended cache duration and premium/regional service rates are not selected by these profiles. Published release/capability documentation does not guarantee access for any particular API key, account, Codex subscription, or region.
+
+All four listed GPT-6 models use Responses in Spell, including plain-text calls and per-call model overrides. Tool calling with reasoning requires Responses; the tool-call profile already forces this transport. Astra and Sol 6.1 support `low`, `medium`, `high`, `xhigh`, and `max`, but not `none` or `minimal`. Sol 6 and Luna additionally support `none`, but not `minimal`. Unsupported efforts fail locally, without a silent remap. These models have a 1,050,000-token context and 128,000-token output ceiling; **Spell's configured output limits remain unchanged** (OpenAI 32,768; Codex 16,384).
+
+For these four GPT-6 models, a request with **more than 272,000 input tokens** is priced at **2x input/cache rates and 1.5x output rates for the entire request**, including reasoning output. Spell sums that request's uncached, cached, and cache-write input, then freezes its dollar cost before accumulation and budget checks. Exactly 272,000 stays at standard rates; several small requests do not trigger a tier merely because their aggregate input exceeds the threshold. Legacy aggregate-only usage records lack request boundaries and retain standard-tier fallback estimates. Cost overrides may specify `:long-context {:threshold 272000 :input-multiplier 2.0 :output-multiplier 1.5}` alongside normal map rates; replacing a model's entry without this metadata opts out of tier selection.
+
+Opus 5.5 always uses adaptive thinking; Sonnet 5.5 defaults to adaptive thinking. Both reject forced tool choice and assistant prefill, so Spell sends `tool_choice: auto` with the existing `spell_suffix` tool and validates returned tool output. Neither builder emits `temperature`, `top_p`, or `top_k`; nondefault values are rejected by these models. `none` and `minimal` are not supported output efforts (also rejected for Fable 5.1). Use `low`, `medium`, `high`, `xhigh`, or `max`; numeric `--thinking` requests use adaptive thinking rather than manual budgets on these models. Explicit disabled/manual-thinking maps are rejected for Claude 5.5. Both Claude 5.5 models have 1M context and 128K output ceilings, but Spell keeps the existing 16,384-token profile limits. Thinking shares that output budget.
+
+For Sonnet 5.5's lowest-thinking mode, set **explicit agent-profile** `:thinking {:type "between_tools"}` and optionally `:reasoning-effort "low"`, `"medium"`, or `"high"`. Omitted effort uses the model's default `high`. Only the `:type` field is allowed in this thinking map; `xhigh`/`max` and other model families are rejected. This is not an alias for effort `none`. Keep effort fixed within a provider conversation when using this mode; Spell does not introduce hidden conversation state. See [Sonnet migration](https://platform.claude.com/docs/en/models/sonnet-5-5/migration-guide) and [Opus migration](https://platform.claude.com/docs/en/models/opus-5-5/migration-guide).
+
+Explicit older comparators remain: `sonnet5`, `sonnet46`, `opus48`, `opus46`, `opus45`, `fable5`, and `gpt56sol`. To retain previous generic Claude behavior, select `sonnet5` / `opus48` explicitly, or set that exact `:default-model` in a custom model profile. No model migration changes Spell's dynamic scope, explicit state, ordinary orchestration, or system prompts.
 
 Kimi K3 is available through Fireworks with `bin/spell -m fireworks-tc:kimi-k3 -R high "task"`. The aliases `kimi3` and `kimik3` select the same provider model, `accounts/fireworks/models/kimi-k3`. Spell sends high effort through the [Fireworks Anthropic-compatible Messages API](https://docs.fireworks.ai/tools-sdks/anthropic-compatibility#reasoning-effort-mapping). Its [published serverless prices](https://fireworks.ai/models/fireworks/kimi-k3) are $3/M input tokens, $0.30/M cached input tokens, and $15/M output tokens; the shared pricing table uses ordinary input pricing for cache writes.
 

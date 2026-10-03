@@ -160,9 +160,9 @@
 
 (deftest sse-timeout-config-test
   (testing "Anthropic constructors default to the current Sonnet model"
-    (is (= "claude-sonnet-5"
+    (is (= "claude-sonnet-5-5"
            (:model (provider/anthropic-pf-provider {:api-key "test"}))))
-    (is (= "claude-sonnet-5"
+    (is (= "claude-sonnet-5-5"
            (:model (provider/anthropic-tc-provider {:api-key "test"})))))
 
   (testing "streaming provider constructors install SSE timeout defaults"
@@ -839,3 +839,156 @@
                                      :base-url (str "http://127.0.0.1:" (.getPort (.getAddress server)))})
                        "hello")))
         (finally (.stop server 0))))))
+
+;; Current model contracts are tested offline at the HTTP request boundary.
+(defn- claude-request-body [transport model thinking effort]
+  (request-json-body
+   (if (= transport :tc)
+     (#'provider/anthropic-tc-request "test" model "prompt" "system" 16384 false
+                                     thinking effort nil 600)
+     (#'provider/anthropic-pf-request "test" model "prompt" "system" "prefill" 16384 false
+                                     thinking effort nil 600))))
+
+(deftest claude-55-request-contract
+  (doseq [transport [:tc :pf]
+          model ["claude-opus-5-5" "claude-sonnet-5-5" "claude-opus-5-5-20260921"]
+          effort [nil "low" "medium" "high" "xhigh" "max"]
+          thinking [nil 1024 {:type "adaptive"}]]
+    (let [body (claude-request-body transport model thinking effort)]
+      (is (= {:type "adaptive"} (:thinking body)))
+      (is (= 16384 (:max_tokens body)))
+      (is (= ["user"] (mapv :role (:messages body))))
+      (is (= (when effort {:effort effort}) (:output_config body)))
+      (is (not-any? #(contains? body %) [:temperature :top_p :top_k]))
+      (when (= transport :tc)
+        (is (= {:type "auto"} (:tool_choice body)))
+        (is (= "spell_suffix" (get-in body [:tools 0 :name]))))))
+  (doseq [transport [:tc :pf]
+          model ["claude-opus-5-5" "claude-sonnet-5-5" "claude-fable-5-1"]
+          effort ["none" "minimal" "bogus"]]
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Unsupported reasoning effort"
+          (claude-request-body transport model nil effort))))
+  (doseq [transport [:tc :pf]
+          model ["claude-opus-5-5" "claude-sonnet-5-5"]
+          thinking [{:type "disabled"} {:type "enabled" :budget_tokens 1024}
+                    {:type "adaptive" :budget_tokens 1024}]]
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"requires adaptive thinking"
+          (claude-request-body transport model thinking "medium")))))
+
+(deftest sonnet-55-between-tools-contract
+  (doseq [transport [:tc :pf] effort [nil "low" "medium" "high"]]
+    (let [body (claude-request-body transport "claude-sonnet-5-5" {:type "between_tools"} effort)]
+      (is (= {:type "between_tools"} (:thinking body)))
+      (is (= (when effort {:effort effort}) (:output_config body)))
+      (when (= transport :tc) (is (= {:type "auto"} (:tool_choice body))))))
+  (doseq [transport [:tc :pf]
+          [model thinking effort] [["claude-sonnet-5-5" {:type "between_tools"} "xhigh"]
+                                    ["claude-sonnet-5-5" {:type "between_tools"} "max"]
+                                    ["claude-sonnet-5-5" {:type "between_tools" :budget_tokens 1} "low"]
+                                    ["claude-opus-5-5" {:type "between_tools"} "low"]
+                                    ["claude-fable-5-1" {:type "between_tools"} "low"]
+                                    ["claude-sonnet-5" {:type "between_tools"} "low"]]]
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"between_tools requires"
+          (claude-request-body transport model thinking effort)))))
+
+(deftest current-anthropic-defaults
+  (doseq [constructor [provider/anthropic-tc-provider provider/anthropic-pf-provider]]
+    (is (= "claude-sonnet-5-5" (:model (constructor {:api-key "offline"}))))))
+
+(defn- gpt6-request [model effort force-tool?]
+  (#'provider/openai-responses-request "test" "https://api.openai.com/v1" model
+                                       "prompt" "system" 32768 effort nil nil force-tool? nil 600))
+
+(deftest gpt6-effort-contract
+  (doseq [model ["gpt-6-astra" "gpt-6.1-sol" "gpt-6-sol" "gpt-6-luna"]
+          effort [nil "low" "medium" "high" "xhigh" "max"]]
+    (let [body (request-json-body (gpt6-request model effort true))]
+      (is (= (when effort {:effort effort}) (:reasoning body)))
+      (is (= 32768 (:max_output_tokens body)))
+      (is (= "spell_suffix" (get-in body [:tools 0 :name])))))
+  (doseq [model ["gpt-6-sol" "gpt-6-luna"]]
+    (is (= {:effort "none"} (:reasoning (request-json-body (gpt6-request model "none" true))))))
+  (doseq [model ["gpt-6-astra" "gpt-6.1-sol" "gpt-6.1-sol-20260929"]
+          effort ["none" "minimal"]]
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Unsupported reasoning effort"
+          (gpt6-request model effort true)))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Unsupported reasoning effort"
+          (#'provider/codex-tc-request-body model "prompt" "system" nil effort nil nil))))
+  (doseq [model ["gpt-6-sol" "gpt-6-luna"]]
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Unsupported reasoning effort"
+          (gpt6-request model "minimal" true)))))
+
+(deftest gpt6-effective-model-and-plain-text-routing
+  (doseq [model ["gpt-6-astra" "gpt-6.1-sol" "gpt-6-sol" "gpt-6-luna"]
+          plain? [false true]]
+    (let [body (atom nil)
+          p (provider/openai-provider {:api-key "offline" :model "gpt-5.6-sol"
+                                       :max-tokens 32768})
+          p (if plain? (provider/plain-text-provider p) p)]
+      ;; Abort at serialization, before HTTP; :input proves Responses routing.
+      (with-redefs [json/write-str (fn [request & _]
+                                    (reset! body request)
+                                    (throw (ex-info "captured" {::captured true})))]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"captured"
+              (provider/call-llm p "prompt" {:model model :reasoning-effort "medium"}))))
+      (is (= model (:model @body)))
+      (is (contains? @body :input))
+      (is (not (contains? @body :messages))))))
+
+(deftest latest-model-pricing-rows
+  (doseq [[model input output read write]
+          [["gpt-6-astra" 10.0 50.0 1.0 12.5]
+           ["gpt-6.1-sol" 2.0 10.0 0.1 2.5]
+           ["gpt-6-sol" 2.0 10.0 0.2 2.5]
+           ["gpt-6-luna" 0.1 0.5 0.01 0.125]
+           ["claude-opus-5-5" 4.0 20.0 0.2 5.0]
+           ["claude-sonnet-5-5" 2.0 10.0 0.2 2.5]
+           ["claude-fable-5-1" 10.0 50.0 0.25 12.5]
+           ["claude-sonnet-5" 3.0 15.0 0.3 3.75]]]
+    (doseq [id [model (str model "-20261003")]]
+      (let [cost (#'provider/lookup-cost id provider/default-costs)]
+        (is (= {:input input :output output :cache-read-input read :cache-write-input write}
+               (dissoc cost :long-context)) id)
+        (is (= (str/starts-with? model "gpt-6") (contains? cost :long-context)) id)))))
+
+(deftest request-local-long-context-pricing
+  (doseq [model ["gpt-6-astra" "gpt-6.1-sol" "gpt-6-sol" "gpt-6-luna"]
+          total [271999 272000 272001]]
+    (let [{:keys [input output cache-read-input cache-write-input]}
+          (#'provider/lookup-cost model provider/default-costs)
+          usage {:uncached_input_tokens (- total 200000) :cached_input_tokens 100000
+                 :cache_write_input_tokens 100000 :visible_output_tokens 200 :reasoning_output_tokens 300}
+          input-cost (+ (* (- total 200000) input) (* 100000 cache-read-input) (* 100000 cache-write-input))
+          expected (/ (+ (* (if (> total 272000) 2.0 1.0) input-cost)
+                         (* (if (> total 272000) 1.5 1.0) 500 output)) 1000000.0)]
+      (is (< (abs (- expected (#'provider/usage-cost model usage nil))) 1.0e-10))))
+  (testing "frozen costs are request-local, never inferred from the accumulated context"
+    (let [usage (atom {:by-model {}})]
+      (binding [provider/*usage* usage]
+        (provider/track-usage! "gpt-6.1-sol" {:uncached_input_tokens 200000})
+        (provider/track-usage! "gpt-6.1-sol" {:uncached_input_tokens 200000}))
+      (is (< (abs (- 0.8 (provider/current-cost usage))) 1.0e-10))
+      (swap! usage assoc :cost-table {"gpt-6.1-sol" [900 900]})
+      (is (< (abs (- 0.8 (provider/current-cost usage))) 1.0e-10))))
+  (testing "legacy aggregate-only records cannot prove a long request"
+    (is (< (abs (- 0.8 (provider/current-cost
+                       (atom {:by-model {"gpt-6.1-sol" {:uncached_input_tokens 400000}}})))) 1.0e-10)))
+  (testing "Anthropic does not get the GPT6 surcharge"
+    (is (= 1.22 (#'provider/usage-cost "claude-opus-5-5"
+                  {:uncached_input_tokens 300000 :visible_output_tokens 1000} nil))))
+  (testing "budget enforcement uses the tiered frozen cost"
+    (let [usage (atom {:by-model {}})]
+      (binding [provider/*usage* usage provider/*budget* 1.0]
+        (is (thrown? clojure.lang.ExceptionInfo
+                     (provider/track-usage! "gpt-6.1-sol" {:uncached_input_tokens 300000}))))
+      (is (= 1.2 (provider/current-cost usage))))))
+
+(deftest long-context-cost-overrides
+  (let [tier {:threshold 10 :input-multiplier 2 :output-multiplier 1.5}
+        costs {"custom" {:input 1.0 :output 2.0 :long-context tier}}
+        normalized (#'provider/lookup-cost "custom" costs)]
+    (is (= tier (:long-context normalized)))
+    (is (= 0.000026 (#'provider/usage-cost "custom" {:uncached_input_tokens 13} costs)))
+    (is (nil? (:long-context (#'provider/lookup-cost "custom" {"custom" [1.0 2.0]})))))
+  (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Invalid long-context pricing tier"
+        (#'provider/lookup-cost "custom" {"custom" {:input 1 :output 2 :long-context {:threshold -1}}}))))

@@ -123,7 +123,7 @@
    ["-K" "--thinking TOKENS" "Enable Anthropic thinking (token budget for extended thinking; adaptive for supported models)"
     :parse-fn #(Integer/parseInt %)
     :validate [pos? "Must be positive"]]
-   ["-R" "--reasoning-effort EFFORT" "Reasoning effort for OpenAI and adaptive Anthropic models (none, low, medium, high, xhigh, max; default: medium for the default model)"
+   ["-R" "--reasoning-effort EFFORT" "Reasoning effort for OpenAI and adaptive Anthropic models (low, medium, high, xhigh, max; none only on supporting models; default: medium for the default model)"
     :validate [#(contains? #{"none" "low" "medium" "high" "xhigh" "max"} %)
                "Must be none, low, medium, high, xhigh, or max"]]
    [nil "--verbosity LEVEL" "OpenAI verbosity (low, auto)"
@@ -166,7 +166,11 @@
           "  spell -t 'Test prompt'"
           "  spell -m codex-tc:gpt-5.3 'Return 42'"
           "  spell -m openai-tc:gpt-6-astra 'Return 42'"
-          "  spell -m anthropic-tc:claude-opus-4-8 'Return 42'"
+          "  spell -m anthropic-tc:claude-opus-5-5 'Return 42'"
+          "  spell -m openai-tc:gpt-6.1-sol 'Use Sol 6.1 (aliases: sol, sol61, gpt61sol)'"
+          "  spell -m openai-tc:gpt-6-sol 'Compare Sol 6 (aliases: sol6, gpt6sol)'"
+          "  spell -m openai-tc:gpt-6-luna 'Use Luna 6 (aliases: luna, luna6, gpt6luna)'"
+          "  spell -m anthropic-tc:claude-sonnet-5-5 'Use Sonnet 5.5 (sonnet, sonnet55)'"
           "  spell -m fable 'Use Claude Fable 5.1'"
           "  spell -m fireworks:glm-5p2 'Return 42'"
           "  spell -m fireworks-tc:kimi-k2p7-code 'Return 42'"

@@ -60,6 +60,8 @@ bin/spell -h
 
 To run `spell` directly instead of `bin/spell`, put this checkout's `bin/` directory on your `PATH`.
 
+The default remains GPT-6 Astra through Codex. For API-backed alternatives, use `bin/spell -m sol`, `-m luna`, `-m opus`, or `-m sonnet` (Sol 6.1, Luna 6, Opus 5.5, and Sonnet 5.5). `-m sol6` selects the explicit GPT-6 Sol comparator; `-m fable` still selects Fable 5.1. These require the corresponding provider credentials and account access. See the [model and pricing reference](https://lukejoconnor.github.io/spell/api#current-models-and-pricing) for version aliases, reasoning controls, and request-local long-context pricing.
+
 ### Examples
 
 - [Hello world](examples/hello-world.md) makes one minimal model self-call and composes its result.
