@@ -27,9 +27,9 @@
            (model-spec/resolve-model-spec "gpt52"))))
 
   (testing "full-spec aliases select provider and model"
-    (is (= {:provider "anthropic-tc" :model "claude-sonnet-5"}
+    (is (= {:provider "anthropic-tc" :model "claude-sonnet-5-5"}
            (model-spec/resolve-model-spec "sonnet")))
-    (is (= {:provider "anthropic-tc" :model "claude-opus-4-8"}
+    (is (= {:provider "anthropic-tc" :model "claude-opus-5-5"}
            (model-spec/resolve-model-spec "opus")))
     (is (= {:provider "anthropic-tc" :model "claude-fable-5-1"}
            (model-spec/resolve-model-spec "fable")))
@@ -66,9 +66,25 @@
   (testing "explicit provider prefixes are preserved"
     (is (= {:provider "fireworks-tc" :model "glm-5p1"}
            (model-spec/resolve-model-spec "fireworks-tc:glm-5p1")))
-    (is (= {:provider "anthropic-pf" :model "claude-opus-4-8"}
+    (is (= {:provider "anthropic-pf" :model "claude-opus-5-5"}
            (model-spec/resolve-model-spec "anthropic-pf:opus"))))
 
   (testing "codex-tc gpt-5.3 normalizes to Codex model id"
     (is (= {:provider "codex-tc" :model "gpt-5.3-codex"}
            (model-spec/resolve-model-spec "codex-tc:gpt53")))))
+
+(deftest current-model-aliases-and-comparators
+  (doseq [[model aliases] {"gpt-6.1-sol" ["sol" "sol61" "gpt61sol"]
+                          "gpt-6-sol" ["sol6" "gpt6sol"]
+                          "gpt-6-luna" ["luna" "luna6" "gpt6luna"]}
+          alias aliases]
+    (is (= {:provider "openai-tc" :model model} (model-spec/resolve-model-spec alias)))
+    (is (= {:provider "codex-tc" :model model}
+           (model-spec/resolve-model-spec (str "codex-tc:" alias)))))
+  (doseq [[alias model] {"sonnet55" "claude-sonnet-5-5" "opus55" "claude-opus-5-5"
+                         "sonnet5" "claude-sonnet-5" "sonnet46" "claude-sonnet-4-6"
+                         "opus48" "claude-opus-4-8" "opus46" "claude-opus-4-6"
+                         "opus45" "claude-opus-4-5-20251101"}]
+    (is (= {:provider "anthropic-tc" :model model} (model-spec/resolve-model-spec alias)))
+    (is (= {:provider "anthropic-pf" :model model}
+           (model-spec/resolve-model-spec (str "anthropic-pf:" alias))))))

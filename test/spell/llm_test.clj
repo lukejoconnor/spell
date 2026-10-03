@@ -1438,7 +1438,9 @@
 
 (deftest astra-uses-openai-responses-api-test
   (testing "Astra routes to Responses even when a generic OpenAI provider does not force it"
-    (is (true? (#'provider/responses-model? "gpt-6-astra"))))
+    (doseq [model ["gpt-6-astra" "gpt-6.1-sol" "gpt-6-sol" "gpt-6-luna"
+                   "gpt-6.1-sol-20260929"]]
+      (is (true? (#'provider/responses-model? model)) model)))
   (testing "explicit older models retain their existing routing"
     (is (false? (boolean (#'provider/responses-model? "gpt-5.6-sol"))))))
 

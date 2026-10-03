@@ -1,6 +1,8 @@
 {
  "claude-3-5-haiku" {"input" 0.80 "cache-read-input" 0.08 "cache-write-input" 1.00 "output" 4.00}
  "claude-haiku-4-5" {"input" 1.00 "cache-read-input" 0.10 "cache-write-input" 1.25 "output" 5.00}
+ "claude-sonnet-5-5" {"input" 2.00 "cache-read-input" 0.20 "cache-write-input" 2.50 "output" 10.00}
+ "claude-opus-5-5" {"input" 4.00 "cache-read-input" 0.20 "cache-write-input" 5.00 "output" 20.00}
  "claude-sonnet-5" {"input" 3.00 "cache-read-input" 0.30 "cache-write-input" 3.75 "output" 15.00}
  "claude-sonnet-4-6" {"input" 3.00 "cache-read-input" 0.30 "cache-write-input" 3.75 "output" 15.00}
  "claude-sonnet-4" {"input" 3.00 "cache-read-input" 0.30 "cache-write-input" 3.75 "output" 15.00}
@@ -31,7 +33,13 @@
  "gpt-5.4" {"input" 2.50 "cache-read-input" 0.25 "cache-write-input" 3.125 "output" 15.00}
  "gpt-5.5" {"input" 5.00 "cache-read-input" 0.50 "cache-write-input" 5.00 "output" 30.00}
  "gpt-5.6-sol" {"input" 5.00 "cache-read-input" 0.50 "cache-write-input" 5.00 "output" 30.00}
- "gpt-6-astra" {"input" 10.00 "cache-read-input" 1.00 "cache-write-input" 12.50 "output" 50.00}
+ "gpt-6-astra" {"input" 10.00 "cache-read-input" 1.00 "cache-write-input" 12.50 "output" 50.00 "long-context" {"threshold" 272000 "input-multiplier" 2.0 "output-multiplier" 1.5}}
+
+ "gpt-6.1-sol" {"input" 2.00 "cache-read-input" 0.10 "cache-write-input" 2.50 "output" 10.00 "long-context" {"threshold" 272000 "input-multiplier" 2.0 "output-multiplier" 1.5}}
+
+ "gpt-6-sol" {"input" 2.00 "cache-read-input" 0.20 "cache-write-input" 2.50 "output" 10.00 "long-context" {"threshold" 272000 "input-multiplier" 2.0 "output-multiplier" 1.5}}
+
+ "gpt-6-luna" {"input" 0.10 "cache-read-input" 0.01 "cache-write-input" 0.125 "output" 0.50 "long-context" {"threshold" 272000 "input-multiplier" 2.0 "output-multiplier" 1.5}}
 
  "accounts/fireworks/models/glm-5" {"input" 1.00 "cache-read-input" 0.20 "cache-write-input" 1.25 "output" 3.20}
  "accounts/fireworks/models/glm-5p1" {"input" 1.40 "cache-read-input" 0.26 "cache-write-input" 1.75 "output" 4.40}

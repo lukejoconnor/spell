@@ -83,6 +83,17 @@
   "Shared pricing table loaded from data/pricing.edn."
   (load-shared-costs))
 
+(defn- normalize-long-context [tier]
+  (when tier
+    (let [field #(or (get tier %) (get tier (name %)))
+          normalized {:threshold (field :threshold)
+                      :input-multiplier (field :input-multiplier)
+                      :output-multiplier (field :output-multiplier)}]
+      (when-not (and (integer? (:threshold normalized))
+                     (every? #(and (number? %) (pos? %)) (vals normalized)))
+        (throw (ex-info "Invalid long-context pricing tier" {:long-context tier})))
+      normalized)))
+
 (defn- normalize-cost-spec
   [costs cache-read-ratio]
   (cond
@@ -97,12 +108,14 @@
     (let [input-cost (or (:input costs) (get costs "input"))
           output-cost (or (:output costs) (get costs "output"))
           cache-write (or (:cache-write-input costs) (get costs "cache-write-input"))
-          cache-read (or (:cache-read-input costs) (get costs "cache-read-input"))]
+          cache-read (or (:cache-read-input costs) (get costs "cache-read-input"))
+          tier (normalize-long-context (or (:long-context costs) (get costs "long-context")))]
       (when (and input-cost output-cost)
-        {:input input-cost
-         :output output-cost
-         :cache-write-input (or cache-write (* input-cost 1.25))
-         :cache-read-input (or cache-read (* input-cost cache-read-ratio))}))
+        (cond-> {:input input-cost
+                 :output output-cost
+                 :cache-write-input (or cache-write (* input-cost 1.25))
+                 :cache-read-input (or cache-read (* input-cost cache-read-ratio))}
+          tier (assoc :long-context tier))))
 
     :else nil))
 
@@ -167,27 +180,35 @@
       (normalize-cost-spec costs cache-read-ratio))))
 
 (defn- usage-cost
-  "Compute the dollar cost for one usage record from a cost table."
-  [model usage cost-table]
-  (if-let [{:keys [input output cache-write-input cache-read-input]}
-           (lookup-cost model (or cost-table default-costs))]
-    (let [base-input (* (:uncached_input_tokens usage 0) (/ input 1000000.0))
-          cache-write (* (:cache_write_input_tokens usage 0)
-                         (/ cache-write-input 1000000.0))
-          cache-read (* (:cached_input_tokens usage 0)
-                        (/ cache-read-input 1000000.0))
-          output (* (+ (:visible_output_tokens usage 0)
-                       (:reasoning_output_tokens usage 0))
-                    (/ output 1000000.0))]
-      (+ base-input cache-write cache-read output))
-    nil))
+  "Compute cost for one request. Legacy aggregate buckets cannot select a tier."
+  ([model usage cost-table] (usage-cost model usage cost-table true))
+  ([model usage cost-table request?]
+   (when-let [{:keys [input output cache-write-input cache-read-input long-context]}
+              (lookup-cost model (or cost-table default-costs))]
+     (let [input-tokens (+ (:uncached_input_tokens usage 0)
+                           (:cache_write_input_tokens usage 0)
+                           (:cached_input_tokens usage 0))
+           tier? (and request? long-context (> input-tokens (:threshold long-context)))
+           input-multiplier (if tier? (:input-multiplier long-context) 1.0)
+           output-multiplier (if tier? (:output-multiplier long-context) 1.0)
+           ;; Preserve standard-tier arithmetic (and frozen historical totals).
+           base-input (* (:uncached_input_tokens usage 0) (/ input 1000000.0))
+           cache-write (* (:cache_write_input_tokens usage 0) (/ cache-write-input 1000000.0))
+           cache-read (* (:cached_input_tokens usage 0) (/ cache-read-input 1000000.0))
+           output-cost (* (+ (:visible_output_tokens usage 0)
+                             (:reasoning_output_tokens usage 0)) (/ output 1000000.0))]
+       (if tier?
+         (+ (* input-multiplier (+ base-input cache-write cache-read))
+            (* output-multiplier output-cost))
+         (+ base-input cache-write cache-read output-cost))))))
+
 
 (defn- bucket-cost
   "Return the stored cost for a bucket, or derive it from pricing when the bucket predates frozen costs."
   [model stats cost-table]
   (if (contains? stats :cost)
     (:cost stats)
-    (usage-cost model stats cost-table)))
+    (usage-cost model stats cost-table false)))
 
 (defn current-cost
   "Compute total cost in dollars from accumulated usage data.
@@ -234,7 +255,9 @@
                                         (+ existing-cost (or turn-cost 0.0))))
 
                                     :else
-                                    (usage-cost model merged-stats (or cost-table (:cost-table u))))]
+                                    (let [old-cost (usage-cost model existing (or cost-table (:cost-table u)) false)]
+                                      (when (or (number? old-cost) (number? turn-cost))
+                                        (+ (or old-cost 0.0) (or turn-cost 0.0)))))]
                   (cond-> (-> u
                               (update :records (fnil conj [])
                                       {:model model :usage usage :cost turn-cost})
@@ -494,16 +517,20 @@
 
 (declare anthropic-adaptive-thinking-model?
          anthropic-output-effort
-         anthropic-thinking-enabled?)
+         anthropic-thinking-enabled?
+         anthropic-thinking-config)
 
 (defn- anthropic-pf-request
   [api-key model prompt system-prompt prefix max-tokens stream? thinking reasoning-effort
    cache-prefix request-timeout-sec]
   (let [adaptive-only? (anthropic-adaptive-thinking-model? model)
+        thinking-config (anthropic-thinking-config model thinking reasoning-effort)
         output-effort (anthropic-output-effort reasoning-effort)
         thinking-enabled? (anthropic-thinking-enabled? model thinking reasoning-effort)
-        ;; When thinking is active, don't use assistant prefill (incompatible)
-        effective-prefix (when-not thinking-enabled? prefix)
+        ;; Keep the direct builder aligned with supports-prefill as well.
+        effective-prefix (when-not (or thinking-enabled? adaptive-only?
+                                       (str/includes? (str model) "opus-4-6"))
+                           prefix)
         ;; Only apply cache_control when the shared user-content prefix exceeds
         ;; the model's minimum cacheable threshold.
         min-chars (cache-min-chars model)
@@ -522,11 +549,7 @@
                       :messages messages}
                cached-system (assoc :system cached-system)
                stream? (assoc :stream true)
-               (and adaptive-only? thinking-enabled?) (assoc :thinking {:type "adaptive"})
-               (and (not adaptive-only?) thinking-enabled?)
-               (assoc :thinking (if (number? thinking)
-                                  {:type "enabled" :budget_tokens thinking}
-                                  {:type "enabled" :budget_tokens 10000}))
+               thinking-config (assoc :thinking thinking-config)
                (and adaptive-only? output-effort)
                (assoc :output_config {:effort output-effort}))
         builder (cond-> (HttpRequest/newBuilder)
@@ -587,10 +610,21 @@
               (catch Exception _ nil))))))
     {:text (.toString text) :usage (with-legacy-usage-keys @usage)}))
 
+(defn- model-version?
+  "Match a model ID or a dated variant, not an unrelated family name."
+  [model id]
+  (let [model (str model)]
+    (or (= model id) (str/starts-with? model (str id "-")))))
+
+(defn- claude-55? [model]
+  (or (model-version? model "claude-opus-5-5")
+      (model-version? model "claude-sonnet-5-5")))
+
 (defn- anthropic-adaptive-thinking-model?
   [model]
   (let [model (str model)]
-    (or (str/includes? model "opus-4-7")
+    (or (model-version? model "claude-opus-5-5")
+        (str/includes? model "opus-4-7")
         (str/includes? model "opus-4-8")
         (str/includes? model "sonnet-5")
         (str/includes? model "fable-5")
@@ -610,7 +644,37 @@
 
 (defn- anthropic-auto-tool-choice-only-model?
   [model]
-  (str/includes? (str model) "fable-5-1"))
+  (or (claude-55? model)
+      (model-version? model "claude-fable-5-1")))
+
+(defn- anthropic-thinking-config
+  [model thinking reasoning-effort]
+  (let [current? (claude-55? model)
+        effort-model? (or current? (model-version? model "claude-fable-5-1"))
+        between? (and (map? thinking) (= "between_tools" (:type thinking)))]
+    (when (and effort-model? reasoning-effort
+               (not (contains? #{"low" "medium" "high" "xhigh" "max"} reasoning-effort)))
+      (throw (ex-info (str "Unsupported reasoning effort " (pr-str reasoning-effort) " for " model
+                           "; use low, medium, high, xhigh, or max")
+                      {:model model :reasoning-effort reasoning-effort})))
+    (when (and between?
+               (not (and (model-version? model "claude-sonnet-5-5")
+                         (= thinking {:type "between_tools"})
+                         (contains? #{"low" "medium" "high"} (or reasoning-effort "high")))))
+      (throw (ex-info "between_tools requires Sonnet 5.5, low/medium/high effort, and only :type"
+                      {:model model :thinking thinking :reasoning-effort reasoning-effort})))
+    (when (and current? (map? thinking)
+               (not (or (= thinking {:type "adaptive"})
+                        (= thinking {:type "between_tools"}))))
+      (throw (ex-info "Claude 5.5 requires adaptive thinking or Sonnet between_tools, without extra fields"
+                      {:model model :thinking thinking})))
+    (cond
+      between? {:type "between_tools"}
+      current? {:type "adaptive"}
+      (anthropic-thinking-enabled? model thinking reasoning-effort)
+      (if (anthropic-adaptive-thinking-model? model)
+        {:type "adaptive"}
+        {:type "enabled" :budget_tokens (if (number? thinking) thinking 10000)}))))
 
 (defrecord AnthropicPfProvider [api-key model max-tokens http-client request-timeout-sec
                                 sse-idle-timeout-sec sse-completion-timeout-sec costs]
@@ -658,7 +722,7 @@
 
    Options:
    - :api-key - API key (default: ANTHROPIC_API_KEY env var)
-   - :model - Model name (default: claude-sonnet-5)
+   - :model - Model name (default: claude-sonnet-5-5)
    - :max-tokens - Max tokens per response (default: 16384)
    - :request-timeout-sec - Per-HTTP-call timeout in seconds (default: 600)
    - :sse-idle-timeout-sec - Max seconds without stream bytes (default: 100)
@@ -667,7 +731,7 @@
   ([] (anthropic-pf-provider {}))
   ([{:keys [api-key model max-tokens request-timeout-sec sse-idle-timeout-sec
             sse-completion-timeout-sec costs]
-     :or {model "claude-sonnet-5"
+     :or {model "claude-sonnet-5-5"
           request-timeout-sec 600
           sse-idle-timeout-sec default-sse-idle-timeout-sec
           sse-completion-timeout-sec default-sse-completion-timeout-sec}}]
@@ -695,6 +759,7 @@
    cache-prefix request-timeout-sec]
   (let [min-chars (cache-min-chars model)
         adaptive-only? (anthropic-adaptive-thinking-model? model)
+        thinking-config (anthropic-thinking-config model thinking reasoning-effort)
         output-effort (anthropic-output-effort reasoning-effort)
         thinking-enabled? (anthropic-thinking-enabled? model thinking reasoning-effort)
         ;; Only apply cache_control when the shared user-content prefix exceeds
@@ -710,19 +775,15 @@
                                     (or max-tokens 16384))
                       :messages [{:role "user" :content user-content}]
                       :tools [spell-suffix-tool]
-                      ;; Thinking and Fable 5.1 forbid forced tool use.
+                      ;; Thinking and auto-only model families forbid forced tool use.
                       :tool_choice {:type (if (or thinking-enabled?
                                                  (anthropic-auto-tool-choice-only-model? model))
                                            "auto"
                                            "any")}}
                cached-system (assoc :system cached-system)
                stream? (assoc :stream true)
-               ;; Opus 4.7 requires adaptive thinking; budget_tokens is rejected.
-               (and adaptive-only? thinking-enabled?) (assoc :thinking {:type "adaptive"})
-               (and (not adaptive-only?) thinking-enabled?)
-               (assoc :thinking (if (number? thinking)
-                                  {:type "enabled" :budget_tokens thinking}
-                                  {:type "enabled" :budget_tokens 10000}))
+               ;; Validated model-specific thinking; no manual budgets on adaptive models.
+               thinking-config (assoc :thinking thinking-config)
                (and adaptive-only? output-effort)
                (assoc :output_config {:effort output-effort}))
         builder (cond-> (HttpRequest/newBuilder)
@@ -874,7 +935,7 @@
 
    Options:
    - :api-key - API key (default: ANTHROPIC_API_KEY env var)
-   - :model - Model name (default: claude-sonnet-5)
+   - :model - Model name (default: claude-sonnet-5-5)
    - :max-tokens - Max tokens per response (default: 16384)
    - :request-timeout-sec - Per-HTTP-call timeout in seconds (default: 600)
    - :sse-idle-timeout-sec - Max seconds without stream bytes (default: 100)
@@ -883,7 +944,7 @@
   ([] (anthropic-tc-provider {}))
   ([{:keys [api-key model max-tokens request-timeout-sec sse-idle-timeout-sec
             sse-completion-timeout-sec costs]
-     :or {model "claude-sonnet-5"
+     :or {model "claude-sonnet-5-5"
           request-timeout-sec 600
           sse-idle-timeout-sec default-sse-idle-timeout-sec
           sse-completion-timeout-sec default-sse-completion-timeout-sec}}]
@@ -964,19 +1025,36 @@
 ;; OpenAI Provider
 ;; ---------------------------------------------------------------------------
 
+(defn- gpt6-model? [model]
+  (boolean (some #(model-version? model %)
+                 ["gpt-6-astra" "gpt-6.1-sol" "gpt-6-sol" "gpt-6-luna"])))
+
+(defn- validate-openai-effort! [model effort]
+  (when (and effort (gpt6-model? model))
+    (let [supports-none? (or (model-version? model "gpt-6-sol")
+                             (model-version? model "gpt-6-luna"))
+          allowed (cond-> #{"low" "medium" "high" "xhigh" "max"}
+                    supports-none? (conj "none"))]
+      (when-not (contains? allowed effort)
+        (throw (ex-info (str "Unsupported reasoning effort " (pr-str effort) " for " model
+                             "; supported: " (str/join ", " (sort allowed)))
+                        {:model model :reasoning-effort effort :supported allowed}))))))
+
 (defn- responses-model?
-  "Does this model require the OpenAI Responses API instead of Chat Completions?"
+  "Use Responses for GPT-6 reasoning/tool compatibility and Codex models."
   [model]
-  (some #(str/includes? model %) ["codex" "gpt-6-astra"]))
+  (or (gpt6-model? model) (str/includes? (str model) "codex")))
 
 (defn- parse-openai-responses-usage
-  "Normalize OpenAI Responses-style usage, splitting cached tokens out of input."
+  "Normalize Responses usage into disjoint ordinary input, cache reads, and cache writes."
   [usage]
   (let [cached-tokens (get-in usage [:input_tokens_details :cached_tokens] 0)
+        cache-write-tokens (get-in usage [:input_tokens_details :cache_write_tokens] 0)
         reasoning-tokens (get-in usage [:output_tokens_details :reasoning_tokens] 0)
         output-tokens (:output_tokens usage 0)]
     (with-legacy-usage-keys
-      {:uncached_input_tokens (max 0 (- (:input_tokens usage 0) cached-tokens))
+      {:uncached_input_tokens (max 0 (- (:input_tokens usage 0) cached-tokens cache-write-tokens))
+       :cache_write_input_tokens cache-write-tokens
        :cached_input_tokens cached-tokens
        :visible_output_tokens (max 0 (- output-tokens reasoning-tokens))
        :reasoning_output_tokens reasoning-tokens})))
@@ -984,6 +1062,7 @@
 (defn- openai-responses-request
   [api-key base-url model prompt system-prompt max-tokens reasoning-effort verbosity
    grammar-format force-tool-call prompt-cache-key request-timeout-sec]
+  (validate-openai-effort! model reasoning-effort)
   (let [reasoning (when reasoning-effort
                     {:effort reasoning-effort})
         force-tool-instructions
@@ -1012,7 +1091,8 @@
                instructions (assoc :instructions instructions)
                max-tokens (assoc :max_output_tokens max-tokens)
                reasoning (assoc :reasoning reasoning)
-               verbosity (assoc :verbosity verbosity)
+               (contains? #{"low" "medium" "high"} verbosity)
+               (assoc :text {:verbosity verbosity})
                prompt-cache-key (assoc :prompt_cache_key prompt-cache-key)
                tool-mode? (assoc :tools [tool]
                                  :tool_choice "required"))
@@ -1073,6 +1153,7 @@
 
 (defn- openai-request [api-key base-url model prompt system-prompt _prefix max-tokens reasoning-effort verbosity
                        prompt-cache-key request-timeout-sec]
+  (validate-openai-effort! model reasoning-effort)
   (let [messages (cond-> []
                    system-prompt (conj {:role "system" :content system-prompt})
                    true (conj {:role "user" :content prompt}))
@@ -1221,6 +1302,7 @@
 
 (defn- codex-msg-request
   [api-key account-id base-url model prompt system-prompt max-tokens reasoning-effort verbosity grammar-format]
+  (validate-openai-effort! model reasoning-effort)
   (let [reasoning (when reasoning-effort
                     {:effort reasoning-effort})
         text-controls (when (= verbosity "low")
@@ -1260,6 +1342,7 @@
 
 (defn- codex-tc-request-body
   [model prompt system-prompt prompt-cache-key reasoning-effort verbosity grammar-format]
+  (validate-openai-effort! model reasoning-effort)
   (let [reasoning (when reasoning-effort
                     {:effort reasoning-effort})
         text-controls (when (= verbosity "low")
