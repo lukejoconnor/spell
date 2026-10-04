@@ -318,6 +318,36 @@
   (testing "map empty"
     (is (= [] (run-spell '(map inc []))))))
 
+(deftest mapv-builtin
+  (testing "one collection, eager vector result, and ordinary builtin"
+    (is (= [2 3 4] (run-spell '(mapv inc [1 2 3]))))
+    (is (vector? (run-spell '(mapv inc '(1 2 3)))))
+    (is (= [2 3 4] (run-spell '(mapv inc '(1 2 3))))))
+  (testing "named and inline Spell functions"
+    (is (= [1 4 9] (run-spell-full '(do (defn sq [x] (* x x)) (mapv sq [1 2 3])))))
+    (is (= [2 4 6] (run-spell '(mapv (fn [x] (* x 2)) [1 2 3])))))
+  (testing "Spell functions use dynamic caller scope, not definition scope"
+    (is (= [21 22]
+           (run-spell '(do (def offset 10)
+                           (defn add-offset [x] (+ offset x))
+                           (let [offset 20] (mapv add-offset [1 2])))))))
+  (testing "ordinary callable values retain invocation semantics"
+    (is (= [1 nil] (run-spell '(mapv :n [{:n 1} {}]))))
+    (is (= [:a nil] (run-spell '(mapv {1 :a} [1 2]))))
+    (is (= [:b :a] (run-spell '(mapv [:a :b] [1 0]))))
+    (is (= [1 nil] (run-spell '(mapv #{1} [1 2])))))
+  (testing "nil and empty collections return empty vectors, without invoking f"
+    (doseq [coll [nil [] '()]]
+      (let [result (run-spell (list 'mapv 'inc coll))]
+        (is (= [] result))
+        (is (vector? result))))
+    (is (= [] (run-spell '(mapv (fn [x] (/ 1 0)) [])))))
+  (testing "only (f coll) is supported: no transducer or multi-collection arity"
+    (doseq [expr ['(mapv) '(mapv inc) '(mapv + [1] [2]) '(mapv + [1] [2] [3])]]
+      (is (thrown? Exception (run-spell expr)) (str expr))))
+  (testing "errors propagate during eager invocation"
+    (is (thrown? Exception (run-spell '(mapv (fn [x] (/ 1 x)) [1 0]))))))
+
 (deftest filter-builtin
   (testing "filter with predicate fn"
     (is (= [3 4 5] (run-spell '(filter (fn [x] (> x 2)) [1 2 3 4 5])))))

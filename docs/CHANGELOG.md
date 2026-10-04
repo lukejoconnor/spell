@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.5.1 - 2026-10-04
+
+- Added single-collection `mapv` and `(strings/index-of s needle from-index)`, avoiding the unsupported-name and arity errors these Clojure-style calls previously caused.
 
 ### Current OpenAI and Anthropic model support
 

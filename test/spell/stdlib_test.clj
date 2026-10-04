@@ -392,6 +392,48 @@
   (testing "index-of at start"
     (is (= 0 (run-spell-full '(strings/index-of "hello" "hello"))))))
 
+(deftest strings-index-of-offset-test
+  (testing "inclusive UTF-16 offsets and Java/Clojure boundary behavior"
+    (doseq [[s needle start expected]
+            [["banana" "an" 1 1]
+             ["banana" "an" 2 3]
+             ["banana" "an" -9 1]
+             ["banana" "an" 6 nil]
+             ["banana" "an" 9 nil]
+             ["banana" "xyz" 0 nil]
+             ;; unchecked-int narrowing precedes the boundary rules:
+             ;; 2147483648 -> -2147483648; 4294967296 -> 0;
+             ;; -2147483649 -> 2147483647.
+             ["abc" "a" 2147483648 0]
+             ["abc" "a" 4294967296 0]
+             ["abc" "a" -2147483649 nil]
+             ["abc" "" 2147483648 0]
+             ["abc" "" 4294967296 0]
+             ["abc" "" -2147483649 3]
+             ["abc" "" -9 0]
+             ["abc" "" 1 1]
+             ["abc" "" 3 3]
+             ["abc" "" 9 3]
+             ["" "" -1 0]
+             ["" "" 0 0]
+             ["" "" 9 0]
+             ["" "a" 0 nil]
+             ["😀a😀" "a" 1 2]
+             ["😀a😀" "😀" 0 0]
+             ["😀a😀" "😀" 1 3]
+             ["😀a😀" "" 9 5]]]
+      (is (= expected (run-spell-full (list 'strings/index-of s needle start)))
+          (pr-str [s needle start]))))
+  (testing "both arities preserve str coercion and nil for absent needles"
+    (doseq [[s needle expected] [[12323 23 1] [nil nil 0] ["abc" nil 0] [nil "a" nil]]]
+      (is (= expected (run-spell-full (list 'strings/index-of s needle))))
+      (is (= expected (run-spell-full (list 'strings/index-of s needle 0)))))
+    (is (= 3 (run-spell-full '(strings/index-of 12323 23 2)))))
+  (testing "only two or three arguments are supported"
+    (doseq [expr ['(strings/index-of) '(strings/index-of "abc")
+                 '(strings/index-of "abc" "a" 0 1)]]
+      (is (thrown? Exception (run-spell-full expr)) (str expr)))))
+
 (deftest strings-starts-with?-test
   (testing "starts-with? true"
     (is (true? (run-spell-full '(strings/starts-with? "hello world" "hello")))))
