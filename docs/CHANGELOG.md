@@ -1,14 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.5.1 - 2026-10-04
 
-### Collection and string helpers
-
-- **Previous behavior:** `map` already returned an eager vector, but the familiar `mapv` name was unavailable. `strings/index-of` accepted only two arguments despite guide language suggesting Clojure parity.
-- **Why it was a problem:** Programs using `mapv` or an inclusive search start failed, and string-helper arity guidance was misleading.
-- **What changed:** Added `(mapv f coll)` using the same callable invocation and dynamic caller scope as unchanged `map`. Both support one collection only, not multi-collection or transducer arities. Added `(strings/index-of s needle from-index)`, preserving two-argument `str` coercion and nil-on-no-match behavior. Starts and results use zero-based UTF-16 offsets. `from-index` is narrowed to a signed 32-bit Java int via `unchecked-int` before boundary rules apply: negative narrowed starts act as zero, nonempty needles at/after the end do not match, and empty needles clamp the narrowed start to the string length. Clarified that `strings/last-index-of` remains two-argument only.
-- **Validation:** Fresh-JVM evaluator/stdlib tests passed after overflow coverage was added (227 tests, 1,147 assertions), covering actual Spell functions, dynamic scope, ordinary callables, nil/empty inputs, supported/unsupported arities, coercion, search boundaries, integer narrowing, and supplementary characters. Direct JVM/Clojure checks confirmed the overflow results. The supervisor's fast suite passed (630 tests, 9,349 assertions), and documentation source checks and the full build passed after `npm ci`; source checks and the build also passed after this correction. Historical receipt retained in the durable run bundle: the implementer's initial focused run passed (227 tests, 1,141 assertions) and source checks passed, but its initial documentation build could not run because VitePress was not installed.
-- **Rollback:** Existing `map` and two-argument `strings/index-of` calls need no migration. Before rolling back, replace new `mapv` calls with `map` and remove or rewrite offset-based searches; the older runtime rejects the new name and arity.
+- Added single-collection `mapv` and `(strings/index-of s needle from-index)`, avoiding the unsupported-name and arity errors these Clojure-style calls previously caused.
 
 ### Current OpenAI and Anthropic model support
 
